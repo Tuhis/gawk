@@ -16,6 +16,7 @@
 //! change the shell reports, video keeps running (R25 Decision 6).
 
 use crate::AudioMode;
+use crate::registration::Registration;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use windows::Win32::Foundation::WAIT_OBJECT_0;
@@ -297,7 +298,10 @@ fn pump(
 ) -> std::result::Result<(), String> {
     // Device-follow only applies to mode 2 (mode 1 follows the process).
     let device_changed = Arc::new(AtomicBool::new(false));
-    let mut _watch_registration: Option<(IMMDeviceEnumerator, IMMNotificationClient)> = None;
+    // Held until the pump returns, on every path: dropping it unregisters
+    // before the callback is released (the enumerator keeps only a raw
+    // pointer — see `registration`).
+    let mut _watch: Option<Registration<IMMNotificationClient>> = None;
     if mode == AudioMode::SystemLoopback {
         let enumerator: IMMDeviceEnumerator =
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
@@ -311,7 +315,9 @@ fn pump(
                 .RegisterEndpointNotificationCallback(&watch)
                 .map_err(|e| format!("device-change registration: {e}"))?;
         }
-        _watch_registration = Some((enumerator, watch));
+        _watch = Some(Registration::new(watch, move |watch| unsafe {
+            let _ = enumerator.UnregisterEndpointNotificationCallback(watch);
+        }));
     }
 
     'reopen: loop {

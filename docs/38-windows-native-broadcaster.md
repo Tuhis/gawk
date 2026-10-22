@@ -1317,6 +1317,19 @@ exists for. The library is now **vendored with five small patches**
   The shell also logs a once-a-minute send-health line (keyframe
   sent/superseded/failed, fps) so this counter pattern is visible in
   debug.log without telemetry.
+- **F-13 (2026-10-22, field, Event Viewer)**: the broadcaster died with an
+  access violation (`c0000005`) faulting in `mmdevapi.dll`, nothing in
+  debug.log. In system-loopback mode the WASAPI pump registered its
+  default-device `IMMNotificationClient` and never unregistered it: when
+  the pump returned (a broadcast stopped, a per-app → system switch, or a
+  capture error such as a device being invalidated) it just dropped its
+  reference. `RegisterEndpointNotificationCallback` takes no reference of
+  its own, so that freed the object while the audio service still held a
+  pointer to it, and the next endpoint event (a default-device change,
+  a device or property change) called into freed memory. Each stopped
+  capture left one more stale registration. Fix: the registration is
+  a `gawk_audio::registration::Registration`, which unregisters on drop
+  before releasing the callback, on every exit path of the pump.
 
 ## 12. References
 

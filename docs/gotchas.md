@@ -1202,6 +1202,14 @@ entries still describe code `gawk-pubsim` runs (now
   and the result was 36 fps (a 144 Hz source: 48). Gate on a virtual
   schedule with an early allowance, as both `FpsGate`s now do.
   ([docs/38](38-windows-native-broadcaster.md) D6)
+- **`RegisterEndpointNotificationCallback` keeps a raw pointer.** It takes
+  no reference of its own, so releasing the last reference to an
+  `IMMNotificationClient` before
+  `UnregisterEndpointNotificationCallback` frees it while it is still
+  registered, and the next device event crashes the process inside
+  `mmdevapi.dll`, with nothing logged. Hold it in a `Registration`, which
+  unregisters first, and never unregister from inside a callback.
+  ([docs/38](38-windows-native-broadcaster.md) F-13)
 
 **Native macOS broadcaster (R52)**
 
