@@ -448,7 +448,8 @@ func (r *Registry) ReplaceStatic(defs []rooms.FileRoom) {
 	r.mu.Lock()
 	var gone []string
 	for code, rm := range r.rooms {
-		if rm.kind == rooms.KindStatic && !keep[code] {
+		// A party wall (spec.pop) is the PoP link's, never the file's.
+		if rm.kind == rooms.KindStatic && rm.pop == "" && !keep[code] {
 			gone = append(gone, code)
 		}
 	}
@@ -501,6 +502,12 @@ func (r *Registry) CheckJoin(code, creatorToken string, attachSecret string, hav
 		expected = resolved
 	}
 	var g Grants
+	if rm.pop != "" && haveAttachSecret {
+		// A party wall has no attach secret to match: every attach to it is
+		// vouched by its PoP's link (docs/76 item 33), so a presented one is
+		// refused as a wrong one would be.
+		return Grants{}, fmt.Errorf("%w: attach secret", ErrForbidden)
+	}
 	if creatorToken != "" {
 		tok, err := decodeHex(creatorToken)
 		if err != nil || r.tokens == nil || !r.tokens.VerifyCreator(norm, tok) {
@@ -509,6 +516,8 @@ func (r *Registry) CheckJoin(code, creatorToken string, attachSecret string, hav
 		g.Creator = true
 	}
 	switch {
+	case rm.pop != "":
+		// A wall grants no attach: its tiles arrive vouched (AttachVouched).
 	case rm.kind == rooms.KindDynamic:
 		g.AttachOK = true
 	case expected == "" && !found:
@@ -607,6 +616,22 @@ func (r *Registry) Mint(ctx context.Context, req MintRequest) (MintResult, error
 		if _, taken := r.rooms[norm]; taken {
 			r.mu.Unlock()
 			continue
+		}
+		if other, taken := r.attached[id]; taken {
+			if wall := r.rooms[other]; wall != nil && wall.pop != "" {
+				// A mint is the broadcaster's explicit choice: it moves the
+				// broadcast off the party wall (docs/76 item 34).
+				if a := wall.find(id); a != nil {
+					r.removeAttachmentLocked(wall, a, wire.RoomDetachReasonPublisher)
+				}
+				r.mu.Unlock()
+				r.notifyAttachments(wall)
+				r.mu.Lock()
+				if _, taken := r.rooms[norm]; taken {
+					r.mu.Unlock()
+					continue
+				}
+			}
 		}
 		if other, taken := r.attached[id]; taken {
 			if own := r.rooms[other]; own != nil && own.minter == id {
@@ -918,6 +943,13 @@ func (p *Participant) attach(cmd wire.RoomCommand) {
 	tokens := r.tokens
 	attachOK := p.grants.AttachOK
 	r.mu.Unlock()
+	if rm.pop != "" {
+		// rm.pop is set at creation and on UpsertStatic under r.mu; a wall
+		// never turns into a plain room while it has participants that
+		// matter here, and a stale read only refuses once more.
+		p.reject(cmd.Kind, wire.RoomRejectForbidden, "the party wall takes broadcasts from its PoP only")
+		return
+	}
 	if !attachOK {
 		p.reject(cmd.Kind, wire.RoomRejectForbidden, "attach key required")
 		return
@@ -936,10 +968,32 @@ func (p *Participant) attach(cmd wire.RoomCommand) {
 		r.mu.Unlock()
 		return
 	}
+	var leftWall *room
 	if other, taken := r.attached[cmd.BroadcastID]; taken && other != rm.code {
-		r.mu.Unlock()
-		p.reject(cmd.Kind, wire.RoomRejectAlreadyAttached, "broadcast is in another room")
-		return
+		wall := r.rooms[other]
+		if wall == nil || wall.pop == "" {
+			r.mu.Unlock()
+			p.reject(cmd.Kind, wire.RoomRejectAlreadyAttached, "broadcast is in another room")
+			return
+		}
+		// The broadcaster's own choice wins over the automatic wall
+		// attach (docs/76 item 34): the broadcast moves off the wall.
+		leftWall = wall
+	}
+	if leftWall != nil {
+		limit := rm.maxBroadcasts
+		if limit <= 0 {
+			limit = r.opts.MaxBroadcasts
+		}
+		if len(rm.attachments) >= limit {
+			r.mu.Unlock()
+			p.reject(cmd.Kind, wire.RoomRejectLimit, "room has no free broadcast slot")
+			return
+		}
+		if a := leftWall.find(cmd.BroadcastID); a != nil {
+			r.removeAttachmentLocked(leftWall, a, wire.RoomDetachReasonPublisher)
+		}
+		defer r.notifyAttachments(leftWall)
 	}
 	if existing := rm.find(cmd.BroadcastID); existing != nil {
 		// Idempotent re-attach (a reconnected broadcaster): adopt ownership,
@@ -1002,6 +1056,122 @@ func (p *Participant) detach(cmd wire.RoomCommand) {
 	}
 	r.mu.Unlock()
 	r.notifyAttachments(rm)
+}
+
+// WallPop names the PoP whose party wall code is (spec.pop), ok false for
+// any other room or none.
+func (r *Registry) WallPop(code string) (pop string, ok bool) {
+	norm, err := rooms.NormalizeCode(code)
+	if err != nil {
+		return "", false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rm, found := r.rooms[norm]
+	if !found || rm.ended || rm.pop == "" {
+		return "", false
+	}
+	return rm.pop, true
+}
+
+// AttachVouched puts a party broadcast on its PoP's wall (docs/76 item 34).
+// The home calls it for a wall record that arrived on pop's authenticated
+// link, for an ID that PoP reserved, so there is no resume proof to check
+// here: the link is the proof, and the caller has checked the reservation.
+// The tile has no owner participant. It is the PoP's, and only a vouched
+// DetachVouched removes it (Hide).
+//
+// ErrNotFound: no such room, or the ID does not parse. ErrForbidden: the
+// room is not pop's wall. ErrAlreadyAttached: the broadcast is in another
+// room, its broadcaster's own choice, which the automatic attach never
+// overrides. ErrMaxBroadcasts: the wall's spec.maxBroadcasts is reached.
+// Re-attaching a tile already on the wall refreshes its label.
+func (r *Registry) AttachVouched(code, pop, id, label string) error {
+	norm, err := rooms.NormalizeCode(code)
+	if err != nil {
+		return ErrNotFound
+	}
+	id, err = broadcastid.Normalize(id)
+	if err != nil {
+		return ErrNotFound
+	}
+	if !utf8.ValidString(label) {
+		label = ""
+	}
+	label = truncate(label, wire.MaxRoomLabelLen)
+	// Queried before r.mu (prefetchStates explains the lock order). A
+	// reservation the fleet has not forwarded yet is unknown or away: the
+	// tile shows away until an outsider's pull makes it live.
+	state, _ := r.opts.Broadcasts.BroadcastState(id)
+	r.mu.Lock()
+	rm, ok := r.rooms[norm]
+	if !ok || rm.ended {
+		r.mu.Unlock()
+		return ErrNotFound
+	}
+	if rm.pop == "" || rm.pop != pop {
+		r.mu.Unlock()
+		return fmt.Errorf("%w: not this PoP's wall", ErrForbidden)
+	}
+	if other, taken := r.attached[id]; taken && other != rm.code {
+		r.mu.Unlock()
+		return fmt.Errorf("%w: broadcast is in another room", ErrAlreadyAttached)
+	}
+	if existing := rm.find(id); existing != nil {
+		if label != "" && label != existing.label {
+			existing.label = rm.uniqueLabelLocked(label, existing.id)
+			r.broadcastLocked(rm, wire.RoomEvent{Kind: wire.RoomEventAttachmentUpdated, Attachment: existing.record()}, 0)
+		}
+		r.mu.Unlock()
+		return nil
+	}
+	limit := rm.maxBroadcasts
+	if limit <= 0 {
+		limit = r.opts.MaxBroadcasts
+	}
+	if len(rm.attachments) >= limit {
+		r.mu.Unlock()
+		return ErrMaxBroadcasts
+	}
+	a := r.attachLocked(rm, id, label, state, 0)
+	r.broadcastLocked(rm, wire.RoomEvent{Kind: wire.RoomEventAttachmentAdded, Attachment: a.record()}, 0)
+	r.mu.Unlock()
+	r.log.Info("broadcast attached to the party wall", "room_key", r.opts.Obfuscate(rm.code), "broadcast_key", r.opts.Obfuscate(id), "pop", pop)
+	r.notifyAttachments(rm)
+	return nil
+}
+
+// DetachVouched takes a party broadcast off its PoP's wall (Hide, or the
+// broadcast ended at the PoP). ErrNotFound when it is not on the wall;
+// ErrForbidden when the room is not pop's wall.
+func (r *Registry) DetachVouched(code, pop, id string) error {
+	norm, err := rooms.NormalizeCode(code)
+	if err != nil {
+		return ErrNotFound
+	}
+	id, err = broadcastid.Normalize(id)
+	if err != nil {
+		return ErrNotFound
+	}
+	r.mu.Lock()
+	rm, ok := r.rooms[norm]
+	if !ok || rm.ended {
+		r.mu.Unlock()
+		return ErrNotFound
+	}
+	if rm.pop == "" || rm.pop != pop {
+		r.mu.Unlock()
+		return fmt.Errorf("%w: not this PoP's wall", ErrForbidden)
+	}
+	a := rm.find(id)
+	if a == nil {
+		r.mu.Unlock()
+		return ErrNotFound
+	}
+	r.removeAttachmentLocked(rm, a, wire.RoomDetachReasonPublisher)
+	r.mu.Unlock()
+	r.notifyAttachments(rm)
+	return nil
 }
 
 func (p *Participant) reject(cmdKind, reason uint8, msg string) {
