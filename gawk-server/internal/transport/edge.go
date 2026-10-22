@@ -172,8 +172,10 @@ type EdgeManager struct {
 	// onReserved is told of every subscribe miss on a lease reserved for an
 	// R74 PoP relay but not yet held (docs/76 item 17), after EnsureEdge has
 	// made the waiting edge hub: it sends the PoP the want. An error is the
-	// viewer's answer, and a waiting hub made for this miss is removed. Nil
-	// until the PoP subsystem installs it; the wait runs without it.
+	// viewer's answer, and a waiting hub made for this miss is removed.
+	// SetCluster sets it (Server.onReservedMiss, a no-op until SetPopDemand
+	// installs the uplink); nil in the unit harness, where the wait runs
+	// without it.
 	onReserved func(ctx context.Context, id string, o cluster.Origin) error
 	// reservationPoll is edgeReservationPoll; a field for the tests.
 	reservationPoll time.Duration

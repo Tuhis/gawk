@@ -83,18 +83,16 @@ type popUplinkState struct {
 	legs map[string]*popLegClaim
 }
 
-// SetPopDemand installs the home's uplink subsystem (nil removes it). It
-// becomes the edge manager's onReserved in cluster mode; a single-pod home
-// waits its viewers in a publisher-less hub instead (popWaitSinglePod).
-// Safe while serving.
+// SetPopDemand installs the home's uplink subsystem (nil removes it). In
+// cluster mode the edge manager's onReserved (onReservedMiss, wired by
+// SetCluster) asks it; a single-pod home waits its viewers in a
+// publisher-less hub instead (popWaitSinglePod). Safe while serving: it
+// only stores the pointer those read.
 func (s *Server) SetPopDemand(h PopDemandHome) {
 	if h == nil {
 		s.uplink.demand.Store(nil)
 	} else {
 		s.uplink.demand.Store(&popDemandBox{h: h})
-	}
-	if em := s.edgeManager(); em != nil && em.onReserved == nil {
-		em.onReserved = s.onReservedMiss
 	}
 }
 

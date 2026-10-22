@@ -297,3 +297,26 @@ func TestARefusedWantReachesADownlinkLegStillUpgrading(t *testing.T) {
 		t.Errorf("leg closed with %d, want %d", code, wire.CloseCodePopUplinkFull)
 	}
 }
+
+// SetPopDemand is safe while serving, as its doc says: installing the
+// uplink must not write the edge manager's onReserved under a subscribe
+// miss reading it (-race; serve wires the uplink after the relay is up,
+// and so does popsrv's harness).
+func TestSetPopDemandWhileAMissReadsOnReserved(t *testing.T) {
+	reg := hub.NewRegistry(discardLog, hub.Options{})
+	srv := New(config.Config{Addr: "127.0.0.1:0"}, reg, nil, discardLog,
+		metrics.NewServerMetrics(prometheus.NewRegistry()))
+	srv.SetCluster(reservingFakeCoordinator{&fakeCoordinator{leases: map[string]fakeLease{
+		"K7XQ2M": {origin: cluster.Origin{Pop: testPop}},
+	}}}, "pod-self")
+	em := srv.edgeManager()
+	defer em.Stop()
+	var wg sync.WaitGroup
+	wg.Go(func() { srv.SetPopDemand(&fakeDemandHome{}) })
+	wg.Go(func() {
+		if err := em.EnsureEdge(context.Background(), "K7XQ2M"); err != nil {
+			t.Errorf("EnsureEdge: %v", err)
+		}
+	})
+	wg.Wait()
+}

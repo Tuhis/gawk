@@ -667,6 +667,10 @@ func (s *Server) SetCluster(c ClusterCoordinator, podName string) {
 	// Every pod that held a killed broadcast counts its own kill, and an
 	// edge's usually arrives as its origin's 4006 rather than a Ban event.
 	em.terminated = s.metrics.Termination
+	// A no-op until SetPopDemand installs the uplink. Set here, before the
+	// manager is published, so installing it while serving writes nothing a
+	// subscribe miss reads.
+	em.onReserved = s.onReservedMiss
 	s.wiring.Store(&clusterWiring{coord: c, edges: em})
 	s.onDrain = func() {
 		em.Stop()
