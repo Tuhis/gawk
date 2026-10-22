@@ -301,6 +301,10 @@ type BroadcastStartedData struct {
 	Role string `json:"role"`
 	// StartedAt is RFC 3339 UTC.
 	StartedAt string `json:"startedAt"`
+	// Pop names the R74 PoP relay the broadcast is published through
+	// (docs/76), absent for a broadcast published at home. A name, never an
+	// address: no event carries a publisher or venue IP.
+	Pop string `json:"pop,omitempty"`
 	Delivery
 }
 
@@ -309,6 +313,8 @@ type BroadcastStartedData struct {
 type BroadcastPublisherAwayData struct {
 	BroadcastID  string `json:"broadcastId,omitempty"`
 	BroadcastKey string `json:"broadcastKey"`
+	// Pop: as on BroadcastStartedData.
+	Pop string `json:"pop,omitempty"`
 	Delivery
 }
 
@@ -316,6 +322,8 @@ type BroadcastPublisherAwayData struct {
 type BroadcastPublisherBackData struct {
 	BroadcastID  string `json:"broadcastId,omitempty"`
 	BroadcastKey string `json:"broadcastKey"`
+	// Pop: as on BroadcastStartedData.
+	Pop string `json:"pop,omitempty"`
 	Delivery
 }
 
@@ -326,6 +334,8 @@ type BroadcastEndedData struct {
 	// Reason is BroadcastEndedGC, BroadcastEndedKilled or
 	// BroadcastEndedReplaced.
 	Reason string `json:"reason"`
+	// Pop: as on BroadcastStartedData.
+	Pop string `json:"pop,omitempty"`
 	Delivery
 }
 
@@ -338,6 +348,8 @@ type BroadcastViewersData struct {
 	Role          string `json:"role"`
 	ViewersLocal  int    `json:"viewersLocal"`
 	ViewersGlobal int    `json:"viewersGlobal"`
+	// Pop: as on BroadcastStartedData.
+	Pop string `json:"pop,omitempty"`
 	Delivery
 }
 

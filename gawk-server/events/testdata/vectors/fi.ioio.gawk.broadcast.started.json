@@ -11,6 +11,7 @@
     "broadcastId": "ABC234",
     "broadcastKey": "3f9a1c2b4d5e",
     "role": "origin",
-    "startedAt": "2026-09-17T12:00:00Z"
+    "startedAt": "2026-09-17T12:00:00Z",
+    "pop": "assembly-2026"
   }
 }

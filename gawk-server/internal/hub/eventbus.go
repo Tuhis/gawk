@@ -43,6 +43,7 @@ func (r *Registry) busStarted(id string) {
 		BroadcastKey: r.ObfuscateID(id),
 		Role:         events.RoleOrigin,
 		StartedAt:    time.Now().UTC().Truncate(time.Second).Format(time.RFC3339),
+		Pop:          r.popOf(id),
 	})
 }
 
@@ -65,6 +66,7 @@ func (r *Registry) busEnded(id, reason string) {
 		BroadcastID:  id,
 		BroadcastKey: r.ObfuscateID(id),
 		Reason:       reason,
+		Pop:          r.popOf(id),
 	})
 }
 
@@ -76,11 +78,11 @@ func (r *Registry) busStalled(id string, stalled bool) {
 	key := r.ObfuscateID(id)
 	if stalled {
 		r.emitEvent(events.TypeBroadcastPublisherAway, id, events.BroadcastPublisherAwayData{
-			BroadcastID: id, BroadcastKey: key})
+			BroadcastID: id, BroadcastKey: key, Pop: r.popOf(id)})
 		return
 	}
 	r.emitEvent(events.TypeBroadcastPublisherBack, id, events.BroadcastPublisherBackData{
-		BroadcastID: id, BroadcastKey: key})
+		BroadcastID: id, BroadcastKey: key, Pop: r.popOf(id)})
 }
 
 // busViewers publishes a viewer count. The publisher coalesces these to at
@@ -105,5 +107,16 @@ func (r *Registry) busViewers(id string, local, global int, edge bool) {
 		Role:          role,
 		ViewersLocal:  local,
 		ViewersGlobal: global,
+		Pop:           r.popOf(id),
 	})
+}
+
+// popOf names the R74 PoP relay a broadcast is published through
+// (Options.PopOf, docs/76), "" for a home broadcast or without the hook.
+// Non-blocking by the hook's contract: the emit sites hold r.mu.
+func (r *Registry) popOf(id string) string {
+	if r.opts.PopOf == nil {
+		return ""
+	}
+	return r.opts.PopOf(id)
 }

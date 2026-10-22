@@ -202,11 +202,17 @@ func TestPopRoutesAreAbsentWithoutPopsAndAdminIsNeverPublic(t *testing.T) {
 	if err == nil || rsp == nil || rsp.StatusCode != http.StatusNotFound {
 		t.Fatalf("no manager: %v %+v", err, rsp)
 	}
-	for _, path := range []string{"/pop/publish/ABC234", "/pop/subscribe/ABC234", "/internal/pop/assembly-2026"} {
+	// The uplink routes (W3-uplink) answer 404 with no manager, as the link
+	// does; /pop/subscribe stays 501 until the downlink lands.
+	for path, want := range map[string]int{
+		"/pop/publish/ABC234":         http.StatusNotFound,
+		"/internal/pop/assembly-2026": http.StatusNotFound,
+		"/pop/subscribe/ABC234":       http.StatusNotImplemented,
+	} {
 		w := httptest.NewRecorder()
 		srv.wt.H3.Handler.ServeHTTP(w, httptest.NewRequest(http.MethodConnect, path, nil))
-		if w.Code != http.StatusNotImplemented {
-			t.Errorf("%s = %d, want 501 until Wave 3", path, w.Code)
+		if w.Code != want {
+			t.Errorf("%s = %d, want %d", path, w.Code, want)
 		}
 	}
 	for _, s := range []*Server{srv, New(config.Config{}, nil, nil, discardLog, nil)} {

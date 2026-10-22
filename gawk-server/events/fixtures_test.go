@@ -33,6 +33,9 @@ const (
 	// fixtureSampler is a sampler's client-credentials identity (docs/71
 	// D18), as Keycloak names a service account.
 	fixtureSampler = "service-account-gawk-sampler"
+	// fixturePop names the R74 PoP relay a broadcast is published through
+	// (docs/76): a DNS label, never an address.
+	fixturePop = "assembly-2026"
 )
 
 var fixtureTime = time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
@@ -83,8 +86,8 @@ func fixtures() map[string]Event {
 		TypeContentFlagRaised: admin(TypeContentFlagRaised, fixtureBroadcastID, ContentFlagRaisedData{
 			Actor: fixtureSampler, BroadcastKey: fixtureBroadcastKey, BroadcastID: fixtureBroadcastID,
 			Reason: "sustained explicit signal", FlagID: 42, SamplerID: "gawk-sampler-1",
-			Window: &ContentFlagWindow{Start: "2026-09-17T11:59:35Z", End: "2026-09-17T12:00:00Z", Samples: 6, FlaggedSamples: 4},
-			Scores: &ContentFlagScores{Max: 0.97, Mean: 0.81},
+			Window:              &ContentFlagWindow{Start: "2026-09-17T11:59:35Z", End: "2026-09-17T12:00:00Z", Samples: 6, FlaggedSamples: 4},
+			Scores:              &ContentFlagScores{Max: 0.97, Mean: 0.81},
 			Labels:              []string{"FEMALE_GENITALIA_EXPOSED"},
 			ReturnedAfterReview: true,
 			Delivery: Delivery{
@@ -151,20 +154,21 @@ func fixtures() map[string]Event {
 
 		TypeBroadcastStarted: bus(TypeBroadcastStarted, fixtureBroadcastID, BroadcastStartedData{
 			BroadcastID: fixtureBroadcastID, BroadcastKey: fixtureBroadcastKey, Role: RoleOrigin,
-			StartedAt: "2026-09-17T12:00:00Z",
+			StartedAt: "2026-09-17T12:00:00Z", Pop: fixturePop,
 		}),
 		TypeBroadcastPublisherAway: bus(TypeBroadcastPublisherAway, fixtureBroadcastID, BroadcastPublisherAwayData{
-			BroadcastID: fixtureBroadcastID, BroadcastKey: fixtureBroadcastKey,
+			BroadcastID: fixtureBroadcastID, BroadcastKey: fixtureBroadcastKey, Pop: fixturePop,
 		}),
 		TypeBroadcastPublisherBack: bus(TypeBroadcastPublisherBack, fixtureBroadcastID, BroadcastPublisherBackData{
-			BroadcastID: fixtureBroadcastID, BroadcastKey: fixtureBroadcastKey,
+			BroadcastID: fixtureBroadcastID, BroadcastKey: fixtureBroadcastKey, Pop: fixturePop,
 		}),
 		TypeBroadcastEnded: bus(TypeBroadcastEnded, fixtureBroadcastID, BroadcastEndedData{
 			BroadcastID: fixtureBroadcastID, BroadcastKey: fixtureBroadcastKey, Reason: BroadcastEndedKilled,
+			Pop: fixturePop,
 		}),
 		TypeBroadcastViewers: bus(TypeBroadcastViewers, fixtureBroadcastID, BroadcastViewersData{
 			BroadcastID: fixtureBroadcastID, BroadcastKey: fixtureBroadcastKey, Role: RoleEdge,
-			ViewersLocal: 12, ViewersGlobal: 340,
+			ViewersLocal: 12, ViewersGlobal: 340, Pop: fixturePop,
 		}),
 		TypeRoomOpened: bus(TypeRoomOpened, fixtureRoomCode, RoomOpenedData{
 			RoomCode: fixtureRoomCode, RoomKey: fixtureRoomKey, DisplayCode: fixtureRoomDisplay, Kind: RoomKindDynamic,
