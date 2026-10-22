@@ -556,9 +556,22 @@ func TestEnsureEdgeSelfAndFluxShortCircuit(t *testing.T) {
 type fakeCoordinator struct {
 	heldID  string
 	heldGen int64
+	// mu guards leases: Lookup runs on the server's goroutines (a demand
+	// loop, the room refresh) while a test moves a lease with setLease.
+	mu sync.Mutex
 	// leases is what Lookup answers (R42 RoomBroadcasts); nil means no
 	// lease for anything.
 	leases map[string]fakeLease
+}
+
+// setLease moves id's lease, as the informer would, while the server reads.
+func (f *fakeCoordinator) setLease(id string, l fakeLease) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.leases == nil {
+		f.leases = map[string]fakeLease{}
+	}
+	f.leases[id] = l
 }
 
 type fakeLease struct {
@@ -573,6 +586,8 @@ func (f *fakeCoordinator) Resolve(context.Context, string) (cluster.Origin, erro
 	return cluster.Origin{}, cluster.ErrNotFound
 }
 func (f *fakeCoordinator) Lookup(id string) (cluster.Origin, bool, bool, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	l, ok := f.leases[id]
 	return l.origin, l.inGrace, l.stalled, ok
 }
