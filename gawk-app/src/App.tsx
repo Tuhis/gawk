@@ -18,6 +18,7 @@ import { applyRouteNick } from './features/room/linkNickname';
 import { applyRouteDesktop } from './lib/desktopLink';
 import { RoomScreen } from './features/room/RoomScreen';
 import { JoinResolver } from './features/room/JoinResolver';
+import { primeLocalNetworkPermission } from './features/pop/switch';
 
 // Hash-based routing; parseRoute is pure, this shell subscribes and redirects.
 //
@@ -100,6 +101,12 @@ export default function App() {
   // again, hash navigation does not.
   const [support] = useState(() => detectBrowserSupport(readBrowserEnv()));
   const [acknowledged, setAcknowledged] = useState(false);
+
+  // R74 (docs/76 item 43.4): read the local-network permission once, so a
+  // tab whose browser denies it never says lr=1 to home.
+  useEffect(() => {
+    void primeLocalNetworkPermission();
+  }, []);
 
   // #/view with no/invalid id, or any unknown route, bounces to the landing
   // page — which owns code entry.

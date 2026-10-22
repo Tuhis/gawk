@@ -18,6 +18,9 @@ function fakeTransport(opts: {
   // Uni streams the relay opens before the identity one (R74: a PoP also
   // sends 0x18 LocalRelayInfo on /echo, in no promised order).
   before?: Uint8Array[];
+  // Uni streams the relay opens after the identity one, at afterDelayMs.
+  after?: Uint8Array[];
+  afterDelayMs?: number;
   failReady?: boolean;
   // WebKit shape: no `datagrams.writable`, only `createWritable()`.
   webkit?: boolean;
@@ -74,6 +77,25 @@ function fakeTransport(opts: {
             // closed
           }
         }, opts.identityDelayMs ?? 0);
+      }
+      if (opts.after) {
+        const later = opts.after;
+        setTimeout(() => {
+          for (const payload of later) {
+            try {
+              c.enqueue(
+                new ReadableStream<Uint8Array>({
+                  start(sc) {
+                    sc.enqueue(payload);
+                    sc.close();
+                  },
+                }),
+              );
+            } catch {
+              // closed
+            }
+          }
+        }, opts.afterDelayMs ?? 1);
       }
     },
   });
@@ -243,6 +265,20 @@ describe('probeRelay local relay messages (R74)', () => {
     expect(result.offer?.candidates[0].hashes[0]).toEqual(new Uint8Array(32).fill(7));
     expect(result.localRelay).toEqual(info);
     expect(result.identity).toMatchObject({ name: 'Homelab' });
+  });
+
+  // Each notice goes out on its own goroutine, so home's offer may well land
+  // after the identity: finding the identity must not stop the reading.
+  it('still reads an offer and the PoP info that arrive after the identity', async () => {
+    const identity = encodeRelayIdentity({ serverVersion: '9.9.9', name: 'Homelab' });
+    const result = await probeRelay('https://relay.example:4433', '', undefined, () =>
+      fakeTransport({ identity, after: [encodeLocalRelayInfo(info), encodeLocalRelayOffer(offer)], afterDelayMs: 2, echoDelayMs: 5 }),
+    );
+    expect(result.state).toBe('ok');
+    if (result.state !== 'ok') return;
+    expect(result.identity).toMatchObject({ name: 'Homelab' });
+    expect(result.offer?.handle).toBe(offer.handle);
+    expect(result.localRelay).toEqual(info);
   });
 
   it('reports neither from a relay that sends neither', async () => {

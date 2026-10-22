@@ -88,7 +88,19 @@ export function selectCertHashList(s: { certHashes: string[] }): string {
 }
 
 // Where the resolved connection came from; drives the in-session indicator.
-export type ResolvedSource = 'override' | 'selected' | 'default';
+// 'pop' (R74): a followed LocalRelayOffer, the PoP on this network.
+export type ResolvedSource = 'override' | 'selected' | 'default' | 'pop';
+
+// R74 (docs/76 §6.12): the PoP a followed offer switched this tab to. Held in
+// memory only: a remembered PoP never switches a client by itself (item 43.1),
+// so a reload starts on home again and waits for a fresh offer.
+export interface OfferOverride {
+  url: string;
+  // The offer's opaque PoP handle (opt-outs key on it).
+  handle: string;
+  // The display name, as the offer gave it (sanitize before rendering).
+  name: string;
+}
 
 // Precedence: the deployment's configured relay (gawk-app chart
 // config.relayUrl) > the reference deployment's own origin > local dev.
@@ -273,6 +285,10 @@ interface TransportSettingsState extends ResolvedTransport {
   // persisted only through an explicit "Save this server".
   overridePublishSecret: string;
   overrideCertHashHex: string;
+  // R74: a followed offer's PoP and its pinned hashes. Outranks every other
+  // source: it is the current relay's own suggestion, acted on this session.
+  offerOverride: OfferOverride | null;
+  offerCertHashes: string[];
   // Quiet note about this route's ?relay= handling (an invalid value, or a
   // link asking for a server on a gated deployment).
   // Route-scoped like the override itself; rendered by the in-session
@@ -303,6 +319,9 @@ interface TransportSettingsState extends ResolvedTransport {
   // Route-driven; null clears. Routing only ever passes normalized origins,
   // and hashes only beside a private-literal relay (routing.ts).
   setSessionOverride: (url: string | null, certHashes?: string[]) => void;
+  // R74: follow an offer (features/pop) / go back to whatever ranked below.
+  setOfferOverride: (url: string, certHashes: string[], handle: string, name: string) => void;
+  clearOfferOverride: () => void;
   setRelayLinkNote: (note: string | null) => void;
   setForeignTelemetryActive: (active: boolean) => void;
   // Across tabs: the picker re-reads storage when it opens; last writer wins.
@@ -322,6 +341,8 @@ interface ResolutionInputs {
   sessionOverrideCertHashes: string[];
   overridePublishSecret: string;
   overrideCertHashHex: string;
+  offerOverride: OfferOverride | null;
+  offerCertHashes: string[];
 }
 
 // The default's credentials-only record, if one is stored and still matches
@@ -374,6 +395,18 @@ function resolveEntry(inputs: ResolutionInputs): EntryResolution {
   const orLink = (saved: string[]) => (linkHashes.length > 0 ? linkHashes : saved);
   const defaultUrl = defaultServerUrl();
   const normalizedDefault = normalizeRelayOrigin(defaultUrl);
+
+  if (inputs.offerOverride !== null) {
+    // A PoP's relay has no publish secret to present (gawk-relay's profile),
+    // and its hashes come from the offer, never from a saved entry.
+    return {
+      serverUrl: inputs.offerOverride.url,
+      certHashes: inputs.offerCertHashes,
+      publishSecret: '',
+      resolvedSource: 'pop',
+      resolvedEntryId: null,
+    };
+  }
 
   if (sessionOverrideUrl !== null) {
     if (sessionOverrideUrl === normalizedDefault) {
@@ -447,6 +480,8 @@ function loadInitialState(): ResolutionInputs {
     sessionOverrideCertHashes: [],
     overridePublishSecret: '',
     overrideCertHashHex: '',
+    offerOverride: null,
+    offerCertHashes: [],
   };
 }
 
@@ -488,6 +523,8 @@ export const useTransportStore = create<TransportSettingsState>((set, get) => {
     sessionOverrideCertHashes: s.sessionOverrideCertHashes,
     overridePublishSecret: s.overridePublishSecret,
     overrideCertHashHex: s.overrideCertHashHex,
+    offerOverride: s.offerOverride,
+    offerCertHashes: s.offerCertHashes,
   });
 
   // Upsert the default's credentials-only record (how its secret is rotated).
@@ -568,7 +605,8 @@ export const useTransportStore = create<TransportSettingsState>((set, get) => {
       const valid = id === DEFAULT_SERVER_ID || s.servers.some((e) => e.id === id);
       if (!valid) return;
       writeSelectedId(id);
-      apply({ ...inputsOf(s), selectedServerId: id });
+      // Picking a server is the user's choice, and it ends a followed offer.
+      apply({ ...inputsOf(s), selectedServerId: id, offerOverride: null, offerCertHashes: [] });
     },
 
     addServer: (entry) => {
@@ -647,8 +685,12 @@ export const useTransportStore = create<TransportSettingsState>((set, get) => {
       if (url !== null && normalized === null) return; // routing pre-validates; belt and braces
       const hashes = normalized === null ? [] : normalizeCertHashes(certHashes);
       if (normalized === s.sessionOverrideUrl && sameHashes(hashes, s.sessionOverrideCertHashes)) return;
+      // A link to a server is the user's choice and ends a followed offer; a
+      // link override merely clearing (navigation) does not.
+      const dropOffer = normalized !== null && normalized !== s.offerOverride?.url;
       apply({
         ...inputsOf(s),
+        ...(dropOffer ? { offerOverride: null, offerCertHashes: [] } : {}),
         sessionOverrideUrl: normalized,
         sessionOverrideCertHashes: hashes,
         // A new (or cleared) override never inherits the previous override's
@@ -656,6 +698,22 @@ export const useTransportStore = create<TransportSettingsState>((set, get) => {
         overridePublishSecret: '',
         overrideCertHashHex: '',
       });
+    },
+
+    setOfferOverride: (url, certHashes, handle, name) => {
+      const normalized = normalizeRelayOrigin(url);
+      if (normalized === null) return;
+      apply({
+        ...inputsOf(get()),
+        offerOverride: { url: normalized, handle, name },
+        offerCertHashes: normalizeCertHashes(certHashes),
+      });
+    },
+
+    clearOfferOverride: () => {
+      const s = get();
+      if (s.offerOverride === null) return;
+      apply({ ...inputsOf(s), offerOverride: null, offerCertHashes: [] });
     },
 
     reloadFromStorage: () => {

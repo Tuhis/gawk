@@ -41,6 +41,7 @@ import {
 } from '../../transport/audio-buffer';
 import { resolvedUrlIsDefault, selectCertHashList, useTransportStore } from '../../state/transportStore';
 import { useTelemetryCollector } from '../../lib/useTelemetry';
+import { leaveUnreachableLocalRelay, noteLocalRelay, willFollowOffers } from '../pop/switch';
 import { readVisibility } from '../../lib/visibility';
 import { log } from '../../lib/logger';
 import { readStored, writeStored } from '../../lib/storage';
@@ -554,6 +555,12 @@ export function useViewerConnection(
         setErrorKind(ev.kind);
         setErrorFatal(ev.fatal);
         setStatus('error');
+        // R74: a PoP that a followed offer chose and that then could not be
+        // reached, or lost the session for good, sends the tab back home;
+        // the store change redials there (docs/76 item 43.5).
+        if (ev.kind !== 'unplayable' && useTransportStore.getState().resolvedSource === 'pop') {
+          leaveUnreachableLocalRelay();
+        }
         break;
       case 'ended':
         popFullRef.current = false;
@@ -585,6 +592,10 @@ export function useViewerConnection(
       // This session's telemetry identity. Adopting it is what starts
       // collection at all; without one (an old relay, or telemetry off) the
       // collector stays inert and issues zero requests.
+      // R74: a PoP's 0x18 or home's 0x19 offer (features/pop decides).
+      case 'localRelay':
+        noteLocalRelay(ev.ev, 'viewer');
+        break;
       case 'telemetryHello':
         telemetry.begin(ev.hello);
         // Read back from the collector rather than derived from the hello, so
@@ -663,6 +674,8 @@ export function useViewerConnection(
         certHashHex,
         ...(deliveryMode !== 'live' ? { deliveryMode: 'reliable' as const } : {}),
         ...(parityLevel != null ? { parityLevel: parityLevel } : {}),
+        // R74 (docs/76 item 43.7): lr=1 while this tab would follow an offer.
+        ...(willFollowOffers() ? { followOffers: true } : {}),
       },
     });
     return () => {
@@ -710,6 +723,7 @@ export function useViewerConnection(
         certHashHex,
         ...(deliveryMode !== 'live' ? { deliveryMode: 'reliable' as const } : {}),
         ...(parityLevel != null ? { parityLevel: parityLevel } : {}),
+        ...(willFollowOffers() ? { followOffers: true } : {}),
       },
       {
         onDecodedFrame: ({ frame }) => {
@@ -767,6 +781,9 @@ export function useViewerConnection(
         },
         onTelemetryHello: (hello) => {
           if (active) applyEvent({ type: 'telemetryHello', hello });
+        },
+        onLocalRelay: (ev) => {
+          if (active) applyEvent({ type: 'localRelay', ev });
         },
         onTelemetryEndpoint: (url) => {
           if (active) applyEvent({ type: 'telemetryEndpoint', url });

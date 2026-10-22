@@ -48,6 +48,10 @@ export interface ProbeSuccess {
 export interface ProbeOptions {
   // R74 (docs/76 item 43.7): this client follows offers; `lr=1`.
   followOffers?: boolean;
+  // How long the handshake may take (PROBE_CONNECT_TIMEOUT_MS by default).
+  // A local relay probe in a browser that will prompt waits for the person
+  // to answer the prompt (docs/76 item 43.4).
+  connectTimeoutMs?: number;
 }
 
 export interface ProbeFailure {
@@ -115,7 +119,7 @@ export async function probeRelay(
     return { state: 'failed' };
   }
   try {
-    await withTimeout(wt.ready, PROBE_CONNECT_TIMEOUT_MS);
+    await withTimeout(wt.ready, opts.connectTimeoutMs ?? PROBE_CONNECT_TIMEOUT_MS);
   } catch {
     try {
       wt.close();
@@ -132,20 +136,28 @@ export async function probeRelay(
   // identity", never to a failed probe. R74's 0x18 (a PoP) and 0x19 (home's
   // offer) are collected the same way, by type byte, because stream order is
   // not part of the contract; anything else is read (bounded) and skipped.
+  // Finding the identity resolves identityPromise at once, but the reading
+  // goes on until the probe closes the session: each notice is sent on its
+  // own, so home's offer may land after the identity.
   let offer: LocalRelayOfferMessage | null = null;
   let localRelay: LocalRelayInfoMessage | null = null;
-  const identityPromise: Promise<RelayIdentityMessage | null> = (async () => {
+  let foundIdentity: (id: RelayIdentityMessage | null) => void = () => {};
+  const identityPromise = new Promise<RelayIdentityMessage | null>((resolve) => {
+    foundIdentity = resolve;
+  });
+  void (async () => {
     let identity: RelayIdentityMessage | null = null;
     try {
       const streams = wt.incomingUnidirectionalStreams.getReader();
-      for (let n = 0; n < PROBE_MAX_STREAMS && identity === null; n++) {
+      for (let n = 0; n < PROBE_MAX_STREAMS; n++) {
         const { value: stream, done } = await streams.read();
         if (done || !stream) break;
         const buf = await readWholeStream(stream, 4096);
         if (buf === null || buf.length < 2) continue;
         try {
-          if (buf[1] === TYPE_RELAY_IDENTITY) {
+          if (buf[1] === TYPE_RELAY_IDENTITY && identity === null) {
             identity = parseRelayIdentity(buf);
+            foundIdentity(identity);
           } else if (isLocalRelayType(buf[1])) {
             const ev = parseLocalRelayEvent(buf);
             if (ev.kind === 'offer') offer = ev.offer;
@@ -159,7 +171,7 @@ export async function probeRelay(
     } catch {
       // the session went away
     }
-    return identity;
+    foundIdentity(identity);
   })();
 
   // RTT: send stamped pings, read echoes, median of successes.

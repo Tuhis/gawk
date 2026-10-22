@@ -78,6 +78,7 @@ vi.mock('../../config', async (importActual) => ({
 
 import { ViewerScreen } from './ViewerScreen';
 import { useTransportStore } from '../../state/transportStore';
+import { resetSwitchForTest, setSwitchDepsForTest } from '../pop/switch';
 
 // ── Shared surface helpers ───────────────────────────────────────────────────
 // The tuning controls live in a pill + a settings panel; these walk the two
@@ -1285,5 +1286,63 @@ describe('ViewerScreen screen wake lock', () => {
     unmount();
     await act(async () => {});
     expect(locks[0].released).toBe(true);
+  });
+});
+
+// R74 (docs/76 item 43.3): a viewer follows home's LocalRelayOffer with the
+// R17 reconnect, once: the store change is the one teardown and redial, with
+// the same code. lr=1 rides on the CONNECT to home, and a PoP that then fails
+// the session sends the viewer back home rather than leaving it stranded.
+describe('ViewerScreen and local relays (R74)', () => {
+  const LAN = 'https://192.168.1.20:4433';
+  const OFFER = {
+    handle: 'pop-uid-1',
+    name: 'Assembly 2026',
+    validity: 3600,
+    candidates: [{ url: LAN, hashes: [new Uint8Array(32).fill(0x11)] }],
+  };
+  type LocalRelayCbs = { onLocalRelay?: (ev: unknown) => void };
+
+  beforeEach(() => {
+    resetSwitchForTest();
+    setSwitchDepsForTest({
+      probe: async () => ({ state: 'ok', rttMs: 1, identity: null }),
+      queryPermission: async () => 'granted',
+      isMac: () => false,
+    });
+    useTransportStore.getState().clearOfferOverride();
+  });
+  afterEach(() => {
+    resetSwitchForTest();
+    useTransportStore.getState().clearOfferOverride();
+  });
+
+  it('says lr=1 to home, follows an offer with one redial to the PoP, and says no lr=1 there', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    const home = sessions[0].url;
+    expect((sessions[0].opts as { followOffers?: boolean }).followOffers).toBe(true);
+    act(() => sessions[0].cbs.onConnected());
+    await act(async () => (sessions[0].cbs as LocalRelayCbs).onLocalRelay?.({ kind: 'offer', offer: OFFER }));
+    await waitFor(() => expect(sessions).toHaveLength(2));
+    expect(sessions[1].url).toBe(LAN);
+    expect(sessions[1].url).not.toBe(home);
+    expect((sessions[1].opts as { certHashHex?: string }).certHashHex).toBe('11'.repeat(32));
+    expect((sessions[1].opts as { followOffers?: boolean }).followOffers).toBeFalsy();
+    // The PoP's own chip names it.
+    expect(screen.getByText(/Assembly 2026 · local relay/)).toBeTruthy();
+  });
+
+  it('a PoP whose session is lost sends the viewer back home, and does not loop it back', async () => {
+    useTransportStore.getState().setOfferOverride(LAN, [], 'pop-uid-1', 'Assembly 2026');
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    expect(sessions[0].url).toBe(LAN);
+    act(() => sessions[0].cbs.onConnected());
+    act(() => sessions[0].cbs.onError(new Error('reconnect failed after 10 attempts: boom')));
+    await waitFor(() => expect(sessions.length).toBeGreaterThanOrEqual(2));
+    const last = sessions[sessions.length - 1];
+    expect(last.url).not.toBe(LAN);
+    expect((last.opts as { followOffers?: boolean }).followOffers).toBeFalsy();
   });
 });
