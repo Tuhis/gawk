@@ -1,4 +1,4 @@
-package main
+package serve
 
 import (
 	"crypto/tls"
@@ -25,7 +25,7 @@ import (
 // AdoptDynamic asked the hub for BroadcastState under the registry lock —
 // an AB/BA deadlock that wedged a relay with one attached broadcast the
 // moment /publish got busy. This drives both directions concurrently,
-// wired exactly as run() wires them, and fails by timeout if either side
+// wired exactly as Run wires them, and fails by timeout if either side
 // ever holds its lock across the other's.
 func TestHubAndRoomRegistryNeverDeadlock(t *testing.T) {
 	discardLog := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -34,7 +34,7 @@ func TestHubAndRoomRegistryNeverDeadlock(t *testing.T) {
 		BroadcastGrace: time.Minute,
 		IDReserved:     func(id string) bool { return roomReg != nil && roomReg.Has(id) },
 	})
-	// The broadcast source is the transport's, as in run: single-pod shape
+	// The broadcast source is the transport's, as in Run: single-pod shape
 	// here (no SetCluster), so it is the local hub behind one more call.
 	cfg := config.Config{Addr: "127.0.0.1:0", MaxIdleTimeout: 30 * time.Second, KeepAlivePeriod: 10 * time.Second, Rooms: true}
 	srv := transport.New(cfg, r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, errors.New("no cert") },

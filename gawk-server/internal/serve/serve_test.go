@@ -1,4 +1,4 @@
-package main
+package serve
 
 import (
 	"bytes"
@@ -68,7 +68,7 @@ func TestRegistryOptionsCarryAllLimits(t *testing.T) {
 		UplinkMaxBitrateBytes:         12_500_000,
 	}
 	// DeepEqual, not ==: Options grew func-typed cluster hooks in R17 W3
-	// (nil here on both sides — registryOptions never sets them; main wires
+	// (nil here on both sides — registryOptions never sets them; Run wires
 	// them separately when -cluster-mode is on).
 	if got := registryOptions(cfg); !reflect.DeepEqual(got, want) {
 		t.Errorf("registryOptions(cfg) = %+v, want %+v", got, want)
@@ -147,7 +147,7 @@ func TestStartupLogCarriesTheSanitizedConfig(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	logStartup(slog.New(slog.NewJSONHandler(&buf, nil)), cfg, "v1.2.3")
+	LogStartup(slog.New(slog.NewJSONHandler(&buf, nil)), cfg, "v1.2.3")
 	var line struct {
 		Msg     string          `json:"msg"`
 		Version string          `json:"version"`
@@ -167,7 +167,7 @@ func TestStartupLogCarriesTheSanitizedConfig(t *testing.T) {
 	}
 
 	var text bytes.Buffer
-	logStartup(slog.New(slog.NewTextHandler(&text, nil)), cfg, "v1.2.3")
+	LogStartup(slog.New(slog.NewTextHandler(&text, nil)), cfg, "v1.2.3")
 	for _, want := range []string{
 		"config.moderationSource=file:/etc/gawk/bans.json",
 		"config.maxRooms=12",
@@ -349,7 +349,7 @@ func TestWiringInstallsTheRoomStoreAfterTheClusterAndStartsItsInformerLast(t *te
 	}
 }
 
-// Without -cluster-mode there is no room store: run passes a nil builder,
+// Without -cluster-mode there is no room store: Run passes a nil builder,
 // and the wiring must not touch SetRoomCluster — single-pod mode stays
 // byte-identical (docs/44 §4.3).
 func TestWiringWithoutARoomBuilderNeverInstallsARoomStore(t *testing.T) {
@@ -365,7 +365,7 @@ func TestWiringWithoutARoomBuilderNeverInstallsARoomStore(t *testing.T) {
 }
 
 // R42 RM3: the rooms stats source is nil until the registry is on the
-// transport. run once read it BEFORE SetRooms, so a rooms-enabled relay
+// transport. run (now Run) once read it BEFORE SetRooms, so a rooms-enabled relay
 // exported no /statusz rooms section and no room metric series while every
 // unit test stayed green — the R2 F1 blind spot again, one seam over. Real
 // transport.Server, not a fake: the nil-before-install behaviour under test
