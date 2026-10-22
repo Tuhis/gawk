@@ -3,7 +3,6 @@ package serve
 import (
 	"context"
 	"log/slog"
-	"reflect"
 
 	"github.com/Tuhis/gawk/gawk-server/internal/popsrv"
 )
@@ -19,30 +18,6 @@ func wirePopOffers(ctx context.Context, w Wired, m *popsrv.Manager, log *slog.Lo
 	}
 	offers := popsrv.NewOffers(m, opts)
 	w.Server.SetOfferer(offers)
-	if !setDemandDeferrer(w.Server, offers) {
-		log.Warn("pop offer deferral not wired: the relay has no demand deferrer seam", "pop_offer_defer", w.Cfg.PopOfferDefer)
-	}
+	w.Server.SetDemandDeferrer(offers)
 	return nil
-}
-
-// setDemandDeferrer calls target.SetDemandDeferrer(d) when target has it.
-// The setter's parameter is transport's unexported demandDeferrer
-// interface (W3-uplink's pop_demand.go, contract §4), which this package
-// cannot name, so the call is made by reflection: it compiles whether or
-// not the seam exists and checks d implements the parameter type. Replace
-// it with a direct w.Server.SetDemandDeferrer(offers) once both land.
-func setDemandDeferrer(target, d any) bool {
-	if target == nil || d == nil {
-		return false
-	}
-	meth := reflect.ValueOf(target).MethodByName("SetDemandDeferrer")
-	if !meth.IsValid() {
-		return false
-	}
-	mt := meth.Type()
-	if mt.NumIn() != 1 || mt.NumOut() != 0 || !reflect.TypeOf(d).AssignableTo(mt.In(0)) {
-		return false
-	}
-	meth.Call([]reflect.Value{reflect.ValueOf(d)})
-	return true
 }

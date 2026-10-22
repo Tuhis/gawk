@@ -3,7 +3,6 @@ package serve
 import (
 	"io"
 	"log/slog"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,43 +12,9 @@ import (
 
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
-	"github.com/Tuhis/gawk/gawk-server/internal/popsrv"
 	"github.com/Tuhis/gawk/gawk-server/internal/transport"
 	"github.com/Tuhis/gawk/gawk-server/pops"
 )
-
-// hiddenDeferrer stands in for transport's unexported demandDeferrer.
-type hiddenDeferrer interface {
-	Defer(remote netip.Addr, lr bool) time.Duration
-}
-
-type seamServer struct{ got hiddenDeferrer }
-
-func (s *seamServer) SetDemandDeferrer(d hiddenDeferrer) { s.got = d }
-
-type wrongSeam struct{}
-
-func (wrongSeam) SetDemandDeferrer(func()) {}
-
-// The deferrer reaches a SetDemandDeferrer whose parameter type this
-// package cannot name, and nothing happens where the seam is absent or
-// shaped differently.
-func TestSetDemandDeferrer(t *testing.T) {
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	m := popsrv.New(popsrv.Options{Log: log})
-	defer m.Close()
-	offers := popsrv.NewOffers(m, popsrv.OffersOptions{Defer: time.Second})
-	s := &seamServer{}
-	if !setDemandDeferrer(s, offers) || s.got != hiddenDeferrer(offers) {
-		t.Fatalf("seam not called: %v", s.got)
-	}
-	if setDemandDeferrer(wrongSeam{}, offers) {
-		t.Fatal("a differently shaped setter was called")
-	}
-	if setDemandDeferrer(&struct{}{}, offers) || setDemandDeferrer(nil, offers) {
-		t.Fatal("a target without the seam reported success")
-	}
-}
 
 // With -pops on, wirePops installs the offer matcher and its counters.
 func TestWirePopsInstallsOffers(t *testing.T) {
