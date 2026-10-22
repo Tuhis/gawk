@@ -950,10 +950,12 @@ PP8 measured the PoP's own carrier sender in R73's lab on 2026-10-22
     `spec.maxBroadcasts` = min(`limits.maxBroadcasts`, 64), the optional
     `spec.maxParticipants`, no attach secret, and an ownerReference to the
     Pop, so deleting the PoP deletes its wall. A taken wall code fails the
-    create (`409 wall_code_taken`) and the Pop is removed again. The wall
-    is set at creation only: editing a Pop later does not add, remove or
-    rename it, nor carry a new `limits.maxBroadcasts` into the room, and a
-    revoke leaves the room in place. `spec.maxParticipants` overrides
+    create (`409 wall_code_taken`) and the Pop is removed again. Every
+    successful edit of the Pop writes its `limits.maxBroadcasts` (as the
+    wall's `spec.maxBroadcasts`) and its display name onto the wall room,
+    so a raised or lowered cap and a rename reach the room; an edit still
+    does not add, remove or rename the wall's code, and a revoke leaves the
+    room in place. `spec.maxParticipants` overrides
     `-max-room-participants` exactly as `spec.maxBroadcasts` overrides
     `-max-room-broadcasts` (0 = the fleet default), and the `-rooms-file`
     entry gained the same field.
@@ -980,6 +982,13 @@ PP8 measured the PoP's own carrier sender in R73's lab on 2026-10-22
     once the broadcaster's resume token proves the broadcast; an `Attach`
     with a valid token proves the ID for the rest of that guest session. A
     home with `-rooms` off has no wall, and the PoP's rooms stay local.
+    The broadcaster's choice moves the broadcast off home's wall either
+    way: a room minted at the PoP (the PoP's registry reports it, and the
+    PoP Hides it), or an `Attach` to a room at home through the PoP. The
+    PoP's resume token never travels home: the PoP zeroes it on an `Attach`
+    it verified, and home accepts the link's vouch for a broadcast reserved
+    for that PoP (`?vouch=` on `/internal/room` when the room's home pod is
+    another, never taken from a public join).
 
 35. **Grid capped by the budget** (OD10). Each tile is an ordinary
     per-broadcast `/subscribe`. For an outside participant that is an
@@ -1113,9 +1122,12 @@ PP8 measured the PoP's own carrier sender in R73's lab on 2026-10-22
 
     *Built:* every home pod offers, since a guest's session can land on any
     of them. The candidates are, in order, `https://<named host>:4433`,
-    only once a certificate has been issued for that host (publicly
-    trusted, so no hashes), then `https://<LAN IP>:4433` with the PoP's
-    current and next hashes (port 4433 when the link reports none). An
+    only once a certificate has been issued for that host and only while
+    `namedAddress` is on (publicly trusted, so no hashes; always
+    `status.tls.host`, never the host the PoP names in its hello), then
+    `https://<LAN IP>:4433` with the PoP's current and next hashes (port
+    4433 when the link reports none; both candidates take the port a relay
+    off 4433 reports). An
     offer is valid for one hour. Metrics: `gawk_pop_offers_total` and
     `gawk_pop_offer_defers_total`, with no PoP label, because a PoP's name
     is its default wall code; `/internal/admin/pops` rows carry
@@ -1346,12 +1358,16 @@ sign-off):
   empty key, no pods and no `publisherRemoteIp`, and its ban state reflects
   ID bans only (PoP traffic is exempt from IP bans). It can be killed like
   any other row. `publisherLanAddr` is on the admin API only, in no event.
+- Create, edit, re-pair, revoke and delete are audited as
+  `pop.created`, `pop.updated`, `pop.repaired`, `pop.revoked` and
+  `pop.deleted` (`fi.ioio.gawk.pop.*` on the webhook channel, with schemas
+  and golden vectors in `gawk-server/events`). Their data is the actor,
+  the PoP's name and its display name: no address, pairing string or
+  credential.
 - **Not built:** Kill/Ban on the PoP detail page (it links to the
-  Broadcasts view, which offers Kill on party rows); per-OS download links
-  in the wizard (it links to the releases page filtered to
-  `gawk-server/`); and `pop.*` audit events for create, edit, re-pair,
-  revoke and delete, which are only logged with actor and PoP name. When
-  they land they carry no address and no token.
+  Broadcasts view, which offers Kill on party rows); and per-OS download
+  links in the wizard (it links to the releases page filtered to
+  `gawk-server/`).
 
 ### 7.3 Guests (web, desktop, iOS)
 
@@ -1651,7 +1667,7 @@ measured or passed.
 |---|---|---|
 | **PP0** | Nothing: the `tools/` harness has not landed | Every measurement (owner hardware), §3 |
 | **PP1** | The surfaces, built to §7's copy | Owner sign-off; console, admin and guest copy and layout are provisional |
-| **PP2** | Zero-flag start, restart-resume and the kill-9 stateless reset (`cmd/gawk-relay` tests: in-process, and a subprocess SIGKILL with a fresh-key control); `gawk-server` with zero flags still exits non-zero; every target GOOS/GOARCH builds and vets with cgo off | Windows runtime: DPAPI and a `TerminateProcess` kill have never run; `lanaddr.Detect` on a real multi-NIC Windows or macOS host |
+| **PP2** | Zero-flag start, restart-resume and the kill-9 stateless reset (`cmd/gawk-relay` tests: in-process, and a subprocess SIGKILL with a fresh-key control); `gawk-server` with zero flags still exits non-zero; every target GOOS/GOARCH builds and vets with cgo off; the portable packages' unit tests run for Windows under Wine (`relay-windows`, DPAPI included) and natively on macOS (`relay-darwin`) | Windows host runtime: a `TerminateProcess` kill and the QUIC listener (Wine cannot open one) have never run on Windows itself; `lanaddr.Detect` on a real multi-NIC Windows or macOS host |
 | **PP3** | Non-loopback refusal (test); QR payloads golden-tested per tier; the firewall helper's command construction; the CI zero-flag smoke probes `127.0.0.1:4480` | The firewall helper run once on Windows (PP15) |
 | **PP4** | `ci.yml`'s `relay` job (windows/amd64, darwin amd64+arm64, linux amd64+arm64; `CGO_ENABLED=0`, `-trimpath`, `main.version` from the release manifest), `relay-macos` (one universal binary, Developer ID signed and notarized, never on pull requests), `relay-release` (attaches to the `gawk-server/vX.Y.Z` release and publishes `releases/gawk-relay/latest.json`); `ghcr.io/tuhis/gawk-relay` from `gawk-server/deploy/Dockerfile.relay` (repo-root context, no chart); `go version -m` checks on every binary and the image; the image's zero-flag start; `tools/releases` `test_relay_releases_under_the_server_tag` | Notarization, unexercised until the first tagged release; a real release producing every artifact, the manifest and the multi-arch GHCR push; the arm64 image start under QEMU runs in CI only; the site's downloads card is not built |
 | **PP5** | Routing vectors; `e2e/pop-pinned.mjs` (headless Chromium 151.0.7922.34: with Local Network Access granted the view link decodes frames, without it the dial fails with `ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS`, and the landing save stores the hashes), wired into `ci.yml`; desktop and iOS-core pinning and the `gawk://server` link vectors; the Rust dial against a pinned relay (an in-test wtransport server, and the ignored real-relay suite CI runs); `0x18` vectors in all three copies | The iOS Swift wiring is unbuilt here; a device pass |
