@@ -653,7 +653,8 @@ func (s *Store) Adopt(ctx context.Context, code string) error {
 // attach secret. Fails closed: a room whose secret cannot be read is not
 // homed here, rather than homed with attach open.
 func (s *Store) staticDef(ctx context.Context, r *rooms.Room) (roomsrv.StaticRoom, error) {
-	def := roomsrv.StaticRoom{Code: r.Name, DisplayCode: r.Spec.DisplayCode, DisplayName: r.Spec.DisplayName, MaxBroadcasts: r.Spec.MaxBroadcasts}
+	def := roomsrv.StaticRoom{Code: r.Name, DisplayCode: r.Spec.DisplayCode, DisplayName: r.Spec.DisplayName,
+		MaxBroadcasts: r.Spec.MaxBroadcasts, MaxParticipants: r.Spec.MaxParticipants, Pop: r.Spec.Pop}
 	if r.Spec.Kind == rooms.KindDynamic || r.Spec.AttachSecretRef == nil {
 		return def, nil
 	}
