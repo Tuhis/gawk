@@ -44,6 +44,7 @@ func startProcess(t *testing.T, exe, stateDir string, port int) *exec.Cmd {
 		"-addr", fmt.Sprintf("127.0.0.1:%d", port),
 		"-metrics-addr", "off",
 		"-lan-address", "127.0.0.1",
+		"-console-addr", "127.0.0.1:0",
 		"-log-level", "warn")
 	cmd.Env = append(os.Environ(), "GAWK_STATE_DIR="+stateDir)
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr

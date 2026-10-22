@@ -114,6 +114,7 @@ func startRelay(t *testing.T, ctx context.Context, stateDir string, port int) (s
 			"-addr", fmt.Sprintf("127.0.0.1:%d", port),
 			"-metrics-addr", "off",
 			"-lan-address", "127.0.0.1",
+			"-console-addr", "127.0.0.1:0", // never the host's real 4480
 			"-log-level", "error",
 		}, envOf(map[string]string{"GAWK_STATE_DIR": stateDir}))
 	}()

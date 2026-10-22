@@ -3522,7 +3522,7 @@ jobs:
           done
       # Zero flags is the product (docs/76 §6.1 item 2), so it is the smoke:
       # a fresh state directory, no arguments, and the relay must come up,
-      # answer /healthz on its loopback ops listener and have persisted the
+      # answer /healthz on its loopback ops listener and console, and have persisted the
       # keys the relay profile generates. Then it must stop on SIGTERM.
       - name: gawk-relay starts with zero flags
         run: |
@@ -3533,15 +3533,26 @@ jobs:
           pid=$!
           ok=0
           for _ in $(seq 1 60); do
-            if curl -fsS -o /dev/null http://127.0.0.1:2112/healthz; then ok=1; break; fi
+            # Both loopback listeners: the ops port and the host console
+            # (docs/76 §7.1, 127.0.0.1:4480).
+            if curl -fsS -o /dev/null http://127.0.0.1:2112/healthz &&
+               curl -fsS -o /dev/null http://127.0.0.1:4480/healthz; then ok=1; break; fi
             if ! kill -0 "$pid" 2>/dev/null; then break; fi
             sleep 1
           done
           if [ "$ok" != 1 ]; then
-            echo "::error::gawk-relay with zero flags never answered /healthz"
+            echo "::error::gawk-relay with zero flags never answered /healthz on the ops port and the console"
             cat "$RUNNER_TEMP/relay.log"
             kill "$pid" 2>/dev/null || true
             exit 1
+          fi
+          # The host's own /app/ gets a generated config.js naming the relay
+          # with its two pinned hashes (docs/76 §6.1 item 6).
+          cfg=$(curl -fsS http://127.0.0.1:4480/app/config.js)
+          if ! grep -qE '"relayCertHashes":\["[0-9a-f]{64}","[0-9a-f]{64}"\]' <<<"$cfg" ||
+             ! grep -q '"requirePublishSecret":false' <<<"$cfg"; then
+            echo "::error::the console's /app/config.js lacks the pinned hashes"
+            echo "$cfg"; cat "$RUNNER_TEMP/relay.log"; kill "$pid"; exit 1
           fi
           for key in stateless-reset.key resume-token.key stats.key; do
             [ -s "$state/$key" ] || {

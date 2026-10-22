@@ -1,0 +1,34 @@
+/* The gawk-relay console. Layout is PP1's design pass (docs/76 §7); this is
+   the plain, readable baseline. */
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+  line-height: 1.4;
+}
+body { margin: 0 auto; max-width: 60rem; padding: 1rem 1.5rem 3rem; }
+h1 { font-size: 1.4rem; margin: 0; }
+h2 { font-size: 1.1rem; margin: 1.5rem 0 0.5rem; }
+.state { font-weight: 600; margin: 0.25rem 0; }
+.state[data-state="revoked"], .state[data-state="repair"], .state[data-state="offline"] { color: #b45309; }
+.notice { background: #fef3c7; color: #78350f; padding: 0.5rem 0.75rem; border-radius: 4px; }
+.error { background: #fee2e2; color: #7f1d1d; padding: 0.5rem 0.75rem; border-radius: 4px; }
+.aside { opacity: 0.75; font-size: 0.9rem; }
+.url { word-break: break-all; font-family: ui-monospace, monospace; font-size: 0.9rem; }
+.join-body { display: flex; gap: 1.5rem; align-items: flex-start; flex-wrap: wrap; }
+#qr { background: #fff; width: 240px; height: 240px; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 0.3rem 0.6rem; border-bottom: 1px solid #8884; }
+#health li.ok::marker { content: "✓  "; color: #15803d; }
+#health li.bad::marker { content: "!  "; color: #b45309; }
+form.inline { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin: 0.5rem 0; }
+form.inline input[type="number"] { width: 5rem; }
+#pair-form { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+#pair-form label { flex-basis: 100%; }
+#pair-input { flex: 1; min-width: 16rem; font-family: ui-monospace, monospace; }
+[hidden] { display: none !important; }
+#projector-view {
+  position: fixed; inset: 0; background: #fff; color: #000;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem;
+}
+#qr-big { width: min(80vh, 90vw); height: min(80vh, 90vw); }
+#projector-url { font-size: 1.5rem; max-width: 90vw; text-align: center; }
