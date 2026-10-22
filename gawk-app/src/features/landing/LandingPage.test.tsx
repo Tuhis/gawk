@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { LandingPage } from './LandingPage';
 import { SITE_DOWNLOAD_URL, SITE_URL, SOURCE_URL } from '../../config';
+import { DEFAULT_SERVER_ID, useTransportStore } from '../../state/transportStore';
 
 afterEach(cleanup);
 
@@ -62,5 +63,65 @@ describe('LandingPage footer', () => {
       .filter((a) => a.closest('footer'))
       .map((a) => a.textContent?.trim());
     expect(names).toEqual(['About', 'Get the app', 'Terms of use', 'GitHub']);
+  });
+});
+
+// R74 (docs/76 §6.1 item 5): a standalone PoP's join link lands here with
+// `?relay=<lan-ip>&certHash=…`. The page offers to keep that server, and its
+// own hops stay on it until then.
+describe('LandingPage on a link-named server (R74)', () => {
+  const H1 = '11'.repeat(32);
+  const H2 = '22'.repeat(32);
+  const POP = 'https://192.168.1.20:4433';
+  const suffix = `?relay=${encodeURIComponent(POP)}&certHash=${H1},${H2}`;
+
+  beforeEach(() => {
+    localStorage.clear();
+    const s = useTransportStore.getState();
+    s.reloadFromStorage();
+    s.selectServer(DEFAULT_SERVER_ID);
+    s.setSessionOverride(null);
+    s.setRelayLinkNote(null);
+  });
+
+  it('offers nothing extra on the user’s own server', () => {
+    render(<LandingPage />);
+    expect(screen.queryByRole('button', { name: 'Save and use this server' })).toBeNull();
+  });
+
+  it('“Save and use this server” saves the relay with its pins and selects it', () => {
+    useTransportStore.getState().setSessionOverride(POP, [H1, H2]);
+    render(<LandingPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'Save and use this server' }));
+
+    const s = useTransportStore.getState();
+    const saved = s.servers.find((e) => e.url === POP);
+    expect(saved).toBeDefined();
+    expect(saved?.certHashes).toEqual([H1, H2]);
+    expect(s.selectedServerId).toBe(saved?.id);
+    // Still resolving the same relay, now as a saved entry, so the offer goes.
+    expect(s.serverUrl).toBe(POP);
+    expect(s.certHashes).toEqual([H1, H2]);
+    expect(screen.queryByRole('button', { name: 'Save and use this server' })).toBeNull();
+
+    // Selected for good: a later plain visit stays on it.
+    s.setSessionOverride(null);
+    expect(useTransportStore.getState().serverUrl).toBe(POP);
+    expect(useTransportStore.getState().certHashes).toEqual([H1, H2]);
+  });
+
+  it('keeps the link’s server on the join and start-a-stream hops', () => {
+    useTransportStore.getState().setSessionOverride(POP, [H1, H2]);
+    render(<LandingPage />);
+    fireEvent.change(screen.getByLabelText('Broadcast code'), { target: { value: 'ab2cd3' } });
+    expect(window.location.hash).toBe(`#/join/AB2CD3${suffix}`);
+    fireEvent.click(screen.getByRole('button', { name: /Start a stream/ }));
+    expect(window.location.hash).toBe(`#/broadcast${suffix}`);
+  });
+
+  it('shows the link note', () => {
+    useTransportStore.getState().setRelayLinkNote('a quiet note');
+    render(<LandingPage />);
+    expect(screen.getByRole('status').textContent).toBe('a quiet note');
   });
 });

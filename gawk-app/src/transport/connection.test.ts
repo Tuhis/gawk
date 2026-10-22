@@ -12,9 +12,11 @@ import {
   DialTimeoutError,
   DIAL_ATTEMPT_TIMEOUT_MS,
   DIAL_TIMEOUT_MS,
+  hexToBytes,
   newCarrierCounters,
   openDatagramWriter,
   readServerStreams,
+  webTransportInit,
   type KeyframeStreamFrame,
 } from './connection';
 import {
@@ -648,5 +650,50 @@ describe('readServerStreams — session closing notice (R57)', () => {
     await readServerStreams(wt, { onKeyframe: () => {}, onCarrierRecord: () => {}, onSessionClosing: (c) => seen.push(c) }, counters);
     expect(seen).toHaveLength(0);
     expect(counters.malformed).toBe(1);
+  });
+});
+
+// R74 (docs/76 §6.1 item 3): a PoP's pinned certificate rotates with an
+// overlap, and the client pins both the current and the next hash, so a
+// session dials whichever the relay presents.
+describe('webTransportInit certificate pins (R74)', () => {
+  const H1 = '11'.repeat(32);
+  const H2 = 'ab'.repeat(32);
+  const bytes = (hex: string) => Array.from(hexToBytes(hex));
+  const pinned = (init: WebTransportOptions) =>
+    (init.serverCertificateHashes ?? []).map((h) => ({
+      algorithm: h.algorithm,
+      value: Array.from(h.value as Uint8Array),
+    }));
+
+  it('pins nothing without a hash', () => {
+    expect(webTransportInit({}).serverCertificateHashes).toBeUndefined();
+    expect(webTransportInit({ certHashHex: ' ' }).serverCertificateHashes).toBeUndefined();
+    expect(webTransportInit({ certHashes: [] }).serverCertificateHashes).toBeUndefined();
+  });
+
+  it('pins one hash, as before', () => {
+    expect(pinned(webTransportInit({ certHashHex: H1 }))).toEqual([{ algorithm: 'sha-256', value: bytes(H1) }]);
+  });
+
+  it('pins two hashes from a list', () => {
+    expect(pinned(webTransportInit({ certHashes: [H1, H2] }))).toEqual([
+      { algorithm: 'sha-256', value: bytes(H1) },
+      { algorithm: 'sha-256', value: bytes(H2) },
+    ]);
+  });
+
+  it('pins two comma-separated hashes from certHashHex (the store’s joined form)', () => {
+    expect(pinned(webTransportInit({ certHashHex: `${H1}, ${H2}` }))).toEqual([
+      { algorithm: 'sha-256', value: bytes(H1) },
+      { algorithm: 'sha-256', value: bytes(H2) },
+    ]);
+  });
+
+  it('merges both fields without repeats', () => {
+    expect(pinned(webTransportInit({ certHashHex: H1, certHashes: [H1, H2] }))).toEqual([
+      { algorithm: 'sha-256', value: bytes(H1) },
+      { algorithm: 'sha-256', value: bytes(H2) },
+    ]);
   });
 });

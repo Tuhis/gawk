@@ -11,6 +11,7 @@ import { getRuntimeConfig, requiresPublishSecret,
   getTermsUrl,
   getRelayUrl,
   getDevCertHashHex,
+  getRelayCertHashes,
 } from './config';
 
 beforeEach(() => {
@@ -166,6 +167,34 @@ describe('getDevCertHashHex', () => {
     expect(getDevCertHashHex()).toBe('');
     window.__GAWK_CONFIG__ = { devCertHashHex: '   ' };
     expect(getDevCertHashHex()).toBe('');
+  });
+});
+
+// R74 (docs/76 §6.1 item 6): the PoP's generated config.js names its LAN
+// relay with both pinned hashes. Unlike devCertHashHex it is not gated on a
+// loopback origin: the named tier serves the app from a real hostname.
+describe('getRelayCertHashes', () => {
+  afterEach(() => {
+    delete window.__GAWK_CONFIG__;
+    vi.unstubAllEnvs();
+  });
+
+  it('returns the configured hashes, on a non-loopback origin too', () => {
+    vi.stubEnv('DEV', false);
+    (window as any).location = { hostname: 'p-7k2m9x.pop.gawk.ioio.fi' };
+    window.__GAWK_CONFIG__ = { relayCertHashes: ['AA11', 'bb22'] };
+    expect(getRelayCertHashes()).toEqual(['aa11', 'bb22']);
+  });
+
+  it('treats unset, empty and junk as no pins', () => {
+    window.__GAWK_CONFIG__ = {};
+    expect(getRelayCertHashes()).toEqual([]);
+    window.__GAWK_CONFIG__ = { relayCertHashes: [] };
+    expect(getRelayCertHashes()).toEqual([]);
+    window.__GAWK_CONFIG__ = { relayCertHashes: 'aa11' as unknown as string[] };
+    expect(getRelayCertHashes()).toEqual([]);
+    window.__GAWK_CONFIG__ = { relayCertHashes: ['', ' ', 7, 'aa11', 'AA11'] as unknown as string[] };
+    expect(getRelayCertHashes()).toEqual(['aa11']);
   });
 });
 

@@ -15,6 +15,11 @@ export const NOTE_RELAY_NOT_ALLOWED =
   'This link asked to use a different server, but this deployment only allows its own.';
 export const NOTE_RELAY_INVALID =
   'This link named a server it couldn’t be understood as — joining on your own server instead.';
+// R74 (docs/76 OD12): a certificate pin is honoured only beside a relay named
+// by a private-range IP address. The session still dials the relay, so a
+// relay with a real certificate works; a self-signed one will not connect.
+export const NOTE_CERT_HASH_DROPPED =
+  'This link carried a certificate pin, which only works with a server on a local network address — ignoring it.';
 
 export function applyRouteRelay(route: Route): void {
   const store = useTransportStore.getState();
@@ -22,8 +27,11 @@ export function applyRouteRelay(route: Route): void {
   // to the session that produced it.
   store.setForeignTelemetryActive(false);
   // Room links take the same ?relay= parameter, and the join resolver carries
-  // it forward to whichever surface it lands on.
+  // it forward to whichever surface it lands on. The landing page takes it
+  // too (R74): a standalone PoP's join link is `#/?relay=…&certHash=…`, and
+  // the page's own hops carry it on (relayQuerySuffix).
   if (
+    route.view !== 'landing' &&
     route.view !== 'viewer' &&
     route.view !== 'broadcaster' &&
     route.view !== 'room' &&
@@ -34,8 +42,8 @@ export function applyRouteRelay(route: Route): void {
     return;
   }
   if (route.relay !== null && allowCustomRelays()) {
-    store.setSessionOverride(route.relay);
-    store.setRelayLinkNote(null);
+    store.setSessionOverride(route.relay, route.certHashes);
+    store.setRelayLinkNote(route.droppedParams.includes('certHash') ? NOTE_CERT_HASH_DROPPED : null);
     return;
   }
   store.setSessionOverride(null);

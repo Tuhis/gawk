@@ -28,7 +28,7 @@ import type { EncoderConfigured } from '../../media/encoder';
 import type { ResolutionSelection } from '../../media/ladder';
 import { DEFAULT_CAPTURE_CONFIG, type CaptureConfig } from '../../media/types';
 import { encoderSettingsFromStore, useBroadcastSettingsStore } from '../../state/broadcastSettingsStore';
-import { resolvedUrlIsDefault, useTransportStore } from '../../state/transportStore';
+import { resolvedUrlIsDefault, selectCertHashList, useTransportStore } from '../../state/transportStore';
 import { allowCustomRelays, requiresPublishSecret, SITE_DOWNLOAD_URL } from '../../config';
 import { ServerIndicator } from '../servers/ServerIndicator';
 import { ServerPickerPanel } from '../servers/ServerPickerPanel';
@@ -342,7 +342,8 @@ export function BroadcasterScreen({
     // grant (phase 'capture'); this only keeps an unconsumed one quiet.
     grant.catch(() => {});
     grantRef.current = grant;
-    const { serverUrl, certHashHex, publishSecret } = useTransportStore.getState();
+    const { serverUrl, publishSecret } = useTransportStore.getState();
+    const certHashHex = selectCertHashList(useTransportStore.getState());
     setError(null);
     setErrorWhileLive(false);
     liveRef.current = false;
