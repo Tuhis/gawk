@@ -75,26 +75,60 @@ func startRecv(t *testing.T, out string, extra ...string) (string, <-chan error)
 // startOnFreePort runs a command that binds the -addr it is given. The port
 // comes from freeUDPPort, so on a busy runner another process can take it
 // between the probe and the command's own bind: a command that fails to
-// bind is started again on a fresh port.
+// bind is started again on a fresh port. It watches the command's result
+// while it waits for the bind, because the other process may let the port
+// go again at once, and a port that merely looks free says nothing.
 func startOnFreePort(t *testing.T, run func(addr string) error) (string, <-chan error) {
 	t.Helper()
-	for attempt := 0; ; attempt++ {
+	for attempt := 0; attempt < 5; attempt++ {
 		port := freeUDPPort(t)
 		addr := fmt.Sprintf("127.0.0.1:%d", port)
 		done := make(chan error, 1)
 		go func() { done <- run(addr) }()
-		waitBound(t, port)
-		select {
-		case err := <-done:
-			if attempt < 5 && err != nil && strings.Contains(err.Error(), "address already in use") {
+		if err, ended := waitBoundOrEnd(port, done); ended {
+			if err != nil && strings.Contains(err.Error(), "address already in use") {
 				continue
 			}
 			ch := make(chan error, 1)
 			ch <- err
 			return addr, ch
-		case <-time.After(200 * time.Millisecond):
-			return addr, done
 		}
+		return addr, done
+	}
+	t.Fatal("could not bind a UDP port in 5 attempts")
+	return "", nil
+}
+
+// waitBoundOrEnd waits until something holds port or done delivers. A
+// result that arrives is returned with ended set; a held port returns with
+// the command still running.
+func waitBoundOrEnd(port int, done <-chan error) (error, bool) {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-done:
+			return err, true
+		default:
+		}
+		c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port})
+		if err != nil {
+			// Held, by the command or by someone else: give a failed bind a
+			// moment to surface before trusting it.
+			select {
+			case err := <-done:
+				return err, true
+			case <-time.After(50 * time.Millisecond):
+				return nil, false
+			}
+		}
+		c.Close()
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		return err, true
+	default:
+		return nil, false
 	}
 }
 
