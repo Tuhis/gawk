@@ -104,8 +104,10 @@ func TestRelayServesTheConsole(t *testing.T) {
 		t.Errorf("/app/ served %q", b)
 	}
 
-	// A broadcast goes live; the console lists its raw code.
-	pub := dialRetry(t, ctx, dialer(t, pinnedTLS(t, stateDir)), fmt.Sprintf("https://127.0.0.1:%d/publish", port))
+	// A broadcast goes live; the console lists its raw code and its tile
+	// label (R74 PP11: the Live table's Label column; Wall stays empty
+	// with no wall).
+	pub := dialRetry(t, ctx, dialer(t, pinnedTLS(t, stateDir)), fmt.Sprintf("https://127.0.0.1:%d/publish?name=tuhis", port))
 	defer pub.CloseWithError(0, "")
 	id, _ := readHandshake(t, ctx, pub)
 
@@ -123,8 +125,8 @@ func TestRelayServesTheConsole(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if len(v.Live) != 1 || v.Live[0].Code != id {
-		t.Errorf("live = %+v, want %s", v.Live, id)
+	if len(v.Live) != 1 || v.Live[0].Code != id || v.Live[0].Label != "tuhis" || v.Live[0].Wall != "" {
+		t.Errorf("live = %+v, want %s labelled tuhis, off any wall", v.Live, id)
 	}
 	if v.Header != relayconsole.HeaderWaiting || v.Join.Tier != relayconsole.TierStandalone || v.RelayPort != port {
 		t.Errorf("state: header %q tier %q port %d", v.Header, v.Join.Tier, v.RelayPort)
