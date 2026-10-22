@@ -6,6 +6,7 @@ import { ROOM_CLIENT_WEB_VIEWER } from '../../transport/wire';
 import { selectCertHashList, useTransportStore } from '../../state/transportStore';
 import { relayQuerySuffix } from '../../lib/shareLink';
 import { log } from '../../lib/logger';
+import { willFollowOffers } from '../pop/switch';
 
 // `#/join/<code>` — a typed six-character code that is
 // either a room or a broadcast. The relay is HTTP/3-only, so there is no
@@ -32,7 +33,15 @@ export function JoinResolver({ code }: { code: string }) {
       window.location.replace(`${window.location.pathname}${window.location.search}${hash}${suffix}`);
     };
     const session = new RoomSession(
-      { serverUrl, certHashHex, target: { kind: 'join', code }, nickname: '', clientKind: ROOM_CLIENT_WEB_VIEWER },
+      {
+        serverUrl,
+        certHashHex,
+        target: { kind: 'join', code },
+        nickname: '',
+        clientKind: ROOM_CLIENT_WEB_VIEWER,
+        // R74 (docs/76 item 43.7): lr=1 on every CONNECT to home.
+        followOffers: willFollowOffers(),
+      },
       {
         onConnected: () => {},
         onState: () => {

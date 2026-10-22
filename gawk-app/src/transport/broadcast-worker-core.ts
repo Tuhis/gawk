@@ -20,6 +20,7 @@ import {
   type EncoderSettings,
 } from './broadcaster';
 import type { ConnectOptions } from './connection';
+import type { LocalRelayEvent } from './local-relay';
 
 // Main thread → worker.
 export type BroadcastWorkerCommand =
@@ -69,6 +70,8 @@ export type BroadcastWorkerEvent =
   // The relay-minted resume token (hex) — the main thread keeps it
   // next to the broadcast ID for manual-restart reclaims.
   | { type: 'resumeToken'; token: string }
+  // R74: 0x18 / 0x19 off the publish session (plain data).
+  | { type: 'localRelay'; ev: LocalRelayEvent }
   // Auto-resume progress: transport died / transport re-attached.
   | { type: 'reconnecting'; attempt: number; delayMs: number; reason: string; closeCode?: number | null }
   | { type: 'resumed' }
@@ -181,6 +184,9 @@ export class BroadcastWorkerCore {
       },
       onResumeToken: (token) => {
         if (current()) this.host.post({ type: 'resumeToken', token });
+      },
+      onLocalRelay: (ev) => {
+        if (current()) this.host.post({ type: 'localRelay', ev });
       },
       onReconnecting: ({ attempt, delayMs, reason, closeCode }) => {
         if (current()) this.host.post({ type: 'reconnecting', attempt, delayMs, reason, closeCode });

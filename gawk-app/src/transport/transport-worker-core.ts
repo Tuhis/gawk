@@ -10,6 +10,7 @@ import type { CarrierCounters, ConnectOptions, KeyframeStreamFrame } from './con
 import type { DatagramBufferStats } from './datagram-buffer';
 import type { TransportConnectionStats } from './net-stats';
 import type { RelayCapabilities } from './parity';
+import type { LocalRelayEvent } from './local-relay';
 import type { TimeSyncStats } from './time-sync';
 import type { DecoderConfigMessage, TelemetryHelloMessage } from './wire';
 import {
@@ -51,6 +52,8 @@ export type TransportWorkerEvent =
   | { type: 'telemetryEndpoint'; url: string }
   // The relay's capabilities — the stripe controller's gate.
   | { type: 'relayCapabilities'; caps: RelayCapabilities }
+  // R74: 0x18 / 0x19 (plain data; structured clone).
+  | { type: 'localRelay'; ev: LocalRelayEvent }
   // The stripe width actually engaged (0 = unstriped).
   | { type: 'stripeChange'; active: number }
   // Pushed at the stats cadence: connection health + the relay clock-sync
@@ -111,6 +114,7 @@ export class TransportWorkerCore {
         onTelemetryHello: (hello) => this.host.post({ type: 'telemetryHello', hello }),
         onTelemetryEndpoint: (url) => this.host.post({ type: 'telemetryEndpoint', url }),
         onRelayCapabilities: (caps) => this.host.post({ type: 'relayCapabilities', caps }),
+        onLocalRelay: (ev) => this.host.post({ type: 'localRelay', ev }),
         onStripeChange: (active) => this.host.post({ type: 'stripeChange', active }),
         onClosed: (info: TransportClosedInfo) => {
           this.stopStats();

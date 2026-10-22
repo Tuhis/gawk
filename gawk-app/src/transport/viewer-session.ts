@@ -10,6 +10,7 @@
 
 import { log } from '../lib/logger';
 import type { ConnectOptions } from './connection';
+import type { LocalRelayEvent } from './local-relay';
 import { ViewerPipeline, type ViewerCallbacks, type ViewerStats } from './viewer';
 import type { DecodedAudioChunk } from './audio-decode';
 import type { ReleasedFrame } from './reorder-buffer';
@@ -21,6 +22,7 @@ import {
 import type { DecodedFrame } from '../media/decoder';
 import {
   RECONNECT_MAX_ATTEMPTS,
+  isPopUplinkFull,
   isTerminalViewerClose,
   reconnectDelayMs,
   type ReconnectInfo,
@@ -85,6 +87,8 @@ export interface ViewerSessionCallbacks {
   // first.
   onTelemetryHello?: (hello: TelemetryHelloMessage) => void;
   onTelemetryEndpoint?: (url: string) => void;
+  // R74: 0x18 / 0x19 from every pipeline attempt.
+  onLocalRelay?: (ev: LocalRelayEvent) => void;
 }
 
 // The subset of ViewerPipeline the session drives; injectable for tests.
@@ -209,6 +213,7 @@ export class ViewerSession {
       ...(this.cb.onReleasedFrame ? { onReleasedFrame: (f) => this.cb.onReleasedFrame?.(f) } : {}),
       ...(this.cb.onTelemetryHello ? { onTelemetryHello: (h) => this.cb.onTelemetryHello?.(h) } : {}),
       ...(this.cb.onTelemetryEndpoint ? { onTelemetryEndpoint: (u: string) => this.cb.onTelemetryEndpoint?.(u) } : {}),
+      ...(this.cb.onLocalRelay ? { onLocalRelay: (ev: LocalRelayEvent) => this.cb.onLocalRelay?.(ev) } : {}),
     };
     // A reconnect means a fresh pipeline on a possibly-restarted timeline —
     // reset the sink before its first packets land.
@@ -248,7 +253,9 @@ export class ViewerSession {
   }
 
   private scheduleReconnect(): void {
-    this.attempt += 1;
+    // A 4012 refusal is the relay answering, not failing: it never spends the
+    // budget (docs/76 item 28), so the 20 s retries go on until a slot frees.
+    this.attempt = isPopUplinkFull(this.lastCloseCode) ? 1 : this.attempt + 1;
     if (this.attempt > RECONNECT_MAX_ATTEMPTS) {
       this.cb.onError(
         new Error(`reconnect failed after ${RECONNECT_MAX_ATTEMPTS} attempts: ${this.lastReason}`),

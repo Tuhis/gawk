@@ -598,3 +598,62 @@ describe('relayCertHashes config (R74)', () => {
     expect(mod.useTransportStore.getState().certHashes).toEqual(['aa']);
   });
 });
+
+// R74 (docs/76 §10): a followed LocalRelayOffer becomes a session override
+// with its own source, 'pop', so the chip can name the PoP. It outranks a
+// link and a selection (it is home's own suggestion, acted on this session),
+// lives in memory only, and clears back to whatever ranked below it.
+describe('transportStore offer override (R74)', () => {
+  const H1 = '11'.repeat(32);
+  const H2 = '22'.repeat(32);
+
+  it('resolves to the PoP with its pinned hashes and no secret, as source "pop"', async () => {
+    setHostname('gawk.ioio.fi');
+    const mod = await freshModule();
+    const store = mod.useTransportStore;
+    store.getState().setPublishSecret('homesec');
+    store.getState().setOfferOverride('https://192.168.1.20:4433', [H1, H2], 'pop-uid-1', 'Assembly 2026');
+    const s = store.getState();
+    expect(s.serverUrl).toBe('https://192.168.1.20:4433');
+    expect(s.certHashes).toEqual([H1, H2]);
+    expect(mod.selectCertHashList(s)).toBe(`${H1},${H2}`);
+    expect(s.publishSecret).toBe('');
+    expect(s.resolvedSource).toBe('pop');
+    expect(s.offerOverride).toEqual({ url: 'https://192.168.1.20:4433', handle: 'pop-uid-1', name: 'Assembly 2026' });
+    expect(localStorage.getItem('gawk.servers') ?? '').not.toContain('192.168.1.20');
+
+    store.getState().clearOfferOverride();
+    expect(store.getState().serverUrl).toBe('https://api.gawk.ioio.fi:4433');
+    expect(store.getState().resolvedSource).toBe('default');
+    expect(store.getState().publishSecret).toBe('homesec');
+  });
+
+  it('outranks a link override, and survives the link clearing on navigation', async () => {
+    setHostname('gawk.ioio.fi');
+    const store = (await freshModule()).useTransportStore;
+    store.getState().setSessionOverride('https://relay.other.example:4433');
+    store.getState().setOfferOverride('https://192.168.1.20:4433', [H1], 'h', 'Party');
+    expect(store.getState().serverUrl).toBe('https://192.168.1.20:4433');
+    store.getState().setSessionOverride(null);
+    expect(store.getState().resolvedSource).toBe('pop');
+  });
+
+  it('a link to another relay drops the offer: the user chose a server', async () => {
+    setHostname('gawk.ioio.fi');
+    const store = (await freshModule()).useTransportStore;
+    store.getState().setOfferOverride('https://192.168.1.20:4433', [H1], 'h', 'Party');
+    store.getState().setSessionOverride('https://relay.other.example:4433');
+    expect(store.getState().serverUrl).toBe('https://relay.other.example:4433');
+    expect(store.getState().offerOverride).toBe(null);
+  });
+
+  it('picking a saved server drops the offer too', async () => {
+    setHostname('gawk.ioio.fi');
+    const store = (await freshModule()).useTransportStore;
+    const id = store.getState().addServer({ label: 'Mine', url: 'https://relay.mine.example:4433' })!;
+    store.getState().setOfferOverride('https://192.168.1.20:4433', [H1], 'h', 'Party');
+    store.getState().selectServer(id);
+    expect(store.getState().serverUrl).toBe('https://relay.mine.example:4433');
+    expect(store.getState().offerOverride).toBe(null);
+  });
+});

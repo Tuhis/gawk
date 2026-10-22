@@ -377,3 +377,46 @@
   border-color: rgba(255, 255, 255, 0.25);
   background: rgba(20, 20, 24, 0.82);
 }
+
+/* ── R74 local relay chip (docs/76 §7.3; provisional until PP1) ── */
+
+.indicatorInteractive {
+  pointer-events: auto;
+}
+
+.popChip {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.popChipButton {
+  font: inherit;
+  font-weight: 700;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.popDot {
+  color: #4ade80;
+}
+
+.popMenu {
+  display: flex;
+  margin-top: 4px;
+}
+
+.popMenu button,
+.popLinkButton {
+  font: inherit;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 8px;
+  padding: 2px 8px;
+  cursor: pointer;
+}

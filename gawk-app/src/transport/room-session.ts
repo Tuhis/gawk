@@ -28,6 +28,7 @@
 
 import { log } from '../lib/logger';
 import { DialTimeoutError, bytesToHex, dialWebTransport, hexToBytes, webTransportInit } from './connection';
+import { readLocalRelayStreams, type LocalRelayEvent } from './local-relay';
 import {
   RECONNECT_MAX_ATTEMPTS,
   isTerminalRoomClose,
@@ -85,6 +86,12 @@ export interface RoomSessionOptions {
   nickname: string;
   clientKind: number; // ROOM_CLIENT_*
   grant?: RoomSessionGrant | null;
+  // R74 (docs/76 item 43.7): this client follows a LocalRelayOffer; `lr=1`.
+  followOffers?: boolean;
+  // R74 (docs/76 item 34): the broadcaster's own session to its party wall,
+  // proving the broadcast is its own with the resume token (the mint's
+  // `broadcast` + `resume` pair) so the PoP can vouch for its Hide or Show.
+  proof?: { broadcastId: string; resumeTokenHex: string };
 }
 
 // How a session failed for good. Structural, never sniffed from messages.
@@ -121,6 +128,9 @@ export interface RoomSessionCallbacks {
   onEnded: (reason: number | null) => void;
   // Terminal failure (never after onEnded).
   onError: (err: RoomConnectError) => void;
+  // R74: a PoP's LocalRelayInfo (0x18) or home's LocalRelayOffer (0x19),
+  // from each (re)connect's session.
+  onLocalRelay?: (ev: LocalRelayEvent) => void;
 }
 
 // Post-upgrade close codes the relay uses for join failures:
@@ -256,6 +266,7 @@ export class RoomSession {
     const base = this.opts.serverUrl.replace(/\/+$/, '');
     const params = new URLSearchParams();
     if (this.nickname !== '') params.set('name', this.nickname);
+    if (this.opts.followOffers) params.set('lr', '1');
     if (this.target.kind === 'mint') {
       params.set('broadcast', this.target.broadcastId);
       params.set('resume', this.target.resumeTokenHex);
@@ -265,6 +276,10 @@ export class RoomSession {
     }
     if (this.grant?.kind === 'creator') params.set('creator', this.grant.tokenHex);
     if (this.grant?.kind === 'attach') params.set('attach', this.grant.secret);
+    if (this.opts.proof) {
+      params.set('broadcast', this.opts.proof.broadcastId);
+      params.set('resume', this.opts.proof.resumeTokenHex);
+    }
     const q = params.toString();
     return `${base}/room/${encodeURIComponent(this.target.code)}${q === '' ? '' : `?${q}`}`;
   }
@@ -354,6 +369,11 @@ export class RoomSession {
       });
     }
     this.cb.onConnected();
+    if (this.cb.onLocalRelay) {
+      void readLocalRelayStreams(wt, (ev) => {
+        if (this.attempt === attempt && !this.stopped) this.cb.onLocalRelay?.(ev);
+      });
+    }
     void this.readLoop(attempt, stream.readable, closeInfo);
   }
 

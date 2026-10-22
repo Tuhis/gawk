@@ -103,6 +103,9 @@ export class WorkerViewerTransport implements ViewerTransport {
           case 'relayCapabilities':
             if (!this.closing) cb.onRelayCapabilities?.(ev.caps);
             break;
+          case 'localRelay':
+            if (!this.closing) cb.onLocalRelay?.(ev.ev);
+            break;
           case 'stripeChange':
             if (!this.closing) cb.onStripeChange?.(ev.active);
             break;

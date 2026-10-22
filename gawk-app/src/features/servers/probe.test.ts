@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { probeRelay, sanitizeIdentityName, type ProbeTransport } from './probe';
-import { encodeRelayIdentity } from '../../transport/wire';
+import { encodeLocalRelayInfo, encodeLocalRelayOffer, encodeRelayIdentity } from '../../transport/wire';
 
 // A scripted echo peer: echoes a configurable subset of datagrams after a
 // per-ping delay, and optionally delivers an identity payload after
@@ -18,6 +18,9 @@ function fakeTransport(opts: {
   // Uni streams the relay opens before the identity one (R74: a PoP also
   // sends 0x18 LocalRelayInfo on /echo, in no promised order).
   before?: Uint8Array[];
+  // Uni streams the relay opens after the identity one, at afterDelayMs.
+  after?: Uint8Array[];
+  afterDelayMs?: number;
   failReady?: boolean;
   // WebKit shape: no `datagrams.writable`, only `createWritable()`.
   webkit?: boolean;
@@ -74,6 +77,25 @@ function fakeTransport(opts: {
             // closed
           }
         }, opts.identityDelayMs ?? 0);
+      }
+      if (opts.after) {
+        const later = opts.after;
+        setTimeout(() => {
+          for (const payload of later) {
+            try {
+              c.enqueue(
+                new ReadableStream<Uint8Array>({
+                  start(sc) {
+                    sc.enqueue(payload);
+                    sc.close();
+                  },
+                }),
+              );
+            } catch {
+              // closed
+            }
+          }
+        }, opts.afterDelayMs ?? 1);
       }
     },
   });
@@ -217,5 +239,68 @@ describe('probeRelay stream order (R74)', () => {
       return fakeTransport({ echoDelayMs: 1 });
     });
     expect(seen).toEqual(['https://192.168.1.20:4433/echo', h]);
+  });
+});
+
+// R74 (docs/76 item 43.3): the web broadcaster probes home's /echo on open so
+// an offer arrives before it goes live, and a candidate probe reads what the
+// PoP says it is.
+describe('probeRelay local relay messages (R74)', () => {
+  const offer = {
+    handle: '6f1c2d3e-4a5b-4c6d-8e7f-0123456789ab',
+    name: 'Assembly 2026',
+    validity: 3600,
+    candidates: [{ url: 'https://192.168.1.20:4433', hashes: [new Uint8Array(32).fill(7)] }],
+  };
+  const info = { linked: true, onWall: false, name: 'Assembly 2026', homeOrigin: 'https://gawk.ioio.fi', wallCode: '' };
+
+  it('returns the offer and the PoP info beside the identity', async () => {
+    const identity = encodeRelayIdentity({ serverVersion: '9.9.9', name: 'Homelab' });
+    const result = await probeRelay('https://relay.example:4433', '', undefined, () =>
+      fakeTransport({ identity, before: [encodeLocalRelayOffer(offer), encodeLocalRelayInfo(info)], echoDelayMs: 5 }),
+    );
+    expect(result.state).toBe('ok');
+    if (result.state !== 'ok') return;
+    expect(result.offer?.handle).toBe(offer.handle);
+    expect(result.offer?.candidates[0].hashes[0]).toEqual(new Uint8Array(32).fill(7));
+    expect(result.localRelay).toEqual(info);
+    expect(result.identity).toMatchObject({ name: 'Homelab' });
+  });
+
+  // Each notice goes out on its own goroutine, so home's offer may well land
+  // after the identity: finding the identity must not stop the reading.
+  it('still reads an offer and the PoP info that arrive after the identity', async () => {
+    const identity = encodeRelayIdentity({ serverVersion: '9.9.9', name: 'Homelab' });
+    const result = await probeRelay('https://relay.example:4433', '', undefined, () =>
+      fakeTransport({ identity, after: [encodeLocalRelayInfo(info), encodeLocalRelayOffer(offer)], afterDelayMs: 2, echoDelayMs: 5 }),
+    );
+    expect(result.state).toBe('ok');
+    if (result.state !== 'ok') return;
+    expect(result.identity).toMatchObject({ name: 'Homelab' });
+    expect(result.offer?.handle).toBe(offer.handle);
+    expect(result.localRelay).toEqual(info);
+  });
+
+  it('reports neither from a relay that sends neither', async () => {
+    const result = await probeRelay('https://relay.example:4433', '', undefined, () =>
+      fakeTransport({ echoDelayMs: 5 }),
+    );
+    expect(result.state === 'ok' && result.offer).toBe(null);
+    expect(result.state === 'ok' && result.localRelay).toBe(null);
+  });
+
+  it('says lr=1 on the CONNECT when asked to', async () => {
+    const seen: string[] = [];
+    await probeRelay(
+      'https://relay.example:4433',
+      '',
+      undefined,
+      (url) => {
+        seen.push(url);
+        return fakeTransport({ echoDelayMs: 1 });
+      },
+      { followOffers: true },
+    );
+    expect(seen).toEqual(['https://relay.example:4433/echo?lr=1']);
   });
 });

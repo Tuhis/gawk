@@ -34,6 +34,8 @@ import {
   type RoomState,
 } from './wire';
 import { ABRUPT_DROP_RETRY_DELAY_MS } from './reconnect';
+import { encodeLocalRelayOffer } from './wire';
+import type { LocalRelayEvent } from './local-relay';
 import { DIAL_ATTEMPT_TIMEOUT_MS, DIAL_TIMEOUT_MS } from './connection';
 
 // ---- A scripted WebTransport --------------------------------------------
@@ -50,6 +52,8 @@ interface FakeWt {
   end(closeCode?: number, reason?: string): void;
   // Break it: wt.closed rejects.
   crash(): void;
+  // Open a server uni stream holding one whole message.
+  pushUni(msg: Uint8Array): void;
   closeCalls: number;
 }
 
@@ -76,6 +80,8 @@ function installFakeWebTransport() {
       private rejectClosed!: (e: unknown) => void;
       private readableCtl!: ReadableStreamDefaultController<Uint8Array>;
       private readable: ReadableStream<Uint8Array>;
+      private uniCtl!: ReadableStreamDefaultController<ReadableStream<Uint8Array>>;
+      incomingUnidirectionalStreams: ReadableStream<ReadableStream<Uint8Array>>;
       private fake: FakeWt;
       constructor(url: string, init?: WebTransportOptions) {
         this.closed = new Promise((res, rej) => {
@@ -87,6 +93,11 @@ function installFakeWebTransport() {
             this.readableCtl = c;
           },
         });
+        this.incomingUnidirectionalStreams = new ReadableStream<ReadableStream<Uint8Array>>({
+          start: (c) => {
+            this.uniCtl = c;
+          },
+        });
         const written: Uint8Array[] = [];
         const reader = new RoomRecordReader();
         const fake: FakeWt = {
@@ -96,6 +107,15 @@ function installFakeWebTransport() {
           closeCalls: 0,
           push: (rec) => this.readableCtl.enqueue(encodeRoomRecord(rec)),
           pushRaw: (bytes) => this.readableCtl.enqueue(bytes),
+          pushUni: (msg) =>
+            this.uniCtl.enqueue(
+              new ReadableStream<Uint8Array>({
+                start(c) {
+                  c.enqueue(msg);
+                  c.close();
+                },
+              }),
+            ),
           end: (closeCode, reason) => {
             try {
               this.readableCtl.close();
@@ -235,6 +255,58 @@ describe('RoomSession dial + hello', () => {
       wantCaps: 0,
       nickname: 'tuhis',
     });
+    s.stop();
+  });
+
+  // R74 (docs/76 §6.12): /room sessions get 0x18 from a PoP and 0x19 from
+  // home too; a client that follows offers says lr=1 on the CONNECT.
+  it('says lr=1 when it follows offers, and hands a LocalRelayOffer to onLocalRelay', async () => {
+    const { cb } = makeCallbacks();
+    const seen: LocalRelayEvent[] = [];
+    const s = new RoomSession(
+      {
+        serverUrl: 'https://relay.test:4433',
+        target: { kind: 'join', code: 'TuhisRoom' },
+        nickname: '',
+        clientKind: ROOM_CLIENT_WEB_VIEWER,
+        followOffers: true,
+      },
+      { ...cb, onLocalRelay: (ev) => seen.push(ev) },
+    );
+    await s.start();
+    await flush();
+    expect(fakes[0].url).toBe('https://relay.test:4433/room/TuhisRoom?lr=1');
+    const offer = {
+      handle: 'h-1',
+      name: 'Assembly 2026',
+      validity: 60,
+      candidates: [{ url: 'https://192.168.1.20:4433', hashes: [new Uint8Array(32)] }],
+    };
+    fakes[0].pushUni(encodeLocalRelayOffer(offer));
+    await flush();
+    expect(seen).toHaveLength(1);
+    expect(seen[0].kind === 'offer' && seen[0].offer.handle).toBe('h-1');
+    s.stop();
+  });
+
+  // Hide/Show on the party wall (docs/76 item 34): the broadcaster's own
+  // control session to the wall proves the broadcast is its own with the
+  // resume token, as a mint does, so the PoP can vouch for the command.
+  it('a join with a broadcast proof carries broadcast= and resume=', async () => {
+    const { cb } = makeCallbacks();
+    const s = new RoomSession(
+      {
+        serverUrl: 'https://relay.test:4433',
+        target: { kind: 'join', code: 'assembly-2026' },
+        nickname: '',
+        clientKind: ROOM_CLIENT_WEB_BROADCASTER,
+        proof: { broadcastId: 'K7XQ2M', resumeTokenHex: 'ab'.repeat(16) },
+      },
+      cb,
+    );
+    await s.start();
+    await flush();
+    expect(fakes[0].url).toBe(`https://relay.test:4433/room/assembly-2026?broadcast=K7XQ2M&resume=${'ab'.repeat(16)}`);
     s.stop();
   });
 

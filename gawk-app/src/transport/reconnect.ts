@@ -4,6 +4,7 @@
 
 import {
   CLOSE_CODE_BROADCAST_ENDED,
+  CLOSE_CODE_POP_UPLINK_FULL,
   CLOSE_CODE_PUBLISHER_SUPERSEDED,
   CLOSE_CODE_ROOM_ENDED,
   CLOSE_CODE_SERVER_DRAINING,
@@ -59,6 +60,18 @@ export function isTerminalRoomClose(code: number | null | undefined): code is nu
   return code != null && TERMINAL_ROOM_CLOSE_CODES.has(code);
 }
 
+// R74 (docs/76 item 28): 4012 PopUplinkFull means the broadcast is at a LAN
+// party whose internet is already carrying all the streams it may. It is NOT
+// terminal and deliberately absent from TERMINAL_VIEWER_CLOSE_CODES: the slot
+// frees when another outside viewer leaves, so the viewer retries on this
+// fixed cadence for as long as it is refused, and the refusals do not spend
+// the reconnect budget (isPopUplinkFull lets ViewerSession tell them apart).
+export const POP_UPLINK_FULL_RETRY_MS = 20_000;
+
+export function isPopUplinkFull(code: number | null | undefined): boolean {
+  return code === CLOSE_CODE_POP_UPLINK_FULL;
+}
+
 // The first retry after an *abrupt* session death (no close code — a crashed
 // pod, a stateless reset, a flushed conntrack path). Fast because the
 // replacement pod is already behind the Service; a 1 s floor would eat the
@@ -80,6 +93,7 @@ export const ABRUPT_DROP_RETRY_DELAY_MS = 250;
 // isTerminalPublisherClose first and stop. There is deliberately no "never"
 // return value — a delay of Infinity would still schedule a timer.
 export function reconnectDelayMs(attempt: number, closeCode?: number | null): number {
+  if (closeCode === CLOSE_CODE_POP_UPLINK_FULL) return POP_UPLINK_FULL_RETRY_MS;
   if (attempt === 1) {
     if (closeCode === CLOSE_CODE_SERVER_DRAINING) return 0;
     if (closeCode == null) return ABRUPT_DROP_RETRY_DELAY_MS;
