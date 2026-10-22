@@ -313,6 +313,26 @@ const CloseCodeStripeLegOrphaned = 4005
 // rejection budget. Allocated 2026-08-20 (R39, docs/42).
 const CloseCodeTerminatedByOperator = 4006
 
+// 4007 is CloseCodeRoomEnded (room.go). 4008–4011 are left unallocated for
+// R43 (docs/45 D3); docs/76's numbering depends on that gap.
+
+// CloseCodePopUplinkFull (4012) is sent by a home pod to an outside viewer
+// waiting on a broadcast that lives on an R74 PoP relay whose uplink budget
+// is spent (docs/76 item 28): the PoP refused the viewer's `want`. Sent
+// in-band first as a SessionClosing (it is in the relay's noticed set, or
+// Chrome would never read it). NOT terminal: the viewer says the stream is
+// at a LAN party with limited internet and retries every 20 s. Allocated
+// 2026-10-22 (R74).
+const CloseCodePopUplinkFull = 4012
+
+// CloseCodePopNoDemand (4013) is sent by a home pod to a PoP's uplink leg
+// (/pop/publish/{id}) when the linger after the last outside viewer expires
+// (docs/76 §6.5). Not terminal: the PoP keeps the broadcast local and waits
+// for the next `want`. Its only reader is the Go PoP, which reads the code
+// directly, so it gets no in-band notice and no browser mirror acts on it.
+// Allocated 2026-10-22 (R74).
+const CloseCodePopNoDemand = 4013
+
 // Size constants for the wire format.
 const (
 	// MaxDatagramSize is the largest datagram we ever produce. It is chosen
