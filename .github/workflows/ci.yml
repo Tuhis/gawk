@@ -3766,7 +3766,7 @@ jobs:
         run: |
           set -euo pipefail
           failed=()
-          skip='^(TestRelayServesTheConsole|TestRelayRefusesANonLoopbackConsole|TestRelayStartsWithNoConfiguration|TestRelayRestartResumesABroadcast|TestRelayServesItsNamedAddress|TestStandaloneRelaySendsLocalRelayInfo)$'
+          skip='^(TestRelayServesTheConsole|TestRelayRefusesANonLoopbackConsole|TestRelayStartsWithNoConfiguration|TestRelayRestartResumesABroadcast|TestRelayServesItsNamedAddress|TestStandaloneRelaySendsLocalRelayInfo|TestRelayIgnoresDevCert)$'
           for pkg in internal/relaystate internal/lanaddr internal/tlsutil internal/relayconsole internal/poplink internal/popclient cmd/gawk-relay; do
             exe="$RUNNER_TEMP/$(tr / _ <<<"$pkg").test.exe"
             GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -c -o "$exe" "./$pkg"

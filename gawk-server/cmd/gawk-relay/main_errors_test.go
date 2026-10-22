@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,10 +12,13 @@ import (
 )
 
 // runArgs is startRelay's flag set, for a run that is expected to stop on
-// its own (an error, or an already-cancelled context).
-func runArgs(t *testing.T, extra ...string) []string {
+// its own (an error, or an already-cancelled context). Such a run never
+// binds its address, so it takes port 0 rather than probing a free one:
+// a probe needs a UDP socket, which Wine cannot open (relay-windows), and
+// a t.Fatal from inside run's goroutine would hang the test.
+func runArgs(extra ...string) []string {
 	return append([]string{
-		"-addr", fmt.Sprintf("127.0.0.1:%d", freeUDPPort(t)),
+		"-addr", "127.0.0.1:0",
 		"-metrics-addr", "off",
 		"-lan-address", "127.0.0.1",
 		"-console-addr", "127.0.0.1:0",
@@ -56,7 +58,8 @@ func TestRelayStartupFailures(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
 			done := make(chan error, 1)
-			go func() { done <- run(ctx, runArgs(t, tc.args...), envOf(tc.env)) }()
+			args := runArgs(tc.args...)
+			go func() { done <- run(ctx, args, envOf(tc.env)) }()
 			select {
 			case err := <-done:
 				if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -77,7 +80,7 @@ func TestRelayIgnoresDevCert(t *testing.T) {
 	stateDir := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := run(ctx, runArgs(t, "-dev-cert"), envOf(map[string]string{"GAWK_STATE_DIR": stateDir})); err != nil {
+	if err := run(ctx, runArgs("-dev-cert"), envOf(map[string]string{"GAWK_STATE_DIR": stateDir})); err != nil {
 		t.Fatalf("run = %v", err)
 	}
 	if n := len(pinnedHashes(t, stateDir)); n != 2 {
