@@ -6,6 +6,7 @@ package popsrv
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/netip"
 	"strings"
@@ -160,6 +161,11 @@ func TestOfferCandidates(t *testing.T) {
 			[]string{"https://[fd00::20]:4433"}, []int{2}},
 		{"LAN address with a port", func(p *pops.Pop) { p.Status.Link.LanAddr = "192.168.1.20:4434" },
 			[]string{"https://192.168.1.20:4434"}, []int{2}},
+		{"named host on a relay with a port", func(p *pops.Pop) {
+			p.Spec.NamedAddress.Enabled = true
+			p.Status.TLS = &pops.TLS{Host: "p-7k2m9x.pop.gawk.ioio.fi", Certificate: "chain"}
+			p.Status.Link.LanAddr = "192.168.1.20:4434"
+		}, []string{"https://p-7k2m9x.pop.gawk.ioio.fi:4434", "https://192.168.1.20:4434"}, []int{0, 2}},
 		{"one hash, one garbage", func(p *pops.Pop) { p.Status.Link.PinnedHashes = []string{offerHashA, "zz"} },
 			[]string{"https://192.168.1.20:4433"}, []int{1}},
 		{"three hashes keep two", func(p *pops.Pop) {
@@ -353,7 +359,7 @@ func TestAMatchingGuestGetsTheOfferFromEveryPod(t *testing.T) {
 			t.Fatalf("%s sent no offer", pod.Name)
 		}
 		if got.Handle != uid || got.Name != "Assembly 2026" || len(got.Candidates) != 1 ||
-			got.Candidates[0].URL != "https://192.168.1.20:4433" || len(got.Candidates[0].Hashes) != 2 ||
+			got.Candidates[0].URL != fmt.Sprintf("https://192.168.1.20:%d", pop.Port) || len(got.Candidates[0].Hashes) != 2 ||
 			got.Candidates[0].Hashes[0] != hashOf(t, cur) || got.Candidates[0].Hashes[1] != hashOf(t, next) {
 			t.Fatalf("pod %d offer = %+v", i, got)
 		}

@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -282,6 +283,7 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 	go c.up.run(ctx)
 	go c.wall.run(ctx)
+	go c.watchHello(ctx)
 	failures := 0
 	for {
 		if ctx.Err() != nil {
@@ -558,7 +560,7 @@ func (c *Client) hello() poplink.Hello {
 	}
 	if c.opts.LAN != nil {
 		if a := c.opts.LAN.Current(); a.IsValid() {
-			h.LanAddr = a.String()
+			h.LanAddr = lanAddrWithPort(a, c.opts.Cfg.Addr)
 		}
 		for _, cand := range c.opts.LAN.Candidates() {
 			h.LanCandidates = append(h.LanCandidates, cand.Addr.String())
@@ -573,6 +575,53 @@ func (c *Client) hello() poplink.Hello {
 		}
 	}
 	return h
+}
+
+// lanAddrWithPort is the hello's LAN address: the IP alone on the default
+// relay port, else ip:port with the port of addr (-addr), so home's offers
+// send guests where this relay listens.
+func lanAddrWithPort(a netip.Addr, addr string) string {
+	_, p, err := net.SplitHostPort(addr)
+	if err != nil {
+		return a.String()
+	}
+	port, err := strconv.ParseUint(p, 10, 16)
+	if err != nil || port == 0 || port == poplink.DefaultRelayPort {
+		return a.String()
+	}
+	return netip.AddrPortFrom(a.WithZone(""), uint16(port)).String()
+}
+
+// watchHello re-sends the hello while linked whenever what it carries
+// changes: the pinned hashes at each rotation and the LAN address (DHCP,
+// or the console's pick). Home builds offers, status.link and the named
+// DNS record from the last hello, so a PoP linked across a rotation would
+// otherwise keep offering a retired hash (docs/76 §6.1 items 3 and 4). A
+// relink sends a fresh one anyway.
+func (c *Client) watchHello(ctx context.Context) {
+	kick := make(chan struct{}, 1)
+	poke := func() {
+		select {
+		case kick <- struct{}{}:
+		default:
+		}
+	}
+	if c.opts.Rolling != nil {
+		defer c.opts.Rolling.Subscribe(func(string, string) { poke() })()
+	}
+	if c.opts.LAN != nil {
+		defer c.opts.LAN.Subscribe(func(netip.Addr) { poke() })()
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-kick:
+		}
+		if err := c.Send(c.hello()); err != nil && !errors.Is(err, ErrNotLinked) {
+			c.log.Debug("hello refresh not sent", "err", err)
+		}
+	}
 }
 
 // statsLoop reports the PoP's use every StatsEvery while linked. PP8/PP9

@@ -16,6 +16,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/Tuhis/gawk/gawk-server/internal/poplink"
 	"github.com/Tuhis/gawk/gawk-server/internal/transport"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
@@ -27,9 +28,9 @@ import (
 const OfferValidity = time.Hour
 
 // PopRelayPort is the port a PoP relay serves WebTransport on (and, for a
-// named host, the HTTPS page: docs/76 item 39). The link reports the LAN
-// address only, so a LAN address without a port gets this one.
-const PopRelayPort = 4433
+// named host, the HTTPS page: docs/76 item 39) unless the link reports
+// another with its LAN address (gawk-relay -addr).
+const PopRelayPort = poplink.DefaultRelayPort
 
 // OffersOptions configures an Offers.
 type OffersOptions struct {
@@ -158,8 +159,9 @@ func buildOffer(lp LinkedPop) (wire.LocalRelayOffer, bool) {
 		Validity: uint32(OfferValidity / time.Second),
 	}
 	if lp.NamedHost != "" {
+		// The named host is the same relay listener, so the same port.
 		offer.Candidates = append(offer.Candidates, wire.LocalRelayCandidate{
-			URL: "https://" + net.JoinHostPort(lp.NamedHost, strconv.Itoa(PopRelayPort)),
+			URL: "https://" + net.JoinHostPort(lp.NamedHost, strconv.Itoa(relayPortOf(lp.LanAddr))),
 		})
 	}
 	if hp, ok := lanHostPort(lp.LanAddr); ok {
@@ -188,6 +190,15 @@ func lanHostPort(s string) (string, bool) {
 		return "", false
 	}
 	return netip.AddrPortFrom(a.Unmap(), PopRelayPort).String(), true
+}
+
+// relayPortOf is the port a reported LAN address carries, else
+// PopRelayPort.
+func relayPortOf(lan string) int {
+	if ap, err := netip.ParseAddrPort(lan); err == nil && ap.Port() != 0 {
+		return int(ap.Port())
+	}
+	return PopRelayPort
 }
 
 // decodeHash parses a hex SHA-256 certificate hash (tlsutil.CertHashHex).

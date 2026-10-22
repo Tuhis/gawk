@@ -183,7 +183,14 @@ func (l *link) handle(rec any) {
 	t := poplink.TypeOf(rec)
 	switch r := rec.(type) {
 	case *poplink.Hello:
+		// A re-sent hello (rotation, LAN address): status.link follows, so
+		// other pods' offers and gawk-admin's DNS record do too.
 		l.setHello(*r)
+		ctx, cancel := background()
+		if err := l.m.opts.Status.PatchLink(ctx, l.name, l.statusLink()); err != nil {
+			l.log.Warn("pop link status write failed", "err", err)
+		}
+		cancel()
 	case *poplink.Stats:
 		l.mu.Lock()
 		l.stats = *r

@@ -53,9 +53,15 @@ const (
 	ByeExpired = "expired"
 )
 
-// Hello is the PoP's first record on a link. NamedHost is the name the PoP
-// already holds a certificate for, so home can tell a fresh install from a
-// restart.
+// DefaultRelayPort is the port a PoP relay serves WebTransport on unless
+// gawk-relay -addr says otherwise.
+const DefaultRelayPort = 4433
+
+// Hello is the PoP's first record on a link, and is sent again whenever
+// what it carries changes (a certificate rotation, a new LAN address).
+// NamedHost is the name the PoP already holds a certificate for, so home
+// can tell a fresh install from a restart. LanAddr is an IP literal, with
+// ":port" when the relay listens elsewhere than DefaultRelayPort.
 type Hello struct {
 	Version       string                `json:"version,omitempty"`
 	Proto         int                   `json:"proto,omitempty"`
