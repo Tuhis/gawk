@@ -146,9 +146,14 @@ func TestOfferCandidates(t *testing.T) {
 		nHashes []int
 	}{
 		{"named host issued", func(p *pops.Pop) {
+			p.Spec.NamedAddress.Enabled = true
 			p.Status.TLS = &pops.TLS{Host: "p-7k2m9x.pop.gawk.ioio.fi", Certificate: "chain"}
 		}, []string{"https://p-7k2m9x.pop.gawk.ioio.fi:4433", "https://192.168.1.20:4433"}, []int{0, 2}},
+		{"named host issued, named address turned off", func(p *pops.Pop) {
+			p.Status.TLS = &pops.TLS{Host: "p-7k2m9x.pop.gawk.ioio.fi", Certificate: "chain"}
+		}, []string{"https://192.168.1.20:4433"}, []int{2}},
 		{"named host assigned, not issued", func(p *pops.Pop) {
+			p.Spec.NamedAddress.Enabled = true
 			p.Status.TLS = &pops.TLS{Host: "p-7k2m9x.pop.gawk.ioio.fi"}
 		}, []string{"https://192.168.1.20:4433"}, []int{2}},
 		{"v6 LAN address", func(p *pops.Pop) { p.Status.Link.LanAddr = "fd00::20" },

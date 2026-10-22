@@ -60,6 +60,9 @@ type link struct {
 	lastConfig  []byte
 	displayName string
 	autoSwitch  bool
+	// namedHost is the named candidate offers carry: status.tls.host once
+	// issued (offeredNamedHost), never the PoP's own Hello claim.
+	namedHost string
 
 	endOnce sync.Once
 	ended   chan struct{}
@@ -78,17 +81,16 @@ func (m *Manager) ServeLink(ctx context.Context, p *pops.Pop, sess LinkSession, 
 	defer cancel()
 	now := m.now()
 	l := &link{
-		m:           m,
-		log:         m.log.With("pop", p.Name, "remote", sess.RemoteAddr().String()),
-		name:        p.Name,
-		uid:         string(p.UID),
-		sess:        sess,
-		since:       now,
-		remote:      addrOf(sess.RemoteAddr()),
-		ended:       make(chan struct{}),
-		displayName: p.Spec.DisplayName,
-		autoSwitch:  p.AutoSwitch(),
+		m:      m,
+		log:    m.log.With("pop", p.Name, "remote", sess.RemoteAddr().String()),
+		name:   p.Name,
+		uid:    string(p.UID),
+		sess:   sess,
+		since:  now,
+		remote: addrOf(sess.RemoteAddr()),
+		ended:  make(chan struct{}),
 	}
+	l.follow(p)
 	if p.Status.Credential != nil {
 		l.credSHA = p.Status.Credential.SHA256
 		l.tokenSHA = p.Status.Credential.PairingTokenSHA256
@@ -239,16 +241,24 @@ func (l *link) write(rec any) error {
 func (l *link) sendConfig(p *pops.Pop) error {
 	c := l.m.config(p)
 	b, _ := json.Marshal(c)
+	l.follow(p)
 	l.mu.Lock()
 	same := string(b) == string(l.lastConfig)
 	l.lastConfig = b
-	l.displayName = p.Spec.DisplayName
-	l.autoSwitch = p.AutoSwitch()
 	l.mu.Unlock()
 	if same {
 		return nil
 	}
 	return l.write(c)
+}
+
+// follow takes the Pop's offer-facing fields as they now read.
+func (l *link) follow(p *pops.Pop) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.displayName = p.Spec.DisplayName
+	l.autoSwitch = p.AutoSwitch()
+	l.namedHost = offeredNamedHost(p)
 }
 
 // verdict decides whether the Pop as it now reads still admits this link:
@@ -359,7 +369,7 @@ func (l *link) linkedPop() (LinkedPop, bool) {
 		PublicAddrs:  parsePrefixes(l.publicAddrs),
 		LanAddr:      l.hello.LanAddr,
 		PinnedHashes: slices.Clone(l.hello.PinnedHashes),
-		NamedHost:    l.hello.NamedHost,
+		NamedHost:    l.namedHost,
 		AutoSwitch:   l.autoSwitch,
 	}, true
 }

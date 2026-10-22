@@ -224,12 +224,7 @@ func (m *Manager) Linked() []LinkedPop {
 				PinnedHashes: slices.Clone(p.Status.Link.PinnedHashes),
 				AutoSwitch:   p.AutoSwitch(),
 			}
-			// The named host only once a certificate was issued for it:
-			// status.tls.host is assigned before issuance, and an offer
-			// must not send guests to a name the PoP cannot serve yet.
-			if p.Status.TLS != nil && p.Status.TLS.Certificate != "" {
-				lp.NamedHost = p.Status.TLS.Host
-			}
+			lp.NamedHost = offeredNamedHost(&p)
 			out = append(out, lp)
 		}
 	}
@@ -296,7 +291,7 @@ func (m *Manager) config(p *pops.Pop) poplink.Config {
 	if p.Spec.Wall != nil {
 		c.WallCode = p.Spec.Wall.RoomCode
 	}
-	if p.Status.TLS != nil {
+	if p.Status.TLS != nil && p.Spec.NamedAddress.Enabled {
 		c.NamedHost = p.Status.TLS.Host
 	}
 	if p.Spec.NotAfter != nil {
@@ -304,6 +299,20 @@ func (m *Manager) config(p *pops.Pop) poplink.Config {
 		c.NotAfter = &t
 	}
 	return c
+}
+
+// offeredNamedHost is the named candidate an offer may carry for p: the
+// host gawk-admin assigned, only while the named address is on and only
+// once a certificate was issued for it (status.tls.host is assigned before
+// issuance, and an offer must not send guests to a name the PoP cannot
+// serve yet, or whose DNS record was deleted with the tier). Every pod,
+// the link-home one included, offers this and never the PoP's own Hello
+// claim (docs/76 §6.11).
+func offeredNamedHost(p *pops.Pop) string {
+	if p == nil || !p.Spec.NamedAddress.Enabled || p.Status.TLS == nil || p.Status.TLS.Certificate == "" {
+		return ""
+	}
+	return p.Status.TLS.Host
 }
 
 // background is a context for the writes a link makes after its session
