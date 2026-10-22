@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -108,7 +109,9 @@ func TestWriteCertPairRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := fi.Mode().Perm(); got != tc.want {
+		// Unix modes only: Windows reports 0666 or 0444, and the state
+		// directory's ACL is what protects a key there.
+		if got := fi.Mode().Perm(); runtime.GOOS != "windows" && got != tc.want {
 			t.Errorf("%s mode = %o, want %o", filepath.Base(tc.path), got, tc.want)
 		}
 	}
