@@ -135,6 +135,9 @@ type Client struct {
 
 	hmu      sync.RWMutex
 	handlers map[string][]func(rec any)
+
+	// up is the uplink (uplink.go): reservations, wants and legs.
+	up *uplink
 }
 
 // New builds a Client from the state directory's stored credential.
@@ -173,6 +176,7 @@ func New(o Options) *Client {
 		c.state.Header = HeaderWaiting
 		c.state.Endpoint = st.Endpoint
 	}
+	c.up = newUplink(c)
 	return c
 }
 
@@ -268,6 +272,7 @@ func (c *Client) Run(ctx context.Context) error {
 	if c.opts.Pair != "" {
 		go c.pairAtStart(ctx, c.opts.Pair)
 	}
+	go c.up.run(ctx)
 	failures := 0
 	for {
 		if ctx.Err() != nil {
@@ -577,9 +582,12 @@ func (c *Client) statsLoop(stop <-chan struct{}) {
 
 func (c *Client) stats() poplink.Stats {
 	rc := c.opts.Relay
+	up := c.up.stats()
 	return poplink.Stats{
-		Uplink:   pops.Budget{MaxMbps: rc.UplinkBudget.Mbps, MaxStreams: rc.UplinkBudget.Streams},
-		Downlink: pops.Budget{MaxMbps: rc.DownlinkBudget.Mbps, MaxStreams: rc.DownlinkBudget.Streams},
+		UplinkMbps:    up.Mbps,
+		UplinkStreams: up.Streams,
+		Uplink:        pops.Budget{MaxMbps: rc.UplinkBudget.Mbps, MaxStreams: rc.UplinkBudget.Streams},
+		Downlink:      pops.Budget{MaxMbps: rc.DownlinkBudget.Mbps, MaxStreams: rc.DownlinkBudget.Streams},
 		// Health is reported on its own record; nothing to add yet.
 	}
 }

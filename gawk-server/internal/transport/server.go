@@ -177,6 +177,9 @@ type Server struct {
 	offerer    atomic.Pointer[offererBox]
 	// popHome serves the /pop/* routes on a home with -pops (pop_routes.go).
 	popHome atomic.Pointer[popHomeBox]
+	// uplink is the R74 uplink's state: the demand hooks and loops on a
+	// home, the legs' linger watchers (pop_demand.go, pop_publish.go).
+	uplink popUplinkState
 }
 
 // rejectedDraining rejects a new CONNECT with 503 once the drain has begun,
@@ -1275,9 +1278,12 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		// Cluster mode: we don't host this broadcast, but its
 		// origin may be another pod — demand-create the edge pull, then
 		// re-check (the pull creates the local hub on attach).
-		if edgeErr := edges.EnsureEdge(r.Context(), id); edgeErr == nil {
+		if edgeErr := edges.EnsureEdge(withDemandRequest(r), id); edgeErr == nil {
 			err = s.registry.CheckSubscribe(id)
 		}
+	} else if errors.Is(err, hub.ErrNotFound) && s.popWaitSinglePod(withDemandRequest(r), id) {
+		// A single-pod home's PoP reservation (docs/76 item 17).
+		err = s.registry.CheckSubscribe(id)
 	}
 	if err != nil {
 		s.log.Warn("subscribe rejected pre-upgrade",

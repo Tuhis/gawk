@@ -175,6 +175,7 @@ func Run(ctx context.Context, cfg config.Config, getCert CertFunc, log *slog.Log
 	popRes := popReservationsFor(cfg, nil)
 	if cfg.Pops {
 		hubOpts.IDReserved = popIDReserved(hubOpts.IDReserved, func() popsrv.Reservations { return popRes })
+		hubOpts.PopOf = popOfFor(func() popsrv.Reservations { return popRes })
 	}
 
 	r := hub.NewRegistry(log, hubOpts)

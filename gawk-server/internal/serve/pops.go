@@ -43,6 +43,7 @@ func wirePops(ctx context.Context, w Wired, log *slog.Logger) (*popsrv.Manager, 
 		HomeRooms:       cfg.Rooms,
 		ScreeningNotice: cfg.ScreeningNotice,
 		ClusterPSK:      cfg.InternalPSK,
+		Reservations:    w.Reservations,
 		Log:             log,
 	})
 	w.Server.SetPopHome(m)
