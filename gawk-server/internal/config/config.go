@@ -337,13 +337,20 @@ type Config struct {
 }
 
 // ParseFlags parses args (without the program name) into a Config.
-// getenv supplies environment lookups, injectable for tests.
+// getenv supplies environment lookups, injectable for tests. It is the
+// gawk-server profile; gawk-relay parses with ParseRelayFlags.
 func ParseFlags(args []string, getenv func(string) string) (Config, error) {
-	// envBool reads a boolean env var with a default. The plain
-	// `env(...) == "true"` idiom cannot express a default-true flag: unset and
-	// an explicit "false" both read as empty there, so it could never be
-	// turned off.
-	envBool := func(key string, def bool) bool {
+	return parse(args, getenv, ServerProfile, nil)
+}
+
+// envLookups returns the two env readers every flag default goes through.
+//
+// envBool reads a boolean env var with a default. The plain
+// `env(...) == "true"` idiom cannot express a default-true flag: unset and
+// an explicit "false" both read as empty there, so it could never be
+// turned off.
+func envLookups(getenv func(string) string) (env func(key, def string) string, envBool func(key string, def bool) bool) {
+	envBool = func(key string, def bool) bool {
 		switch strings.ToLower(strings.TrimSpace(getenv(key))) {
 		case "true", "1", "yes":
 			return true
@@ -353,15 +360,27 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 			return def
 		}
 	}
-	env := func(key, def string) string {
+	env = func(key, def string) string {
 		if v := getenv(key); v != "" {
 			return v
 		}
 		return def
 	}
+	return env, envBool
+}
 
-	fs := flag.NewFlagSet("gawk-server", flag.ContinueOnError)
-	addr := fs.String("addr", env("GAWK_ADDR", ":4433"), "UDP listen address")
+// parse is the one flag list, with the profile's defaults substituted in.
+// register, when non-nil, adds a binary's own flags to the same FlagSet and
+// returns the validation to run after Parse (gawk-relay's knobs).
+func parse(args []string, getenv func(string) string, p Profile, register func(fs *flag.FlagSet, getenv func(string) string) func() error) (Config, error) {
+	env, envBool := envLookups(getenv)
+
+	fs := flag.NewFlagSet(p.Name, flag.ContinueOnError)
+	var finish func() error
+	if register != nil {
+		finish = register(fs, getenv)
+	}
+	addr := fs.String("addr", env("GAWK_ADDR", p.Addr), "UDP listen address")
 	certFile := fs.String("cert-file", env("GAWK_CERT_FILE", ""), "path to PEM certificate")
 	keyFile := fs.String("key-file", env("GAWK_KEY_FILE", ""), "path to PEM private key")
 	devCert := fs.Bool("dev-cert", env("GAWK_DEV_CERT", "") == "true" || env("GAWK_DEV_CERT", "") == "1",
@@ -370,7 +389,7 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"comma-separated hosts for the dev certificate")
 	logLevel := fs.String("log-level", env("GAWK_LOG_LEVEL", "info"), "log level: debug|info|warn|error")
 	logFormat := fs.String("log-format", env("GAWK_LOG_FORMAT", "text"), "log format: text|json")
-	maxSubs := fs.String("max-subscribers", env("GAWK_MAX_SUBSCRIBERS", "15"), "maximum concurrent subscribers")
+	maxSubs := fs.String("max-subscribers", env("GAWK_MAX_SUBSCRIBERS", p.MaxSubscribers), "maximum concurrent subscribers")
 	origins := fs.String("allowed-origins", env("GAWK_ALLOWED_ORIGINS", ""),
 		"comma-separated allowed Origin values; empty allows all")
 	maxIdle := fs.String("max-idle-timeout", env("GAWK_MAX_IDLE_TIMEOUT", "30s"),
@@ -386,9 +405,9 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"a connected publisher that sends no datagram at all (not even TimeSync/ClockMapping) for this long is reported stalled (not live); 0 disables; keep >= 90s, a hidden Chrome tab pings once a minute")
 	publisherStallEnds := fs.Bool("publisher-stall-ends", envBool("GAWK_PUBLISHER_STALL_ENDS", false),
 		"end a broadcast stalled for broadcast-grace with the terminal 'broadcast ended' and free its slot (default: report only)")
-	maxBroadcasts := fs.String("max-broadcasts", env("GAWK_MAX_BROADCASTS", "5"),
+	maxBroadcasts := fs.String("max-broadcasts", env("GAWK_MAX_BROADCASTS", p.MaxBroadcasts),
 		"maximum concurrent broadcasts")
-	maxTotalSubs := fs.String("max-total-subscribers", env("GAWK_MAX_TOTAL_SUBSCRIBERS", "50"),
+	maxTotalSubs := fs.String("max-total-subscribers", env("GAWK_MAX_TOTAL_SUBSCRIBERS", p.MaxTotalSubscribers),
 		"maximum total subscribers across all broadcasts")
 	pubSecret := fs.String("publish-secret", env("GAWK_PUBLISH_SECRET", ""),
 		"shared secret required to publish")
@@ -420,7 +439,7 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"accept R73 reliable uplink carriers from broadcasters (advertised to publishers); off is byte-identical to pre-R73")
 	uplinkMaxBitrate := fs.String("uplink-max-bitrate", env("GAWK_UPLINK_MAX_BITRATE", "50mbps"),
 		"highest broadcaster bitrate the initial QUIC receive windows are sized for (R73, docs/75 D10); 0 keeps quic-go's defaults")
-	metricsAddr := fs.String("metrics-addr", env("GAWK_METRICS_ADDR", ":2112"),
+	metricsAddr := fs.String("metrics-addr", env("GAWK_METRICS_ADDR", p.MetricsAddr),
 		"TCP listen address for the ops endpoint (/metrics, /healthz, /statusz); \"off\" disables")
 	statelessResetKey := fs.String("stateless-reset-key", env("GAWK_STATELESS_RESET_KEY", ""),
 		"QUIC stateless reset key as 64 hex chars (32 bytes), shared across all relay pods; empty disables")
@@ -457,7 +476,7 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"operator display name advertised to server pickers over /echo (R37 wire 0x11); empty leaves the relay unnamed")
 	moderationSource := fs.String("moderation-source", env("GAWK_MODERATION_SOURCE", "off"),
 		"R39 ban source: off | k8s (Ban CRs in POD_NAMESPACE) | file:<path> (JSON array, reloaded on change and SIGHUP)")
-	roomsFlag := fs.Bool("rooms", envBool("GAWK_ROOMS", false),
+	roomsFlag := fs.Bool("rooms", envBool("GAWK_ROOMS", p.Rooms),
 		"enable R42 rooms: the /room/ routes and the room registry; off is byte-identical to pre-R42")
 	roomEmptyGrace := fs.String("room-empty-grace", env("GAWK_ROOM_EMPTY_GRACE", "60s"),
 		"how long a dynamic room survives with no participant before it ends")
@@ -504,6 +523,11 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
+	}
+	if finish != nil {
+		if err := finish(); err != nil {
+			return Config{}, err
+		}
 	}
 
 	// The admin-API knobs are trimmed ONCE, here, so the validation below and
@@ -865,6 +889,10 @@ func parseCIDRs(s string) ([]*net.IPNet, error) {
 	}
 	return out, nil
 }
+
+// ParseHexKey32 is parseHexKey32 for the relay's state directory, which
+// stores its persisted keys in the flag's own format.
+func ParseHexKey32(name, s string) ([]byte, error) { return parseHexKey32(name, s) }
 
 // parseHexKey32 decodes a 32-byte hex-encoded key flag: empty (disabled) or
 // exactly 64 hex chars. The decoded bytes are never logged.
