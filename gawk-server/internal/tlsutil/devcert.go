@@ -30,6 +30,10 @@ import (
 // rejected for QUIC regardless of trust flags.
 const MaxDevCertValidity = 14 * 24 * time.Hour
 
+// clockSkew is how far GenerateDevCertAt backdates NotBefore, for clients
+// whose clock runs slightly behind. It counts against MaxDevCertValidity.
+const clockSkew = time.Hour
+
 // devCertCommonName is the Subject this package stamps on the certificates it
 // generates. It is load-bearing, not decoration: it is how LoadOrGenerate
 // tells a pair it may replace from one it must never touch.
@@ -40,6 +44,14 @@ const devCertCommonName = "gawk-server dev cert"
 // validity period of at most 14 days for WebTransport; validity is capped
 // accordingly. The returned certificate has Leaf populated.
 func GenerateDevCert(hosts []string, validity time.Duration) (tls.Certificate, error) {
+	return GenerateDevCertAt(hosts, time.Now(), validity)
+}
+
+// GenerateDevCertAt is GenerateDevCert with the issuing time given: NotBefore
+// is now minus the clock-skew backdate, NotAfter now plus validity. The
+// rolling pinned certificate (rolling.go) mints on its own schedule and
+// under a fake clock in tests.
+func GenerateDevCertAt(hosts []string, now time.Time, validity time.Duration) (tls.Certificate, error) {
 	if len(hosts) == 0 {
 		return tls.Certificate{}, fmt.Errorf("tlsutil: no hosts given")
 	}
@@ -47,7 +59,6 @@ func GenerateDevCert(hosts []string, validity time.Duration) (tls.Certificate, e
 	// span (NotAfter-NotBefore) exceeds 14 days. We backdate NotBefore by
 	// clockSkew for tolerance, so the future validity must be capped to leave
 	// room for it: skew + validity <= MaxDevCertValidity.
-	const clockSkew = time.Hour
 	if validity <= 0 || validity > MaxDevCertValidity-clockSkew {
 		validity = MaxDevCertValidity - clockSkew
 	}
@@ -62,7 +73,6 @@ func GenerateDevCert(hosts []string, validity time.Duration) (tls.Certificate, e
 		return tls.Certificate{}, fmt.Errorf("tlsutil: generate serial: %w", err)
 	}
 
-	now := time.Now()
 	tmpl := x509.Certificate{
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: devCertCommonName},
