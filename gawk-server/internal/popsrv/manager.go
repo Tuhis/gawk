@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Tuhis/gawk/gawk-server/internal/cluster"
@@ -85,6 +86,10 @@ type Manager struct {
 	handlers map[string][]func(pop string, rec any)
 
 	unsubscribe func()
+
+	// offers is this pod's offer matcher (NewOffers), for the admin rows'
+	// OffersSent; nil when none is wired.
+	offers atomic.Pointer[Offers]
 }
 
 // New builds a Manager. It subscribes to the Pop source so a Re-pair,
@@ -208,7 +213,10 @@ func (m *Manager) Linked() []LinkedPop {
 				PinnedHashes: slices.Clone(p.Status.Link.PinnedHashes),
 				AutoSwitch:   p.AutoSwitch(),
 			}
-			if p.Status.TLS != nil {
+			// The named host only once a certificate was issued for it:
+			// status.tls.host is assigned before issuance, and an offer
+			// must not send guests to a name the PoP cannot serve yet.
+			if p.Status.TLS != nil && p.Status.TLS.Certificate != "" {
 				lp.NamedHost = p.Status.TLS.Host
 			}
 			out = append(out, lp)
