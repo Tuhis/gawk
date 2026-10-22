@@ -1100,8 +1100,13 @@ func TestAClientAbortAfterTheRowCommitsStillProjectsRecordsAndPages(t *testing.T
 		t.Fatalf("projections = %d, want 1", n)
 	}
 
-	// The webhook fan-out is the half with no retry path at all.
+	// The webhook fan-out is the half with no retry path at all. The handler
+	// enqueues after the event row is written, so the row being visible does
+	// not mean the enqueue has happened yet: wait for it too.
 	evs := h.enq.all()
+	for deadline := time.Now().Add(10 * time.Second); len(evs) == 0 && time.Now().Before(deadline); evs = h.enq.all() {
+		time.Sleep(20 * time.Millisecond)
+	}
 	if len(evs) != 1 || evs[0].Type != store.EventBroadcastKilled {
 		t.Fatalf("enqueued = %+v, want one broadcast.killed", evs)
 	}
