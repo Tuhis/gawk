@@ -173,9 +173,13 @@ func TestEdgePullBurstSurvivesBlockedDatagramLoop(t *testing.T) {
 	id, _ := readPublisherHandshake(t, ctx, pub)
 	// A viewer on the edge pod demand-creates the pull from the origin.
 	_ = dialSubscriber(t, ctx, edge.port, id, clientTLS)
+	// Both ends: the edge takes its role before the origin has attached the
+	// pull, and a burst fanned out before that reaches no edge at all.
 	waitForCascade(t, func() (bool, string) {
-		st := edge.registry.Stats().Broadcasts[edge.registry.ObfuscateID(id)]
-		return st.Role == "edge", fmt.Sprintf("edge role=%q", st.Role)
+		stA := origin.registry.Stats().Broadcasts[origin.registry.ObfuscateID(id)]
+		stB := edge.registry.Stats().Broadcasts[edge.registry.ObfuscateID(id)]
+		return stB.Role == "edge" && stA.EdgeSessions == 1,
+			fmt.Sprintf("edge role=%q, origin edgeSessions=%d", stB.Role, stA.EdgeSessions)
 	}, "the edge pull")
 
 	em := edge.srv.edgeManager()

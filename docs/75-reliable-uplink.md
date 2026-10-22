@@ -815,6 +815,14 @@ frames the uplink actually lost (RU5).
   `gawk-server/third_party/quic-go` (quic-go v0.62.0 + `gawk.patch`, its
   `GAWK-PATCH.md` says how to re-derive and when to drop it), checked by
   CI's `tidy` job. Upstream's latest release, v0.64.1, still hardcodes 32.
+  *2026-10-22*: the patch also takes quic-go's per-connection receive
+  queue (`maxDatagramRcvQueueLen`) from 128 to 512, so it can hold what
+  the session queue behind it can. Datagrams wait there until http3's
+  single dispatching goroutine hands them to their session. Raising it
+  alone changed nothing on the lab's network-paced path (table G,
+  R-only128), but under CPU contention a loopback-speed burst overflowed
+  it before the session queue could take anything, and the RU2 burst
+  tests failed on that in CI (release PR #547).
 - **Where it matters**: the origin's publisher sessions and the edge's
   pull sessions, which read origin → edge datagrams through the same
   queue, at pod-to-pod speed.
