@@ -414,6 +414,10 @@ func TestWallVouchAndLinkJoinReachTheWallsHomePod(t *testing.T) {
 		h, ok := b.store.Resolve("assembly-2026")
 		return ok && h.Live && h.Holder == "pod-a"
 	}, "pod-b to resolve the wall's home")
+	// A vouched broadcast is one the PoP reserved: its Lease is what keeps
+	// the attachment through the home's refresh, which expires an
+	// attachment the fleet does not know (UnknownIsExpired).
+	reserveForWall(t, ctx, "ABCDEF", a, b)
 
 	if err := b.srv.VouchWall(ctx, testWallPop, WallOpAttach, "assembly-2026", "ABCDEF", "Stream 1"); err != nil {
 		t.Fatalf("remote VouchWall: %v", err)
@@ -449,11 +453,28 @@ func TestWallVouchAndLinkJoinReachTheWallsHomePod(t *testing.T) {
 	}
 }
 
+// reserveForWall reserves id for testWallPop, as the PoP does before it
+// vouches for a party broadcast, and waits until every pod's lease cache
+// has the reservation.
+func reserveForWall(t *testing.T, ctx context.Context, id string, pods ...*roomPod) {
+	t.Helper()
+	if err := pods[0].coord.Reserve(ctx, id, testWallPop); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	for _, p := range pods {
+		waitFor(t, 15*time.Second, func() bool {
+			o, _, _, ok := p.coord.Lookup(id)
+			return ok && o.Pop == testWallPop
+		}, "the reservation in every pod's lease cache")
+	}
+}
+
 func TestWallVouchAdoptsAWallNobodyHomes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	f := newRoomFleet(t, wallRoomObject(t, "assembly-2026", testWallPop))
 	b := f.startRoomPod(t, ctx, "pod-b")
+	reserveForWall(t, ctx, "ABCDEF", b)
 	if err := b.srv.VouchWall(ctx, testWallPop, WallOpAttach, "assembly-2026", "ABCDEF", ""); err != nil {
 		t.Fatalf("VouchWall: %v", err)
 	}
