@@ -49,16 +49,20 @@ type WallOptions struct {
 
 // Wall is the home side of every linked PoP's party wall on this pod.
 type Wall struct {
-	m    *Manager
-	o    WallOptions
-	log  *slog.Logger
-	ctx  context.Context
-	mu   sync.Mutex
-	work map[string]chan *poplink.Wall // per PoP, so its ops stay in order
+	m   *Manager
+	o   WallOptions
+	log *slog.Logger
+	ctx context.Context
+
+	// Ops are driven per broadcast, latest wins: one broadcast waiting for
+	// its reservation never holds up another (a relink resyncs them all at
+	// once), and a Hide that arrives during the wait replaces the attach.
+	mu      sync.Mutex
+	pending map[wallKey]*poplink.Wall
+	running map[wallKey]bool
 }
 
-// wallQueue bounds one PoP's pending wall ops.
-const wallQueue = 256
+type wallKey struct{ pop, id string }
 
 // StartWall registers the wall on m: wall records from any link this pod
 // holds, and room streams on those links. It runs until ctx ends.
@@ -75,43 +79,52 @@ func StartWall(ctx context.Context, m *Manager, o WallOptions) *Wall {
 	if o.Log == nil {
 		o.Log = m.log
 	}
-	w := &Wall{m: m, o: o, log: o.Log.With("subsystem", "wall"), ctx: ctx, work: map[string]chan *poplink.Wall{}}
+	w := &Wall{m: m, o: o, log: o.Log.With("subsystem", "wall"), ctx: ctx,
+		pending: map[wallKey]*poplink.Wall{}, running: map[wallKey]bool{}}
 	m.OnLinkRecord(poplink.TWall, w.onRecord)
 	m.setLinkStreams(w.serveStream)
 	return w
 }
 
-// onRecord queues a wall record for its PoP's worker; it never blocks the
-// link's reader.
+// onRecord records a wall record as its broadcast's latest op and makes
+// sure a driver applies it; it never blocks the link's reader.
 func (w *Wall) onRecord(pop string, rec any) {
 	r, ok := rec.(*poplink.Wall)
 	if !ok || r.ID == "" {
 		return
 	}
+	k := wallKey{pop: pop, id: r.ID}
 	w.mu.Lock()
-	q := w.work[pop]
-	if q == nil {
-		q = make(chan *poplink.Wall, wallQueue)
-		w.work[pop] = q
-		go w.worker(pop, q)
-	}
+	w.pending[k] = r
+	start := !w.running[k]
+	w.running[k] = true
 	w.mu.Unlock()
-	select {
-	case q <- r:
-	default:
-		w.log.Warn("pop wall op dropped: queue full", "pop", pop, "op", r.Op)
+	if start {
+		go w.drive(k)
 	}
 }
 
-func (w *Wall) worker(pop string, q chan *poplink.Wall) {
+// drive applies one broadcast's ops in order until none is pending.
+func (w *Wall) drive(k wallKey) {
 	for {
-		select {
-		case <-w.ctx.Done():
+		w.mu.Lock()
+		r := w.pending[k]
+		delete(w.pending, k)
+		if r == nil || w.ctx.Err() != nil {
+			delete(w.running, k)
+			w.mu.Unlock()
 			return
-		case r := <-q:
-			w.apply(pop, r)
 		}
+		w.mu.Unlock()
+		w.apply(k, r)
 	}
+}
+
+// superseded reports a newer op for k arrived while one was in hand.
+func (w *Wall) superseded(k wallKey) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.pending[k] != nil
 }
 
 // apply turns one wall record into a vouched op. An attach is vouched only
@@ -119,7 +132,8 @@ func (w *Wall) worker(pop string, q chan *poplink.Wall) {
 // reservation ties the broadcast to it. A detach needs no reservation (it
 // may be the broadcast's end, after its release), and the registry only
 // lets a PoP detach from its own wall.
-func (w *Wall) apply(pop string, r *poplink.Wall) {
+func (w *Wall) apply(k wallKey, r *poplink.Wall) {
+	pop := k.pop
 	p, ok := w.m.pop(pop)
 	if !ok || p.Spec.Wall == nil || p.Spec.Wall.RoomCode == "" {
 		w.log.Debug("pop wall op ignored: the PoP has no wall", "pop", pop)
@@ -128,7 +142,10 @@ func (w *Wall) apply(pop string, r *poplink.Wall) {
 	code := p.Spec.Wall.RoomCode
 	switch r.Op {
 	case poplink.WallAttach:
-		if !w.waitOwner(pop, r.ID) {
+		switch w.waitOwner(k) {
+		case ownerSuperseded:
+			return // a newer op (a Hide) replaces this attach
+		case ownerMissing:
 			w.log.Info("pop wall attach refused: the broadcast is not this PoP's reservation", "pop", pop)
 			return
 		}
@@ -148,21 +165,34 @@ func (w *Wall) apply(pop string, r *poplink.Wall) {
 	}
 }
 
-func (w *Wall) waitOwner(pop, id string) bool {
+type ownerVerdict int
+
+const (
+	ownerOK ownerVerdict = iota
+	ownerMissing
+	ownerSuperseded
+)
+
+// waitOwner waits up to OwnerWait for k's ID to read as k's PoP's
+// reservation, giving up early when a newer op for it arrives.
+func (w *Wall) waitOwner(k wallKey) ownerVerdict {
 	if w.o.Owner == nil {
-		return false
+		return ownerMissing
 	}
 	deadline := time.Now().Add(w.o.OwnerWait)
 	for {
-		if owner, ok := w.o.Owner.Owner(id); ok && owner == pop {
-			return true
+		if w.superseded(k) {
+			return ownerSuperseded
+		}
+		if owner, ok := w.o.Owner.Owner(k.id); ok && owner == k.pop {
+			return ownerOK
 		}
 		if time.Now().After(deadline) {
-			return false
+			return ownerMissing
 		}
 		select {
 		case <-w.ctx.Done():
-			return false
+			return ownerMissing
 		case <-time.After(w.o.OwnerPoll):
 		}
 	}
