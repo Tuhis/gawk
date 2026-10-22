@@ -23,6 +23,9 @@
       "$ref": "common.json#/$defs/count",
       "description": "Viewers across the fleet, as the origin computes it from the edge leases. An edge reports what it last learned from the origin."
     },
+    "pop": {
+      "$ref": "common.json#/$defs/popName"
+    },
     "summary": {
       "$ref": "common.json#/$defs/summary"
     },
