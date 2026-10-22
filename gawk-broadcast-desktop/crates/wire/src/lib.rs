@@ -1,7 +1,8 @@
 //! The gawk wire format — fourth mirror (docs/38 D4).
 //!
 //! The source of truth is `gawk-server/wire/wire.go` (plus `parity.go`,
-//! `stripe.go` and `room.go`); the other mirror is the TypeScript `wire.ts`.
+//! `stripe.go`, `room.go`, `closing.go` and `localrelay.go`); the other
+//! mirror is the TypeScript `wire.ts`.
 //! This crate is a hand-written
 //! reimplementation with the golden vectors deliberately RESTATED in its
 //! tests, never shared or imported: an exported fixture the sides shared
@@ -23,6 +24,7 @@
 
 mod chunking;
 mod error;
+mod localrelay;
 mod messages;
 mod parity;
 mod room;
@@ -30,6 +32,7 @@ mod stripe;
 
 pub use chunking::{ChunkBudget, split_frame};
 pub use error::WireError;
+pub use localrelay::*;
 pub use messages::*;
 pub use parity::{
     CAP_PARITY_CHUNKS, CAP_STRIPED_DELIVERY, CAP_UPLINK_CARRIERS, MAX_PARITY_DATA_CHUNKS,
@@ -80,6 +83,11 @@ pub const TYPE_ROOM_COMMAND: u8 = 0x16;
 // and vector are here because every mirror carries every message.
 pub const TYPE_SESSION_CLOSING: u8 = 0x17;
 pub const SESSION_CLOSING_SIZE: usize = 6;
+// R74 PoP relays (docs/76 §9): relay→client on their own uni stream, the
+// local relay's name/link/wall state (PoP → client) and the home's offer of
+// a PoP on the client's network. Layouts and constants live in localrelay.rs.
+pub const TYPE_LOCAL_RELAY_INFO: u8 = 0x18;
+pub const TYPE_LOCAL_RELAY_OFFER: u8 = 0x19;
 
 // Size constants. A change to any of these is a protocol change, not a
 // tuning knob — the constants test pins every one.
@@ -139,6 +147,14 @@ pub const CLOSE_CODE_TERMINATED_BY_OPERATOR: u32 = 4006;
 /// lifecycle and are untouched (attached broadcasts keep streaming to anyone
 /// watching them directly). Never sent on a publish or subscribe session.
 pub const CLOSE_CODE_ROOM_ENDED: u32 = 4007;
+// 4008–4011 are left unallocated for R43 (docs/45 D3).
+/// Non-terminal (R74, docs/76 item 28): a home pod refused an outside viewer
+/// of a broadcast on a PoP relay whose uplink budget is spent; the viewer
+/// says so and retries every 20 s. Sent in-band first as SessionClosing.
+pub const CLOSE_CODE_POP_UPLINK_FULL: u32 = 4012;
+/// Home → a PoP's uplink leg only (R74): no outside demand is left. Never
+/// sent to clients like this one.
+pub const CLOSE_CODE_POP_NO_DEMAND: u32 = 4013;
 
 /// Whether a close code ends a *viewer* for good (R65, docs/67 D13): the
 /// broadcast was garbage-collected (4000) or the operator killed it (4006).
