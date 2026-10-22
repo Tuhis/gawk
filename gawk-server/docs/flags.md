@@ -75,6 +75,11 @@ deployment must not be able to turn TLS verification off by setting one
 | `-max-room-participants` | `GAWK_MAX_ROOM_PARTICIPANTS` | `50` |
 | `-room-create-secret` | `GAWK_ROOM_CREATE_SECRET` | (empty = anyone with a live broadcast may mint a dynamic room) |
 | `-rooms-file` | `GAWK_ROOMS_FILE` | (empty; JSON array of static rooms for non-Kubernetes deployments) |
+| `-pops` | `GAWK_POPS` | `false` (R74 PoP relays; needs `-cluster-mode` or `-pops-file`) |
+| `-pops-file` | `GAWK_POPS_FILE` | (empty; YAML or JSON list of PoPs for non-Kubernetes deployments; no chart value) |
+| `-pop-uplink-linger` | `GAWK_POP_UPLINK_LINGER` | `30s` |
+| `-pop-offer-defer` | `GAWK_POP_OFFER_DEFER` | `2s` |
+| `-pop-demand-timeout` | `GAWK_POP_DEMAND_TIMEOUT` | `5s` |
 
 ## Notes on the non-obvious ones
 
@@ -90,7 +95,7 @@ client reconnect interval, or a pod drain ends every room it hosted.
 Static rooms come from `Room` CRs in cluster mode (`rooms.enabled` in the
 chart) or from `-rooms-file` elsewhere: a JSON array of
 `{"code": "TuhisRoom", "displayName": "...", "attachSecret": "...",
-"maxBroadcasts": 4}` objects, reloaded on change and on SIGHUP exactly like
+"maxBroadcasts": 4, "maxParticipants": 50}` objects, reloaded on change and on SIGHUP exactly like
 `-moderation-source=file`. Room codes are joinable secrets like broadcast
 IDs and are keyed by the same `-stats-key` HMAC everywhere they appear.
 
@@ -234,3 +239,36 @@ the Kubernetes API and behaves exactly like the single-pod relay; see
 [docs/22](../../docs/22-relay-scale-out.md) for the design and
 [docs/05](../../docs/05-resilience-deploy.md) for the multi-replica
 runbook.
+
+**`-pops` is off by default.** With it on, the relay serves the `/pop/*`
+routes PoP relays dial ([docs/76](../../docs/76-pop-relays.md) §9). A PoP
+dials with Origin `gawk-relay://pop`, which the relay accepts on `/pop/*`
+only, so it never needs adding to `-allowed-origins`. `-pop-uplink-linger`
+is how long an uplink leg stays open after its last outside viewer leaves,
+`-pop-offer-defer` how long a guest's session that announced it can switch
+(`lr=1`) waits for the switch before home pulls the stream up anyway, and
+`-pop-demand-timeout` how long an outside viewer waits for a PoP to start
+forwarding before the broadcast reads as away. All five appear in
+`/internal/admin/config`. Offers need real client addresses:
+[docs/self-hosting.md](../../docs/self-hosting.md#14-pop-relays-r74) §14.
+
+## gawk-relay
+
+`cmd/gawk-relay` takes the same flags and `GAWK_*` envs with LAN-shaped
+defaults ([docs/76](../../docs/76-pop-relays.md) §6.1 item 2): `-max-subscribers`
+100, `-max-broadcasts` 50, `-max-total-subscribers` 500, `-metrics-addr`
+`127.0.0.1:2112` and rooms on, in memory. With no certificate flags it
+serves a rolling self-signed certificate from its state directory; an
+explicit `-cert-file`/`-key-file` pair overrides that, and `-dev-cert` is
+ignored with a warning. These flags are the relay's alone; `gawk-server`
+does not register them:
+
+| Flag | Env | Default |
+|------|-----|---------|
+| `-state-dir` | `GAWK_STATE_DIR` | (empty = the per-OS default) |
+| `-console-addr` | `GAWK_CONSOLE_ADDR` | `127.0.0.1:4480` (loopback only; a non-loopback address refuses to start) |
+| `-ui-addr` | `GAWK_UI_ADDR` | `:4433` (the HTTPS web app, named tier only) |
+| `-lan-address` | `GAWK_LAN_ADDRESS` | `auto` (or an IP literal) |
+| `-pair` | `GAWK_PAIR` | (empty; a `gawk-pair:…` or `gawk-cred:…` string) |
+| `-pop-leg-delivery` | `GAWK_POP_LEG_DELIVERY` | `carrier` (or `datagram`; measured in docs/76 §11.2) |
+| `-uplink-budget` / `-downlink-budget` | `GAWK_UPLINK_BUDGET` / `GAWK_DOWNLINK_BUDGET` | (empty = the home fleet's ceiling; `Mbps[/streams]`, lower only) |

@@ -249,6 +249,30 @@ kill path here.
 The Keycloak `flagger` client and the sampler chart:
 [`docs/self-hosting.md`](../docs/self-hosting.md).
 
+## PoP relays (R74)
+
+Optional, off by default. With `-pops` (chart `pops.enabled`) the portal
+serves `/api/v1/pops` and the PoPs view, operator-only, for the `gawk-relay`
+PoPs of [`docs/76`](../docs/76-pop-relays.md) §7.2: create, edit, re-pair,
+revoke and delete a `Pop` CR. A pairing string is shown once, at create or
+re-pair, and only its SHA-256 is stored. A party wall is a static `Room`
+owned by the `Pop`, so it needs `-rooms` too.
+
+| Flag | Env | Default |
+|---|---|---|
+| `-pops` | `GAWK_ADMIN_POPS` | `false` |
+| `-pop-home-endpoint` | `GAWK_ADMIN_POP_HOME_ENDPOINT` | (empty; the relay's public `host:port` a pairing string names, e.g. `api.gawk.ioio.fi:4433`; required with `-pops`) |
+| `-pop-pairing-ttl` | `GAWK_ADMIN_POP_PAIRING_TTL` | `72h` |
+| `-pop-dns-zone` | `GAWK_ADMIN_POP_DNS_ZONE` | (empty; the named tier's zone) |
+| `-pop-cert-issuer` | `GAWK_ADMIN_POP_CERT_ISSUER` | (empty; `Issuer/<name>` or `ClusterIssuer/<name>`, set together with `-pop-dns-zone`) |
+| `-pop-dns-ttl` | `GAWK_ADMIN_POP_DNS_TTL` | `60s` |
+
+With both named-tier flags set, a reconciler gives each opted-in PoP a
+random `p-xxxxxx` host in the zone, an external-dns `DNSEndpoint` for its
+LAN address and one cert-manager `CertificateRequest` per CSR. The `Pop`
+CRD comes from the relay chart (`pops.enabled` there). Setup:
+[`docs/self-hosting.md`](../docs/self-hosting.md#14-pop-relays-r74) §14.
+
 ## Deploy
 
 Chart in `deploy/charts/gawk-admin`, image `ghcr.io/tuhis/gawk-admin`, chart at
