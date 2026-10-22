@@ -373,6 +373,51 @@ func TestPopReconcilerDNSEndpointLifecycle(t *testing.T) {
 	}
 }
 
+// The record is harmless only because it names a private address (docs/76
+// §8): a PoP reporting a public LAN address gets no record under the
+// official zone, and one that moves to a public address loses its record.
+func TestPopReconcilerPublishesOnlyAPrivateLanAddress(t *testing.T) {
+	c, dc := newNamedFake(t, namedPop("pub", "uid-p", "203.0.113.7"), namedPop("ula", "uid-u", "fd00::20"))
+	r := newNamedReconciler(c, dc)
+	reconcile(t, r)
+	if _, ok := dnsEndpoint(t, dc, "pub"); ok {
+		t.Fatal("a DNSEndpoint for a public LAN address")
+	}
+	u, ok := dnsEndpoint(t, dc, "ula")
+	if !ok {
+		t.Fatal("no DNSEndpoint for a ULA address")
+	}
+	if eps, _, _ := unstructured.NestedSlice(u.Object, "spec", "endpoints"); len(eps) != 1 || eps[0].(map[string]any)["recordType"] != "AAAA" {
+		t.Fatalf("endpoints = %v", eps)
+	}
+	setLan(t, dc, "ula", "2001:db8::20")
+	reconcile(t, r)
+	if _, ok := dnsEndpoint(t, dc, "ula"); ok {
+		t.Fatal("the DNSEndpoint survived a move to a public address")
+	}
+}
+
+// A PoP named "p" (a valid name) still gets a host: only the random part
+// of the label is kept free of the name, not the fixed "p-" prefix.
+func TestPopReconcilerAssignsAHostToAPopNamedP(t *testing.T) {
+	c, dc := newNamedFake(t, namedPop("p", "uid-1", "192.168.1.20"))
+	labels := []string{"p-k2m9xq"}
+	r := newNamedReconciler(c, dc, func(o *kube.PopReconcilerOptions) {
+		o.NewLabel = func() (string, error) {
+			if len(labels) == 0 {
+				return "p-pppppp", nil
+			}
+			l := labels[0]
+			labels = labels[1:]
+			return l, nil
+		}
+	})
+	reconcile(t, r)
+	if p := getPop(t, c, "p"); p.Status.TLS == nil || p.Status.TLS.Host != "p-k2m9xq."+testZone {
+		t.Fatalf("host = %+v, want p-k2m9xq.%s", p.Status.TLS, testZone)
+	}
+}
+
 // docs/76 §11 PP12: a CSR with a wrong SAN is refused — no
 // CertificateRequest, nothing written.
 func TestPopReconcilerRefusesACSRWithAWrongSAN(t *testing.T) {

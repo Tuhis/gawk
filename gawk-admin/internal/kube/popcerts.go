@@ -269,8 +269,11 @@ func (r *PopReconciler) ensureHost(ctx context.Context, p *pops.Pop, taken map[s
 		}
 		label = strings.ToLower(label)
 		host := label + "." + r.opts.Zone
-		if label == p.Name || strings.Contains(label, p.Name) {
-			continue // never the PoP's name (item 38)
+		// Never the PoP's name (item 38): the whole label, or inside the
+		// random part (not the fixed "p-", which a PoP named "p" would
+		// otherwise match on every draw).
+		if label == p.Name || strings.Contains(strings.TrimPrefix(label, "p-"), p.Name) {
+			continue
 		}
 		if owner, ok := taken[host]; ok && owner != p.Name {
 			continue
@@ -293,6 +296,12 @@ func dnsEndpointName(pop string) string { return "pop-" + pop }
 
 // ensureDNS keeps the Pop's DNSEndpoint naming its LAN address. With no
 // LAN address reported yet it leaves any record as it is.
+//
+// The address is the PoP's own report, so only a private one (RFC 1918,
+// fc00::/7) is published: the record is harmless because it reveals a
+// private address for the label (docs/76 §8), and a public target would
+// hand a third-party host a CA-trusted name under the official zone. A
+// PoP reporting anything else loses its record.
 func (r *PopReconciler) ensureDNS(ctx context.Context, p *pops.Pop, host string) error {
 	if p.Status.Link == nil {
 		return nil
@@ -302,6 +311,18 @@ func (r *PopReconciler) ensureDNS(ctx context.Context, p *pops.Pop, host string)
 		return nil
 	}
 	lan = lan.Unmap()
+	name := dnsEndpointName(p.Name)
+	ri := r.opts.Dynamic.Resource(DNSEndpointResource).Namespace(r.opts.Namespace)
+	if !lan.IsPrivate() {
+		err := ri.Delete(ctx, name, metav1.DeleteOptions{})
+		switch {
+		case err == nil:
+			r.opts.Log.Warn("named DNS record deleted: the PoP reports a LAN address that is not private", "pop", p.Name, "lan", lan.String())
+		case !apierrors.IsNotFound(err):
+			return fmt.Errorf("delete DNSEndpoint %s: %w", name, err)
+		}
+		return nil
+	}
 	recordType := "A"
 	if lan.Is6() {
 		recordType = "AAAA"
@@ -312,8 +333,6 @@ func (r *PopReconciler) ensureDNS(ctx context.Context, p *pops.Pop, host string)
 		"recordTTL":  int64(r.opts.DNSTTL / time.Second),
 		"targets":    []any{lan.String()},
 	}}}
-	ri := r.opts.Dynamic.Resource(DNSEndpointResource).Namespace(r.opts.Namespace)
-	name := dnsEndpointName(p.Name)
 	cur, err := ri.Get(ctx, name, metav1.GetOptions{})
 	switch {
 	case apierrors.IsNotFound(err):
