@@ -463,12 +463,14 @@ func (c *Client) refused(ctx context.Context, req *pairRequest, rsp *http.Respon
 		return linkResult{}
 	}
 	if req != nil {
+		// State first: Pair returns as soon as the request finishes, and its
+		// caller (the console) reads State to show why.
+		c.setState(func(s *LinkState) { s.LastStatus = status })
 		if status != 0 {
 			req.finish(&PairError{Status: status, Reason: reason})
 		} else {
 			req.finish(err)
 		}
-		c.setState(func(s *LinkState) { s.LastStatus = status })
 		// A refused pairing leaves the previous credential (if any) in use.
 		return linkResult{relinkNow: c.hasCredential()}
 	}
