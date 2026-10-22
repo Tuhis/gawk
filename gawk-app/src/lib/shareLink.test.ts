@@ -141,6 +141,23 @@ describe('share links from LocalRelayInfo (R74)', () => {
     expect(relayQuerySuffix()).toBe('');
   });
 
+  it('a tab a self-hosted fleet’s offer moved to its PoP keeps naming that home in hops and shares', async () => {
+    const { store, buildViewLink, relayQuerySuffix } = await loadWithPop();
+    const SELF = 'https://relay.self.example:4433';
+    store.getState().setSessionOverride(SELF);
+    store.getState().setOfferOverride(POP, [H1], 'pop-uid-1', 'Assembly 2026');
+    expect(store.getState().resolvedSource).toBe('pop');
+    const suffix = `?relay=${encodeURIComponent(SELF)}`;
+    expect(relayQuerySuffix()).toBe(suffix);
+    expect(buildViewLink('AB2CD3')).toBe(`${window.location.origin}${window.location.pathname}#/view/AB2CD3${suffix}`);
+    // The hop re-applies the same override: the followed offer survives it,
+    // and a later fall back from the PoP lands on the fleet that offered it.
+    store.getState().setSessionOverride(SELF);
+    expect(store.getState().resolvedSource).toBe('pop');
+    store.getState().clearOfferOverride();
+    expect(store.getState().serverUrl).toBe(SELF);
+  });
+
   it('a linked PoP’s page shares links to the home app it names', async () => {
     window.__GAWK_CONFIG__ = { relayUrl: POP, relayCertHashes: [H1] };
     const { store, pop, buildViewLink, buildRoomLink } = await loadWithPop();

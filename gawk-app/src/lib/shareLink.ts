@@ -19,20 +19,36 @@ export const REFERENCE_APP_ORIGIN = 'https://gawk.ioio.fi';
 // browser can only dial with them. Anywhere else the router would drop the
 // pins, so they are never written.
 export function relayQuerySuffix(): string {
-  // R74: a tab a followed offer moved to a PoP stays there in memory across
-  // hops; naming the PoP in the URL would only pin it into the route.
-  if (useTransportStore.getState().resolvedSource === 'pop') return '';
+  const t = useTransportStore.getState();
+  if (t.resolvedSource === 'pop') {
+    // R74: a tab a followed offer moved to a PoP stays there in memory
+    // across hops; naming the PoP in the URL would only pin it into the
+    // route. The home it came from is still named, though, when that is
+    // not the default (a self-hosted fleet's ?relay=): re-applying the same
+    // override keeps the offer, and a fall back from the PoP, or a reload,
+    // lands on that fleet rather than on the default.
+    const home = t.sessionOverrideUrl;
+    if (home === null || home === normalizeRelayOrigin(defaultServerUrl())) return '';
+    return suffixFor(home, linkHashes(home, t.sessionOverrideCertHashes));
+  }
   const relay = nonDefaultRelayOrigin();
   if (relay === null) return '';
-  const pins = linkCertHashes(relay);
+  return suffixFor(relay, linkCertHashes(relay));
+}
+
+function suffixFor(relay: string, pins: string): string {
   return `?relay=${encodeURIComponent(relay)}${pins === '' ? '' : `&certHash=${pins}`}`;
 }
 
 // The resolved hashes in the link grammar (routing.ts parseCertHashList), or
 // '' when there are none or they would not parse back.
 function linkCertHashes(relay: string): string {
+  return linkHashes(relay, useTransportStore.getState().certHashes);
+}
+
+function linkHashes(relay: string, hashes: string[]): string {
   if (!isPinnableRelay(relay)) return '';
-  const value = useTransportStore.getState().certHashes.slice(0, MAX_CERT_HASHES).join(',');
+  const value = hashes.slice(0, MAX_CERT_HASHES).join(',');
   return value !== '' && parseCertHashList(value) !== null ? value : '';
 }
 
@@ -71,7 +87,8 @@ function isLoopbackHost(host: string): boolean {
 
 // Where a share link points and what it carries (R74, docs/76 item 45):
 // - a linked PoP (its 0x18 names the home app): a home link, no ?relay=;
-// - a tab a followed offer moved to the PoP: a home link on this page;
+// - a tab a followed offer moved to the PoP: a home link on this page,
+//   naming that home when it is not the default;
 // - a standalone PoP seen from the host's loopback /app/: the public app,
 //   naming the LAN relay with its pins;
 // - anything else: this page, with ?relay= off the default (relayQuerySuffix).
@@ -82,7 +99,7 @@ function shareTarget(): { base: string; suffix: string } {
     const home = appOrigin(info.homeOrigin);
     if (home !== null) return { base: home === window.location.origin ? here : `${home}/`, suffix: '' };
   }
-  if (useTransportStore.getState().resolvedSource === 'pop') return { base: here, suffix: '' };
+  if (useTransportStore.getState().resolvedSource === 'pop') return { base: here, suffix: relayQuerySuffix() };
   if (info !== null && !info.linked && isLoopbackHost(window.location.hostname)) {
     const relay = normalizeRelayOrigin(useTransportStore.getState().serverUrl);
     if (relay !== null && isPinnableRelay(relay)) {
