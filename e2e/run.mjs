@@ -57,6 +57,16 @@
 //                             go LIVE with nothing about it on its screen. The
 //                             --browser-broadcast pass is the control: no
 //                             flag, no mark.
+//   node run.mjs --pop-switch
+//                             R74 PP14 (docs/76 item 43) — runs
+//                             pop-switch.mjs, which owns its own stack (a
+//                             home gawk-server with -pops, a linked
+//                             gawk-relay on the host's private address,
+//                             pubsim publishing to home): a viewer with Local
+//                             Network Access granted follows home's offer
+//                             to the PoP with one freeze of at most 1 s, and
+//                             with it denied stays on home. Remaining
+//                             arguments (--allow-skip) are passed through.
 //   node run.mjs --muxer-check
 //                             R22 MF1 (docs/27 Decision 10) — the production
 //                             fMP4 muxer's output must PLAY in a real Chrome
@@ -97,6 +107,9 @@ const OUT = join(HERE, process.env.GAWK_E2E_OUT_DIR ?? 'out');
 const EXTERNAL = process.argv.includes('--external');
 const BROWSER_BROADCAST = process.argv.includes('--browser-broadcast');
 const MUXER_CHECK = process.argv.includes('--muxer-check');
+// R74 (docs/76 item 43): the local relay switch. Delegated to pop-switch.mjs,
+// which needs a stack of its own (home with -pops, a linked PoP).
+const POP_SWITCH_CHECK = process.argv.includes('--pop-switch');
 // R28 (docs/33): the telemetry pass. Off by default — it starts a fourth
 // process and spends ~20 s of dwell waiting for a real batch to flush, so it
 // is its own CI step rather than a tax on every viewer run.
@@ -2044,6 +2057,15 @@ async function main() {
     cleanup();
     process.exit(1);
   }, WATCHDOG_MS);
+
+  // R74: the local relay switch runs as its own script, with its own stack.
+  if (POP_SWITCH_CHECK) {
+    const args = process.argv.slice(2).filter((a) => a !== '--pop-switch');
+    const r = spawnSync(process.execPath, [join(HERE, 'pop-switch.mjs'), ...args], { stdio: 'inherit' });
+    if (r.status !== 0) fail(`pop-switch.mjs failed (exit ${r.status ?? r.signal})`);
+    log('PASS');
+    return;
+  }
 
   // R22: the muxer check is self-contained — bundle, browser, verdict.
   if (MUXER_CHECK) {
