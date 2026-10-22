@@ -177,6 +177,8 @@ type Server struct {
 	offerer    atomic.Pointer[offererBox]
 	// popHome serves the /pop/* routes on a home with -pops (pop_routes.go).
 	popHome atomic.Pointer[popHomeBox]
+	// popMod is the R74 moderation reach (pop_moderation.go, telemetry.go).
+	popMod popModeration
 }
 
 // rejectedDraining rejects a new CONNECT with 503 once the drain has begun,

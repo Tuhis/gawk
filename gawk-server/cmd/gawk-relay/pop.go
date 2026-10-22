@@ -34,10 +34,13 @@ func popPart(r *Relay) ([]func(ctx context.Context, w serve.Wired) error, []func
 		w.Server.SetLocalRelay(popLink)
 		return nil
 	}
-	run := func(ctx context.Context, _ serve.Wired) error {
+	run := func(ctx context.Context, w serve.Wired) error {
 		if popLink == nil {
 			return nil
 		}
+		// Home's forwarded bans into the relay's own ban set, and home's
+		// screening notice mirrored while linked (docs/76 §6.9).
+		popLink.EnableModeration(ctx, w.Bans)
 		return popLink.Run(ctx)
 	}
 	return []func(context.Context, serve.Wired) error{run}, []func(serve.Wired) error{pre}, nil
