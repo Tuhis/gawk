@@ -77,7 +77,8 @@ and, for the multi-pod cascade, `docs/22`.
 
 ### Relay invariants (rules, not narrative)
 - **Every new knob must be plumbed through `registryOptions` in
-  `cmd/gawk-server/main.go`** — flags + `GAWK_*` envs + Helm values. The R2
+  `internal/serve/options.go`** (shared by `gawk-server` and, since R74,
+  `gawk-relay`) — flags + `GAWK_*` envs + Helm values. The R2
   post-implementation review found a whole set of limits wired only into the
   test helper, so they never reached production.
 - **Never expose raw broadcast IDs, and never hash them unkeyed.** They are

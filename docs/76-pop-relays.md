@@ -813,7 +813,35 @@ PP8 measured the PoP's own carrier sender in R73's lab on 2026-10-22
 24. **Downlink budget**, optional, enforced at the PoP. Separately, the
     home fleet caps a PoP's concurrent downlink legs
     (`spec.limits.maxDownlinkStreams`, default 20) so a compromised PoP
-    cannot drain the fleet's egress.
+    cannot drain the fleet's egress. The cap counts distinct broadcasts,
+    so a second leg for one broadcast (a re-attach racing its
+    predecessor's end, possibly on another pod) fits.
+
+    **The cap is fleet-wide, not per pod.** The PoP's link-home pod
+    holds the one count. Any other pod serving `/pop/subscribe/{id}` takes
+    a slot there before it upgrades, over `/internal/pop/{name}?leg={id}`,
+    behind item 17's PSK and generation fence:
+    - `404`: the pod asked does not hold the link;
+    - `409`: an old generation;
+    - `429` `downlink-limit`: over the cap.
+
+    The slot *is* that internal session. Ending the leg frees it, and a pod
+    that dies without closing loses its slots at the edge idle timeout
+    (4 s).
+
+    The cap fails closed. No link, an unreachable link home, or a lease
+    still stale after 2 s each refuse the leg with the cap's `429`.
+
+    When the link moves, a live leg takes its slot again at the new link
+    home within 15 s, or ends with `4003` and re-dials into the cap. A
+    single-pod home counts locally.
+
+    Verified by `internal/popsrv/downlink_cap_test.go`:
+    - the 21st distinct broadcast is refused across three pods;
+    - a slot is freed when its leg ends;
+    - a crashed holder's slots expire;
+    - the cap fails closed with no link;
+    - slots follow the link.
 
 ### 6.7 Counts and clocks across the WAN
 
@@ -1673,13 +1701,13 @@ measured or passed.
 | **PP5** | Routing vectors; `e2e/pop-pinned.mjs` (headless Chromium 151.0.7922.34: with Local Network Access granted the view link decodes frames, without it the dial fails with `ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS`, and the landing save stores the hashes), wired into `ci.yml`; desktop and iOS-core pinning and the `gawk://server` link vectors; the Rust dial against a pinned relay (an in-test wtransport server, and the ignored real-relay suite CI runs); `0x18` vectors in all three copies | The iOS Swift wiring is unbuilt here; a device pass |
 | **PP6** | The CRD gated on `pops.enabled`; the pairing string shown once with only its hash stored; the `go list -deps` check in CI; the OpenAPI drift check; UI tests | PP1 sign-off on the admin pages |
 | **PP7** | Every row, in-process | — |
-| **PP8** | Every in-process row; `e2e/pop-uplink-full.mjs` (the fourth outside stream reads `4012` in-band) passes on Chrome for Testing 151.0.7922.34 but has no CI job; the uplink lab, §11.2 | **Time to first frame at 40 ms netem RTT: not measured** (no harness cell yet); the keyframe-priority cost was not measured separately |
-| **PP9** | Every in-process row | **The downlink beside a saturating TCP download: not measured** (needs root and netem) |
+| **PP8** | Every in-process row; `e2e/pop-uplink-full.mjs` (the fourth outside stream reads `4012` in-band) passes on Chrome for Testing 151.0.7922.34 and runs in `ci.yml`; the uplink lab, §11.2 | **Time to first frame at 40 ms netem RTT: not measured** (no harness cell yet); the keyframe-priority cost was not measured separately |
+| **PP9** | Every in-process row, and the leg cap across three pods (item 24) | **The downlink beside a saturating TCP download: not measured** (needs root and netem) |
 | **PP10** | Every row, in-process (`popsrv/bans_test.go`, `transport/pop_moderation_test.go`, `serve/pops_moderation_test.go`, gawk-admin's `popbroadcasts_test.go` and `BroadcastsView.test.tsx`) | — |
 | **PP11** | Vouched-only wall rooms, the vouched route, link-proxied room control, the local read-only wall with its resync, Hide/Show and `wall=hidden`, and `0x18`'s wall fields, in-process (`popsrv/wall_test.go`, `transport/room_link_test.go`), because the kind tier runs no `gawk-relay`; `rooms-assert` step 3b (a wall grants no attach, an attach secret gets `403`, an outsider's ordinary attach leaves it empty) | 3b has not run against a kind cluster here; "Party-only right now" checked end to end |
 | **PP12** | Reconciler tests against fake cert-manager and external-dns objects; the CSR, renewal and chain rules; the HTTPS UI; the DNS self-check | **One staging issuance on the reference deployment**; a phone loads the UI with no prompt (PP15) |
 | **PP13** | Every row, in Go tests | — |
-| **PP14** | Web unit tests; `e2e/pop-switch.mjs` (headless Chromium 151.0.7922.34, 2026-10-22, on a scratch merge made before Wave 3 was complete: granted → one switch, longest gap between drawn frames 432 ms; denied → stays on home with the note); the engine's `localrelay` tests and `relay_integration`'s pinned switch against the real relay; iOS-core `localrelay` tests | `pop-switch.mjs` re-run on the merged tree, and a CI job for it; Swift `LocalRelayTests` (first run: the `ios.yml` xcode job); the Apple prompts on device, Safari/iOS, Firefox and the headful Chrome prompt; the iOS room participant switch is not built |
+| **PP14** | Web unit tests; `e2e/pop-switch.mjs` (headless Chromium 151.0.7922.34, 2026-10-22, on a scratch merge made before Wave 3 was complete: granted → one switch, longest gap between drawn frames 432 ms; denied → stays on home with the note); the engine's `localrelay` tests and `relay_integration`'s pinned switch against the real relay; iOS-core `localrelay` tests | `pop-switch.mjs` re-run on the final tree (it runs in `ci.yml`, and passed on the post-Wave-3 tree before the review fixes); Swift `LocalRelayTests` (first run: the `ios.yml` xcode job); the Apple prompts on device, Safari/iOS, Firefox and the headful Chrome prompt; the iOS room participant switch is not built |
 | **PP15** | — | All of §12 |
 
 No Swift was compiled or run on this host, and neither was the Apple-only
@@ -1687,17 +1715,12 @@ No Swift was compiled or run on this host, and neither was the Apple-only
 
 **Where the build departs from the text above**, beyond the *Built* notes
 in §6 and §7:
-- **The downlink cap is per home pod.** `maxDownlinkStreams` counts
-  distinct broadcasts per PoP on each pod that serves the legs, not
-  fleet-wide. A PoP's legs to one broadcast count once, so a re-attach
-  that races its predecessor always fits. The refusal is `429` with
-  `Gawk-Reason: downlink-limit` (item 23).
 - **The PoP's downlink budget admits on measured ingress.** A new pull is
   admitted while the running pulls are below `maxStreams` and their
   measured 10 s ingress is below `maxMbps`. The candidate's own rate is
   unknown before it is pulled, so, unlike the uplink's item 27, it is not
-  added in. The console's lowered downlink budget is held in memory and
-  does not reach this admission yet.
+  added in. A budget the host lowers in the console reaches this
+  admission and the uplink's.
 - **The home mint redraws** with the refused hub removed, and answers
   `503` after 8 draws (item 14).
 - **A reservation always gets a waiting hub**, and the demand hook is a
