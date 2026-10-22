@@ -99,3 +99,38 @@ func TestTheEventContractIsCacheable(t *testing.T) {
 		}
 	}
 }
+
+// R74 (docs/76 §8): the served broadcast schemas declare the additive `pop`
+// (the PoP relay's name) and nothing address-shaped, so a subscriber that
+// validates against this deployment's contract accepts a PoP broadcast's
+// events and never learns where the venue is.
+func TestServedBroadcastSchemasNameThePopNotAnAddress(t *testing.T) {
+	h := newHarnessWithoutPostgres(t)
+	for _, typ := range []string{events.TypeBroadcastStarted, events.TypeBroadcastEnded,
+		events.TypeBroadcastPublisherAway, events.TypeBroadcastPublisherBack, events.TypeBroadcastViewers} {
+		status, body := h.raw(http.MethodGet, "/api/v1/schemas/events/"+events.SchemaFile(typ), nil)
+		if status != http.StatusOK {
+			t.Fatalf("GET %s = %d", typ, status)
+		}
+		var schema struct {
+			Properties map[string]any `json:"properties"`
+			Required   []string       `json:"required"`
+		}
+		if err := json.Unmarshal([]byte(body), &schema); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := schema.Properties["pop"]; !ok {
+			t.Errorf("%s does not declare pop", typ)
+		}
+		for _, r := range schema.Required {
+			if r == "pop" {
+				t.Errorf("%s requires pop; a home broadcast has none", typ)
+			}
+		}
+		for p := range schema.Properties {
+			if lp := strings.ToLower(p); strings.Contains(lp, "addr") || strings.HasSuffix(lp, "ip") || strings.Contains(lp, "remote") {
+				t.Errorf("%s declares %q, an address-shaped property", typ, p)
+			}
+		}
+	}
+}
