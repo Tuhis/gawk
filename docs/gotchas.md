@@ -2087,6 +2087,17 @@ entries still describe code `gawk-pubsim` runs (now
   enforces no resourceVersion CAS, so a fixture without the hand-rolled
   reactor (`installCAS` / `installRoomCAS`) last-writer-wins and hides
   exactly this. ([docs/44](44-rooms.md) §11.1)
+- **A chart Role's verbs must match the client call, and no fake checks
+  them.** `UpdateStatus` needs `update` on the `…/status` subresource,
+  `Patch(…, "status")` needs `patch`. The R74 relay chart granted
+  `pops/status` get/patch while `popsrc` wrote with `UpdateStatus`, so on
+  the first real cluster every pairing failed with a bare `503`; the fake
+  dynamic client and the in-process harness accept any verb, and the kind
+  tier runs no `gawk-relay`. `popsrc/rbac_test.go` now reads the chart's
+  rule and checks every verb the writer sends. On the cluster the error
+  is the relay's `pop pairing refused after upgrade` log line; and note
+  that `kubectl logs -l …` tails only 10 lines per pod unless given
+  `--tail=-1`. ([docs/76](76-pop-relays.md) §9)
 
 - **A guard that suppresses a doomed command also suppresses its
   rejection, and a rejection was the only thing wired to copy.** A

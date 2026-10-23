@@ -1569,7 +1569,8 @@ Credential invalidation goes through `spec` (item 9), so `gawk-admin` never
 touches the relays' fields. Live counts are not in status (API write
 amplification). `gawk-admin` reads them from a new
 `/internal/admin/pops` relay route, alongside the existing relay scrape.
-RBAC: relays get `pops` get/list/watch and `pops/status` patch. `gawk-admin`
+RBAC: relays get `pops` get/list/watch and `pops/status` get/update (their
+writes are `resourceVersion`-fenced `UpdateStatus` calls). `gawk-admin`
 gets `pops` CRUD **and `pops/status` patch**, because with a status
 subresource the API server ignores status written through the main
 resource. It also gets `certificaterequests` create/get and `dnsendpoints`
@@ -1577,9 +1578,12 @@ CRUD.
 
 *Built:* in the relay chart the `Pop` CRD (`templates/crd-pop.yaml`)
 renders with `pops.enabled`, and the `-pops` Role (`pops` get/list/watch,
-`pops/status` get/patch) and the `GAWK_POP*` envs with `pops.enabled` and
+`pops/status` get/update) and the `GAWK_POP*` envs with `pops.enabled` and
 `config.clusterMode`; the chart refuses `pops.enabled` without
-`clusterMode`. `-pops-file` is for non-Kubernetes deployments and is not a
+`clusterMode`. 0.36.0 shipped `pops/status` get/patch, so every status
+write was forbidden and every pairing ended in a bare `503`;
+`popsrc/rbac_test.go` now checks the rule against the writer's calls,
+because the fakes never check RBAC and the kind tier runs no `gawk-relay`. `-pops-file` is for non-Kubernetes deployments and is not a
 chart value, as `-rooms-file` is not. The CRD keeps the name a DNS-1123
 label with a CEL rule, because the name is the `gawk/pop` label value. In
 the gawk-admin chart, `pops.enabled` requires `pops.homeEndpoint` and
