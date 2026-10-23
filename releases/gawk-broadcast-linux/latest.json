@@ -1,66 +1,66 @@
 {
   "asset": {
     "name": "gawk-broadcast-linux-x86_64.tar.gz",
-    "sha256": "297c48b48c7969bfae772bbe6c6acfbb526abb875c0d871aebea2afc58800b03",
-    "size": 18136567,
-    "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v2.10.0/gawk-broadcast-linux-x86_64.tar.gz"
+    "sha256": "bcc0570b7d264750aa380dc628abdc7020cf0d22a95365ceb6fcb72483de64d6",
+    "size": 18374304,
+    "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v2.11.0/gawk-broadcast-linux-x86_64.tar.gz"
   },
   "assets": {
     "BUILD-INFO-linux.txt": {
-      "sha256": "33b7b4203906ca86ffb0c25eba5a8b9c180be7e9da1673673ce62e75e7689fbf",
+      "sha256": "b5c7cc5646ac0f46bbbc51c99fea0283636c5d74a4e357cf9bec776372b1f88a",
       "size": 3073,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v2.10.0/BUILD-INFO-linux.txt"
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v2.11.0/BUILD-INFO-linux.txt"
     },
     "BUILD-INFO.txt": {
-      "sha256": "ab5704b787aa68cd12d34b5883ed7b6fa8920972744de8a74c81ec1b64d97280",
+      "sha256": "b0f568555864c528311dad9a30309e989936a7a0ecb82dc8efd8c70bd8899602",
       "size": 422,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v2.10.0/BUILD-INFO.txt"
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v2.11.0/BUILD-INFO.txt"
     },
     "LICENSE": {
       "sha256": "31d34ab1effd9d99ecbc4feeb527b28d4624ddeaff93fd86c136fa0934ddce4f",
       "size": 11344,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v2.10.0/LICENSE"
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v2.11.0/LICENSE"
     },
     "SHA256SUMS": {
-      "sha256": "124c15ed4866ff9202788f70fa05e9b02ce8473c07a71fbe559ed3e011893fad",
+      "sha256": "4b64707118af508af84d2dbc822eb6fff9ecc1bfaccaf3bf0420a2282d6db35b",
       "size": 741,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v2.10.0/SHA256SUMS"
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v2.11.0/SHA256SUMS"
     },
     "SHA256SUMS.minisig": {
-      "sha256": "ebc4b7ac2e9cf8959a8a717f3982dab5211b1dd23f65dfeb3c9f94fdce54b161",
+      "sha256": "fd47bc6bf9ee1288136fb143013a83ade2ab573b8b251b55259dffdb54edb591",
       "size": 291,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v2.10.0/SHA256SUMS.minisig"
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v2.11.0/SHA256SUMS.minisig"
     },
     "THIRD-PARTY-NOTICES-linux.md": {
-      "sha256": "8d8e2c4a76be0f4db7251c511f212dc0a9cc5af2a04e86f201fcf255ece0e98b",
+      "sha256": "5b16839a1e74c2a2a01ca52a072bd743c4c5303768c980a146bf0df782ca776c",
       "size": 318982,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v2.10.0/THIRD-PARTY-NOTICES-linux.md"
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v2.11.0/THIRD-PARTY-NOTICES-linux.md"
     },
     "THIRD-PARTY-NOTICES.md": {
-      "sha256": "194f8501168798a1aaeec7b553d5fb13ab6177780b5cf4c4b9d3900737e616fa",
+      "sha256": "714caf8f2dd03b04d5395d6f3d99ffadaf27334884a9755d1df81be543f71f94",
       "size": 321679,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v2.10.0/THIRD-PARTY-NOTICES.md"
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v2.11.0/THIRD-PARTY-NOTICES.md"
     },
     "gawk-broadcast-linux-x86_64.tar.gz": {
-      "sha256": "297c48b48c7969bfae772bbe6c6acfbb526abb875c0d871aebea2afc58800b03",
-      "size": 18136567,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v2.10.0/gawk-broadcast-linux-x86_64.tar.gz"
+      "sha256": "bcc0570b7d264750aa380dc628abdc7020cf0d22a95365ceb6fcb72483de64d6",
+      "size": 18374304,
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v2.11.0/gawk-broadcast-linux-x86_64.tar.gz"
     },
     "gawk-broadcast-windows-x86_64.exe": {
-      "sha256": "c19cb2207cff8462df40682bae76a3bf1e8e9adcb6bd8818e20787930d2ed6e6",
-      "size": 43523584,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v2.10.0/gawk-broadcast-windows-x86_64.exe"
+      "sha256": "07db66877baa194ece2a0f978e75733dbb8f12ff34cc02e8360cd24d29120212",
+      "size": 44294144,
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v2.11.0/gawk-broadcast-windows-x86_64.exe"
     },
-    "gawk-broadcast_2.10.0_amd64.deb": {
-      "sha256": "1301fe30b43bdb0068e8c1251dc6f58fab883c978bc49132f6255805f4baafbb",
-      "size": 12095340,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v2.10.0/gawk-broadcast_2.10.0_amd64.deb"
+    "gawk-broadcast_2.11.0_amd64.deb": {
+      "sha256": "20ebe47f01a20d2c7862892ab4ed9d8701a520980a76129dd1c861c669cc2dbf",
+      "size": 12238992,
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v2.11.0/gawk-broadcast_2.11.0_amd64.deb"
     }
   },
   "component": "gawk-broadcast-linux",
-  "published_at": "2026-10-22T18:09:16Z",
-  "release_url": "https://github.com/Tuhis/gawk/releases/tag/gawk-broadcast-desktop/v2.10.0",
+  "published_at": "2026-10-23T12:14:58Z",
+  "release_url": "https://github.com/Tuhis/gawk/releases/tag/gawk-broadcast-desktop/v2.11.0",
   "schema": 1,
-  "tag": "gawk-broadcast-desktop/v2.10.0",
-  "version": "2.10.0"
+  "tag": "gawk-broadcast-desktop/v2.11.0",
+  "version": "2.11.0"
 }
