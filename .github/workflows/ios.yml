@@ -338,8 +338,10 @@ jobs:
         working-directory: gawk-ios/rust
         run: cargo build -p gawk-devpub
 
-      # The first Simulator of this kind on the pinned iOS 27 runtime; device
-      # names vary between runner images.
+      # A Pro Simulator of this kind on the pinned iOS 27 runtime; device names
+      # vary between runner images. Only a plain Pro model: the UI tests'
+      # layout assertions assume its screen, and images carrying the iOS 27.1
+      # runtime list "iPhone Duo" ahead of it, which failed nine of them.
       - name: Pick a simulator
         env:
           DEVICE: ${{ matrix.device }}
@@ -347,14 +349,16 @@ jobs:
           udid=$(xcrun simctl list devices available -j | python3 -c '
           import json, os, sys
           devs = json.load(sys.stdin)["devices"]
+          kind = os.environ["DEVICE"]
           for rt in sorted(devs, reverse=True):
               if "iOS-27" not in rt:
                   continue
               for d in devs[rt]:
-                  if d["name"].startswith(os.environ["DEVICE"]):
+                  n = d["name"]
+                  if n.startswith(kind) and " Pro" in n and "Max" not in n:
                       print(d["udid"]); sys.exit(0)
           sys.exit(1)
-          ') || { echo "::error::no $DEVICE simulator on an iOS 27 runtime"; exit 1; }
+          ') || { echo "::error::no $DEVICE Pro simulator on an iOS 27 runtime"; exit 1; }
           echo "SIM_UDID=$udid" >> "$GITHUB_ENV"
           xcrun simctl list devices available | grep "$udid"
 
