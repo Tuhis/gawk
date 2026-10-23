@@ -194,13 +194,33 @@ type fakeCarrierStream struct {
 	cancelled bool
 	cancel    chan struct{}
 	once      sync.Once
+	// dlChanged is closed (and cleared) by every SetWriteDeadline, so a
+	// Write blocked on carBlock re-reads its deadline, as a real SendStream's
+	// blocked Write does. The R74 leg writer abandons a write blocked across
+	// a rotation that way (docs/76 item 18, F10).
+	dlChanged chan struct{}
 }
 
 func (c *fakeCarrierStream) SetWriteDeadline(t time.Time) error {
 	c.mu.Lock()
 	c.deadline = t
+	if c.dlChanged != nil {
+		close(c.dlChanged)
+		c.dlChanged = nil
+	}
 	c.mu.Unlock()
 	return nil
+}
+
+// deadlineWatch returns the current deadline and a channel the next
+// SetWriteDeadline closes.
+func (c *fakeCarrierStream) deadlineWatch() (time.Time, <-chan struct{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.dlChanged == nil {
+		c.dlChanged = make(chan struct{})
+	}
+	return c.deadline, c.dlChanged
 }
 
 func (c *fakeCarrierStream) Write(p []byte) (int, error) {
@@ -211,22 +231,27 @@ func (c *fakeCarrierStream) Write(p []byte) (int, error) {
 	if videoOnly && !carrierWriteIsVideoRecord(p) {
 		block = nil
 	}
-	if block != nil {
-		c.mu.Lock()
-		deadline := c.deadline
-		c.mu.Unlock()
+	for block != nil {
+		deadline, changed := c.deadlineWatch()
 		var timeout <-chan time.Time
+		var t *time.Timer
 		if !deadline.IsZero() {
-			t := time.NewTimer(time.Until(deadline))
-			defer t.Stop()
+			t = time.NewTimer(time.Until(deadline))
 			timeout = t.C
 		}
 		select {
-		case <-c.parent.carBlock:
+		case <-block:
+			block = nil
 		case <-c.cancel:
 			return 0, errors.New("carrier stream cancelled")
 		case <-timeout:
 			return 0, errors.New("carrier write deadline exceeded")
+		case <-changed:
+			// A new deadline: re-read it. One in the past fails the write at
+			// once, as quic-go's SetWriteDeadline does for a blocked Write.
+		}
+		if t != nil {
+			t.Stop()
 		}
 	}
 	select {

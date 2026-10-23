@@ -123,7 +123,8 @@ lands in all three in one PR, or it does not land.
 not only at test time.** `gawk-admin` compiles the relay's public packages in
 through the repo-root `replace`, but release-please attributes commits **by
 path**: a change under `gawk-server/moderation/`, `gawk-server/oidcroles/`,
-`gawk-server/adminapi/` or `gawk-server/rooms/` (or to the `/internal/admin/*` response shapes those
+`gawk-server/adminapi/`, `gawk-server/rooms/` or `gawk-server/pops/` (the R74
+`Pop` CR types and their pairing, credential and CSR rules, docs/76) (or to the `/internal/admin/*` response shapes those
 types define) ships in the next *relay* release and never cuts a `gawk-admin`
 one — so the **deployed** pair runs two different builds of the "shared"
 package until some unrelated admin change ships, and a semantic drift there

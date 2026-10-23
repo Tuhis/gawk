@@ -28,8 +28,16 @@ pub const PROBE_IDENTITY_DEADLINE: Duration = Duration::from_millis(1500);
 /// How long an echo may take after the last send before it is lost.
 pub const PROBE_ECHO_WAIT: Duration = Duration::from_millis(1000);
 
-/// The identity stream is one small message; anything bigger is not it.
-const IDENTITY_READ_LIMIT: usize = 512;
+/// The largest server message the probe reads: a `LocalRelayOffer` with four
+/// full candidates is about 1.4 KB; anything bigger is none of ours.
+const STREAM_READ_LIMIT: usize = 2048;
+
+/// How long after the echoes finish (or the last stream landed, whichever is
+/// later) the probe still waits for another server stream once it has the
+/// identity. Home sends the offer beside the identity, not after it, so this
+/// only absorbs their scheduling; a relay that sends nothing more costs this
+/// and no more (R74, docs/76 item 43.3: the offer must reach the Ready page).
+pub const PROBE_STREAM_GRACE: Duration = Duration::from_millis(300);
 
 /// Marks the probe's datagrams; the byte after it is the sample's index.
 const PROBE_MAGIC: &[u8] = b"gawk-probe";
@@ -45,10 +53,18 @@ pub enum ProbeResult {
     /// relay automatically screens streams, which the window marks on the
     /// server's row in Settings (§9.8). False when the identity was absent or
     /// late.
+    ///
+    /// R74 (docs/76 §6.12): `local` is a PoP's `LocalRelayInfo` (`0x18`)
+    /// when the probed relay is one, and `offer` a home relay's
+    /// `LocalRelayOffer` (`0x19`) when it suggests a party's local relay to
+    /// this client. Both ride the same session as the identity, in no fixed
+    /// order, and each is `None` when absent, malformed or late.
     Ok {
         rtt_ms: u32,
         name: Option<String>,
         screens: bool,
+        local: Option<crate::localrelay::LocalRelay>,
+        offer: Option<crate::localrelay::Offer>,
     },
     /// Nothing usable came back.
     Failed,
@@ -68,12 +84,43 @@ pub fn echo_url(relay_url: &str) -> Result<String, String> {
 
 /// Probes the relay at `relay_url`: dial `/echo`, then [`probe_session`].
 pub async fn probe(relay_url: &str, origin: &str, insecure: bool) -> ProbeResult {
+    probe_pinned(relay_url, origin, insecure, &[]).await
+}
+
+/// [`probe`] of a server pinned to `pins` (R74, docs/76 §6.1 item 5): the
+/// dial accepts only a certificate hashing to one of them, and an empty
+/// list is the system store ([`crate::transport::dial_pinned`]).
+pub async fn probe_pinned(
+    relay_url: &str,
+    origin: &str,
+    insecure: bool,
+    pins: &[crate::transport::CertHash],
+) -> ProbeResult {
+    probe_home(relay_url, origin, insecure, pins, false).await
+}
+
+/// [`probe_pinned`] of a home relay by a client that follows local-relay
+/// offers (R74, docs/76 item 43.7): its `/echo` carries `lr=1`, the same as
+/// every other CONNECT it makes to home, and the result carries home's
+/// offer when there is one.
+pub async fn probe_home(
+    relay_url: &str,
+    origin: &str,
+    insecure: bool,
+    pins: &[crate::transport::CertHash],
+    follow_offers: bool,
+) -> ProbeResult {
     let Ok(url) = echo_url(relay_url) else {
         return ProbeResult::Failed;
     };
+    let url = if follow_offers {
+        crate::localrelay::with_follow_offers(&url)
+    } else {
+        url
+    };
     let dialed = tokio::time::timeout(
         PROBE_CONNECT_TIMEOUT,
-        crate::transport::dial(&url, origin, insecure),
+        crate::transport::dial_pinned(&url, origin, insecure, pins),
     )
     .await;
     match dialed {
@@ -88,19 +135,98 @@ pub async fn probe(relay_url: &str, origin: &str, insecure: bool) -> ProbeResult
 /// tests script.
 pub async fn probe_session(relay: Arc<dyn RelaySession>) -> ProbeResult {
     let ready = Instant::now();
-    let (rtts, identity) = tokio::join!(
-        measure(relay.clone()),
-        read_identity(relay.clone(), ready + PROBE_IDENTITY_DEADLINE)
-    );
+    let deadline = ready + PROBE_IDENTITY_DEADLINE;
+    let found = std::sync::Mutex::new(Found::default());
+    let landed = tokio::sync::Notify::new();
+    // The reader is one future for the whole probe: an accept is never
+    // dropped half-way between two waits, so no stream is lost.
+    let reader = async {
+        read_streams(relay.clone(), &found, &landed).await;
+        std::future::pending::<()>().await
+    };
+    let control = async {
+        let rtts = measure(relay.clone()).await;
+        let echoes_done = Instant::now();
+        loop {
+            let stop = {
+                let f = found.lock().unwrap();
+                match (&f.identity, f.last_at) {
+                    (Some(_), Some(last)) => {
+                        deadline.min(echoes_done.max(last) + PROBE_STREAM_GRACE)
+                    }
+                    _ => deadline,
+                }
+            };
+            tokio::select! {
+                _ = tokio::time::sleep_until(stop) => break,
+                _ = landed.notified() => {}
+            }
+        }
+        rtts
+    };
+    let rtts = tokio::select! {
+        rtts = control => rtts,
+        _ = reader => unreachable!("the reader never finishes"),
+    };
     relay.close();
-    let (name, screens) = identity.unwrap_or_default();
+    let found = found.into_inner().unwrap_or_else(|e| e.into_inner());
+    let (name, screens) = found.identity.unwrap_or_default();
     match median(rtts) {
         Some(rtt) => ProbeResult::Ok {
             rtt_ms: u32::try_from(rtt.as_millis()).unwrap_or(u32::MAX),
             name,
             screens,
+            local: found.local,
+            offer: found.offer,
         },
         None => ProbeResult::Failed,
+    }
+}
+
+/// What the server's uni streams said so far.
+#[derive(Default)]
+struct Found {
+    identity: Option<(Option<String>, bool)>,
+    local: Option<crate::localrelay::LocalRelay>,
+    offer: Option<crate::localrelay::Offer>,
+    /// When the last stream was read.
+    last_at: Option<Instant>,
+}
+
+/// Reads every server uni stream until the session ends, each classified by
+/// its type byte, never by its order (R74): the RelayIdentity (`0x11`) for
+/// the sanitized name and the screening notice, a PoP's `0x18` and a home's
+/// `0x19`. A relay that predates them, or sends them late, is still a
+/// reachable relay: this only ever costs what they carry. A malformed or
+/// unknown stream is skipped.
+async fn read_streams(
+    relay: Arc<dyn RelaySession>,
+    found: &std::sync::Mutex<Found>,
+    landed: &tokio::sync::Notify,
+) {
+    while let Ok(mut stream) = relay.accept_uni().await {
+        let Ok(msg) = stream.read_to_end(STREAM_READ_LIMIT).await else {
+            continue;
+        };
+        {
+            let mut f = found.lock().unwrap_or_else(|e| e.into_inner());
+            match msg.get(1).copied() {
+                Some(wire::TYPE_RELAY_IDENTITY) if f.identity.is_none() => {
+                    if let Ok(id) = wire::parse_relay_identity(&msg) {
+                        f.identity = Some((sanitize_name(id.name), id.screens()));
+                    }
+                }
+                Some(wire::TYPE_LOCAL_RELAY_INFO) if f.local.is_none() => {
+                    f.local = crate::localrelay::LocalRelay::parse(&msg);
+                }
+                Some(wire::TYPE_LOCAL_RELAY_OFFER) if f.offer.is_none() => {
+                    f.offer = crate::localrelay::Offer::parse(&msg);
+                }
+                _ => {}
+            }
+            f.last_at = Some(Instant::now());
+        }
+        landed.notify_one();
     }
 }
 
@@ -152,22 +278,6 @@ fn sample_index(d: &[u8]) -> Option<usize> {
     }
 }
 
-/// Reads the RelayIdentity, until `deadline`: the sanitized name and the
-/// screening notice. A relay that predates it, or one that sends it late, is
-/// still a reachable relay: this only ever costs the name and the notice.
-async fn read_identity(
-    relay: Arc<dyn RelaySession>,
-    deadline: Instant,
-) -> Option<(Option<String>, bool)> {
-    let read = async {
-        let mut stream = relay.accept_uni().await.ok()?;
-        let msg = stream.read_to_end(IDENTITY_READ_LIMIT).await.ok()?;
-        let id = wire::parse_relay_identity(&msg).ok()?;
-        Some((sanitize_name(id.name), id.screens()))
-    };
-    tokio::time::timeout_at(deadline, read).await.ok().flatten()
-}
-
 /// The operator's display name as the window may show it: control and
 /// bidirectional-override characters dropped (a name must not reorder the
 /// host printed beside it), whitespace trimmed, empty as none.
@@ -211,6 +321,11 @@ mod tests {
             "https://relay.example:4433/echo"
         );
         assert!(echo_url("http://relay.example:4433").is_err());
+        // R74: a client that follows offers says so on home's /echo too.
+        assert_eq!(
+            crate::localrelay::with_follow_offers(&echo_url("https://h:4433/x?y=z").unwrap()),
+            "https://h:4433/echo?lr=1"
+        );
         assert!(echo_url("not a url").is_err());
     }
 

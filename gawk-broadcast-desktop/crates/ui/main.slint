@@ -1490,6 +1490,60 @@ component ServerStrip inherits Rectangle {
     }
 }
 
+// R74 (docs/76 §7.3): a party's local relay, as one line under the header:
+// the chip "● Assembly 2026 · local relay" with "Use gawk.ioio.fi instead"
+// before going live, and "Live on Assembly 2026's local relay" with the
+// party wall's Hide or Show while live. Layout is PP1's to refine.
+component LocalRelayStrip inherits Rectangle {
+    in property <string> line;
+    in property <string> detail;
+    in property <string> action;
+    in property <bool> enabled: true;
+    callback act;
+    vertical-stretch: 0;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: T.accent-line;
+    background: T.accent-soft;
+    accessible-role: text;
+    accessible-label: self.detail == "" ? self.line : self.line + ". " + self.detail;
+    HorizontalLayout {
+        padding: 8px;
+        padding-left: 12px;
+        spacing: 10px;
+        cross-axis-alignment: center;
+        Rectangle {
+            width: 8px;
+            height: 8px;
+            border-radius: 4px;
+            background: T.ok;
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 1px;
+            Text {
+                text: root.line;
+                color: T.text;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+            if root.detail != "": Text {
+                text: root.detail;
+                color: T.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+        }
+        if root.action != "": RowLink {
+            text: root.action;
+            enabled: root.enabled;
+            clicked => {
+                root.act();
+            }
+        }
+    }
+}
+
 // docs/66 D4: a problem viewers feel right now, as one line pinned under the
 // header, with its fix. Never dismissible (docs/57 OD7).
 component AlertStrip inherits Rectangle {
@@ -2122,6 +2176,20 @@ export component MainWindow inherits Window {
     // never on the broadcast page, and never a gate.
     in property <bool> server-screens: false;
 
+    // ----- a party's local relay (R74, docs/76 §6.12, §7.3) -----
+    // The chip before going live: "Assembly 2026 · local relay" (empty: none).
+    in property <string> local-relay-chip: "";
+    // The home server's host, for "Use gawk.ioio.fi instead".
+    in property <string> local-relay-home: "";
+    // "Live on Assembly 2026's local relay", or an offer that came while
+    // live on home ("… Your next broadcast will use it.").
+    in property <string> local-relay-line: "";
+    // 0 no party wall, 1 on it (Hide), 2 hidden from it (Show).
+    in property <int> wall-state: 0;
+    in property <bool> wall-busy: false;
+    callback local-relay-opt-out();
+    callback wall-toggle();
+
     // ----- paused (docs/64 D9, D11) -----
     in property <bool> paused: false;
     in property <string> paused-elapsed: "";
@@ -2693,6 +2761,36 @@ export component MainWindow inherits Window {
                 mono-font: root.mono-font;
                 change => {
                     root.page = 2;
+                }
+            }
+        }
+
+        // R74 (docs/76 §7.3): the local relay the next broadcast uses, and
+        // the way back to home.
+        if root.page == 0 && root.local-relay-chip != "": HorizontalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-bottom: 4px;
+            LocalRelayStrip {
+                line: root.local-relay-chip;
+                action: "Use " + root.local-relay-home + " instead";
+                act => {
+                    root.local-relay-opt-out();
+                }
+            }
+        }
+        // While live: where, and the party wall's Hide or Show.
+        if root.page == 0 && root.local-relay-line != "": HorizontalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-bottom: 4px;
+            LocalRelayStrip {
+                line: root.local-relay-line;
+                detail: root.wall-state == 1 ? "On the party wall" : root.wall-state == 2 ? "Hidden from the party wall" : "";
+                action: root.wall-state == 1 ? "Hide" : root.wall-state == 2 ? "Show" : "";
+                enabled: !root.wall-busy;
+                act => {
+                    root.wall-toggle();
                 }
             }
         }

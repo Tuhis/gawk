@@ -10,6 +10,7 @@ struct PlayerScreen: View {
     let linkRelay: String?
     @Environment(AppSettings.self) private var settings
     @Environment(AppRouter.self) private var router
+    @Environment(LocalRelaySwitcher.self) private var switcher
     @Environment(\.scenePhase) private var scenePhase
     @State private var model: WatchModel?
     @State private var controls = ControlsVisibility()
@@ -44,7 +45,10 @@ struct PlayerScreen: View {
         .statusBarHidden(!controls.visible)
         .persistentSystemOverlays(controls.visible ? .automatic : .hidden)
         .onAppear(perform: start)
-        .onDisappear { model?.stop() }
+        .onDisappear {
+            model?.stop()
+            switcher.onSwitch = nil
+        }
         .onChange(of: model?.isLive ?? false) { _, live in controls.pinned = !live || showStats }
         .onChange(of: showStats) { _, open in controls.pinned = open || !(model?.isLive ?? false) }
         .onChange(of: scenePhase) { _, phase in
@@ -63,8 +67,29 @@ struct PlayerScreen: View {
 
     private func start() {
         guard model == nil else { return }
-        let m = WatchModel(
-            code: code, relayUrl: linkRelay ?? settings.relayURL, insecure: settings.insecure)
+        let m: WatchModel
+        if linkRelay == nil || linkRelay == settings.relayURL {
+            // R74 (docs/76 §6.12): on home, a held party relay takes the
+            // player at once; otherwise it watches home with lr=1, and a
+            // fresh offer on its session switches it, once.
+            let t = switcher.target(home: settings.relayURL, homeCertHashes: settings.relayCertHashes)
+            m = WatchModel(
+                code: code, relayUrl: t.url, insecure: t.pop == nil ? settings.insecure : false,
+                certHashes: t.certHashes, followOffers: t.followOffers, localRelay: t.pop,
+                home: WatchModel.Endpoint(
+                    url: settings.relayURL, insecure: settings.insecure, certHashes: settings.relayCertHashes))
+            m.onOffer = { [switcher, home = settings.relayURL] offer in
+                switcher.consider(offer, live: false, home: home)
+            }
+            m.onLocalRelayFailed = { [switcher] in switcher.refused() }
+            switcher.onSwitch = { [weak m, home = settings.relayURL] pop in
+                if pop.home == home { m?.switchTo(pop) }
+            }
+        } else {
+            m = WatchModel(
+                code: code, relayUrl: linkRelay ?? settings.relayURL, insecure: settings.insecure,
+                certHashes: settings.certHashes(for: linkRelay ?? settings.relayURL))
+        }
         model = m
         controls.pinned = true
         m.watch()
@@ -131,8 +156,8 @@ struct PlayerScreen: View {
         switch model.status {
         case .live:
             LiveChip().accessibilityIdentifier("player.live")
-        case .reconnecting(_, _, let draining):
-            ReconnectingChip(text: WatchStatusText.reconnecting(draining: draining))
+        case .reconnecting(_, _, let draining, let partyFull):
+            ReconnectingChip(text: WatchStatusText.reconnecting(draining: draining, partyFull: partyFull))
                 .accessibilityIdentifier("player.reconnecting")
         default:
             EmptyView()

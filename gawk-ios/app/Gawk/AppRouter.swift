@@ -32,7 +32,7 @@ final class AppRouter {
     /// What D21 is asking about: a screen, or a typed code still to look up.
     enum Pending: Equatable {
         case screen(Screen)
-        case join(code: String, relay: String, insecure: Bool)
+        case join(code: String, relay: String, insecure: Bool, certHashes: [String] = [])
     }
 
     /// What a `gawk://broadcast` link fills in on Broadcast (docs/68 D4):
@@ -41,6 +41,17 @@ final class AppRouter {
         var room: String?
         var nick: String?
         var relay: String?
+    }
+
+    /// A `gawk://server` link (R74, docs/76 §6.1 item 5) waiting for the
+    /// user to add it: a server to save and select, named by its label or
+    /// its URL, pinned to `certHashes` when it carries any. Nothing is
+    /// saved until Settings asks and the user agrees
+    /// (`AppSettings.adoptServer`).
+    struct ServerOffer: Equatable {
+        var name: String
+        var url: String
+        var certHashes: [String]
     }
 
     var tab: Tab = .watch
@@ -58,6 +69,8 @@ final class AppRouter {
     /// The quiet line after a link, naming what it left out (docs/68 D1).
     var linkNotice: String?
     var broadcastPrefill: BroadcastPrefill?
+    /// The latest `gawk://server` link's server, for Settings to offer.
+    var serverOffer: ServerOffer?
 
     /// Whether a broadcast is up; set by the root view from the session.
     var isBroadcasting = false
@@ -82,12 +95,12 @@ final class AppRouter {
 
     /// The Watch box's Join: a typed code is a room or a broadcast (D4).
     /// While live, D21 asks before anything is dialed.
-    func join(code: String, relay: String, insecure: Bool) {
+    func join(code: String, relay: String, insecure: Bool, certHashes: [String] = []) {
         guard BroadcastCode.isValid(code), resolving == nil else { return }
         if isBroadcasting {
-            confirmWhileLive = .join(code: code, relay: relay, insecure: insecure)
+            confirmWhileLive = .join(code: code, relay: relay, insecure: insecure, certHashes: certHashes)
         } else {
-            resolve(code: code, relay: relay, insecure: insecure)
+            resolve(code: code, relay: relay, insecure: insecure, certHashes: certHashes)
         }
     }
 
@@ -97,14 +110,15 @@ final class AppRouter {
         confirmWhileLive = nil
         switch pending {
         case .screen(let s): screen = s
-        case .join(let code, let relay, let insecure): resolve(code: code, relay: relay, insecure: insecure)
+        case .join(let code, let relay, let insecure, let certHashes):
+            resolve(code: code, relay: relay, insecure: insecure, certHashes: certHashes)
         case nil: break
         }
     }
 
-    private func resolve(code: String, relay: String, insecure: Bool) {
+    private func resolve(code: String, relay: String, insecure: Bool, certHashes: [String] = []) {
         resolving = code
-        let start = CoreRoomProbe.starter(relay: relay, insecure: insecure)
+        let start = CoreRoomProbe.starter(relay: relay, insecure: insecure, certHashes: certHashes)
         Task { [weak self] in
             let target = await JoinResolver.resolve(code: code, start: start)
             guard let self, self.resolving == code else { return }
@@ -117,7 +131,8 @@ final class AppRouter {
     }
 
     /// A `gawk://` link (K8): `watch` opens the player, `room` the room
-    /// player, `broadcast` fills Broadcast in and starts nothing. A link
+    /// player, `broadcast` fills Broadcast in and starts nothing, `server`
+    /// (R74) opens Settings with the server to add. A link
     /// names its server completely: no `relay=` is the default fleet, never
     /// the server picked in Settings (docs/68 D1).
     func open(url: URL) {
@@ -139,6 +154,14 @@ final class AppRouter {
         case .broadcast(let room, let nick, let relay):
             tab = .broadcast
             broadcastPrefill = BroadcastPrefill(room: room, nick: nick, relay: Self.chip(for: relay))
+        case .server(let relay, let certHashes, let label):
+            // Never under a live broadcast: its server doesn't change.
+            if isBroadcasting {
+                linkNotice = "This link is for \(relay). End the broadcast to switch server."
+                return
+            }
+            tab = .settings
+            serverOffer = ServerOffer(name: label ?? relay, url: relay, certHashes: certHashes)
         }
     }
 

@@ -18,6 +18,7 @@ pub mod gate;
 #[cfg(feature = "self-update")]
 pub mod install;
 pub mod link;
+pub mod localrelay;
 pub mod lossnotice;
 pub mod media;
 pub mod notices;
@@ -212,7 +213,7 @@ pub fn parse_room_input(input: &str) -> Option<RoomInput> {
         let code = match link::parse(input).ok()?.link {
             link::Link::Room { code, .. } => code,
             link::Link::Broadcast { room, .. } => room?,
-            link::Link::Watch { .. } => return None,
+            link::Link::Watch { .. } | link::Link::Server { .. } => return None,
         };
         return Some(RoomInput { code, grant: None });
     }

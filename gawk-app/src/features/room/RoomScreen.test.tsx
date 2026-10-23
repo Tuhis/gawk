@@ -60,6 +60,7 @@ const { roomSessions, roomState, FakeRoomSession, viewerSessions, FakeViewerSess
 
   interface ViewerCbs {
     onConnected: () => void;
+    onReconnecting: (i: { attempt: number; delayMs: number; reason: string; closeCode?: number | null }) => void;
     onStats: (s: unknown) => void;
     onEnded: (reason: 'normal' | 'moderated') => void;
   }
@@ -101,6 +102,7 @@ import { LEAVE_DETACH_TIMEOUT_MS, RoomScreen, RoomView } from './RoomScreen';
 import { NARROW_QUERY } from '../../lib/useMediaMatch';
 import { useRoomStore } from '../../state/roomStore';
 import { useTransportStore } from '../../state/transportStore';
+import { resetSwitchForTest, setSwitchDepsForTest } from '../pop/switch';
 import {
   ROOM_CLIENT_WEB_VIEWER,
   ROOM_COMMAND_ATTACH,
@@ -246,6 +248,21 @@ describe('RoomScreen modes', () => {
     for (const t of tiles) expect(t.textContent).not.toMatch(/watching/);
     // The room key (never the code) is what tile telemetry is grouped by.
     expect(screen.getByTitle('Room code').textContent).toBe('AB2CD3');
+  });
+
+  // docs/76 item 35: a wall tile past the PoP's budget is refused with 4012
+  // and draws "Party-only right now" with its label, retrying every 20 s
+  // (ViewerSession), and joins when frames arrive.
+  it('a tile refused with 4012 reads "Party-only right now" with its label until frames arrive', async () => {
+    await joinAs();
+    await waitFor(() => expect(activeViewerIds()).toEqual(['AAAAAA', 'BBBBBB', 'CCCCCC']));
+    const alpha = viewerSessions.find((v) => v.id === 'AAAAAA')!;
+    act(() => alpha.cbs.onReconnecting({ attempt: 1, delayMs: 20_000, reason: 'full', closeCode: 4012 }));
+    const tile = screen.getAllByTestId('room-tile')[0];
+    expect(within(tile).getByText('Party-only right now')).toBeTruthy();
+    expect(tile.textContent).toContain('alpha');
+    act(() => alpha.cbs.onStats({ viewerCount: 2, framesCompleted: 4 }));
+    expect(within(tile).queryByText('Party-only right now')).toBeNull();
   });
 
   it('a number key focuses that POV; 0 returns to grid; neither fires while typing', async () => {
@@ -1105,5 +1122,55 @@ describe('the desktop handoff from a room (R67, docs/69 D1, D5)', () => {
     } finally {
       window.__GAWK_CONFIG__ = {};
     }
+  });
+});
+
+// R74 (docs/76 item 43.3): a room participant follows home's offer the way a
+// viewer does, through the reconnect path with the same code; lr=1 rides on
+// the CONNECT to home; a PoP that then fails the room session sends the tab
+// back home.
+describe('RoomScreen and local relays (R74)', () => {
+  const LAN = 'https://192.168.1.20:4433';
+  const OFFER = {
+    handle: 'pop-uid-1',
+    name: 'Assembly 2026',
+    validity: 3600,
+    candidates: [{ url: LAN, hashes: [] as Uint8Array[] }],
+  };
+  type PopOpts = { serverUrl?: string; followOffers?: boolean };
+  type PopCbs = { onLocalRelay?: (ev: unknown) => void };
+
+  beforeEach(() => {
+    resetSwitchForTest();
+    setSwitchDepsForTest({
+      probe: async () => ({ state: 'ok', rttMs: 1, identity: null }),
+      queryPermission: async () => 'granted',
+      isMac: () => false,
+    });
+    useTransportStore.getState().clearOfferOverride();
+  });
+  afterEach(() => {
+    resetSwitchForTest();
+    useTransportStore.getState().clearOfferOverride();
+  });
+
+  it('follows an offer with one redial of the same room on the PoP', async () => {
+    const first = await joinAs();
+    expect((first.opts as PopOpts).followOffers).toBe(true);
+    await act(async () => (first.cbs as PopCbs).onLocalRelay?.({ kind: 'offer', offer: OFFER }));
+    await waitFor(() => expect(roomSessions).toHaveLength(2));
+    expect((roomSessions[1].opts as PopOpts).serverUrl).toBe(LAN);
+    expect(roomSessions[1].code).toBe('AB2CD3');
+    expect((roomSessions[1].opts as PopOpts).followOffers).toBeFalsy();
+  });
+
+  it('a room session the PoP cannot serve sends the tab back home', async () => {
+    useTransportStore.getState().setOfferOverride(LAN, [], 'pop-uid-1', 'Assembly 2026');
+    const first = await joinAs();
+    expect((first.opts as PopOpts).serverUrl).toBe(LAN);
+    act(() => first.cbs.onError({ kind: 'lost', message: 'reconnect budget spent' }));
+    await waitFor(() => expect(roomSessions).toHaveLength(2));
+    expect((roomSessions[1].opts as PopOpts).serverUrl).not.toBe(LAN);
+    expect(useTransportStore.getState().resolvedSource).not.toBe('pop');
   });
 });

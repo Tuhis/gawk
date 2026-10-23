@@ -3,9 +3,10 @@ import styles from './room.module.css';
 import { GlassPanel } from '../../ui/GlassPanel';
 import { RoomSession } from '../../transport/room-session';
 import { ROOM_CLIENT_WEB_VIEWER } from '../../transport/wire';
-import { useTransportStore } from '../../state/transportStore';
+import { selectCertHashList, useTransportStore } from '../../state/transportStore';
 import { relayQuerySuffix } from '../../lib/shareLink';
 import { log } from '../../lib/logger';
+import { willFollowOffers } from '../pop/switch';
 
 // `#/join/<code>` — a typed six-character code that is
 // either a room or a broadcast. The relay is HTTP/3-only, so there is no
@@ -19,7 +20,7 @@ import { log } from '../../lib/logger';
 // (with the remembered nickname); the empty grace covers the gap.
 export function JoinResolver({ code }: { code: string }) {
   const serverUrl = useTransportStore((s) => s.serverUrl);
-  const certHashHex = useTransportStore((s) => s.certHashHex);
+  const certHashHex = useTransportStore(selectCertHashList);
   const [note, setNote] = useState<string | null>(null);
 
   useEffect(() => {
@@ -32,7 +33,15 @@ export function JoinResolver({ code }: { code: string }) {
       window.location.replace(`${window.location.pathname}${window.location.search}${hash}${suffix}`);
     };
     const session = new RoomSession(
-      { serverUrl, certHashHex, target: { kind: 'join', code }, nickname: '', clientKind: ROOM_CLIENT_WEB_VIEWER },
+      {
+        serverUrl,
+        certHashHex,
+        target: { kind: 'join', code },
+        nickname: '',
+        clientKind: ROOM_CLIENT_WEB_VIEWER,
+        // R74 (docs/76 item 43.7): lr=1 on every CONNECT to home.
+        followOffers: willFollowOffers(),
+      },
       {
         onConnected: () => {},
         onState: () => {

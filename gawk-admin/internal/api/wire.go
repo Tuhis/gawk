@@ -153,6 +153,9 @@ type broadcastJSON struct {
 	// docs/71 §9.4), which the portal pins to the top of the view. Absent
 	// when there is none, and always absent with screening off.
 	ContentFlag *contentFlagJSON `json:"contentFlag,omitempty"`
+	// Pop badges a party broadcast (R74, docs/76 §7.2): absent on every
+	// broadcast that did not start at a PoP.
+	Pop *broadcastPopJSON `json:"pop,omitempty"`
 }
 
 type deliveryJSON struct {
@@ -388,6 +391,11 @@ type meFeaturesJSON struct {
 	// Screening is R40's content flagging (docs/71 §9.4), default-off like
 	// rooms: with it off every screening route answers 404.
 	Screening bool `json:"screening"`
+	// Pops is R74's PoP management (docs/76 §7.2), default-off.
+	Pops bool `json:"pops"`
+	// PopNamedAddress says the named tier is configured (-pop-dns-zone and
+	// -pop-cert-issuer), so the wizard can offer a named address.
+	PopNamedAddress bool `json:"popNamedAddress"`
 }
 
 // broadcastsPageJSON carries the coverage counters beside the rows so partial

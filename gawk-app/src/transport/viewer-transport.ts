@@ -6,6 +6,7 @@
 // browser's small incoming-datagram queue.
 
 import { log } from '../lib/logger';
+import type { LocalRelayEvent } from './local-relay';
 import {
   connectWebTransport,
   newCarrierCounters,
@@ -44,6 +45,8 @@ export interface ViewerTransportCallbacks {
   // CAP_STRIPED_DELIVERY — a relay that never advertises is never dialed for
   // legs.
   onRelayCapabilities?: (caps: RelayCapabilities) => void;
+  // R74: 0x18 / 0x19, forwarded to the main thread (features/pop).
+  onLocalRelay?: (ev: LocalRelayEvent) => void;
   // The stripe width actually engaged (0 = unstriped). Fires on engage,
   // grow and fallback — the requested-vs-active distinction's active half.
   onStripeChange?: (active: number) => void;
@@ -248,6 +251,7 @@ export class LocalViewerTransport implements ViewerTransport {
         onTelemetryHello: (hello) => cb.onTelemetryHello?.(hello),
         onTelemetryEndpoint: (url) => cb.onTelemetryEndpoint?.(url),
         onRelayCapabilities: (caps) => cb.onRelayCapabilities?.(caps),
+        onLocalRelay: (ev) => cb.onLocalRelay?.(ev),
         onSessionClosing: (code) => {
           this.noticedCloseCode = code;
         },

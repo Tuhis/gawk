@@ -40,9 +40,16 @@ pub fn terminal_for_publisher(code: u32) -> bool {
     )
 }
 
-/// The user-facing sentence for a terminal close.
+/// The viewer-facing copy for 4012 PopUplinkFull (R74, docs/76 item 28): the
+/// broadcast is on a LAN party's local relay whose uplink budget is spent.
+/// Not terminal — the session retries every 20 s.
+pub const POP_UPLINK_FULL_MESSAGE: &str = "This stream is at a LAN party with limited internet. Outside viewing is full right now; we'll keep trying.";
+
+/// The user-facing sentence for a close: the terminal codes, plus R74's
+/// non-terminal 4012, whose copy says why the session waits.
 pub fn close_code_message(code: u32) -> String {
     match code {
+        gawk_wire::CLOSE_CODE_POP_UPLINK_FULL => POP_UPLINK_FULL_MESSAGE.into(),
         gawk_wire::CLOSE_CODE_PUBLISHER_SUPERSEDED => {
             "another broadcaster took over this code — this session has been superseded".into()
         }
@@ -135,6 +142,28 @@ mod tests {
         );
         // Anything else still reads as a sentence, not a bare number.
         assert!(close_code_message(4242).contains("code 4242"));
+    }
+
+    // R74 (docs/76 item 28): 4012 PopUplinkFull carries its own copy and is
+    // NOT terminal — the stream is at a LAN party and outside viewing frees
+    // up again, so the session keeps retrying.
+    #[test]
+    fn pop_uplink_full_has_its_copy_and_is_not_terminal() {
+        assert_eq!(
+            close_code_message(gawk_wire::CLOSE_CODE_POP_UPLINK_FULL),
+            POP_UPLINK_FULL_MESSAGE
+        );
+        assert_eq!(
+            POP_UPLINK_FULL_MESSAGE,
+            "This stream is at a LAN party with limited internet. Outside viewing is full right now; we'll keep trying."
+        );
+        assert!(!terminal_for_publisher(
+            gawk_wire::CLOSE_CODE_POP_UPLINK_FULL
+        ));
+        assert!(!terminal_for_publisher(gawk_wire::CLOSE_CODE_POP_NO_DEMAND));
+        assert!(!gawk_wire::terminal_for_viewer(
+            gawk_wire::CLOSE_CODE_POP_UPLINK_FULL
+        ));
     }
 
     #[test]

@@ -18,6 +18,9 @@ final class RoomPlayerModel {
     let code: String
     let relayUrl: String
     let insecure: Bool
+    /// The relay's pins (R74; empty: the system store), for the roster
+    /// session and every tile.
+    let certHashes: [String]
     private(set) var nickname: String
 
     private(set) var room: RoomView?
@@ -46,10 +49,11 @@ final class RoomPlayerModel {
     /// Called with each new room picture, and whether it's the first.
     @ObservationIgnored var onRoom: ((_ room: RoomView, _ first: Bool) -> Void)?
 
-    init(code: String, relayUrl: String, insecure: Bool, nickname: String) {
+    init(code: String, relayUrl: String, insecure: Bool, nickname: String, certHashes: [String] = []) {
         self.code = code
         self.relayUrl = relayUrl
         self.insecure = insecure
+        self.certHashes = certHashes
         self.nickname = nickname
     }
 
@@ -69,7 +73,8 @@ final class RoomPlayerModel {
         endedReason = nil
         let listener = Listener(model: self)
         watcher = RoomWatcher.start(
-            relayUrl: relayUrl, code: code, nickname: nickname, insecure: insecure, listener: listener)
+            relayUrl: relayUrl, code: code, nickname: nickname, insecure: insecure, listener: listener,
+            certHashes: certHashes)
     }
 
     /// Leaves the room: the roster session and every player stop.
@@ -170,7 +175,7 @@ final class RoomPlayerModel {
     }
 
     private func options(_ id: String) -> ViewerOptions {
-        ViewerOptions(relayUrl: relayUrl, broadcastId: id, preset: preset, insecure: insecure)
+        ViewerOptions(relayUrl: relayUrl, broadcastId: id, preset: preset, insecure: insecure, certHashes: certHashes)
     }
 
     /// The core's roster callbacks, hopping to the main actor.

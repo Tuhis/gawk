@@ -5,7 +5,7 @@ and the viewer replay (live edge and adaptive). Results land in
 $UPLINK_OUT/results/<scenario>/<mode>/; a cell with a summary.json is skipped,
 so a set resumes where it stopped.
 
-Usage: matrix.py core|cc|hi|engine|engine-hi|engine-check|jit|win|bigq|seeds|chrome|chrome-kf|chrome-ceiling|chrome-knobs|chrome-seeds|chrome-ceiling-repeat|chrome-kftiming|chrome-kftiming2|ru8-g10|chrome-ru9-p7|chrome-ru9-p9|all [--jobs 3] [--seconds 100] [--only name-prefix]
+Usage: matrix.py core|cc|hi|engine|engine-hi|engine-check|jit|win|bigq|seeds|chrome|chrome-kf|chrome-ceiling|chrome-knobs|chrome-seeds|chrome-ceiling-repeat|chrome-kftiming|chrome-kftiming2|ru8-g10|chrome-ru9-p7|chrome-ru9-p9|pop|all [--jobs 3] [--seconds 100] [--only name-prefix]
        matrix.py rescore [substr] [--jobs N]   # analyse and replay every finished run again
 """
 import concurrent.futures as cf
@@ -86,6 +86,14 @@ for _d, _w in (("dgram", "datagram"), ("carrier", "carrier")):
         MODE_ENV[f"eng-{_d}{_s}"] = {"SENDER_BIN": f"{OUT}/bin/sender-engine",
                                     "RECV_BIN": f"{OUT}/bin/gawk-uplinklab"}
 ENGINE_MODES = ("eng-dgram", "eng-carrier", "eng-dgram-bbr", "eng-carrier-bbr")
+# R74 PP8 (docs/76 item 18): the PoP's own sender, the hub's leg writer
+# (`gawk-uplinklab legsend`, through pop-sender.sh), datagrams against R73's
+# carrier; quic-go ships Cubic only. The receiver is the tree's own build, at
+# the datagram queue depth home's relay ships (D7's 512).
+for _d, _w in (("dgram", "datagram"), ("carrier", "carrier")):
+    MODES[f"pop-{_d}"] = ["--mode", _w, "--cc", "cubic"]
+    MODE_ENV[f"pop-{_d}"] = {"SENDER_BIN": f"{HERE}/pop-sender.sh", "RECV_BIN": f"{OUT}/bin/gawk-uplinklab"}
+POP_MODES = ("pop-dgram", "pop-carrier")
 # A cell whose CPU steal (% of the host's CPU time, sampled over the run)
 # exceeds this is moved aside and run again, at most STEAL_RETRIES times.
 STEAL_MAX = float(os.environ.get("UPLINK_STEAL_MAX", "5"))
@@ -276,6 +284,18 @@ def sets():
     # One representative cell (G1 at 10 ms, both deliveries, both
     # controllers): the tooling check for a host too noisy for the rest.
     s["engine-check"] = [scen("rtt10-clean", ["-rtt", "10ms"], modes=ENGINE_MODES)]
+    # R74 PP8: the PoP's leg writer on table B's cells (bursts and outages at
+    # 10 / 40 / 100 ms), three runs a cell (seeds 7, 8, 9). Table O's cells
+    # are fair/matrix.sh's with FAIR_CCS=pop; tables.py prints both as PP8.
+    pop = []
+    for rtt in (10, 40, 100):
+        for name, proxy in (("ge1pct", ["-ge-g2b", "0.0025", "-ge-b2g", "0.25"]),
+                            ("out20drop", ["-outage-period", "1070ms", "-outage-len", "20ms"]),
+                            ("out80drop", ["-outage-period", "1070ms", "-outage-len", "80ms"])):
+            for seed in (7, 8, 9):
+                pop.append(scen(f"pop-rtt{rtt}-{name}-s{seed}", ["-rtt", f"{rtt}ms"] + proxy,
+                                modes=POP_MODES, seed=seed))
+    s["pop"] = pop
     return s
 
 

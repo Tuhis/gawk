@@ -52,6 +52,9 @@ type roomClusterWiring struct {
 	store   RoomCluster
 	podName string
 	dial    roomProxyDialer
+	// vouch sends a PoP's vouched wall op to the wall's home pod (R74,
+	// room_link.go).
+	vouch roomVoucher
 }
 
 // roomProxyUpstream is one internal session to a room's home.
@@ -103,6 +106,7 @@ func (s *Server) SetRoomCluster(rc RoomCluster, podName string) {
 		store:   rc,
 		podName: podName,
 		dial:    newRoomProxyDialer(s.cfg.InternalServerName, s.cfg.InternalPSK, nil),
+		vouch:   newRoomVoucher(s.cfg.InternalServerName, s.cfg.InternalPSK, nil),
 	})
 	prev := s.onDrain
 	s.onDrain = func() {
@@ -173,7 +177,9 @@ func (s *Server) roomHomedElsewhere(w http.ResponseWriter, r *http.Request, code
 func roomProxyPath(code string, gen int64, q url.Values) string {
 	fwd := url.Values{}
 	for k, v := range q {
-		if k == "psk" || k == "gen" {
+		// vouch is set only by a link stream's pipe (popVouchPath), never
+		// carried over from a public request.
+		if k == "psk" || k == "gen" || k == popVouchParam {
 			continue
 		}
 		fwd[k] = v
@@ -213,6 +219,7 @@ func (s *Server) proxyRoom(w http.ResponseWriter, r *http.Request, rc *roomClust
 		return
 	}
 	defer s.trackSession(sess)()
+	s.sendSessionNotices(sess, r, kindRoom)
 	defer s.trackProxied(code, home.Kind)()
 	s.metrics.Connection(route, metrics.OutcomeAccepted)
 	log = log.With("remote", sess.RemoteAddr())
@@ -341,6 +348,10 @@ func (s *Server) handleInternalRoom(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("internal room upgrade failed", "err", err)
 		w.WriteHeader(http.StatusForbidden)
 		return
+	}
+	if pop := q.Get(popVouchParam); pop != "" {
+		// PSK-gated: the pipe from the pod a PoP's link stream reached.
+		grants.VouchedBy = s.popVouch(pop)
 	}
 	s.serveRoomSession(r, sess, reg, norm, grants, nil)
 }

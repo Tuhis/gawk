@@ -8,6 +8,10 @@ pub const RECONNECT_MAX_ATTEMPTS: u32 = 10;
 /// The SPA's `ABRUPT_DROP_RETRY_DELAY_MS`: the replacement pod is already
 /// behind the Service.
 pub const ABRUPT_DROP_RETRY_DELAY_MS: u64 = 250;
+/// R74 (docs/76 item 28): a PoP's uplink is full (4012). Not terminal: the
+/// viewer tries again every 20 s, joining when a slot frees, and never gives
+/// up on it (each refused session connected, so the ladder restarts).
+pub const POP_UPLINK_FULL_RETRY_MS: u64 = 20_000;
 
 /// The delay before reconnect attempt `attempt` (1-based) after a session
 /// ended with `close_code` (`None`: an abrupt drop). 1, 2, 4, 8 s, then
@@ -15,6 +19,9 @@ pub const ABRUPT_DROP_RETRY_DELAY_MS: u64 = 250;
 /// abrupt drop 250 ms. Terminal codes never get here: ask
 /// [`gawk_wire::terminal_for_viewer`] first.
 pub fn reconnect_delay_ms(attempt: u32, close_code: Option<u32>) -> u64 {
+    if close_code == Some(gawk_wire::CLOSE_CODE_POP_UPLINK_FULL) {
+        return POP_UPLINK_FULL_RETRY_MS;
+    }
     if attempt == 1 {
         match close_code {
             Some(gawk_wire::CLOSE_CODE_SERVER_DRAINING) => return 0,
@@ -35,6 +42,17 @@ mod tests {
         let coded = Some(gawk_wire::CLOSE_CODE_SUBSCRIBER_UNRESPONSIVE);
         let ladder: Vec<u64> = (1..=7).map(|a| reconnect_delay_ms(a, coded)).collect();
         assert_eq!(ladder, [1000, 2000, 4000, 8000, 15_000, 15_000, 15_000]);
+    }
+
+    // R74 (docs/76 item 28): 4012 is not terminal and retries every 20 s.
+    #[test]
+    fn a_full_party_uplink_retries_every_20s() {
+        let full = Some(gawk_wire::CLOSE_CODE_POP_UPLINK_FULL);
+        assert!(!gawk_wire::terminal_for_viewer(
+            gawk_wire::CLOSE_CODE_POP_UPLINK_FULL
+        ));
+        assert_eq!(reconnect_delay_ms(1, full), 20_000);
+        assert_eq!(reconnect_delay_ms(3, full), 20_000);
     }
 
     #[test]

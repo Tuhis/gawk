@@ -91,6 +91,14 @@ const (
 	TypeRoomEnded            = TypePrefix + "room.ended"
 	TypeRoomSecretRotated    = TypePrefix + "room.secret_rotated"
 	TypeRoomScreeningChanged = TypePrefix + "room.screening_changed"
+	// R74 (docs/76 §7.2): an operator's changes to a PoP relay. They name
+	// the PoP and nothing else about it: never an address, a pairing
+	// string or a credential.
+	TypePopCreated  = TypePrefix + "pop.created"
+	TypePopUpdated  = TypePrefix + "pop.updated"
+	TypePopRepaired = TypePrefix + "pop.repaired"
+	TypePopRevoked  = TypePrefix + "pop.revoked"
+	TypePopDeleted  = TypePrefix + "pop.deleted"
 
 	// TypeContentFlagObserved is R40's calibration signal (docs/71 D16,
 	// D19): what a sampler in `observe` mode would have flagged. It is
@@ -148,6 +156,11 @@ func Types() []string {
 		TypeRoomEnded,
 		TypeRoomSecretRotated,
 		TypeRoomScreeningChanged,
+		TypePopCreated,
+		TypePopUpdated,
+		TypePopRepaired,
+		TypePopRevoked,
+		TypePopDeleted,
 
 		TypeBroadcastStarted,
 		TypeBroadcastPublisherAway,
@@ -196,6 +209,11 @@ var moderationTypes = map[string]string{
 	"room.ended":             TypeRoomEnded,
 	"room.secret_rotated":    TypeRoomSecretRotated,
 	"room.screening_changed": TypeRoomScreeningChanged,
+	"pop.created":            TypePopCreated,
+	"pop.updated":            TypePopUpdated,
+	"pop.repaired":           TypePopRepaired,
+	"pop.revoked":            TypePopRevoked,
+	"pop.deleted":            TypePopDeleted,
 }
 
 // ModerationType maps a moderation_events row type to its CloudEvents type.

@@ -71,14 +71,22 @@ pub struct WtSubscribeDialer {
     pub origin: String,
     /// Skip certificate verification: dev certs only.
     pub insecure: bool,
+    /// R74 (docs/76 §6.1 item 5): the server's pinned certificate hashes;
+    /// empty trusts the system store.
+    pub pins: Vec<gawk_engine::transport::CertHash>,
 }
 
 impl SubscribeDialer for WtSubscribeDialer {
     fn dial(&self, url: &str) -> BoxFuture<'_, Result<Arc<dyn RelaySession>, StartError>> {
         let url = url.to_owned();
         Box::pin(async move {
-            let s =
-                gawk_engine::transport::dial_subscribe(&url, &self.origin, self.insecure).await?;
+            let s = gawk_engine::transport::dial_subscribe_pinned(
+                &url,
+                &self.origin,
+                self.insecure,
+                &self.pins,
+            )
+            .await?;
             Ok(Arc::new(s) as Arc<dyn RelaySession>)
         })
     }
@@ -137,6 +145,10 @@ pub struct ViewerConfig {
     pub relay_url: String,
     pub broadcast_id: String,
     pub preset: PlayoutPreset,
+    /// R74 (docs/76 items 21, 43.7): this viewer follows a home relay's
+    /// local-relay offer, so every subscribe carries `lr=1`. Cleared when
+    /// it watches on the PoP it switched to.
+    pub follow_offers: bool,
 }
 
 /// Milliseconds on the viewer's monotonic clock, the one every
@@ -214,6 +226,7 @@ pub async fn run(
             }
         }
         let url = match subscribe_url(&cfg.relay_url, &cfg.broadcast_id, &mint_owner(), rejoin) {
+            Ok(u) if cfg.follow_offers => gawk_engine::localrelay::with_follow_offers(&u),
             Ok(u) => u,
             // A malformed relay URL never heals.
             Err(_) => return end(&*sink, EndReason::GaveUp),

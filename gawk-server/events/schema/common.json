@@ -4,6 +4,13 @@
   "title": "Shared definitions of the gawk event contract",
   "description": "Definitions every data schema in this directory `$ref`s. Vocabularies (enums) only grow; treat an unknown value as unknown (docs/52 D6 b).",
   "$defs": {
+    "popName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+      "description": "The name of the R74 PoP relay (a LAN-party relay federated with the fleet, docs/76) a broadcast is published through: the Pop resource's name, a DNS label. Absent for a broadcast published at home. Never an address — no event carries a publisher or venue IP."
+    },
     "hexKey": {
       "type": "string",
       "pattern": "^(?:[0-9a-f]{2}){4,32}$",

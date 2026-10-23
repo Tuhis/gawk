@@ -21,7 +21,11 @@ data:
       "telemetryUrl": {{ .Values.config.telemetryUrl | default "" | toJson }},
       "allowCustomRelays": {{ if hasKey .Values.config "allowCustomRelays" }}{{ .Values.config.allowCustomRelays }}{{ else }}true{{ end }},
       "desktopHandoff": {{ if hasKey .Values.config "desktopHandoff" }}{{ .Values.config.desktopHandoff }}{{ else }}true{{ end }},
-      "serverDirectoryUrl": {{ .Values.config.serverDirectoryUrl | default "" | toJson }}
+      "serverDirectoryUrl": {{ .Values.config.serverDirectoryUrl | default "" | toJson }},
+      {{- /* R74 (docs/76 §6.1 item 6): pinned hex SHA-256 hashes of relayUrl's
+      self-signed certificate DER, for a relay with no public certificate.
+      Applies to relayUrl only. Empty list (the default) pins nothing. */}}
+      "relayCertHashes": {{ .Values.config.relayCertHashes | default list | toJson }}
     };
   # R23 (docs/29): optional full-body terms override, mounted over
   # /usr/share/nginx/html/terms.html and served at /terms.html. It is only

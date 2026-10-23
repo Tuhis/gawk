@@ -6,6 +6,24 @@ import { GlassPanel } from '../../ui/GlassPanel';
 import { isValidBroadcastId } from '../../lib/broadcastId';
 import { SITE_DOWNLOAD_URL, SITE_URL, SOURCE_URL } from '../../config';
 import { ServerChip } from '../servers/ServerChip';
+import { relayQuerySuffix } from '../../lib/shareLink';
+import { useTransportStore } from '../../state/transportStore';
+
+// R74 (docs/76 §6.1 item 5): keep a link-named server (a standalone PoP's
+// join link carries its LAN address and pinned hashes) and make it the
+// selection, so the next visit needs no link. The resolved hashes are the
+// link's (or any typed for this session).
+function saveAndUseOverride(): void {
+  const store = useTransportStore.getState();
+  if (store.sessionOverrideUrl === null || store.resolvedEntryId !== null) return;
+  const id = store.addServer({
+    label: '',
+    url: store.sessionOverrideUrl,
+    publishSecret: store.overridePublishSecret,
+    certHashes: store.certHashes,
+  });
+  if (id !== null) useTransportStore.getState().selectServer(id);
+}
 
 // The front door. Segmented code entry is the hero; a smaller
 // "start a stream" affordance sits below. A friend handed a #/view/<id> link
@@ -13,12 +31,17 @@ import { ServerChip } from '../servers/ServerChip';
 export function LandingPage() {
   const [code, setCode] = useState('');
   const valid = isValidBroadcastId(code);
+  // An unsaved link override (`#/?relay=…`): offer to keep it. Saved or
+  // matching a saved entry, there is nothing to offer.
+  const unsavedOverride = useTransportStore((s) => s.sessionOverrideUrl !== null && s.resolvedEntryId === null);
+  const relayLinkNote = useTransportStore((s) => s.relayLinkNote);
 
   // A typed code may name a room or a broadcast; the #/join/ resolver asks
   // the relay and lands on whichever it is. No "start a room" here on
   // purpose: rooms are made from a running broadcast.
   const join = (id: string = code) => {
-    if (isValidBroadcastId(id)) window.location.hash = `#/join/${id}`;
+    // The hops carry a link-named server on (the override is route-scoped).
+    if (isValidBroadcastId(id)) window.location.hash = `#/join/${id}${relayQuerySuffix()}`;
   };
 
   return (
@@ -45,7 +68,10 @@ export function LandingPage() {
           <span>or</span>
         </div>
 
-        <button className={styles.startLink} onClick={() => (window.location.hash = '#/broadcast')}>
+        <button
+          className={styles.startLink}
+          onClick={() => (window.location.hash = `#/broadcast${relayQuerySuffix()}`)}
+        >
           Start a stream <span aria-hidden="true">→</span>
         </button>
       </GlassPanel>
@@ -54,7 +80,17 @@ export function LandingPage() {
           deployment disallows custom relays. */}
       <div className={styles.chipRow}>
         <ServerChip />
+        {unsavedOverride && (
+          <Button variant="secondary" onClick={saveAndUseOverride}>
+            Save and use this server
+          </Button>
+        )}
       </div>
+      {relayLinkNote !== null && (
+        <p className={styles.hint} role="status">
+          {relayLinkNote}
+        </p>
+      )}
 
       {/* Unobtrusive links, all the same quiet weight. "Get the app" is here
           because the native apps are the one thing this UI may send someone

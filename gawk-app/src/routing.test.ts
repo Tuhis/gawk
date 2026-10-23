@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { hashWithoutGrant, hashWithoutParam, parseRoute } from './routing';
 
-const noQuery = { relay: null, droppedParams: [] };
+const noQuery = { relay: null, certHashes: [], droppedParams: [] };
 
 describe('parseRoute', () => {
   it('maps the root variants to landing', () => {
     for (const h of ['', '#', '#/', '#//']) {
-      expect(parseRoute(h)).toEqual({ view: 'landing' });
+      expect(parseRoute(h)).toEqual({ view: 'landing', ...noQuery });
     }
   });
 
@@ -26,6 +26,7 @@ describe('parseRoute', () => {
       room: 'AB2CD3',
       nick: null, desktop: false,
       relay: 'https://relay.example.com',
+      certHashes: [],
       droppedParams: [],
     });
     for (const bad of ['', 'ab', 'no spaces', 'a/b', 'x'.repeat(64)]) {
@@ -90,6 +91,7 @@ describe('parseRoute ?relay=', () => {
       view: 'viewer',
       broadcastId: 'AB2CD3',
       relay: 'https://relay.example.com:4433',
+      certHashes: [],
       droppedParams: [],
     });
   });
@@ -100,6 +102,7 @@ describe('parseRoute ?relay=', () => {
       room: null,
       nick: null, desktop: false,
       relay: 'https://relay.example.com:4433',
+      certHashes: [],
       droppedParams: [],
     });
   });
@@ -115,6 +118,7 @@ describe('parseRoute ?relay=', () => {
         view: 'viewer',
         broadcastId: 'AB2CD3',
         relay: null,
+        certHashes: [],
         droppedParams: ['relay'],
       });
     }
@@ -146,13 +150,129 @@ describe('parseRoute ?relay=', () => {
 
   it('a query on a non-producing route changes nothing', () => {
     expect(parseRoute('#/terms?relay=https://x.example')).toEqual({ view: 'terms' });
-    expect(parseRoute('#/?relay=https://x.example')).toEqual({ view: 'landing' });
+  });
+
+  it('carries ?relay= on the landing route (R74: the standalone PoP join link)', () => {
+    expect(parseRoute('#/?relay=https://x.example')).toEqual({
+      view: 'landing',
+      relay: 'https://x.example',
+      certHashes: [],
+      droppedParams: [],
+    });
+    expect(parseRoute('#?relay=nope')).toEqual({
+      view: 'landing',
+      relay: null,
+      certHashes: [],
+      droppedParams: ['relay'],
+    });
   });
 
   it('an invalid id still redirects, query or not', () => {
     expect(parseRoute('#/view/ABC?relay=https://relay.example.com')).toEqual({
       view: 'redirect',
       to: '#/',
+    });
+  });
+});
+
+// R74 (docs/76 §6.1 item 5, OD12): `certHash=` is pinning data accepted only
+// beside a `relay=` whose host is an IP literal in a private range.
+const H1 = '00'.repeat(32);
+const H2 = 'ab'.repeat(32);
+
+describe('parseRoute ?certHash= (R74)', () => {
+  const landing = (q: string) => parseRoute(`#/?${q}`);
+
+  it('accepts one or two lowercase hashes beside a private IPv4 literal', () => {
+    for (const host of ['10.0.0.1', '10.255.255.255', '172.16.0.1', '172.31.255.254', '192.168.1.20']) {
+      expect(landing(`relay=https://${host}:4433&certHash=${H1},${H2}`)).toEqual({
+        view: 'landing',
+        relay: `https://${host}:4433`,
+        certHashes: [H1, H2],
+        droppedParams: [],
+      });
+    }
+    expect(landing(`relay=https://192.168.1.20:4433&certHash=${H1}`)).toMatchObject({ certHashes: [H1] });
+  });
+
+  it('accepts a hash beside an fc00::/7 IPv6 literal', () => {
+    for (const host of ['[fd12:3456::1]', '[fc00::1]', '[FDFF::2]']) {
+      const r = landing(`relay=https://${host}:4433&certHash=${H1}`);
+      expect(r).toMatchObject({ certHashes: [H1], droppedParams: [] });
+    }
+  });
+
+  it('carries the hashes on every route that takes ?relay=', () => {
+    const q = `relay=https://192.168.1.20:4433&certHash=${H1}`;
+    for (const h of [`#/view/AB2CD3?${q}`, `#/broadcast?${q}`, `#/room/AB2CD3?${q}`, `#/join/AB2CD3?${q}`]) {
+      expect(parseRoute(h)).toMatchObject({ relay: 'https://192.168.1.20:4433', certHashes: [H1], droppedParams: [] });
+    }
+  });
+
+  it('drops the hash beside a public host, a public literal or a non-private range', () => {
+    for (const host of [
+      'relay.example.com',
+      '8.8.8.8',
+      '172.15.0.1',
+      '172.32.0.1',
+      '192.169.0.1',
+      '100.64.0.1',
+      '127.0.0.1',
+      '169.254.1.1',
+      '[2001:db8::1]',
+      '[fe80::1]',
+      '[::1]',
+      '[::ffff:192.168.1.20]',
+      // A hostname that merely looks like a private address.
+      '192.168.1.20.nip.io',
+    ]) {
+      expect(landing(`relay=https://${host}:4433&certHash=${H1}`)).toMatchObject({
+        relay: expect.any(String),
+        certHashes: [],
+        droppedParams: ['certHash'],
+      });
+    }
+  });
+
+  it('drops the hash with no relay, or beside an invalid relay', () => {
+    expect(landing(`certHash=${H1}`)).toEqual({
+      view: 'landing',
+      relay: null,
+      certHashes: [],
+      droppedParams: ['certHash'],
+    });
+    expect(landing(`relay=http://192.168.1.20&certHash=${H1}`)).toEqual({
+      view: 'landing',
+      relay: null,
+      certHashes: [],
+      droppedParams: ['relay', 'certHash'],
+    });
+  });
+
+  it('drops a malformed hash list whole', () => {
+    for (const bad of [
+      '',
+      H2.toUpperCase(),
+      H1.slice(2),
+      `${H1}00`,
+      `${H1},`,
+      `,${H1}`,
+      `${H1},${H2},${H1}`,
+      `${H1} ,${H2}`,
+      'zz'.repeat(32),
+    ]) {
+      expect(landing(`relay=https://192.168.1.20:4433&certHash=${encodeURIComponent(bad)}`)).toMatchObject({
+        relay: 'https://192.168.1.20:4433',
+        certHashes: [],
+        droppedParams: ['certHash'],
+      });
+    }
+  });
+
+  it('collapses a repeated hash to one', () => {
+    expect(landing(`relay=https://192.168.1.20:4433&certHash=${H1},${H1}`)).toMatchObject({
+      certHashes: [H1],
+      droppedParams: [],
     });
   });
 });
@@ -176,6 +296,7 @@ describe('parseRoute rooms (R42)', () => {
       grant: '0011',
       nick: null,
       relay: 'https://relay.example.com:4433',
+      certHashes: [],
       droppedParams: [],
     });
     expect(parseRoute('#/room/AB2CD3?rt=')).toEqual({ view: 'room', code: 'AB2CD3', grant: null, nick: null, ...noQuery });
@@ -227,6 +348,7 @@ describe('parseRoute rooms (R42)', () => {
       view: 'join',
       code: 'AB2CD3',
       relay: 'https://relay.example.com:4433',
+      certHashes: [],
       droppedParams: [],
     });
     // A static slug is link-only: the join box refuses it.

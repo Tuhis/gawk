@@ -12,6 +12,7 @@ import { BroadcastsView } from './views/BroadcastsView.tsx';
 import { CalibrationView } from './views/CalibrationView.tsx';
 import { EventsView } from './views/EventsView.tsx';
 import { RelaysView } from './views/RelaysView.tsx';
+import { PopsView } from './views/PopsView.tsx';
 import { RoomsView } from './views/RoomsView.tsx';
 import { WebhooksView } from './views/WebhooksView.tsx';
 import styles from './App.module.css';
@@ -35,6 +36,9 @@ const NAV: readonly { view: ViewName; label: string }[] = [
 // route that would 404. The route itself still resolves (a webhook deep link
 // must land somewhere that explains itself).
 const ROOMS_NAV = { view: 'rooms' as const, label: 'Rooms' };
+
+// PoPs (R74, docs/76 §7.2) follow `features.pops` the same way.
+const POPS_NAV = { view: 'pops' as const, label: 'PoPs' };
 
 // Calibration (R40, docs/71 D21) follows `features.screening` the same way:
 // default-off, and its routes 404 when off.
@@ -99,6 +103,7 @@ function Portal() {
   const nav = [
     ...NAV,
     ...(me?.features?.rooms ? [ROOMS_NAV] : []),
+    ...(me?.features?.pops ? [POPS_NAV] : []),
     ...(screening ? [CALIBRATION_NAV] : []),
     API_NAV,
   ];
@@ -139,6 +144,8 @@ function Portal() {
             detail={route.detail}
             cooldownSeconds={cooldown}
             screening={screening}
+            popNamedAddress={me?.features?.popNamedAddress ?? false}
+            rooms={me?.features?.rooms ?? false}
           />
         ) : (
           <p className={styles.dim}>Loading…</p>
@@ -155,6 +162,8 @@ function Routed({
   detail,
   cooldownSeconds,
   screening,
+  popNamedAddress,
+  rooms,
 }: {
   view: ViewName;
   path: string;
@@ -162,6 +171,8 @@ function Routed({
   detail: string;
   cooldownSeconds: number;
   screening: boolean;
+  popNamedAddress: boolean;
+  rooms: boolean;
 }) {
   switch (view) {
     case 'broadcasts':
@@ -186,6 +197,8 @@ function Routed({
       return <WebhooksView />;
     case 'rooms':
       return <RoomsView initialFilter={filterKey} screening={screening} />;
+    case 'pops':
+      return <PopsView detail={detail} namedAddress={popNamedAddress} rooms={rooms} />;
     case 'calibration':
       return <CalibrationView />;
     case 'api':

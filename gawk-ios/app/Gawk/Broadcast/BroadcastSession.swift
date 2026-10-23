@@ -117,6 +117,46 @@ final class BroadcastSession {
     @ObservationIgnored var onEnded: (() -> Void)?
     /// A room seen, with the relay it's on: Your rooms keeps it (K12).
     @ObservationIgnored var onRoomSeen: ((RoomView, String) -> Void)?
+    /// R74: the party's local relay this broadcast publishes on; nil on
+    /// home. Set by the start.
+    var localRelay: LocalRelaySwitcher.Held?
+    /// R74: what that PoP last said about itself (`0x18`).
+    private(set) var localRelayInfo: LocalRelayInfo?
+    /// R74: a fresh offer home sent while live (the app root sends it to
+    /// the switch, for the next broadcast).
+    @ObservationIgnored var onLiveOffer: (@MainActor (LocalRelayOffer) -> Void)?
+    /// R74 (docs/76 item 43.5): the PoP ended the broadcast before it went
+    /// live (a refusal, or it stopped answering), so the switch leaves that
+    /// PoP for the app session and the next start goes to home.
+    @ObservationIgnored var onLocalRelayFailed: (@MainActor () -> Void)?
+
+    /// The live line (§7.3): "Live on Assembly 2026's local relay".
+    var localRelayLine: String? {
+        localRelay.map { "Live on \($0.name)'s local relay" }
+    }
+
+    /// The party wall's line: nil without a wall; else on it (Hide) or
+    /// hidden from it (Show).
+    var onPartyWall: Bool? {
+        guard localRelay != nil, let i = localRelayInfo, !i.wallCode.isEmpty else { return nil }
+        return i.onWall
+    }
+
+    /// Hide (`show == false`) or Show this broadcast on the party wall
+    /// (docs/76 item 34), proven by its resume token; the PoP's next 0x18
+    /// carries the new state.
+    func setOnPartyWall(_ show: Bool, label: String) {
+        guard let pop = localRelay, let info = localRelayInfo, let relay,
+            let stored = identity.load(relay: relay)
+        else { return }
+        let code = info.wallCode
+        Task.detached {
+            _ = localRelayWall(
+                popUrl: pop.url, wallCode: code, broadcastId: stored.code,
+                resumeTokenHex: stored.token, label: label, show: show,
+                certHashes: pop.certHashes)
+        }
+    }
     /// The Live Activity's hooks (D15).
     @ObservationIgnored var activity: BroadcastActivity?
     @ObservationIgnored private let identity: IdentityStore
@@ -153,7 +193,8 @@ final class BroadcastSession {
     func start(
         relayURL: String, secret: String, quality: Quality,
         nickname: String, telemetry: Bool, insecure: Bool,
-        captureSource: String = "test-source"
+        captureSource: String = "test-source",
+        certHashes: [String] = [], followOffers: Bool = false, wallHidden: Bool = false
     ) {
         guard !isActive else { return }
         let stored = identity.load(relay: relayURL)
@@ -171,7 +212,10 @@ final class BroadcastSession {
             telemetry: telemetry,
             captureSource: captureSource,
             roomNew: joining.new,
-            roomCreatorTokenHex: joining.creatorToken
+            roomCreatorTokenHex: joining.creatorToken,
+            certHashes: certHashes,
+            followOffers: followOffers,
+            wallHidden: wallHidden
         )
         failure = nil
         refusal = nil
@@ -185,6 +229,7 @@ final class BroadcastSession {
         viewerCount = 0
         // A new broadcast's session says it again, or not.
         screeningRelay = nil
+        localRelayInfo = nil
         liveSince = nil
         counters = nil
         tracker = SummaryTracker()
@@ -356,6 +401,9 @@ final class BroadcastSession {
             if liveSince == nil, phase == .connecting, let reason {
                 refusal = (reason, reclaimStatus)
             }
+            if liveSince == nil, phase != .stopping, localRelay != nil {
+                onLocalRelayFailed?()
+            }
             finish(reason: reason)
         // A stopping broadcast only ends: a report the core sent before it
         // saw the stop must not bring the live screen back.
@@ -411,6 +459,12 @@ final class BroadcastSession {
                 if case .live = self.phase, c.uploadAvailable {
                     self.tracker.upload(bps: c.uploadBps)
                 }
+                // R74 (docs/76 §6.12): the PoP's 0x18 (the wall's state
+                // follows it), and an offer home sent while live, which is
+                // for the next broadcast: this one is never moved.
+                let info = b.localRelay()
+                if info != self.localRelayInfo { self.localRelayInfo = info }
+                if let offer = b.takeLocalRelayOffer() { self.onLiveOffer?(offer) }
             }
         }
     }

@@ -794,3 +794,81 @@ describe('kill + ban is two writes (§4.9, AP3)', () => {
     expect(screen.getByRole('button', { name: 'Kill and ban' })).toBeTruthy();
   });
 });
+
+// R74 (docs/76 §7.2): party broadcasts carry their PoP's badge and say
+// whether home carries them, and either kind can be killed.
+describe('party broadcasts', () => {
+  const party = (over: Partial<Broadcast> = {}) =>
+    broadcast({
+      id: 'XYZ789',
+      key: '',
+      publisherRemoteIp: null,
+      pods: [],
+      viewersGlobal: 3,
+      pop: {
+        name: 'assembly-2026',
+        forwarded: false,
+        label: 'demo',
+        publisherLanAddr: '192.168.1.40',
+        localViewers: 3,
+        outsideViewers: 0,
+      },
+      ...over,
+    });
+
+  it('badges a party-only broadcast with its PoP and its LAN address', async () => {
+    mount([party()]);
+    expect(await screen.findByText('XYZ789')).toBeTruthy();
+    expect(screen.getByText('PoP assembly-2026')).toBeTruthy();
+    expect(screen.getByText('party-only')).toBeTruthy();
+    expect(screen.getByText('192.168.1.40')).toBeTruthy();
+    expect(screen.getByText(/no home key/)).toBeTruthy();
+  });
+
+  it('badges a forwarded one and keeps its fleet row', async () => {
+    mount([
+      broadcast({
+        pop: {
+          name: 'assembly-2026',
+          forwarded: true,
+          publisherLanAddr: '192.168.1.31',
+          localViewers: 4,
+          outsideViewers: 7,
+        },
+      }),
+    ]);
+    expect(await screen.findByText('PoP assembly-2026')).toBeTruthy();
+    expect(screen.getByText('forwarded')).toBeTruthy();
+    expect(screen.queryByText('party-only')).toBeNull();
+    expect(screen.getByText('203.0.113.7')).toBeTruthy();
+    expect(screen.getByText('3f9a1c2b4d5e')).toBeTruthy();
+  });
+
+  it('shows no badge on a home broadcast', async () => {
+    mount([broadcast()]);
+    await screen.findByText('ABC123');
+    expect(screen.queryByText(/^PoP /)).toBeNull();
+  });
+
+  it('kills a party-only broadcast like any other', async () => {
+    const { session } = mount([party()]);
+    fireEvent.click(await screen.findByRole('button', { name: 'Kill' }));
+    fireEvent.change(screen.getByLabelText('Reason (required)'), {
+      target: { value: 'terms violation' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Kill broadcast' }));
+    await waitFor(() =>
+      expect(session.calls.some((c) => c.path.includes('broadcasts/XYZ789/kill'))).toBe(true),
+    );
+  });
+
+  it('filters by PoP name', async () => {
+    mount([broadcast(), party()]);
+    await screen.findByText('XYZ789');
+    fireEvent.change(screen.getByLabelText('Filter broadcasts'), {
+      target: { value: 'assembly' },
+    });
+    expect(screen.queryByText('ABC123')).toBeNull();
+    expect(screen.getByText('XYZ789')).toBeTruthy();
+  });
+});

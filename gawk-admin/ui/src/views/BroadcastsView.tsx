@@ -5,6 +5,7 @@ import { ApiError } from '../api/client.ts';
 import type {
   Broadcast,
   BroadcastBanState,
+  BroadcastPop,
   BroadcastsPage,
   ContentFlag,
   ContentFlagPage,
@@ -131,7 +132,9 @@ export function BroadcastsView({
           (b) =>
             b.id.toLowerCase().includes(needle) ||
             b.key.toLowerCase().includes(needle) ||
-            (b.publisherRemoteIp ?? '').toLowerCase().includes(needle),
+            (b.publisherRemoteIp ?? '').toLowerCase().includes(needle) ||
+            (b.pop?.name ?? '').toLowerCase().includes(needle) ||
+            (b.pop?.publisherLanAddr ?? '').toLowerCase().includes(needle),
         )
       : rest),
   ];
@@ -370,9 +373,14 @@ export function BroadcastsView({
                       <code className={ui.mono}>{b.id}</code>
                       <CopyButton value={b.id} />
                     </div>
-                    <div className={ui.dim}>
-                      key <code className={ui.mono}>{b.key}</code>
-                    </div>
+                    {b.key ? (
+                      <div className={ui.dim}>
+                        key <code className={ui.mono}>{b.key}</code>
+                      </div>
+                    ) : (
+                      <div className={ui.dim}>no home key: home does not carry it</div>
+                    )}
+                    {b.pop ? <PopBadge pop={b.pop} /> : null}
                   </td>
                   <td>
                     {b.publisherActive ? (
@@ -380,7 +388,12 @@ export function BroadcastsView({
                     ) : (
                       <span className={ui.badge}>away</span>
                     )}
-                    <div className={ui.mono}>{b.publisherRemoteIp ?? '—'}</div>
+                    <div className={ui.mono}>{b.publisherRemoteIp ?? (b.pop ? '' : '—')}</div>
+                    {b.pop?.publisherLanAddr ? (
+                      <div className={ui.dim} title="The broadcaster's address on the party LAN">
+                        LAN <span className={ui.mono}>{b.pop.publisherLanAddr}</span>
+                      </div>
+                    ) : null}
                   </td>
                   <td>{uptime(b.startedAt, now)}</td>
                   <td>{b.viewersGlobal}</td>
@@ -408,7 +421,7 @@ export function BroadcastsView({
                         </a>
                       ) : null}
                       {/* R70: the broadcast's moderation timeline, by key. */}
-                      {screening ? <a href={timelineHref(b.key)}>Timeline</a> : null}
+                      {screening && b.key ? <a href={timelineHref(b.key)}>Timeline</a> : null}
                       {b.links?.telemetry ? (
                         <a href={b.links.telemetry} target="_blank" rel="noreferrer">
                           Telemetry
@@ -581,6 +594,24 @@ function BanCell({
     );
   }
   return <span className={ui.badgeBad}>banned</span>;
+}
+
+/**
+ * A party broadcast's PoP (R74, docs/76 §7.2): which PoP, and whether home
+ * carries it (`forwarded`) or it is only at the party (`party-only`). Either
+ * kind can be killed; the kill reaches the PoP.
+ */
+function PopBadge({ pop }: { pop: BroadcastPop }) {
+  return (
+    <div className={ui.row} title={pop.label ? `Label: ${pop.label}` : undefined}>
+      <span className={ui.badge}>PoP {pop.name}</span>
+      {pop.forwarded ? (
+        <span className={ui.badgeOk}>forwarded</span>
+      ) : (
+        <span className={ui.badgeWarn}>party-only</span>
+      )}
+    </div>
+  );
 }
 
 function CopyButton({ value }: { value: string }) {

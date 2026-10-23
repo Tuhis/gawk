@@ -168,6 +168,11 @@ type Options struct {
 	// -rooms, the value the chart derives from the same rooms.enabled that
 	// grants the Role its Room and Secret verbs.
 	Rooms Rooms
+	// Pops manages Pop CRs (R74, docs/76 §7.2). nil means PoPs are OFF: no
+	// /pops route is registered and /me reports the feature absent. main.go
+	// sets it only under -pops, the value the chart derives from the same
+	// pops.enabled that grants the Role its Pop verbs.
+	Pops Pops
 	// Config carries the deep-link bases, the kill cooldown, the operator role
 	// and the chart-defined webhooks.
 	Config config.Config
@@ -317,6 +322,8 @@ const (
 	RequiresRooms = "rooms"
 	// RequiresScreening gates R40's routes on -screening (docs/71 §9.4).
 	RequiresScreening = "screening"
+	// RequiresPops gates R74's PoP routes on -pops (Options.Pops).
+	RequiresPops = "pops"
 )
 
 // Route describes one /api/v1 operation, and it is the DECLARED form of what
@@ -443,6 +450,24 @@ var routeTable = []routeEntry{
 	// 404 for every room when rooms are off (docs/71 D11).
 	{Route{Method: "PATCH", Pattern: "/api/v1/rooms/{name}", Roles: []string{RoleOperator}, Requires: RequiresScreening},
 		func(a *API) http.HandlerFunc { return a.handlePatchRoom }},
+
+	// R74 PoPs (docs/76 §7.2), only with -pops. Operator-only: a pairing
+	// string is a credential until redeemed, and a PoP's live view carries
+	// its public and LAN addresses.
+	{Route{Method: "GET", Pattern: "/api/v1/pops", Roles: []string{RoleOperator}, Requires: RequiresPops},
+		func(a *API) http.HandlerFunc { return a.handleListPops }},
+	{Route{Method: "POST", Pattern: "/api/v1/pops", Roles: []string{RoleOperator}, Requires: RequiresPops},
+		func(a *API) http.HandlerFunc { return a.handleCreatePop }},
+	{Route{Method: "GET", Pattern: "/api/v1/pops/{name}", Roles: []string{RoleOperator}, Requires: RequiresPops},
+		func(a *API) http.HandlerFunc { return a.handleGetPop }},
+	{Route{Method: "PATCH", Pattern: "/api/v1/pops/{name}", Roles: []string{RoleOperator}, Requires: RequiresPops},
+		func(a *API) http.HandlerFunc { return a.handlePatchPop }},
+	{Route{Method: "DELETE", Pattern: "/api/v1/pops/{name}", Roles: []string{RoleOperator}, Requires: RequiresPops},
+		func(a *API) http.HandlerFunc { return a.handleDeletePop }},
+	{Route{Method: "POST", Pattern: "/api/v1/pops/{name}/repair", Roles: []string{RoleOperator}, Requires: RequiresPops},
+		func(a *API) http.HandlerFunc { return a.handleRepairPop }},
+	{Route{Method: "POST", Pattern: "/api/v1/pops/{name}/revoke", Roles: []string{RoleOperator}, Requires: RequiresPops},
+		func(a *API) http.HandlerFunc { return a.handleRevokePop }},
 }
 
 // RouteTable is the declared /api/v1 surface, for the tests that hold the
@@ -467,6 +492,8 @@ func (a *API) enabled(requires string) bool {
 		return a.opts.Rooms != nil
 	case RequiresScreening:
 		return a.opts.Config.Screening
+	case RequiresPops:
+		return a.opts.Pops != nil
 	default:
 		// An unknown feature name is a programming error in the table, and
 		// refusing to serve the route is the safe half of it.

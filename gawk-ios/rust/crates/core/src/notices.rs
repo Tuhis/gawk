@@ -103,4 +103,20 @@ mod tests {
                 .any(|t| t.body.contains("Mozilla Public License Version 2.0"))
         );
     }
+
+    // R74 (docs/76 item 28): the shared engine's user-facing copy for 4012
+    // PopUplinkFull, pinned on the iOS side because this core reaches the
+    // engine and wire crates by path (CONTRIBUTING.md). 4012 is not terminal
+    // for a viewer: the iOS viewer keeps retrying.
+    #[test]
+    fn pop_uplink_full_copy_is_pinned_and_not_terminal() {
+        assert_eq!(
+            gawk_engine::resume::close_code_message(gawk_wire::CLOSE_CODE_POP_UPLINK_FULL),
+            "This stream is at a LAN party with limited internet. Outside viewing is full right now; we'll keep trying."
+        );
+        assert_eq!(gawk_wire::CLOSE_CODE_POP_UPLINK_FULL, 4012);
+        assert!(!gawk_wire::terminal_for_viewer(
+            gawk_wire::CLOSE_CODE_POP_UPLINK_FULL
+        ));
+    }
 }

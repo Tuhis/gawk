@@ -310,6 +310,52 @@ fn records_session_closing_and_drops_malformed_streams() {
     );
 }
 
+// R74 (docs/76 §6.12): a home relay's offer and a PoP's info reach the app
+// on a subscribe session; a malformed one is dropped like any stream.
+#[test]
+fn a_local_relay_offer_and_info_reach_the_app() {
+    let mut p = Pipeline::new(PlayoutPreset::Balanced);
+    let mut out = Vec::new();
+    let h = [9u8; 32];
+    let mut offer = Vec::new();
+    gawk_wire::append_local_relay_offer(
+        &mut offer,
+        &gawk_wire::LocalRelayOffer {
+            handle: "6f1c2d3e-4a5b-4c6d-8e7f-0123456789ab",
+            name: "Assembly 2026",
+            validity: 3600,
+            candidates: vec![gawk_wire::LocalRelayCandidate {
+                url: "https://192.168.1.20:4433",
+                hashes: vec![&h],
+            }],
+        },
+    )
+    .unwrap();
+    let mut bad = offer.clone();
+    bad[2] = 1;
+    p.on_stream(&bad, 0.0, &mut out);
+    assert!(out.is_empty());
+    p.on_stream(&offer, 0.0, &mut out);
+    let mut info = Vec::new();
+    gawk_wire::append_local_relay_info(
+        &mut info,
+        &gawk_wire::LocalRelayInfo {
+            linked: true,
+            on_wall: false,
+            name: "Assembly 2026",
+            home_origin: "https://gawk.ioio.fi",
+            wall_code: "",
+        },
+    )
+    .unwrap();
+    p.on_stream(&info, 0.0, &mut out);
+    assert!(matches!(
+        &out[..],
+        [ViewerEvent::LocalRelayOffer(o), ViewerEvent::LocalRelay(i)]
+            if o.candidates[0].hashes == vec![h] && i.linked
+    ));
+}
+
 #[test]
 fn capture_latency_combines_time_sync_and_the_clock_mapping() {
     let mut p = Pipeline::new(PlayoutPreset::Balanced);

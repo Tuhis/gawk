@@ -74,14 +74,14 @@ final class SettingsTests: XCTestCase {
         let probes = ServerProbes()
         let url = "https://relay.example.net:4433"
         var answer: ServerProbe = .reachable(rttMs: 5, name: nil, screens: true)
-        probes.probe = { [answer] _, _ in answer }
+        probes.probe = { [answer] _, _, _ in HomeProbe(probe: answer, offer: nil) }
         probes.refresh(url, insecure: false)
         try await settle { probes.screens(url) }
         XCTAssertTrue(probes.screens(url))
         XCTAssertFalse(probes.screens("https://other.example:4433"))
 
         answer = .unreachable
-        probes.probe = { [answer] _, _ in answer }
+        probes.probe = { [answer] _, _, _ in HomeProbe(probe: answer, offer: nil) }
         probes.refresh(url, insecure: false)
         try await settle { !probes.screens(url) }
         XCTAssertFalse(probes.screens(url))

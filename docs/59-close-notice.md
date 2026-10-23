@@ -238,7 +238,10 @@ terminal close (4000/4004/4006)
 - **New close codes.** Any code a browser must act on needs the notice too.
   R43's planned refusal codes 4008–4011 (docs/45, not started) are the next
   case. `SessionClosing` already accepts the whole 4000–4999 range, and
-  `noticedCloseCode` is the one list to extend.
+  `noticedCloseCode` is the one list to extend. R74's `4012`
+  `PopUplinkFull` ([docs/76](76-pop-relays.md) item 28) is the first
+  non-terminal code in it: it changes what the viewer shows and how often
+  it retries (every 20 s).
 
 ---
 

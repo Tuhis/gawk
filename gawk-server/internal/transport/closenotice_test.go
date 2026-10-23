@@ -131,3 +131,38 @@ func TestKilledBroadcastNoticesPublisherAndViewer(t *testing.T) {
 		assertNoticedClose(t, res.label, wire.CloseCodeTerminatedByOperator, res.n, res.nAt, res.code, res.cAt)
 	}
 }
+
+// R74 (docs/76 item 28): 4012 PopUplinkFull changes what a viewer does next
+// (the "outside viewing is full" copy and a 20 s retry), so it is noticed
+// in-band; 4013 PopNoDemand only ever reaches the Go PoP, which reads the
+// code, and is not.
+func TestNoticedCloseCodeR74(t *testing.T) {
+	if !noticedCloseCode(wire.CloseCodePopUplinkFull) {
+		t.Error("4012 PopUplinkFull is not noticed — Chrome would never read it")
+	}
+	if noticedCloseCode(wire.CloseCodePopNoDemand) {
+		t.Error("4013 PopNoDemand is noticed; its only reader is the Go PoP")
+	}
+}
+
+// End to end: a viewer whose hub is ended with 4012 reads the in-band notice
+// and then the close with the same code.
+func TestPopUplinkFullViewerGetsCloseNotice(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	port, clientTLS, r, _ := startTestServerCfg(t, ctx, config.Config{
+		MaxSubscribers:  15,
+		MaxIdleTimeout:  30 * time.Second,
+		KeepAlivePeriod: 10 * time.Second,
+		BroadcastGrace:  5 * time.Minute,
+	})
+	_, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
+	sub := dialSubscriber(t, ctx, port, id, clientTLS)
+	waitFor(t, 5*time.Second, func() bool { return r.Stats().Totals.Subscribers == 1 }, "subscriber registered")
+
+	if !r.TerminateBroadcast(id, wire.CloseCodePopUplinkFull, "pop uplink full") {
+		t.Fatal("TerminateBroadcast found no hub")
+	}
+	n, nAt, code, cAt := drainUntilClosed(t, ctx, sub)
+	assertNoticedClose(t, "viewer", wire.CloseCodePopUplinkFull, n, nAt, code, cAt)
+}

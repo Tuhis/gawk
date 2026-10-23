@@ -123,4 +123,45 @@ subjects:
     name: {{ include "gawk-server.fullname" . }}
     namespace: {{ .Release.Namespace }}
 {{- end }}
+{{- if and .Values.pops.enabled .Values.config.clusterMode }}
+---
+# R74 (docs/76 §9): the relay READS Pop CRs (gawk-admin or kubectl writes
+# spec) and patches its own status paths — credential at pairing, lease on
+# every link and renewal, link, tls.csr — through the status subresource.
+# Nothing else: no create, no delete, no spec write, so a compromised relay
+# cannot mint itself a PoP or un-revoke one. The broadcast reservations a
+# PoP holds are ordinary origin Leases, covered by the -leases Role above.
+#
+# Gated on pops.enabled AND clusterMode, like rooms: the chart only runs the
+# CR source (deployment.yaml refuses pops without clusterMode; -pops-file is
+# for non-Kubernetes deployments).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "gawk-server.fullname" . }}-pops
+  labels:
+    {{- include "gawk-server.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["gawk.ioio.fi"]
+    resources: ["pops"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["gawk.ioio.fi"]
+    resources: ["pops/status"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "gawk-server.fullname" . }}-pops
+  labels:
+    {{- include "gawk-server.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "gawk-server.fullname" . }}-pops
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gawk-server.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
 {{- end }}

@@ -111,11 +111,40 @@ struct SettingsScreen: View {
             path = [route]
             router.settingsRoute = nil
         }
+        // R74 (docs/76 §6.1 item 5): a gawk://server link is untrusted
+        // input, so nothing is saved until the user agrees here.
+        .alert(
+            "Add this server?",
+            isPresented: Binding(
+                get: { router.serverOffer != nil },
+                set: { if !$0 { router.serverOffer = nil } }),
+            presenting: router.serverOffer
+        ) { offer in
+            Button("Add and use") {
+                settings.adoptServer(name: offer.name, url: offer.url, certHashes: offer.certHashes)
+                router.serverOffer = nil
+            }
+            .accessibilityIdentifier("server.offer.add")
+            Button("Cancel", role: .cancel) { router.serverOffer = nil }
+        } message: { offer in
+            Text(Self.serverOfferMessage(offer))
+        }
     }
 
     /// One server (D22): a tap selects it, its status says whether it
     /// answers and whether it screens streams (docs/71 D13), and the info
     /// button opens Edit.
+    /// The confirm's words: the server's host is named, never only its
+    /// label (the link's label is the sender's claim, docs/40 F6), and a
+    /// pinned server says it trusts its own certificate.
+    static func serverOfferMessage(_ offer: AppRouter.ServerOffer) -> String {
+        let host = hostOf(offer.url)
+        let named = offer.name == offer.url ? host : "“\(offer.name)” at \(host)"
+        let pinned = offer.certHashes.isEmpty
+            ? "" : " gawk will trust only the certificate this link names for it."
+        return "\(named) becomes your server for watching and broadcasting.\(pinned)"
+    }
+
     private func serverRow(name: String, url: String, selected: Bool, select: @escaping () -> Void) -> some View {
         let state = probes.state(url)
         let screens = ScreeningMark.shown(probed: probes.screens(url), session: broadcast.screens(relay: url))
@@ -156,7 +185,7 @@ struct SettingsScreen: View {
         }
         .frame(minHeight: 38)
         .gawkRow()
-        .task(id: url) { probes.refresh(url, insecure: settings.insecure) }
+        .task(id: url) { probes.refresh(url, insecure: settings.insecure, certHashes: settings.certHashes(for: url)) }
     }
 }
 

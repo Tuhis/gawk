@@ -39,6 +39,12 @@ import (
 // rolling update, old pods dial new pods with it.
 const internalEdgeOrigin = "gawk-server://native-internal-edge"
 
+// popOrigin is the Origin header an R74 PoP relay sends on its link and leg
+// dials to the home fleet (docs/76). CheckOrigin honors it only on the
+// credential-gated /pop/* routes. Keep it stable across versions: a PoP and
+// its home upgrade independently.
+const popOrigin = "gawk-relay://pop"
+
 // Internal-session QUIC timing: in-cluster keepalives are cheap, and a dead
 // origin must be detected fast even without the lease watch.
 const (
@@ -52,6 +58,10 @@ const (
 	// How long EnsureEdge waits for the first upstream attach before the
 	// viewer's subscribe is failed (the viewer retries on its ladder).
 	edgeAttachTimeout = 5 * time.Second
+	// How often a pull waiting on an R74 PoP reservation re-resolves the
+	// Lease for a holder when no OnOriginClaimed kick arrives (docs/76 item
+	// 17). It also paces that pull's linger check, at most a second apart.
+	edgeReservationPoll = 1 * time.Second
 )
 
 // timeSyncEstimator is the Go port of the client TimeSyncEstimator
@@ -159,6 +169,37 @@ type EdgeManager struct {
 	// 4006 (they never pass through Server.terminate). Set by SetCluster;
 	// nil in the unit harness.
 	terminated func()
+	// onReserved is told of every subscribe miss on a lease reserved for an
+	// R74 PoP relay but not yet held (docs/76 item 17), after EnsureEdge has
+	// made the waiting edge hub: it sends the PoP the want. An error is the
+	// viewer's answer, and a waiting hub made for this miss is removed.
+	// SetCluster sets it (Server.onReservedMiss, a no-op until SetPopDemand
+	// installs the uplink); nil in the unit harness, where the wait runs
+	// without it.
+	onReserved func(ctx context.Context, id string, o cluster.Origin) error
+	// reservationPoll is edgeReservationPoll; a field for the tests.
+	reservationPoll time.Duration
+
+	// The R74 PoP downlink (pop_downlink.go) runs a second manager on a PoP
+	// relay whose one upstream is home's public endpoint. These fields are
+	// nil/false on a fleet pod, whose pulls behave as they always did.
+	//
+	// upstreamPath builds the upstream route for a pull (nil: the fleet's
+	// /internal/subscribe with its generation fence).
+	upstreamPath func(id string, o cluster.Origin) string
+	// dialRefusal classifies a failed upstream dial. final ends the pull
+	// instead of retrying (home's 404: the broadcast is not there; 401, 403,
+	// 426, 429): a first attach returns viewerErr to the waiting viewer, and
+	// an attached hub's viewers get 4000.
+	dialRefusal func(err error) (viewerErr error, final bool)
+	// admit is asked, under mu, before a new pull starts; active is the
+	// number of pulls running. An error refuses the pull and is the viewer's
+	// answer (the PoP's downlink budget).
+	admit func(id string, active int) error
+	// standalone: no Lease watch ends a pull here, so a pull that has
+	// nobody to serve while it cannot attach (its first attach failed, or
+	// its last viewer left during a re-attach) ends by itself.
+	standalone bool
 
 	baseCtx    context.Context
 	cancelBase context.CancelFunc
@@ -176,15 +217,16 @@ type EdgeManager struct {
 func newEdgeManager(registry *hub.Registry, resolver originResolver, dial edgeDialer, podName string, log *slog.Logger) *EdgeManager {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &EdgeManager{
-		registry:   registry,
-		resolver:   resolver,
-		dial:       dial,
-		podName:    podName,
-		linger:     edgeLingerDefault,
-		log:        log,
-		baseCtx:    ctx,
-		cancelBase: cancel,
-		edges:      make(map[string]*edgeSession),
+		registry:        registry,
+		resolver:        resolver,
+		dial:            dial,
+		podName:         podName,
+		linger:          edgeLingerDefault,
+		log:             log,
+		reservationPoll: edgeReservationPoll,
+		baseCtx:         ctx,
+		cancelBase:      cancel,
+		edges:           make(map[string]*edgeSession),
 	}
 }
 
@@ -198,6 +240,9 @@ func (m *EdgeManager) Stop() {
 // hub.ErrNotFound return maps to the viewer's 404: no lease, an origin in
 // flux (empty holder mid-re-home), or a stale lease naming this very pod
 // (never dial ourselves).
+//
+// An R74 PoP reservation (a gawk/pop lease with no holder yet) is the
+// exception to the empty-holder 404: see ensureReservationWait.
 func (m *EdgeManager) EnsureEdge(ctx context.Context, broadcastID string) error {
 	origin, err := m.resolver.Resolve(ctx, broadcastID)
 	if err != nil {
@@ -206,6 +251,9 @@ func (m *EdgeManager) EnsureEdge(ctx context.Context, broadcastID string) error 
 		}
 		return err
 	}
+	if origin.Holder == "" && origin.Pop != "" {
+		return m.ensureReservationWait(ctx, broadcastID, origin)
+	}
 	if origin.Holder == m.podName || origin.Holder == "" {
 		return hub.ErrNotFound
 	}
@@ -213,6 +261,12 @@ func (m *EdgeManager) EnsureEdge(ctx context.Context, broadcastID string) error 
 	m.mu.Lock()
 	es := m.edges[broadcastID]
 	if es == nil || es.done() {
+		if m.admit != nil {
+			if err := m.admit(broadcastID, m.activeLocked()); err != nil {
+				m.mu.Unlock()
+				return err
+			}
+		}
 		es = newEdgeSession(m, broadcastID)
 		m.edges[broadcastID] = es
 		go es.run()
@@ -220,6 +274,99 @@ func (m *EdgeManager) EnsureEdge(ctx context.Context, broadcastID string) error 
 	m.mu.Unlock()
 
 	return es.awaitAttached(ctx)
+}
+
+// activeLocked counts the pulls running. Caller holds m.mu.
+func (m *EdgeManager) activeLocked() int {
+	n := 0
+	for _, es := range m.edges {
+		if !es.done() {
+			n++
+		}
+	}
+	return n
+}
+
+// Active is the number of pulls running (the PoP's downlink stream count).
+func (m *EdgeManager) Active() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.activeLocked()
+}
+
+// ensureReservationWait answers a subscribe miss on a PoP reservation
+// (docs/76 item 17). The PoP's broadcast is live there but forwarded only on
+// demand, so a 404 would be wrong: it makes the waiting edge hub at once (an
+// edge publisher claim with nothing primed, so the viewer attaches and waits
+// for the first keyframe), starts the edge session in waiting mode — it
+// re-resolves until a holder appears, on each OnOriginClaimed kick or poll —
+// and fires onReserved, the want (which the transport's handlers send only
+// once their session is on the hub: deferredDemand). A second viewer's miss
+// joins the same pull and fires the want again (it is idempotent at the PoP).
+func (m *EdgeManager) ensureReservationWait(ctx context.Context, id string, origin cluster.Origin) error {
+	m.mu.Lock()
+	es := m.edges[id]
+	created := false
+	if es == nil || es.done() {
+		_, pub, err := m.registry.EdgePublish(id)
+		if err != nil {
+			m.mu.Unlock()
+			return err
+		}
+		es = newEdgeSession(m, id)
+		es.held = pub
+		es.signalAttached(nil)
+		m.edges[id] = es
+		created = true
+		go es.run()
+	} else {
+		es.wake()
+	}
+	m.mu.Unlock()
+
+	if m.onReserved != nil {
+		if err := m.onReserved(ctx, id, origin); err != nil {
+			if created {
+				m.abandonWait(es)
+			}
+			return err
+		}
+	}
+	if created {
+		return nil
+	}
+	// A pull that already existed: its hub may be up (waiting or attached)
+	// or about to be (it was backing off and will see the reservation next).
+	if err := m.registry.CheckSubscribe(id); !errors.Is(err, hub.ErrNotFound) {
+		return nil
+	}
+	return es.awaitAttached(ctx)
+}
+
+// abandonWait undoes a waiting pull made for a miss onReserved refused: the
+// pull stops, and its hub goes too unless a viewer joined in between.
+func (m *EdgeManager) abandonWait(es *edgeSession) {
+	m.mu.Lock()
+	if m.edges[es.id] == es {
+		delete(m.edges, es.id)
+	}
+	m.mu.Unlock()
+	es.stop()
+	<-es.doneCh
+	m.registry.ExpireEdgeIfViewerless(es.id)
+}
+
+// KickReservation wakes a pull waiting on the broadcast's PoP reservation to
+// re-resolve now: the OnOriginClaimed dispatch, when the PoP's uplink leg
+// claimed the Lease on some pod. Only a wake-up — with no pull, or a pull
+// that is not waiting, nothing happens.
+func (m *EdgeManager) KickReservation(broadcastID string) {
+	m.mu.Lock()
+	es := m.edges[broadcastID]
+	m.mu.Unlock()
+	if es != nil {
+		es.wake()
+	}
 }
 
 // OnLeaseDeleted tears down the broadcast's edge pull (if any); the caller
@@ -275,6 +422,14 @@ type edgeSession struct {
 	attachedOnce sync.Once
 	attachedCh   chan struct{}
 	attachErr    error // set before attachedCh closes on a failed FIRST attach
+
+	// held is the edge hub's publisher claim while the pull waits on a PoP
+	// reservation (docs/76 item 17): it keeps the hub, and so the waiting
+	// viewers, in place until a holder appears, and is then handed to the
+	// pump. Set before run starts, then touched only by run.
+	held *hub.Publisher
+	// kick wakes a reservation wait (KickReservation); buffered, never closed.
+	kick chan struct{}
 }
 
 func newEdgeSession(m *EdgeManager, id string) *edgeSession {
@@ -286,10 +441,79 @@ func newEdgeSession(m *EdgeManager, id string) *edgeSession {
 		cancel:     cancel,
 		doneCh:     make(chan struct{}),
 		attachedCh: make(chan struct{}),
+		kick:       make(chan struct{}, 1),
 	}
 }
 
 func (es *edgeSession) stop() { es.cancel() }
+
+// wake nudges a reservation wait; a no-op when one is already pending.
+func (es *edgeSession) wake() {
+	select {
+	case es.kick <- struct{}{}:
+	default:
+	}
+}
+
+// releaseHeld gives up a waiting claim, leaving the hub to the edge's usual
+// publisher-less lifecycle.
+func (es *edgeSession) releaseHeld() {
+	if es.held != nil {
+		es.held.Close()
+		es.held = nil
+	}
+}
+
+// awaitReservation is one round of the wait on a PoP reservation: hold the
+// hub (re-claiming it after a leg that came and went), mark the pull
+// attached, linger out a hub nobody watches, then sleep until a kick, the
+// poll or a stop. viewerlessSince carries the linger clock between rounds.
+// False means the pull is over (stopped, failed, or lingered out with the
+// hub deleted).
+func (es *edgeSession) awaitReservation(viewerlessSince *time.Time) bool {
+	if es.held == nil {
+		_, pub, err := es.m.registry.EdgePublish(es.id)
+		if err != nil {
+			if errors.Is(err, hub.ErrPublisherActive) {
+				// A publisher is leaving the slot (the leg just went); retry.
+				return es.backoff(0)
+			}
+			es.m.log.Warn("edge hub claim for a reservation failed", "broadcast_id", es.id, "err", err)
+			es.signalAttached(err)
+			return false
+		}
+		es.held = pub
+	}
+	es.signalAttached(nil)
+
+	poll := time.NewTimer(es.m.reservationPoll)
+	defer poll.Stop()
+	lingerTick := time.NewTicker(time.Second)
+	defer lingerTick.Stop()
+	for {
+		if serving, _ := es.m.registry.EdgeDemand(es.id); serving > 0 {
+			*viewerlessSince = time.Time{}
+		} else if viewerlessSince.IsZero() {
+			*viewerlessSince = time.Now()
+		} else if time.Since(*viewerlessSince) >= es.m.linger {
+			es.releaseHeld()
+			if es.m.registry.ExpireEdgeIfViewerless(es.id) {
+				return false
+			}
+			*viewerlessSince = time.Time{} // a viewer raced the linger: keep waiting
+			return true
+		}
+		select {
+		case <-es.ctx.Done():
+			return false
+		case <-es.kick:
+			return true
+		case <-poll.C:
+			return true
+		case <-lingerTick.C:
+		}
+	}
+}
 
 func (es *edgeSession) done() bool {
 	select {
@@ -333,6 +557,11 @@ func (es *edgeSession) run() {
 	}()
 
 	leaseGone := false
+	// endHub: a refusal from a standalone upstream ended the pull; the hub's
+	// viewers get 4000 (home said the broadcast is not there).
+	endHub := false
+	// The linger clock of a reservation wait (awaitReservation).
+	var waitViewerless time.Time
 	for attempt := 0; ; attempt++ {
 		if es.ctx.Err() != nil {
 			break
@@ -348,25 +577,53 @@ func (es *edgeSession) run() {
 			es.signalAttached(nil)
 			break
 		}
+		if err == nil && origin.Holder == "" && origin.Pop != "" {
+			// A PoP reservation with no leg on any pod (yet, or again after
+			// the leg's linger handed it back): hold the hub and wait.
+			if !es.awaitReservation(&waitViewerless) {
+				break
+			}
+			attempt = -1 // the next real attempt starts the ladder afresh
+			continue
+		}
+		waitViewerless = time.Time{}
 		if err != nil || origin.Holder == "" || origin.Addr == "" {
 			es.signalAttached(hub.ErrNotFound)
-			if !es.backoff(attempt) {
+			if es.nobodyToServe() || !es.backoff(attempt) {
 				break
 			}
 			continue
 		}
 
-		up, err := es.m.dial(es.ctx, origin.Addr, internalSubscribePath(es.id, origin.Generation))
+		path := internalSubscribePath(es.id, origin.Generation)
+		if es.m.upstreamPath != nil {
+			path = es.m.upstreamPath(es.id, origin)
+		}
+		up, err := es.m.dial(es.ctx, origin.Addr, path)
 		if err != nil {
+			if es.m.dialRefusal != nil {
+				if viewerErr, final := es.m.dialRefusal(err); final {
+					es.m.log.Info("edge upstream refused the pull", "broadcast_id", es.id, "origin", origin.Addr, "err", err)
+					es.signalAttached(viewerErr)
+					endHub = true
+					break
+				}
+			}
 			es.m.log.Warn("edge upstream dial failed", "broadcast_id", es.id, "origin", origin.Addr, "err", err)
 			es.signalAttached(hub.ErrNotFound)
-			if !es.backoff(attempt) {
+			if es.nobodyToServe() || !es.backoff(attempt) {
 				break
 			}
 			continue
 		}
 
-		_, pub, err := es.m.registry.EdgePublish(es.id)
+		// A reservation wait already holds the hub's publisher slot; the
+		// pump takes that claim over.
+		pub := es.held
+		es.held = nil
+		if pub == nil {
+			_, pub, err = es.m.registry.EdgePublish(es.id)
+		}
 		if err != nil {
 			up.Close()
 			if errors.Is(err, hub.ErrPublisherActive) {
@@ -429,11 +686,28 @@ func (es *edgeSession) run() {
 		}
 	}
 
-	if leaseGone {
+	// A reservation wait's claim goes with the pull (StopEdge for a come-home
+	// keeps the hub and its viewers, as for any pull).
+	es.releaseHeld()
+	if leaseGone || endHub {
 		// Lease deletion means "broadcast ended": close local viewers with
 		// 4000 (EndBroadcast skips live hubs; ours is publisher-less now).
 		es.m.registry.EndBroadcast(es.id)
 	}
+}
+
+// nobodyToServe ends a standalone pull (EdgeManager.standalone) that cannot
+// attach and serves no one, deleting its hub if it has one so a later viewer
+// starts a fresh pull rather than joining a hub with no pull behind it.
+// Always false on a fleet pod, whose Lease watch ends its pulls.
+func (es *edgeSession) nobodyToServe() bool {
+	if !es.m.standalone {
+		return false
+	}
+	if serving, _ := es.m.registry.EdgeDemand(es.id); serving > 0 {
+		return false
+	}
+	return es.m.registry.ExpireEdgeIfViewerless(es.id)
 }
 
 // upstreamEndIsFinal decides whether the origin's terminal close ends this
@@ -556,28 +830,7 @@ func (es *edgeSession) pump(up edgeUpstream, pub *hub.Publisher) (lingered bool,
 	go func() {
 		defer wg.Done()
 		defer cancel()
-		sem := make(chan struct{}, maxConcurrentKeyframeStreams)
-		for {
-			stream, err := up.AcceptUniStream(ctx)
-			if err != nil {
-				recordEnd(err)
-				return
-			}
-			select {
-			case sem <- struct{}{}:
-			default:
-				es.m.log.Warn("edge keyframe stream rejected: too many concurrent", "broadcast_id", es.id)
-				continue
-			}
-			wg.Add(1)
-			go func(st io.Reader) {
-				defer wg.Done()
-				defer func() { <-sem }()
-				if err := pub.IngestKeyframeStream(st); err != nil {
-					es.m.log.Debug("edge keyframe ingest failed", "broadcast_id", es.id, "err", err)
-				}
-			}(stream)
-		}
+		recordEnd(es.acceptStreams(ctx, up, pub))
 	}()
 
 	// TimeSync pings (2 s, as the TS client) + linger check + viewer-count report.
@@ -602,13 +855,15 @@ func (es *edgeSession) pump(up edgeUpstream, pub *hub.Publisher) (lingered bool,
 			case <-ping.C:
 				_ = up.SendDatagram(wire.AppendTimeSync(nil, relayNowUs(), 0))
 			case <-lingerTick.C:
-				// Two counts on purpose: linger counts every external session (an
-				// edge serving only stripe legs still serves media); the upstream
-				// report counts watching humans, excluding legs.
-				n := es.m.registry.ExternalSubscribers(es.id)
+				// Two counts on purpose: linger counts every session the hub
+				// serves (an edge serving only stripe legs, or only an R74 PoP's
+				// downlink leg, still serves media); the upstream report counts
+				// watching humans, excluding stripe legs, here and below — a
+				// PoP leg's reported party viewers are part of G (docs/76 item 25).
+				n, below := es.m.registry.EdgeDemand(es.id)
 				// Change-driven plus keepalive, so a lost report heals on re-send.
 				// The count is bounded by the subscriber caps, far below uint32.
-				count := uint32(es.m.registry.ViewerSubscribers(es.id))
+				count := uint32(below)
 				if !reported || count != lastReport || time.Since(lastReportAt) >= hub.ViewerCountKeepalive {
 					if up.SendDatagram(wire.AppendViewerCount(nil, count)) == nil {
 						reported = true
@@ -716,6 +971,21 @@ func (u *webtransportUpstream) Close() error {
 	return err
 }
 
+// internalStatusError is a pod-to-pod dial the peer refused with an HTTP
+// status, typed so a caller can branch on it (the fleet-wide leg cap reads
+// 429 apart from 404 / 409, pop_legcap.go).
+type internalStatusError struct {
+	addr   string
+	status int
+	err    error
+}
+
+func (e *internalStatusError) Error() string {
+	return fmt.Sprintf("internal subscribe to %s: status %d: %v", e.addr, e.status, e.err)
+}
+
+func (e *internalStatusError) Unwrap() error { return e.err }
+
 // newEdgeDialer builds the production dialer: TLS against the public cert
 // hostname (the lease addr is a raw pod IP — no per-pod certs, no
 // InsecureSkipVerify), tight in-cluster QUIC timers, PSK appended here.
@@ -743,7 +1013,7 @@ func newEdgeDialer(serverName, psk string, rootCAs *x509.CertPool, log *slog.Log
 			// Unlike a browser, Go can read the HTTP status: surface it (404
 			// not-origin / 409 stale generation / 401 bad PSK / 426 version skew).
 			if rsp != nil {
-				return nil, fmt.Errorf("internal subscribe to %s: status %d: %w", addr, rsp.StatusCode, err)
+				return nil, &internalStatusError{addr: addr, status: rsp.StatusCode, err: err}
 			}
 			return nil, err
 		}

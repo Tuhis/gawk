@@ -95,6 +95,8 @@ jobs:
       dev_stack_images: ${{ steps.filter.outputs.dev_stack_images }}
       coverage_tool: ${{ steps.filter.outputs.coverage_tool }}
       release_tool: ${{ steps.filter.outputs.release_tool }}
+      relay_pack: ${{ steps.filter.outputs.relay_pack }}
+      relay_portable: ${{ steps.filter.outputs.relay_portable }}
       icon: ${{ steps.filter.outputs.icon }}
       common_ts: ${{ steps.filter.outputs.common_ts }}
       commonlock_tool: ${{ steps.filter.outputs.commonlock_tool }}
@@ -249,6 +251,19 @@ jobs:
           # buttons point at, and the attach job only runs it on a release
           # commit — a PR is the only place a broken writer can fail early.
           release_tool=$(decide release_tool '^tools/releases/')
+          # R74 PP4 (docs/76 §11): what `relay-macos` packages on a pull
+          # request. That job runs on a hosted macOS runner, so it is held to
+          # the files that shape the macOS asset — the relay's own command
+          # and its packaging — rather than to every relay change; on a push
+          # to main it always runs, because that is the run that attaches.
+          relay_pack=$(decide   relay_pack   '^gawk-server/(cmd/gawk-relay/|deploy/Dockerfile\.relay$)|^tools/releases/')
+          # R74 PP2 (docs/76 §11): the code gawk-relay ships for Windows and
+          # macOS, which `relay-windows` and `relay-darwin` run (not only vet).
+          # Held to the relay's command, its own wiring (config, serve) and
+          # its portable packages, since the macOS job is a hosted runner.
+          # The shared relay core it also imports (transport, hub, roomsrv)
+          # changes in most server PRs and is tested on Linux by `server`.
+          relay_portable=$(decide relay_portable '^gawk-server/(cmd/gawk-relay/|internal/(config|serve|relaystate|lanaddr|relayconsole|popclient|poplink|tlsutil)/|go\.(mod|sum)$)')
           # R44 (docs/53 D2): the icon's generated derivatives are committed
           # and drift-checked against the SVG. The check runs on any edit to
           # either side, because the failure it catches is "edited the SVG
@@ -297,10 +312,22 @@ jobs:
           # gawk-admin cannot serve without a cluster (docs/42 §4.14), so it
           # carries no probe: `expect_exit_message` asserts it gets all the way
           # to the one failure a cluster-less run must have. See the step.
+          # R74 PP4 (docs/76 §11): the standalone LAN relay's image, both
+          # architectures it is published for. The context is the repo root
+          # because it embeds the gawk-app build. ZERO run_args on purpose:
+          # a bare start is the product (the relay profile self-signs and
+          # keeps its state in the image's /data), so that is the smoke. The
+          # arm64 entry runs under QEMU — the image is cross-compiled, so
+          # emulation only ever starts the finished binary. `buildinfo` is
+          # the binary whose `go version -m` must show the vendored quic-go.
+          pop_amd64='{"context":".","dockerfile":"gawk-server/deploy/Dockerfile.relay","tag":"gawk-relay:ci","platform":"linux/amd64","run_args":"","probe_port":2112,"probe_path":"/healthz","buildinfo":"/gawk-relay"}'
+          pop_arm64='{"context":".","dockerfile":"gawk-server/deploy/Dockerfile.relay","tag":"gawk-relay:ci-arm64","platform":"linux/arm64","run_args":"","probe_port":2112,"probe_path":"/healthz","buildinfo":"/gawk-relay"}'
           adm='{"context":".","dockerfile":"gawk-admin/deploy/Dockerfile","tag":"gawk-admin:ci","run_args":"-addr :8090 -pg-dsn postgres://127.0.0.1:1/none?sslmode=disable -external-url https://admin.invalid -oidc-issuer https://id.invalid -oidc-client-id ci -oidc-audience ci -relay-scan-target relays.invalid -relay-admin-token ci -namespace ci -log-level warn","expect_exit_message":"kubernetes:"}'
           images=""
           add() { images="${images:+$images,}$1"; }
           if [ "$server" = true ]; then add "$relay"; fi
+          # gawk-relay embeds the app, so an app change rebuilds it too.
+          if [ "$server" = true ] || [ "$app" = true ]; then add "$pop_amd64"; add "$pop_arm64"; fi
           if [ "$app" = true ]; then add "$spa"; fi
           if [ "$telemetry" = true ]; then add "$tel"; fi
           if [ "$admin" = true ]; then add "$adm"; fi
@@ -320,7 +347,7 @@ jobs:
             # that if the gate ever fails open, CI does what it did before this
             # change instead of refusing to start — the safe direction, and one
             # this PR cannot test on itself, since editing ci.yml sets all=true.
-            images="$relay,$spa,$tel,$adm"
+            images="$relay,$pop_amd64,$pop_arm64,$spa,$tel,$adm"
           fi
           # A credential-shaped substring here is not a style problem, it is an
           # outage: the runner DROPS an output it believes holds a secret
@@ -676,6 +703,22 @@ jobs:
       - run: go test -race ./...
         env:
           CGO_ENABLED: "1"
+      # R74 PP6 (docs/76 §11): gawk-server/pops is public so this module can
+      # share its types, and it must stay apimachinery-only. The vendored
+      # quic-go `replace` does not cross modules, so a pops import that
+      # reached quic-go would build here against upstream quic-go. The list
+      # is taken first, so a `go list` failure fails the step rather than
+      # passing an empty grep.
+      - name: gawk-server/pops reaches no quic-go
+        run: |
+          set -euo pipefail
+          deps=$(go list -deps github.com/Tuhis/gawk/gawk-server/pops)
+          grep -q '/gawk-server/pops$' <<<"$deps"
+          if grep -q 'quic-go' <<<"$deps"; then
+            echo "::error::gawk-server/pops depends on quic-go:"
+            grep 'quic-go' <<<"$deps"
+            exit 1
+          fi
       # Coverage in a second, race-free run — see the server job. It stays in
       # THIS job rather than a leaner one because the number has to come from a
       # run that has the database and the envtest binaries; the verbose re-run
@@ -1974,6 +2017,41 @@ jobs:
           if grep -q 'invite-only' <<<"$ref"; then echo "::error::the Ref form leaked a literal"; exit 1; fi
           helm lint "$chart" --set rooms.enabled=true --set config.clusterMode=true
 
+      # R74 PP6 (docs/76 §11): the Pop CRD and the RBAC that writes its
+      # status render only with pops on, on both charts. Off is the default
+      # everywhere, so the default renders must carry no trace of it.
+      - name: pops render only when enabled, on the relay and admin charts
+        run: |
+          set -euo pipefail
+          relay=gawk-server/deploy/charts/gawk-server
+          admin=gawk-admin/deploy/charts/gawk-admin
+          off=$(helm template "$relay")
+          if grep -qE 'pops\.gawk\.ioio\.fi|pops/status' <<<"$off"; then
+            echo "::error::the relay chart renders pop content with pops.enabled unset"
+            grep -nE 'pops\.gawk\.ioio\.fi|pops/status' <<<"$off"; exit 1
+          fi
+          # Home pods hold the PoP status lease (docs/76 §6.3), which is
+          # cluster mode; the CRD rides with the flag.
+          on=$(helm template "$relay" --set pops.enabled=true --set config.clusterMode=true)
+          grep -q 'name: pops.gawk.ioio.fi' <<<"$on" || {
+            echo "::error::pops.enabled=true does not render the Pop CRD"; exit 1; }
+          rbac=$(grep -A3 '"pops/status"' <<<"$on") || {
+            echo "::error::pops.enabled=true renders no pops/status RBAC"; exit 1; }
+          grep -q '"patch"' <<<"$rbac" || {
+            echo "::error::the pops/status rule does not grant patch"; echo "$rbac"; exit 1; }
+          helm lint "$relay" --set pops.enabled=true --set config.clusterMode=true
+          aoff=$(helm template "$admin" $ADMIN_PG)
+          if grep -qE 'certificaterequests|dnsendpoints' <<<"$aoff"; then
+            echo "::error::the admin chart grants certificate or DNS access with pops.enabled unset"; exit 1
+          fi
+          # pops.enabled requires the endpoint a pairing string names.
+          aon=$(helm template "$admin" $ADMIN_PG --set pops.enabled=true \
+                  --set pops.homeEndpoint=relay.invalid:4433)
+          for res in certificaterequests dnsendpoints; do
+            grep -q "$res" <<<"$aon" || {
+              echo "::error::the admin chart with pops.enabled renders no $res RBAC"; exit 1; }
+          done
+
       # The admin API rides the ops listener and the per-pod headless Service
       # is gated on metrics.enabled — so a credential without that listener
       # renders a complete-looking surface that can never answer, while bans
@@ -2747,6 +2825,48 @@ jobs:
         working-directory: e2e
         env:
           GAWK_E2E_OUT_DIR: out-screening-notice
+      # R74 PP5 (docs/76 §11): headless Chrome, with the `local-network`
+      # permission granted over CDP, joins a gawk-relay at a NON-loopback
+      # address by a certHash link — the pinned path a party guest takes.
+      # The script finds this runner's own non-loopback address; the relay
+      # is gawk-relay, built here, on its rolling certificate, and the link
+      # is the one its console publishes (both hashes). Keyed on the script so the hook
+      # lands before it does (it is gawk-app's R74 test, e2e/pop-pinned.mjs).
+      # gawk-devcert is pop-uplink-full.mjs's: it mints home's certificate,
+      # which the PoP trusts through SSL_CERT_FILE.
+      - name: Build gawk-relay and gawk-devcert for the PoP E2Es (R74)
+        if: hashFiles('e2e/pop-*.mjs') != ''
+        run: (cd gawk-server && go build -o ../e2e/bin/ ./cmd/gawk-relay ./cmd/gawk-devcert)
+      - name: Run the pinned-relay E2E (R74)
+        if: hashFiles('e2e/pop-pinned.mjs') != ''
+        run: node pop-pinned.mjs
+        working-directory: e2e
+        env:
+          GAWK_E2E_OUT_DIR: out-pop-pinned
+          GAWK_RELAY_BIN: ${{ github.workspace }}/e2e/bin/gawk-relay
+      # R74 PP8 (docs/76 items 27-28): a PoP linked to a single-pod home
+      # with a static credential forwards three outside streams (the
+      # default uplink budget) and refuses the fourth; Chrome, dialling
+      # home pinned, reads 4012 in-band. All on loopback: no LAN address.
+      - name: Run the PoP uplink-full E2E (R74)
+        if: hashFiles('e2e/pop-uplink-full.mjs') != ''
+        run: node pop-uplink-full.mjs
+        working-directory: e2e
+        env:
+          GAWK_E2E_OUT_DIR: out-pop-uplink-full
+          GAWK_E2E_RELAY_BIN: ${{ github.workspace }}/e2e/bin/gawk-relay
+      # R74 PP14 (docs/76 item 43): a viewer on home follows its
+      # LocalRelayOffer to the linked PoP — the built app under vite
+      # preview, Local Network Access granted then denied over CDP. Like
+      # pop-pinned it needs this runner's private non-loopback IPv4, and
+      # :4433 free (the port an offer names).
+      - name: Run the local-relay switch E2E (R74)
+        if: hashFiles('e2e/pop-switch.mjs') != ''
+        run: node pop-switch.mjs
+        working-directory: e2e
+        env:
+          GAWK_E2E_OUT_DIR: out-pop-switch
+          GAWK_RELAY_BIN: ${{ github.workspace }}/e2e/bin/gawk-relay
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
@@ -2759,6 +2879,9 @@ jobs:
             e2e/out-rooms/
             e2e/out-rooms-gated/
             e2e/out-screening-notice/
+            e2e/out-pop-pinned/
+            e2e/out-pop-uplink-full/
+            e2e/out-pop-switch/
           retention-days: 7
 
   # R20 tier 2 (docs/25 Decision 7): cluster-mode E2E — the real chart with
@@ -3126,12 +3249,24 @@ jobs:
       matrix: ${{ fromJSON(needs.changes.outputs.docker_matrix) }}
     steps:
       - uses: actions/checkout@v7
+      # R74 PP4: the arm64 gawk-relay image has to START, not just build, and
+      # this runner is amd64. Registering QEMU is all docker/setup-qemu-action
+      # does; the image is pinned by the digest it was checked against.
+      - name: Register QEMU for a foreign-architecture smoke run
+        if: matrix.platform && matrix.platform != 'linux/amd64'
+        run: |
+          docker run --rm --privileged \
+            tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0 \
+            --install "${{ matrix.platform }}"
       # Host networking and the in-cluster registry mirror — see the action.
       - uses: ./.github/actions/setup-buildx
       - uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
+          # Empty for every image but gawk-relay's two entries, which is the
+          # builder's own platform — what this job always built.
+          platforms: ${{ matrix.platform }}
           push: false
           # `load` so the next step can actually RUN what was just built.
           load: true
@@ -3202,6 +3337,7 @@ jobs:
         run: |
           set -euo pipefail
           docker run -d --name ci-smoke --network host \
+            ${{ matrix.platform && format('--platform {0}', matrix.platform) || '' }} \
             ${{ matrix.tag }} ${{ matrix.run_args }}
           # Poll rather than sleep: a fixed wait is either flaky or slow, and
           # the failures this guards are immediate anyway.
@@ -3226,6 +3362,23 @@ jobs:
             exit 1
           fi
           echo "${{ matrix.tag }} started and served ${{ matrix.probe_path }}"
+
+      # R74 PP4 (docs/76 §11): the shipped binary is built against the
+      # vendored, patched quic-go (docs/75 D7) — `go.mod`'s replace — and
+      # not the upstream module a stray `go install` would fetch. The image
+      # has no shell, so the binary is copied out and read here.
+      - name: the shipped binary carries the vendored quic-go
+        if: matrix.buildinfo
+        run: |
+          set -euo pipefail
+          id=$(docker create ${{ matrix.platform && format('--platform {0}', matrix.platform) || '' }} ${{ matrix.tag }})
+          docker cp "$id:${{ matrix.buildinfo }}" "$RUNNER_TEMP/buildinfo-bin"
+          docker rm "$id" >/dev/null
+          info=$(go version -m "$RUNNER_TEMP/buildinfo-bin")
+          echo "$info"
+          grep -A1 -E '^\s+dep\s+github\.com/quic-go/quic-go\s' <<<"$info" \
+            | grep -qE '^\s+=>\s+\./third_party/quic-go\s' || {
+            echo "::error::${{ matrix.tag }}${{ matrix.buildinfo }} is not built against ./third_party/quic-go"; exit 1; }
 
       # gawk-admin is the one image that CANNOT serve a request from a bare
       # `docker run`, and asserting that it does would be asserting a lie: it
@@ -3303,6 +3456,462 @@ jobs:
       - name: clean up the smoke container
         if: always()
         run: docker rm -f ci-smoke >/dev/null 2>&1 || true
+
+  # R74 PP4 (docs/76 §6.1, §11): gawk-relay, the standalone LAN relay — a
+  # second binary of the gawk-server module, released under the gawk-server
+  # tag as the `gawk-relay` distribution. This job is the one place every
+  # binary is built: windows/amd64, darwin/amd64+arm64 (lipo'd into one by
+  # `relay-macos`) and linux/amd64+arm64. `relay-release` attaches exactly
+  # these bytes, the way broadcast-desktop.yml's attach-release moves its
+  # artifacts rather than rebuilding them.
+  #
+  # Every binary embeds the gawk-app build (cmd/gawk-relay/webapp), so the
+  # app is staged first and a placeholder embed fails the job — and an app
+  # change runs this job too, since it changes what the relay ships.
+  relay:
+    needs: changes
+    if: needs.changes.outputs.server == 'true' || needs.changes.outputs.app == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    # The bound and its reason: see `server`.
+    timeout-minutes: 30
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      version: ${{ steps.source.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
+        with:
+          go-version-file: gawk-server/go.mod
+          cache-dependency-path: gawk-server/go.sum
+      - uses: ./.github/actions/go-shared-cache
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: gawk-app/package-lock.json
+      # The version is the manifest's, as for every native distribution
+      # here: exact on the release commit (the only build that is attached),
+      # the most recent release on any other.
+      - name: Resolve the commit and version being built
+        id: source
+        run: |
+          set -euo pipefail
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "version=$(jq -r '."gawk-server"' .release-please-manifest.json)" >> "$GITHUB_OUTPUT"
+      - name: Stage the web app into the embed
+        run: gawk-server/cmd/gawk-relay/webapp/stage.sh
+      # The webapp package's own test, with the switch that makes a
+      # placeholder embed a failure instead of a dev-tree default.
+      - name: The embed is the gawk-app build, not the placeholder
+        working-directory: gawk-server
+        run: GAWK_RELAY_REQUIRE_APP=1 go test -count=1 ./cmd/gawk-relay/webapp/
+      # `server` vets the module on Linux only, and the relay is the one
+      # binary here that ships for Windows and macOS. Vetted per GOOS: the
+      # relay's own command and the packages written to be portable (state
+      # directory, LAN detection, rolling certificate, console, PoP client).
+      # Not the whole graph — some relay test files are Linux-only by design
+      # (moderationsrc sends itself SIGHUP), and every other package is
+      # compiled for each GOOS by the build step below anyway.
+      - name: go vet per GOOS
+        working-directory: gawk-server
+        run: |
+          set -euo pipefail
+          mod=$(go list -m)
+          portable="^$mod/(cmd/gawk-relay|internal/(serve|relaystate|lanaddr|relayconsole|popclient|poplink|tlsutil|config))(/|$)"
+          for goos in windows darwin linux; do
+            mapfile -t pkgs < <(GOOS=$goos go list -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' ./cmd/gawk-relay | grep -E "$portable")
+            # A failed `go list` inside <( ) does not trip set -e; an empty list must.
+            [ "${#pkgs[@]}" -gt 0 ] || { echo "::error::no packages to vet for GOOS=$goos"; exit 1; }
+            echo "GOOS=$goos: ${pkgs[*]}"
+            GOOS=$goos go vet "${pkgs[@]}"
+          done
+      - name: Build every target
+        working-directory: gawk-server
+        env:
+          VERSION: ${{ steps.source.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p ../relay-dist
+          for target in windows/amd64 darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
+            goos=${target%/*} goarch=${target#*/}
+            ext=; [ "$goos" = windows ] && ext=.exe
+            CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -trimpath \
+              -ldflags "-s -w -X main.version=${VERSION}" \
+              -o "../relay-dist/gawk-relay-${goos}-${goarch}${ext}" ./cmd/gawk-relay
+          done
+          ls -l ../relay-dist
+      # docs/76 §11 PP4: `go install …@version` is no distribution, because it
+      # refuses a module with a `replace` — so the binaries are the only way
+      # the vendored quic-go (its 512-deep datagram queue, docs/75 D7) reaches
+      # a party. Each one must say it was built against it.
+      - name: Every binary carries the vendored quic-go
+        run: |
+          set -euo pipefail
+          for bin in relay-dist/*; do
+            info=$(go version -m "$bin")
+            if ! grep -A1 -E '^\s+dep\s+github\.com/quic-go/quic-go\s' <<<"$info" \
+                 | grep -qE '^\s+=>\s+\./third_party/quic-go\s'; then
+              echo "::error::$bin is not built against ./third_party/quic-go"
+              echo "$info"
+              exit 1
+            fi
+            echo "$bin: quic-go => ./third_party/quic-go"
+          done
+      # Zero flags is the product (docs/76 §6.1 item 2), so it is the smoke:
+      # a fresh state directory, no arguments, and the relay must come up,
+      # answer /healthz on its loopback ops listener and console, and have persisted the
+      # keys the relay profile generates. Then it must stop on SIGTERM.
+      - name: gawk-relay starts with zero flags
+        run: |
+          set -euo pipefail
+          state="$RUNNER_TEMP/relay-state"
+          rm -rf "$state"
+          GAWK_STATE_DIR="$state" relay-dist/gawk-relay-linux-amd64 > "$RUNNER_TEMP/relay.log" 2>&1 &
+          pid=$!
+          ok=0
+          for _ in $(seq 1 60); do
+            # Both loopback listeners: the ops port and the host console
+            # (docs/76 §7.1, 127.0.0.1:4480).
+            if curl -fsS -o /dev/null http://127.0.0.1:2112/healthz &&
+               curl -fsS -o /dev/null http://127.0.0.1:4480/healthz; then ok=1; break; fi
+            if ! kill -0 "$pid" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          if [ "$ok" != 1 ]; then
+            echo "::error::gawk-relay with zero flags never answered /healthz on the ops port and the console"
+            cat "$RUNNER_TEMP/relay.log"
+            kill "$pid" 2>/dev/null || true
+            exit 1
+          fi
+          # The host's own /app/ gets a generated config.js naming the relay
+          # with its two pinned hashes (docs/76 §6.1 item 6).
+          cfg=$(curl -fsS http://127.0.0.1:4480/app/config.js)
+          if ! grep -qE '"relayCertHashes":\["[0-9a-f]{64}","[0-9a-f]{64}"\]' <<<"$cfg" ||
+             ! grep -q '"requirePublishSecret":false' <<<"$cfg"; then
+            echo "::error::the console's /app/config.js lacks the pinned hashes"
+            echo "$cfg"; cat "$RUNNER_TEMP/relay.log"; kill "$pid"; exit 1
+          fi
+          for key in stateless-reset.key resume-token.key stats.key; do
+            [ -s "$state/$key" ] || {
+              echo "::error::the relay did not persist $key in its state directory"
+              ls -lR "$state"; cat "$RUNNER_TEMP/relay.log"; kill "$pid"; exit 1; }
+          done
+          kill -TERM "$pid"
+          for _ in $(seq 1 15); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+          if kill -0 "$pid" 2>/dev/null; then
+            echo "::error::gawk-relay did not stop within 15 s of SIGTERM"
+            kill -KILL "$pid"; cat "$RUNNER_TEMP/relay.log"; exit 1
+          fi
+          tail -20 "$RUNNER_TEMP/relay.log"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gawk-relay-${{ steps.source.outputs.sha }}
+          path: relay-dist/
+          retention-days: 7
+          if-no-files-found: error
+
+  # The macOS asset: one universal binary from the two darwin builds above,
+  # Developer ID signed and notarized when the secrets exist — the same
+  # secrets and the same posture as broadcast-desktop.yml's `macos` job
+  # (docs/54 D13): never on pull_request, ad-hoc and labelled so without
+  # them. A bare Mach-O cannot carry a stapled ticket (stapler takes
+  # bundles, disk images and packages), so Gatekeeper checks the
+  # notarization online on first run.
+  relay-macos:
+    needs: [changes, relay]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.relay_pack == 'true'
+    runs-on: macos-latest
+    env:
+      SIGNING_CONFIGURED: ${{ secrets.APPLE_SIGNING_CERTIFICATE_P12 != '' }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: gawk-relay-${{ needs.relay.outputs.sha }}
+          path: relay-dist
+      - name: lipo the darwin builds into one universal binary
+        run: |
+          set -euo pipefail
+          mkdir -p mac
+          lipo -create -output mac/gawk-relay \
+            relay-dist/gawk-relay-darwin-amd64 relay-dist/gawk-relay-darwin-arm64
+          chmod +x mac/gawk-relay
+          lipo -info mac/gawk-relay
+          lipo mac/gawk-relay -verify_arch x86_64 arm64
+      - name: Import the signing identity
+        id: signing
+        if: github.event_name != 'pull_request' && env.SIGNING_CONFIGURED == 'true'
+        env:
+          P12: ${{ secrets.APPLE_SIGNING_CERTIFICATE_P12 }}
+          P12_PASSWORD: ${{ secrets.APPLE_SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          kc="$RUNNER_TEMP/signing.keychain-db"
+          kc_pass="$(uuidgen)"
+          security create-keychain -p "$kc_pass" "$kc"
+          security set-keychain-settings -lut 3600 "$kc"
+          security unlock-keychain -p "$kc_pass" "$kc"
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$P12_PASSWORD" -T /usr/bin/codesign >/dev/null
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_pass" "$kc" >/dev/null
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          identity=$(security find-identity -v -p codesigning "$kc" | awk -F'"' '/Developer ID Application/ {print $2; exit}')
+          if [ -z "$identity" ]; then
+            echo "::error::the imported certificate holds no Developer ID Application identity"
+            exit 1
+          fi
+          echo "::add-mask::$identity"
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+      # Hardened runtime + a secure timestamp: both are notarization
+      # requirements. Ad-hoc (`-`) without an identity, so the binary is at
+      # least consistently signed, which arm64 macOS requires to run at all.
+      - name: Sign (Developer ID when imported, else ad-hoc)
+        env:
+          SIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
+        run: |
+          set -euo pipefail
+          if [ -n "$SIGN_IDENTITY" ]; then
+            codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" mac/gawk-relay
+          else
+            codesign --force --sign - mac/gawk-relay
+          fi
+          codesign --verify --strict --verbose=2 mac/gawk-relay
+      - name: Notarize
+        if: steps.signing.outputs.identity != ''
+        env:
+          KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          for v in KEY_ID ISSUER KEY_P8; do
+            if [ -z "${!v}" ]; then
+              echo "::error::signing is configured but the notarization secret for $v is missing (docs/54 D13)"
+              exit 1
+            fi
+          done
+          key="$RUNNER_TEMP/notary.p8"
+          printf '%s' "$KEY_P8" > "$key"
+          ditto -c -k mac/gawk-relay "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --key "$key" --key-id "$KEY_ID" --issuer "$ISSUER" --wait --timeout 20m
+          rm -f "$key"
+      # ditto keeps the executable bit and the signature, which
+      # upload-artifact alone would not.
+      - name: Assemble artifact
+        env:
+          SIGNED: ${{ steps.signing.outputs.identity != '' }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          ditto -c -k mac/gawk-relay out/gawk-relay-macos-universal.zip
+          {
+            echo "gawk-relay-macos (R74, docs/76)"
+            echo "commit:    ${{ needs.relay.outputs.sha }}"
+            echo "version:   ${{ needs.relay.outputs.version }}"
+            echo "built:     $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "arches:    $(lipo -archs mac/gawk-relay)"
+            if [ "$SIGNED" = "true" ]; then
+              echo "signed:    Developer ID + notarized"
+            else
+              echo "signed:    ad-hoc — not Developer ID, not notarized"
+            fi
+          } > out/BUILD-INFO-macos.txt
+          cat out/BUILD-INFO-macos.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gawk-relay-macos-${{ needs.relay.outputs.sha }}
+          path: out/
+          retention-days: 7
+          if-no-files-found: error
+
+  # R74 PP2 (docs/76 §11, "Windows and macOS builds and unit tests"): the
+  # relay's Windows code RUNS, not only vets. The self-hosted Linux pool,
+  # as for every Windows job here (docs/38 D18): the unit tests are
+  # cross-compiled for windows/amd64 and run under Wine, which executes
+  # what only Windows had (DPAPI in relaystate/secret_windows.go, the
+  # per-OS state directory, LAN detection's Windows names).
+  #
+  # Wine has no SIO_UDP_CONNRESET (Go's UDP listener sets it on Windows,
+  # and Wine answers WSAEOPNOTSUPP), so the tests that open the relay's
+  # QUIC listener are skipped here; they run on Linux in `server` and on
+  # macOS in `relay-darwin`. A Wine run is not a Windows host: the
+  # firewall elevation and a real TerminateProcess stay on the owner's
+  # on-hardware list (docs/76 §11.1).
+  relay-windows:
+    needs: changes
+    if: needs.changes.outputs.relay_portable == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    container: ubuntu:24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install Wine
+        run: |
+          set -euo pipefail
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates git wine wine64
+          wine --version
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: gawk-server/go.mod
+          cache-dependency-path: gawk-server/go.sum
+      - name: Unit tests for windows/amd64, under Wine
+        working-directory: gawk-server
+        env:
+          WINEDEBUG: -all
+          WINEPREFIX: /tmp/wine-prefix
+        run: |
+          set -euo pipefail
+          failed=()
+          skip='^(TestRelayServesTheConsole|TestRelayRefusesANonLoopbackConsole|TestRelayStartsWithNoConfiguration|TestRelayRestartResumesABroadcast|TestRelayServesItsNamedAddress|TestStandaloneRelaySendsLocalRelayInfo|TestRelayIgnoresDevCert)$'
+          for pkg in internal/relaystate internal/lanaddr internal/tlsutil internal/relayconsole internal/poplink internal/popclient cmd/gawk-relay; do
+            exe="$RUNNER_TEMP/$(tr / _ <<<"$pkg").test.exe"
+            GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -c -o "$exe" "./$pkg"
+            echo "::group::$pkg"
+            # Every package runs, so one failure cannot hide the next.
+            if ! (cd "$pkg" && wine "$exe" -test.v -test.timeout=10m -test.skip "$skip"); then
+              failed+=("$pkg")
+              echo "::error::$pkg failed under Wine"
+            fi
+            echo "::endgroup::"
+          done
+          if (( ${#failed[@]} )); then
+            echo "failed: ${failed[*]}"
+            exit 1
+          fi
+
+  # The same acceptance row's macOS half: the relay's unit tests on a
+  # hosted macOS runner (the one deliberate hosted exception, as in
+  # broadcast-desktop.yml's `macos`), so the darwin builds of the state
+  # directory, LAN detection and the relay itself run before they ship.
+  relay-darwin:
+    needs: changes
+    if: needs.changes.outputs.relay_portable == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: gawk-server/go.mod
+          cache-dependency-path: gawk-server/go.sum
+      - name: Unit tests on macOS
+        working-directory: gawk-server
+        run: |
+          go test -count=1 ./internal/relaystate/ ./internal/lanaddr/ ./internal/tlsutil/ \
+            ./internal/relayconsole/ ./internal/poplink/ ./internal/popclient/ ./cmd/gawk-relay/
+
+  # Puts the relay on the gawk-server release page and publishes
+  # releases/gawk-relay/latest.json (the site card and the console's
+  # "update available" read it). Moves bytes, builds nothing — the reasoning
+  # is attach-release-assets' own. The gate is the action's: a push whose
+  # gawk-server tag does not point at this commit attaches nothing, which is
+  # every push but a release.
+  #
+  # Hard dependencies: `server` (a release never goes out off a red test
+  # run) and `relay`. macOS is soft, as in broadcast-desktop.yml: a hosted
+  # macOS hiccup or absent Apple secrets never hold the other platforms.
+  # Push only — the job holds `contents: write` and runs an action from the
+  # tree it checked out, which on a pull_request would be a contributor's.
+  relay-release:
+    needs: [server, relay, relay-macos]
+    if: >-
+      !cancelled() &&
+      github.event_name == 'push' &&
+      needs.server.result == 'success' &&
+      needs.relay.result == 'success'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: gawk-relay-${{ needs.relay.outputs.sha }}
+          path: staging
+      - uses: actions/download-artifact@v8
+        if: needs.relay-macos.result == 'success'
+        with:
+          name: gawk-relay-macos-${{ needs.relay.outputs.sha }}
+          path: staging-macos
+      - name: Package the release assets
+        env:
+          MACOS_BUILT: ${{ needs.relay-macos.result == 'success' }}
+          MACOS_SIGNING: ${{ secrets.APPLE_SIGNING_CERTIFICATE_P12 != '' }}
+          SHA: ${{ needs.relay.outputs.sha }}
+          VERSION: ${{ needs.relay.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Not `assets`: the repository root has an `assets/` directory, and
+          # a staging directory that collides with the checkout is how a
+          # release once published without its binary (broadcast-desktop.yml).
+          mkdir -p release-assets
+          chmod +x staging/*
+          # One file is the whole product on Windows: nothing to unpack.
+          cp staging/gawk-relay-windows-amd64.exe release-assets/
+          # Linux rides in a tarball, which keeps the executable bit, with
+          # its notices beside it.
+          for arch in amd64 arm64; do
+            d="$RUNNER_TEMP/gawk-relay-linux-$arch"
+            rm -rf "$d"; mkdir -p "$d"
+            cp "staging/gawk-relay-linux-$arch" "$d/gawk-relay"
+            cp LICENSE "$d/"
+            cp gawk-server/THIRD-PARTY-NOTICES.md "$d/THIRD-PARTY-NOTICES.md"
+            cp gawk-app/THIRD-PARTY-NOTICES.md "$d/THIRD-PARTY-NOTICES-app.md"
+            tar -C "$RUNNER_TEMP" -czf "release-assets/gawk-relay-linux-$arch.tar.gz" "gawk-relay-linux-$arch"
+          done
+          # A release never carries an unsigned Mac binary once signing is
+          # configured; without the secrets it is left off with a warning.
+          if [ "$MACOS_BUILT" != "true" ]; then
+            echo "::warning::the macOS binary is not attached: relay-macos did not succeed for this commit"
+          elif [ "$MACOS_SIGNING" = "true" ]; then
+            if ! grep -q '^signed:    Developer ID + notarized' staging-macos/BUILD-INFO-macos.txt; then
+              echo "::error::signing is configured but the macOS relay is not Developer ID + notarized — refusing to attach it"
+              cat staging-macos/BUILD-INFO-macos.txt
+              exit 1
+            fi
+            cp staging-macos/gawk-relay-macos-universal.zip staging-macos/BUILD-INFO-macos.txt release-assets/
+          else
+            echo "::warning::the macOS binary is not attached: no Developer ID signing secrets are configured (docs/54 D13)"
+          fi
+          # The attribution obligations attach to the distributed binaries.
+          cp LICENSE release-assets/
+          cp gawk-server/THIRD-PARTY-NOTICES.md release-assets/THIRD-PARTY-NOTICES.md
+          cp gawk-app/THIRD-PARTY-NOTICES.md release-assets/THIRD-PARTY-NOTICES-app.md
+          {
+            echo "gawk-relay (R74, docs/76)"
+            echo "commit:    $SHA"
+            echo "version:   $VERSION"
+            echo "built:     cross-compiled by ci.yml \`relay\` (CGO_ENABLED=0, -trimpath)"
+            echo "quic-go:   ./third_party/quic-go (go version -m <binary>)"
+          } > release-assets/BUILD-INFO.txt
+          # Unsigned, like the broadcasters' Linux and Windows assets: the
+          # checksum is the integrity check. The relay has no self-update, so
+          # it needs no SHA256SUMS.minisig (docs/48 D1 is the apps' installer).
+          (cd release-assets && sha256sum ./* > ../SHA256SUMS)
+          mv SHA256SUMS release-assets/
+          ls -l release-assets
+      - uses: ./.github/actions/attach-release-assets
+        id: attach
+        with:
+          component: gawk-server
+          dir: release-assets
+          sha: ${{ needs.relay.outputs.sha }}
+      - uses: ./.github/actions/publish-release-manifest
+        if: steps.attach.outputs.attached == 'true'
+        with:
+          component: gawk-server
+          distribution: gawk-relay
+          dir: release-assets
+          primary: gawk-relay-windows-amd64.exe
+          tag: ${{ steps.attach.outputs.tag }}
+          published-at: ${{ steps.attach.outputs.published_at }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   # R41 (docs/43): the coverage plumbing's own tests. Small, but it is what
   # every component's floor gate calls — a parser that quietly counted coverage

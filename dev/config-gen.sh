@@ -6,7 +6,10 @@
 # the frontend needs no dev-only code path. It runs in the `config-gen`
 # service, after the relay reports healthy, and exits.
 #
-# Inputs (environment): RELAY_URL, APP_URL, CERT_MODE, OUT.
+# Inputs (environment): RELAY_URL, APP_URL, CERT_MODE, OUT, and optionally
+# RELAY_CERT_HASHES (R74): comma-separated hex SHA-256 pins for RELAY_URL,
+# rendered as relayCertHashes, the key a PoP's /app/config.js uses. For
+# pointing the stack's app at a relay on a LAN address (docs/76 §6.1 item 6).
 set -eu
 
 CERT=${CERT:-/certs/cert.pem}
@@ -14,6 +17,20 @@ OUT=${OUT:-/out/config.js}
 CERT_MODE=${CERT_MODE:-devcert}
 RELAY_URL=${RELAY_URL:-https://localhost:4433}
 APP_URL=${APP_URL:-http://localhost:8080}
+RELAY_CERT_HASHES=${RELAY_CERT_HASHES:-}
+
+# Validated up front: a malformed pin would only surface later as an opaque
+# certificate error in the browser.
+PINS_JSON=
+if [ -n "$RELAY_CERT_HASHES" ]; then
+    for h in $(echo "$RELAY_CERT_HASHES" | tr ',' ' '); do
+        if ! echo "$h" | grep -Eq '^[0-9a-f]{64}$'; then
+            echo "config-gen: RELAY_CERT_HASHES entry '$h' is not a lowercase 64-hex SHA-256" >&2
+            exit 1
+        fi
+        PINS_JSON="${PINS_JSON:+$PINS_JSON, }\"$h\""
+    done
+fi
 
 # The relay is healthy, so the pair exists — but poll rather than assume, and
 # fail loudly rather than emit a config with no hash in it, which would fail
@@ -75,6 +92,9 @@ TMP="$OUT.tmp"
         # Dev-only key (docs/41 D4), and the reason the chrome-free
         # #/view/{id} route works here in a fresh profile.
         echo "  devCertHashHex: \"$HASH\","
+    fi
+    if [ -n "$PINS_JSON" ]; then
+        echo "  relayCertHashes: [$PINS_JSON],"
     fi
     echo "};"
 } > "$TMP"

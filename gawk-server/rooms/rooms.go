@@ -169,6 +169,13 @@ type RoomSpec struct {
 	// ScreeningExempt both hold that rule, so a CR applied by hand that breaks
 	// it is screened anyway.
 	Screening string `json:"screening,omitempty"`
+	// Pop names the R74 PoP whose party wall this static room is (docs/76
+	// item 33). Such a room accepts vouched attaches only, from that PoP's
+	// link; empty means an ordinary room.
+	Pop string `json:"pop,omitempty"`
+	// MaxParticipants overrides -max-room-participants for this room; 0
+	// means the fleet default. A party wall needs more than 50.
+	MaxParticipants int `json:"maxParticipants,omitempty"`
 }
 
 // ScreeningExempt is the one non-empty RoomSpec.Screening value.
@@ -283,6 +290,8 @@ type FileRoom struct {
 	DisplayName   string `json:"displayName,omitempty"`
 	AttachSecret  string `json:"attachSecret,omitempty"`
 	MaxBroadcasts int    `json:"maxBroadcasts,omitempty"`
+	// MaxParticipants overrides -max-room-participants for this room.
+	MaxParticipants int `json:"maxParticipants,omitempty"`
 }
 
 // --- deepcopy ---------------------------------------------------------

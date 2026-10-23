@@ -7,6 +7,7 @@ struct BroadcastView: View {
     @Environment(BroadcastSession.self) private var session
     @Environment(Capture.self) private var capture
     @Environment(AppRouter.self) private var router
+    @Environment(LocalRelaySwitcher.self) private var switcher
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showRoomPicker = false
     @State private var showRoomManager = false
@@ -75,6 +76,16 @@ struct BroadcastView: View {
                         .accessibilityIdentifier("link.notice")
                     }
                     ServerNotices()
+                    // R74 (docs/76 §7.3): the party's local relay the next
+                    // broadcast uses, and the way back to home.
+                    if let chip = switcher.chip(home: settings.relayURL) {
+                        Banner(kind: .info, systemImage: "wifi", title: chip) {
+                            Button("Use \(LocalRelayCopy.homeHost(settings)) instead") { switcher.optOut() }
+                                .buttonStyle(.gawkTintedCompact)
+                                .accessibilityIdentifier("localRelay.optOut")
+                        }
+                        .accessibilityIdentifier("localRelay.chip")
+                    }
                     if let summary = session.summary {
                         SummaryCard(summary: summary) {
                             session.dismissSummary()
@@ -127,7 +138,7 @@ struct BroadcastView: View {
         return VStack(spacing: 8) {
             Button {
                 settings.sawCaptureNote = true
-                capture.start(session: session, settings: settings)
+                capture.start(session: session, settings: settings, switcher: switcher)
             } label: {
                 HStack(spacing: 10) {
                     Circle().fill(Theme.live).frame(width: 10, height: 10)

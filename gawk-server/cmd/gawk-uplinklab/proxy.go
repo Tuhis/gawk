@@ -52,6 +52,7 @@ type proxyCounters struct {
 func runProxy(args []string) error {
 	fs := flag.NewFlagSet("proxy", flag.ExitOnError)
 	listen := fs.String("listen", "127.0.0.1:4600", "client-facing UDP address")
+	listenFile := fs.String("listen-file", "", "write the bound client-facing address here once listening (for -listen with port 0)")
 	upstream := fs.String("upstream", "127.0.0.1:4500", "server UDP address")
 	rtt := fs.Duration("rtt", 10*time.Millisecond, "base round-trip time added by the path")
 	jitter := fs.Duration("jitter", 0, "extra uniform one-way delay in [0, jitter) per packet, both ways; order is kept")
@@ -94,6 +95,10 @@ func runProxy(args []string) error {
 	}
 	front, err := net.ListenUDP("udp", laddr)
 	if err != nil {
+		return err
+	}
+	if err := writeAddrFile(*listenFile, front.LocalAddr()); err != nil {
+		_ = front.Close()
 		return err
 	}
 	back, err := net.DialUDP("udp", nil, uaddr)

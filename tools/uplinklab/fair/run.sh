@@ -31,7 +31,12 @@ ping -i 0.2 -w $((secs + 2)) 127.0.0.1 > "$out/ping.txt" 2>&1 &
 sp= rp=
 # RU6: <cc> engine-cubic / engine-bbr runs the shipped engine's sender
 # (bin/sender-engine) with that controller.
-case $cc in engine-*) SENDER=${SENDER:-$LAB/bin/sender-engine}; cc=${cc#engine-} ;; esac
+# R74 PP8: <cc> pop runs the PoP's leg writer (bin/gawk-uplinklab legsend,
+# docs/76 item 18), whose quic-go has Cubic only.
+case $cc in
+  engine-*) SENDER=${SENDER:-$LAB/bin/sender-engine}; cc=${cc#engine-} ;;
+  pop) SENDER=${SENDER:-$LAB/bin/gawk-uplinklab legsend}; cc=cubic ;;
+esac
 if [ "$mode" != none ]; then
   "$LAB/bin/gawk-uplinklab-bigq" recv -addr 127.0.0.1:4500 -out "$out/recv.csv" -cert-hash-file "$out/cert.hash" \
     2> "$out/recv.log" &

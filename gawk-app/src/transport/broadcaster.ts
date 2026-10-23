@@ -64,6 +64,7 @@ import {
 } from './reconnect';
 import { CLOCK_MAPPING_INTERVAL_MS, TimeSyncClient } from './time-sync';
 import { appendClientIdentity } from './client-identity';
+import { parseLocalRelayEvent, type LocalRelayEvent } from './local-relay';
 import {
   CLOSE_CODE_PUBLISHER_SUPERSEDED,
   CLOSE_CODE_TERMINATED_BY_OPERATOR,
@@ -83,6 +84,8 @@ import {
   TYPE_TELEMETRY_ENDPOINT,
   parseTelemetryEndpoint,
   TYPE_RELAY_IDENTITY,
+  TYPE_LOCAL_RELAY_INFO,
+  TYPE_LOCAL_RELAY_OFFER,
   TYPE_VIEWER_COUNT,
   VIEWER_COUNT_SIZE,
   type TelemetryHelloMessage,
@@ -293,6 +296,9 @@ export interface BroadcastCallbacks {
   // new session.
   onTelemetryHello?: (hello: TelemetryHelloMessage) => void;
   onTelemetryEndpoint?: (url: string) => void;
+  // R74: a PoP's LocalRelayInfo (0x18) or home's LocalRelayOffer (0x19),
+  // once per transport session (features/pop decides what they mean).
+  onLocalRelay?: (ev: LocalRelayEvent) => void;
 }
 
 function roundDownToEven(n: number): number {
@@ -603,6 +609,10 @@ export class BroadcastPipeline {
     // R59 (docs/61 D1): who this broadcaster is, for the relay's usage
     // metrics. New vs resumed the relay tells from the path.
     appendClientIdentity(urlObj);
+    // R74 (docs/76 items 21 and 34): this client follows a PoP offer, and the
+    // broadcaster asked to stay off the party wall.
+    if (this.connectOpts.followOffers) urlObj.searchParams.set('lr', '1');
+    if (this.connectOpts.wallHidden) urlObj.searchParams.set('wall', 'hidden');
     return urlObj.toString();
   }
 
@@ -741,6 +751,13 @@ export class BroadcastPipeline {
         // drops the message here rather than warn about it on every session.
         case TYPE_RELAY_IDENTITY:
           break;
+        // R74: what a PoP is (0x18), or home's offer of one (0x19).
+        case TYPE_LOCAL_RELAY_INFO:
+        case TYPE_LOCAL_RELAY_OFFER: {
+          const ev = parseLocalRelayEvent(data);
+          if (!this.stopping) this.cb.onLocalRelay?.(ev);
+          break;
+        }
         // The fleet's parity level. An older relay sends no such stream, so
         // parityLevel stays 0 and this producer emits no parity chunks. A
         // relay configured off sends level 0 for the same effect, so the

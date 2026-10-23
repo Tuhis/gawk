@@ -156,6 +156,9 @@ fn a_quality_change_keeps_the_code_and_the_viewer_re_primes() {
             capture_source: "test-source".into(),
             room_new: false,
             room_creator_token_hex: String::new(),
+            cert_hashes: Vec::new(),
+            follow_offers: false,
+            wall_hidden: false,
         },
         heard.clone(),
     );
@@ -183,10 +186,12 @@ fn a_quality_change_keeps_the_code_and_the_viewer_re_primes() {
                     relay_url: url,
                     broadcast_id: code,
                     preset: PlayoutPreset::LowestLatency,
+                    follow_offers: false,
                 },
                 Arc::new(WtSubscribeDialer {
                     origin: "gawk://ios".into(),
                     insecure: true,
+                    pins: Vec::new(),
                 }),
                 sink,
                 ViewerClock::new(),

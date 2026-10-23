@@ -792,7 +792,9 @@ service account created, enforced by a creator stamp on the `Room` CR
   rations creation, it is not identity.
 - The internal `/internal/room/` route uses the cluster PSK and the lease
   generation, and, like `/internal/subscribe/`, must never be routed
-  publicly.
+  publicly. So does R74's `POST /internal/roomvouch/{code}`, which forwards
+  a PoP's party-wall attach or detach to the wall's home pod and exists
+  only with `-pops` ([docs/76](76-pop-relays.md) §6.10).
 
 ## 6. Failure modes
 

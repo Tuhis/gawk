@@ -66,7 +66,7 @@ func (f *fakeRooms) CreateStatic(_ context.Context, req kube.StaticRoom) (string
 	obj := kube.RoomObject{Name: code, Managed: true, CreatedBy: req.CreatedBy}
 	obj.Room.Name = code
 	obj.Room.Spec = rooms.RoomSpec{Kind: rooms.KindStatic, DisplayCode: req.Code,
-		DisplayName: req.DisplayName, MaxBroadcasts: req.MaxBroadcasts}
+		DisplayName: req.DisplayName, MaxBroadcasts: req.MaxBroadcasts, Pop: req.Pop}
 	secret := ""
 	if req.WithAttachSecret {
 		f.secrets++
@@ -128,6 +128,21 @@ func (f *fakeRooms) SetScreening(_ context.Context, name, value string, check fu
 	after.Room.Spec.Screening = value
 	f.rooms[name] = after
 	return obj, after, nil
+}
+
+func (f *fakeRooms) SetWall(_ context.Context, name, pop string, maxBroadcasts int, displayName string) (kube.RoomObject, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return kube.RoomObject{}, f.err
+	}
+	obj, ok := f.rooms[name]
+	if !ok || pop == "" || obj.Room.Spec.Pop != pop {
+		return kube.RoomObject{}, kube.ErrRoomNotFound
+	}
+	obj.Room.Spec.MaxBroadcasts, obj.Room.Spec.DisplayName = maxBroadcasts, displayName
+	f.rooms[name] = obj
+	return obj, nil
 }
 
 func dynamicRoomObject(name, key, holder string, attachments int) kube.RoomObject {

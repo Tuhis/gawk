@@ -25,6 +25,7 @@ const terminationReason = "terminated by operator"
 // An already-expired record kills nothing — evaluated on the same clock as
 // the publish path, so a ban CR that outlived its cooldown is inert on both.
 func (s *Server) HandleBanAdded(rec moderation.Record) {
+	s.notifyBanObservers(rec)
 	if !rec.Active(s.clock()) {
 		s.log.Debug("moderation ban not actuated: already expired",
 			"target_type", string(rec.Target.Type))

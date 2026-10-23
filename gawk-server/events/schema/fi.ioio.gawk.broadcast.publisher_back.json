@@ -12,6 +12,9 @@
     "broadcastKey": {
       "$ref": "common.json#/$defs/broadcastKey"
     },
+    "pop": {
+      "$ref": "common.json#/$defs/popName"
+    },
     "summary": {
       "$ref": "common.json#/$defs/summary"
     },

@@ -317,16 +317,40 @@ type Config struct {
 	// with the terminal 4000 and its slot freed. Default off — the relay
 	// only reports the stall unless the operator opts in.
 	PublisherStallEnds bool
+
+	// Pops turns on the home side of R74 PoP relays (docs/76): the /pop/*
+	// routes a paired LAN relay links and pulls through. Needs a Pop source:
+	// the Pop CRs (ClusterMode) or PopsFile.
+	Pops bool
+	// PopsFile is a list of Pop definitions (pops.FilePop) for deployments
+	// without a Kubernetes API, the -rooms-file shape.
+	PopsFile string
+	// PopUplinkLinger: how long a PoP's forwarded broadcast keeps its uplink
+	// leg after the last outside viewer leaves.
+	PopUplinkLinger time.Duration
+	// PopOfferDefer: how long the home waits before offering a guest the
+	// switch to a PoP.
+	PopOfferDefer time.Duration
+	// PopDemandTimeout: how long an outside viewer's subscribe waits for a
+	// PoP to start forwarding a reserved broadcast.
+	PopDemandTimeout time.Duration
 }
 
 // ParseFlags parses args (without the program name) into a Config.
-// getenv supplies environment lookups, injectable for tests.
+// getenv supplies environment lookups, injectable for tests. It is the
+// gawk-server profile; gawk-relay parses with ParseRelayFlags.
 func ParseFlags(args []string, getenv func(string) string) (Config, error) {
-	// envBool reads a boolean env var with a default. The plain
-	// `env(...) == "true"` idiom cannot express a default-true flag: unset and
-	// an explicit "false" both read as empty there, so it could never be
-	// turned off.
-	envBool := func(key string, def bool) bool {
+	return parse(args, getenv, ServerProfile, nil)
+}
+
+// envLookups returns the two env readers every flag default goes through.
+//
+// envBool reads a boolean env var with a default. The plain
+// `env(...) == "true"` idiom cannot express a default-true flag: unset and
+// an explicit "false" both read as empty there, so it could never be
+// turned off.
+func envLookups(getenv func(string) string) (env func(key, def string) string, envBool func(key string, def bool) bool) {
+	envBool = func(key string, def bool) bool {
 		switch strings.ToLower(strings.TrimSpace(getenv(key))) {
 		case "true", "1", "yes":
 			return true
@@ -336,15 +360,27 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 			return def
 		}
 	}
-	env := func(key, def string) string {
+	env = func(key, def string) string {
 		if v := getenv(key); v != "" {
 			return v
 		}
 		return def
 	}
+	return env, envBool
+}
 
-	fs := flag.NewFlagSet("gawk-server", flag.ContinueOnError)
-	addr := fs.String("addr", env("GAWK_ADDR", ":4433"), "UDP listen address")
+// parse is the one flag list, with the profile's defaults substituted in.
+// register, when non-nil, adds a binary's own flags to the same FlagSet and
+// returns the validation to run after Parse (gawk-relay's knobs).
+func parse(args []string, getenv func(string) string, p Profile, register func(fs *flag.FlagSet, getenv func(string) string) func() error) (Config, error) {
+	env, envBool := envLookups(getenv)
+
+	fs := flag.NewFlagSet(p.Name, flag.ContinueOnError)
+	var finish func() error
+	if register != nil {
+		finish = register(fs, getenv)
+	}
+	addr := fs.String("addr", env("GAWK_ADDR", p.Addr), "UDP listen address")
 	certFile := fs.String("cert-file", env("GAWK_CERT_FILE", ""), "path to PEM certificate")
 	keyFile := fs.String("key-file", env("GAWK_KEY_FILE", ""), "path to PEM private key")
 	devCert := fs.Bool("dev-cert", env("GAWK_DEV_CERT", "") == "true" || env("GAWK_DEV_CERT", "") == "1",
@@ -353,7 +389,7 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"comma-separated hosts for the dev certificate")
 	logLevel := fs.String("log-level", env("GAWK_LOG_LEVEL", "info"), "log level: debug|info|warn|error")
 	logFormat := fs.String("log-format", env("GAWK_LOG_FORMAT", "text"), "log format: text|json")
-	maxSubs := fs.String("max-subscribers", env("GAWK_MAX_SUBSCRIBERS", "15"), "maximum concurrent subscribers")
+	maxSubs := fs.String("max-subscribers", env("GAWK_MAX_SUBSCRIBERS", p.MaxSubscribers), "maximum concurrent subscribers")
 	origins := fs.String("allowed-origins", env("GAWK_ALLOWED_ORIGINS", ""),
 		"comma-separated allowed Origin values; empty allows all")
 	maxIdle := fs.String("max-idle-timeout", env("GAWK_MAX_IDLE_TIMEOUT", "30s"),
@@ -369,9 +405,9 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"a connected publisher that sends no datagram at all (not even TimeSync/ClockMapping) for this long is reported stalled (not live); 0 disables; keep >= 90s, a hidden Chrome tab pings once a minute")
 	publisherStallEnds := fs.Bool("publisher-stall-ends", envBool("GAWK_PUBLISHER_STALL_ENDS", false),
 		"end a broadcast stalled for broadcast-grace with the terminal 'broadcast ended' and free its slot (default: report only)")
-	maxBroadcasts := fs.String("max-broadcasts", env("GAWK_MAX_BROADCASTS", "5"),
+	maxBroadcasts := fs.String("max-broadcasts", env("GAWK_MAX_BROADCASTS", p.MaxBroadcasts),
 		"maximum concurrent broadcasts")
-	maxTotalSubs := fs.String("max-total-subscribers", env("GAWK_MAX_TOTAL_SUBSCRIBERS", "50"),
+	maxTotalSubs := fs.String("max-total-subscribers", env("GAWK_MAX_TOTAL_SUBSCRIBERS", p.MaxTotalSubscribers),
 		"maximum total subscribers across all broadcasts")
 	pubSecret := fs.String("publish-secret", env("GAWK_PUBLISH_SECRET", ""),
 		"shared secret required to publish")
@@ -403,7 +439,7 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"accept R73 reliable uplink carriers from broadcasters (advertised to publishers); off is byte-identical to pre-R73")
 	uplinkMaxBitrate := fs.String("uplink-max-bitrate", env("GAWK_UPLINK_MAX_BITRATE", "50mbps"),
 		"highest broadcaster bitrate the initial QUIC receive windows are sized for (R73, docs/75 D10); 0 keeps quic-go's defaults")
-	metricsAddr := fs.String("metrics-addr", env("GAWK_METRICS_ADDR", ":2112"),
+	metricsAddr := fs.String("metrics-addr", env("GAWK_METRICS_ADDR", p.MetricsAddr),
 		"TCP listen address for the ops endpoint (/metrics, /healthz, /statusz); \"off\" disables")
 	statelessResetKey := fs.String("stateless-reset-key", env("GAWK_STATELESS_RESET_KEY", ""),
 		"QUIC stateless reset key as 64 hex chars (32 bytes), shared across all relay pods; empty disables")
@@ -416,6 +452,16 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"pre-shared key gating the pod-to-pod /internal/subscribe route; required with -cluster-mode")
 	internalServerName := fs.String("internal-server-name", env("GAWK_INTERNAL_SERVER_NAME", ""),
 		"TLS server name edge pods verify when dialing an origin's pod IP (the public cert hostname); required with -cluster-mode")
+	popsFlag := fs.Bool("pops", envBool("GAWK_POPS", false),
+		"accept R74 PoP relays (docs/76): serve the /pop/* link and leg routes; requires -cluster-mode or -pops-file")
+	popsFile := fs.String("pops-file", env("GAWK_POPS_FILE", ""),
+		"Pop definitions for non-Kubernetes deployments (the -rooms-file shape); reloaded on change")
+	popUplinkLinger := fs.String("pop-uplink-linger", env("GAWK_POP_UPLINK_LINGER", "30s"),
+		"how long a PoP broadcast's uplink leg lingers after its last outside viewer leaves")
+	popOfferDefer := fs.String("pop-offer-defer", env("GAWK_POP_OFFER_DEFER", "2s"),
+		"how long the home waits before offering a guest the switch to a PoP")
+	popDemandTimeout := fs.String("pop-demand-timeout", env("GAWK_POP_DEMAND_TIMEOUT", "5s"),
+		"how long an outside viewer's subscribe waits for a PoP to start forwarding a reserved broadcast")
 	trustedCIDRs := fs.String("trusted-cidrs", env("GAWK_TRUSTED_CIDRS", ""),
 		"comma-separated CIDRs that bypass the per-IP connection rate limiter (node/pod CIDRs under SNAT)")
 	statsKey := fs.String("stats-key", env("GAWK_STATS_KEY", ""),
@@ -430,7 +476,7 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"operator display name advertised to server pickers over /echo (R37 wire 0x11); empty leaves the relay unnamed")
 	moderationSource := fs.String("moderation-source", env("GAWK_MODERATION_SOURCE", "off"),
 		"R39 ban source: off | k8s (Ban CRs in POD_NAMESPACE) | file:<path> (JSON array, reloaded on change and SIGHUP)")
-	roomsFlag := fs.Bool("rooms", envBool("GAWK_ROOMS", false),
+	roomsFlag := fs.Bool("rooms", envBool("GAWK_ROOMS", p.Rooms),
 		"enable R42 rooms: the /room/ routes and the room registry; off is byte-identical to pre-R42")
 	roomEmptyGrace := fs.String("room-empty-grace", env("GAWK_ROOM_EMPTY_GRACE", "60s"),
 		"how long a dynamic room survives with no participant before it ends")
@@ -477,6 +523,11 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
+	}
+	if finish != nil {
+		if err := finish(); err != nil {
+			return Config{}, err
+		}
 	}
 
 	// The admin-API knobs are trimmed ONCE, here, so the validation below and
@@ -606,6 +657,29 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	}
 	if *clusterMode && (*internalPSK == "" || *internalServerName == "") {
 		return Config{}, fmt.Errorf("cluster-mode requires -internal-psk and -internal-server-name")
+	}
+	popsFileV := strings.TrimSpace(*popsFile)
+	if *popsFlag && !*clusterMode && popsFileV == "" {
+		return Config{}, fmt.Errorf("pops requires -cluster-mode or -pops-file")
+	}
+	positive := func(name, v string) (time.Duration, error) {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			return 0, fmt.Errorf("invalid %s %q: want a positive duration", name, v)
+		}
+		return d, nil
+	}
+	popLinger, err := positive("pop-uplink-linger", *popUplinkLinger)
+	if err != nil {
+		return Config{}, err
+	}
+	popDefer, err := positive("pop-offer-defer", *popOfferDefer)
+	if err != nil {
+		return Config{}, err
+	}
+	popDemand, err := positive("pop-demand-timeout", *popDemandTimeout)
+	if err != nil {
+		return Config{}, err
 	}
 	cidrs, err := parseCIDRs(*trustedCIDRs)
 	if err != nil {
@@ -770,6 +844,12 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 
 		PublisherStallTimeout: stallDuration,
 		PublisherStallEnds:    *publisherStallEnds,
+
+		Pops:             *popsFlag,
+		PopsFile:         popsFileV,
+		PopUplinkLinger:  popLinger,
+		PopOfferDefer:    popDefer,
+		PopDemandTimeout: popDemand,
 	}, nil
 }
 
@@ -809,6 +889,10 @@ func parseCIDRs(s string) ([]*net.IPNet, error) {
 	}
 	return out, nil
 }
+
+// ParseHexKey32 is parseHexKey32 for the relay's state directory, which
+// stores its persisted keys in the flag's own format.
+func ParseHexKey32(name, s string) ([]byte, error) { return parseHexKey32(name, s) }
 
 // parseHexKey32 decodes a 32-byte hex-encoded key flag: empty (disabled) or
 // exactly 64 hex chars. The decoded bytes are never logged.

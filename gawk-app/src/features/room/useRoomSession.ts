@@ -9,10 +9,20 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { RoomSession, type RoomSessionGrant, type RoomTarget } from '../../transport/room-session';
 import { CLOSE_CODE_SERVER_DRAINING } from '../../transport/wire';
-import { useTransportStore } from '../../state/transportStore';
+import { selectCertHashList, useTransportStore } from '../../state/transportStore';
 import { useRoomStore } from '../../state/roomStore';
 import { log } from '../../lib/logger';
 import { DRAINING_NOTE, RECONNECTING_NOTE } from './roomCopy';
+import { leaveUnreachableLocalRelay, noteLocalRelay, willFollowOffers } from '../pop/switch';
+
+// R74 (docs/76 item 43.5): a PoP a followed offer chose that cannot serve
+// the room (unreachable, refused, lost, or not holding it) sends the tab
+// back home; the store change redials there. A full room or a refused key
+// is the room's answer, the same from home.
+function leaveLocalRelayAfter(kind: string): void {
+  if (kind === 'full' || kind === 'forbidden') return;
+  if (useTransportStore.getState().resolvedSource === 'pop') leaveUnreachableLocalRelay();
+}
 
 export interface RoomCommands {
   attach: (broadcastId: string, resumeTokenHex: string, label: string) => void;
@@ -36,7 +46,7 @@ export function useRoomSession({ target, nickname, clientKind, grant, dialNonce 
   // Same subscription discipline as useViewerConnection: a server change is
   // a deliberate re-dial, and the room's tiles re-dial with it.
   const serverUrl = useTransportStore((s) => s.serverUrl);
-  const certHashHex = useTransportStore((s) => s.certHashHex);
+  const certHashHex = useTransportStore(selectCertHashList);
   const sessionRef = useRef<RoomSession | null>(null);
   const nicknameRef = useRef(nickname);
   nicknameRef.current = nickname;
@@ -76,9 +86,12 @@ export function useRoomSession({ target, nickname, clientKind, grant, dialNonce 
           nickname: nicknameRef.current,
           clientKind: clientKindRef.current,
           grant: grantRef.current,
+          // R74 (docs/76 item 43.7): lr=1 while this tab would follow an offer.
+          followOffers: willFollowOffers(),
         },
         {
           onConnected: () => {},
+          onLocalRelay: (ev) => noteLocalRelay(ev, 'room'),
           onState: (state) => useRoomStore.getState().replaceState(state),
           onEvent: (ev) => useRoomStore.getState().applyEvent(ev),
           onReconnecting: (info) => {
@@ -94,6 +107,7 @@ export function useRoomSession({ target, nickname, clientKind, grant, dialNonce 
           onError: (err) => {
             log.error(`room session failed (${err.kind}):`, err.message);
             useRoomStore.getState().setError(err.kind, err.message);
+            leaveLocalRelayAfter(err.kind);
           },
         },
       );
@@ -103,6 +117,7 @@ export function useRoomSession({ target, nickname, clientKind, grant, dialNonce 
         if (sessionRef.current !== s) return;
         log.error(`room session failed (${err.kind}):`, err.message);
         useRoomStore.getState().setError(err.kind, err.message);
+        leaveLocalRelayAfter(err.kind);
       });
     }, 0);
     return () => {

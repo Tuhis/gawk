@@ -28,7 +28,7 @@ import type { EncoderConfigured } from '../../media/encoder';
 import type { ResolutionSelection } from '../../media/ladder';
 import { DEFAULT_CAPTURE_CONFIG, type CaptureConfig } from '../../media/types';
 import { encoderSettingsFromStore, useBroadcastSettingsStore } from '../../state/broadcastSettingsStore';
-import { resolvedUrlIsDefault, useTransportStore } from '../../state/transportStore';
+import { resolvedUrlIsDefault, selectCertHashList, useTransportStore } from '../../state/transportStore';
 import { allowCustomRelays, requiresPublishSecret, SITE_DOWNLOAD_URL } from '../../config';
 import { ServerIndicator } from '../servers/ServerIndicator';
 import { ServerPickerPanel } from '../servers/ServerPickerPanel';
@@ -36,6 +36,7 @@ import { acceptCurrentTerms, hasAcceptedCurrentTerms } from '../terms/acceptance
 import { DiagnosticsBuffer } from '../../lib/diagnostics';
 import { useTelemetryCollector } from '../../lib/useTelemetry';
 import type { TelemetryHelloMessage } from '../../transport/wire';
+import type { LocalRelayEvent } from '../../transport/local-relay';
 import { buildViewLink, nonDefaultRelayOrigin } from '../../lib/shareLink';
 import {
   buildDesktopBroadcastLink,
@@ -58,6 +59,16 @@ import type { RoomTarget } from '../../transport/room-session';
 import { parseGrant, readGrant, type RoomGrant } from '../room/grantHandoff';
 import { takeRoomReturn } from '../room/roomReturn';
 import { BACKGROUND_STOP_NOTE, BackgroundWatchdog } from './backgroundWatchdog';
+import {
+  leaveUnreachableLocalRelay,
+  noteLocalRelay,
+  probeHomeForOffer,
+  setBroadcasterLive,
+  willFollowOffers,
+} from '../pop/switch';
+import { usePopStore } from '../pop/popStore';
+import { isWallHidden } from '../pop/wall';
+import { PartyWallLine } from '../pop/PartyWallLine';
 import { sentQuality, UPLINK_NOTICE_PILL, uplinkNoticeSentence } from './uplinkNotice';
 import { loadNickname, sanitizeNickname } from '../room/roomPrefs';
 import { parseRoomLink } from '../../lib/roomCode';
@@ -342,7 +353,16 @@ export function BroadcasterScreen({
     // grant (phase 'capture'); this only keeps an unconsumed one quiet.
     grant.catch(() => {});
     grantRef.current = grant;
-    const { serverUrl, certHashHex, publishSecret } = useTransportStore.getState();
+    const { serverUrl, publishSecret } = useTransportStore.getState();
+    const certHashHex = selectCertHashList(useTransportStore.getState());
+    // R74 (docs/76 items 43.7 and 34): lr=1 while this tab would follow an
+    // offer, and a party-wall Hide remembered for this PoP's wall, so the
+    // broadcast never flashes onto it.
+    const popInfo = usePopStore.getState().info;
+    const localRelay = {
+      followOffers: willFollowOffers(),
+      wallHidden: popInfo !== null && popInfo.relayUrl === serverUrl && isWallHidden(popInfo.info.wallCode),
+    };
     setError(null);
     setErrorWhileLive(false);
     liveRef.current = false;
@@ -432,6 +452,9 @@ export function BroadcasterScreen({
       onTelemetryHello: (hello: TelemetryHelloMessage) => {
         telemetry.begin(hello);
       },
+      // R74: a PoP's LocalRelayInfo (where this is live, the party wall) or
+      // home's offer, which a live broadcast keeps for its next one.
+      onLocalRelay: (ev: LocalRelayEvent) => noteLocalRelay(ev, 'broadcaster'),
       // The relay-advertised ingest URL; the disclosure flips only when this
       // session is on a foreign relay.
       onTelemetryEndpoint: (url: string) => {
@@ -456,7 +479,7 @@ export function BroadcasterScreen({
         BROADCASTER_CAPTURE_CONFIG,
         serverUrl,
         // The reclaim needs the resume token from the prior session.
-        { certHashHex, publishSecret, resumeToken: resumeTokenRef.current ?? undefined },
+        { certHashHex, publishSecret, resumeToken: resumeTokenRef.current ?? undefined, ...localRelay },
         makeCallbacks(false),
         activeId,
         grant,
@@ -501,7 +524,7 @@ export function BroadcasterScreen({
     const pipeline = await createBroadcastSession(
       BROADCASTER_CAPTURE_CONFIG,
       serverUrl,
-      { certHashHex, publishSecret },
+      { certHashHex, publishSecret, ...localRelay },
       makeCallbacks(triedReclaim),
       undefined,
       grant,
@@ -529,7 +552,12 @@ export function BroadcasterScreen({
       // opaquely, so without this the foreign-secured-relay case dead-ends
       // indistinguishable from "unreachable".
       const resolved = useTransportStore.getState();
-      if (
+      if (e instanceof BroadcastStartError && e.phase === 'connect' && resolved.resolvedSource === 'pop') {
+        // R74: a followed PoP has no publish secret to ask for. It answered
+        // the probe and then refused or vanished: go back to home, so Try
+        // again starts there (docs/76 item 43.5, no retry loop).
+        leaveUnreachableLocalRelay();
+      } else if (
         e instanceof BroadcastStartError &&
         e.phase === 'connect' &&
         resolved.resolvedSource !== 'default' &&
@@ -562,8 +590,14 @@ export function BroadcasterScreen({
   // no secret. Otherwise start straight away.
   const proceedStart = useCallback(() => {
     const { publishSecret, resolvedSource } = useTransportStore.getState();
+    // A PoP a followed offer switched to (R74) runs gawk-relay's profile,
+    // which has no publish secret.
     const needsPrompt =
-      resolvedSource === 'default' ? requiresPublishSecret() : publishSecret === '';
+      resolvedSource === 'pop'
+        ? false
+        : resolvedSource === 'default'
+          ? requiresPublishSecret()
+          : publishSecret === '';
     if (needsPrompt) {
       setSecretDraft(publishSecret);
       setSecretPromptNote(null);
@@ -628,6 +662,22 @@ export function BroadcasterScreen({
   // just dimming one desk. Held through 'reconnecting': auto-resume keeps
   // capture and the encoder alive across it.
   useWakeLock(status === 'broadcasting' || status === 'reconnecting');
+
+  // R74 (docs/76 item 43.3): probe the resolved relay's /echo when the
+  // screen opens (and after a switch), so home's offer arrives in time to
+  // switch before going live and a PoP's wall state is known before the
+  // first /publish. Never while a broadcast runs: its publish session says
+  // the same.
+  useEffect(() => {
+    if (pipelineRef.current) return;
+    void probeHomeForOffer();
+  }, [resolvedServerUrl]);
+  // A live broadcast is never moved to a PoP (item 43.3).
+  const broadcastLive = status === 'connecting' || status === 'broadcasting' || status === 'reconnecting';
+  useEffect(() => {
+    setBroadcasterLive(broadcastLive);
+  }, [broadcastLive]);
+  useEffect(() => () => setBroadcasterLive(false), []);
 
   const copyDiagnostics = useCallback(() => {
     const { resolutionSelection: res, framerateSelection, hwPreference, bitrateOverride, codecOverride } =
@@ -965,6 +1015,14 @@ export function BroadcasterScreen({
             <EyeIcon /> {fmtWatching(stats.viewerCount)}
           </span>
         )}
+        {/* R74 (docs/76 §7.3): on a PoP, where this is live and the party
+            wall's Hide / Show. Nothing anywhere else. */}
+        <PartyWallLine
+          className={styles.badge}
+          broadcastId={broadcastId}
+          resumeTokenHex={resumeReady ? resumeTokenRef.current : null}
+          label={roomLabel.trim()}
+        />
         {room && (
           <span className={styles.roomPill} title="Room" data-testid="room-pill">
             <PeopleIcon />

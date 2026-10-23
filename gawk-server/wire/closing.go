@@ -21,7 +21,8 @@ import (
 // close code keeps using it.
 //
 // Sent only for the codes that change what a client does next — 4000 to a
-// viewer, 4004 and 4006 to a publisher or viewer — and only on external
+// viewer, 4004 and 4006 to a publisher or viewer, and since R74 the
+// non-terminal 4012 to a viewer (docs/76 item 28) — and only on external
 // publish/subscribe sessions: never on /internal/* (the edge client reads
 // every uni stream as a keyframe), and not on room control sessions, whose
 // RoomEnding event already carries 4007's meaning in-band (docs/44 §4.6).

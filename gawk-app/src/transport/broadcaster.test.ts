@@ -43,6 +43,7 @@ import {
   RELAY_NOTICE_SCREENING,
   TYPE_CLOCK_MAPPING,
   TYPE_TIME_SYNC,
+  encodeLocalRelayInfo,
   encodeRelayIdentity,
   encodeTimeSync,
   encodeViewerCount,
@@ -373,6 +374,39 @@ describe('BroadcastPipeline relay identity (R40)', () => {
     expect(cbs.onEnded).not.toHaveBeenCalled();
     await pipeline.stop();
     warn.mockRestore();
+  });
+});
+
+// R74 (docs/76 §6.12): a PoP says what it is on the publish session (0x18),
+// and home may offer a PoP (0x19). The pipeline hands both out; the screen
+// decides what they mean.
+describe('BroadcastPipeline local relay messages (R74)', () => {
+  it('hands LocalRelayInfo to onLocalRelay without a warning', async () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
+    const info = { linked: true, onWall: true, name: 'Assembly 2026', homeOrigin: 'https://gawk.ioio.fi', wallCode: 'assembly-2026' };
+    const fake = makeFakeWT([encodeLocalRelayInfo(info)], [[ANNOUNCE_K7XQ2M]]);
+    connectWebTransport.mockResolvedValue(fake.wt);
+    startCapture.mockResolvedValue(makeCaptureHandle());
+    const onLocalRelay = vi.fn<NonNullable<BroadcastCallbacks['onLocalRelay']>>();
+    const pipeline = makePipeline({ ...makeCallbacks(), onLocalRelay });
+    await pipeline.start();
+    await vi.waitFor(() => expect(onLocalRelay).toHaveBeenCalledWith({ kind: 'info', info }));
+    expect(warn).not.toHaveBeenCalled();
+    await pipeline.stop();
+    warn.mockRestore();
+  });
+
+  it('says lr=1 when it will follow an offer, and wall=hidden for a remembered Hide', async () => {
+    const fake = makeFakeWT([ANNOUNCE_K7XQ2M]);
+    connectWebTransport.mockResolvedValue(fake.wt);
+    startCapture.mockResolvedValue(makeCaptureHandle());
+    const opts = { followOffers: true, wallHidden: true };
+    const pipeline = new BroadcastPipeline({ ...DEFAULT_CAPTURE_CONFIG }, 'https://relay.test:4433', opts, makeCallbacks());
+    await pipeline.start();
+    const url = new URL(connectWebTransport.mock.calls[0][0] as string);
+    expect(url.searchParams.get('lr')).toBe('1');
+    expect(url.searchParams.get('wall')).toBe('hidden');
+    await pipeline.stop();
   });
 });
 

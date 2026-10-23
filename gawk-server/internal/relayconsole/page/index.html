@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gawk relay</title>
+<link rel="stylesheet" href="console.css">
+<script src="console.js" defer></script>
+</head>
+<body>
+<header>
+  <h1>gawk relay<span id="name"></span></h1>
+  <p id="header-state" class="state"></p>
+  <p id="notice" class="notice" hidden></p>
+</header>
+
+<main>
+  <section id="join" aria-labelledby="join-h">
+    <h2 id="join-h">Join from this network</h2>
+    <div class="join-body">
+      <img id="qr" alt="Join QR code" width="240" height="240" hidden>
+      <div>
+        <p id="join-hint"></p>
+        <p><a id="join-url" class="url" target="_blank" rel="noopener noreferrer"></a></p>
+        <p><button id="copy-join" type="button">Copy link</button>
+           <button id="projector" type="button">Show on a projector</button></p>
+        <p id="server-link-row" hidden>For the gawk apps: <code id="server-link" class="url"></code>
+           <button id="copy-server" type="button">Copy</button></p>
+        <p class="aside">On this machine: <a href="/app/">open gawk here</a>, which works with no internet.</p>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="live-h">
+    <h2 id="live-h">Live here</h2>
+    <p id="live-empty">Nothing is live yet.</p>
+    <table id="live" hidden>
+      <thead><tr><th>Broadcast</th><th>Viewers here</th><th>Outside</th><th>Outside state</th><th>Wall</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section aria-labelledby="net-h">
+    <h2 id="net-h">Party internet</h2>
+    <p id="uplink-line"></p>
+    <p id="downlink-line"></p>
+    <form id="uplink-form" class="inline">
+      <label>Lower the uplink to <input id="uplink-mbps" type="number" min="0" step="1"> Mbps</label>
+      <label><input id="uplink-streams" type="number" min="0" step="1"> streams</label>
+      <button type="submit">Set</button>
+    </form>
+    <form id="downlink-form" class="inline">
+      <label>Lower the downlink to <input id="downlink-mbps" type="number" min="0" step="1"> Mbps</label>
+      <label><input id="downlink-streams" type="number" min="0" step="1"> streams</label>
+      <button type="submit">Set</button>
+    </form>
+    <p class="aside">0 means the home fleet's limit. The console can only lower a budget.</p>
+  </section>
+
+  <section aria-labelledby="health-h">
+    <h2 id="health-h">Health</h2>
+    <ul id="health"></ul>
+    <p id="firewall-row" hidden><button id="firewall" type="button">Allow on this network</button>
+      <span class="aside">Asks for administrator rights once.</span></p>
+    <form id="lan-form" class="inline">
+      <label>LAN address <select id="lan"></select></label>
+      <button type="submit">Use</button>
+    </form>
+  </section>
+
+  <section id="pairing" aria-labelledby="pair-h">
+    <h2 id="pair-h">Pairing</h2>
+    <form id="pair-form">
+      <label for="pair-input">Pairing string from the admin portal</label>
+      <input id="pair-input" type="password" autocomplete="off" spellcheck="false" placeholder="gawk-pair:…">
+      <button type="submit">Pair</button>
+      <button id="standalone" type="button">Run standalone</button>
+    </form>
+  </section>
+
+  <p id="error" class="error" role="alert" hidden></p>
+</main>
+
+<footer><span id="version"></span></footer>
+
+<div id="projector-view" hidden>
+  <img id="qr-big" alt="Join QR code">
+  <p id="projector-url" class="url"></p>
+  <p class="aside">Press Esc to close</p>
+</div>
+</body>
+</html>

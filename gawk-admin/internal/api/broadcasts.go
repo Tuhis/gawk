@@ -30,7 +30,10 @@ func (a *API) handleMe(w http.ResponseWriter, r *http.Request) {
 		Subject:  id.Subject,
 		Roles:    roles,
 		Defaults: meDefaultsJSON{KillCooldownSeconds: int(a.opts.Config.KillCooldown.Seconds())},
-		Features: meFeaturesJSON{Rooms: a.opts.Rooms != nil, Screening: a.opts.Config.Screening},
+		Features: meFeaturesJSON{
+			Rooms: a.opts.Rooms != nil, Screening: a.opts.Config.Screening,
+			Pops: a.opts.Pops != nil, PopNamedAddress: a.opts.Pops != nil && a.opts.Config.PopNamedAddress(),
+		},
 	})
 }
 
@@ -80,6 +83,7 @@ func (a *API) handleListBroadcasts(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, row)
 	}
+	out = mergePopBroadcasts(out, snap.Pops, cfg, active, banStateKnown, now)
 	// The coverage counters ride along so partial coverage is VISIBLE: relayscan
 	// treats a pod-level scrape failure as data rather than an error, and
 	// without these an empty answer from an unreachable fleet would render as a

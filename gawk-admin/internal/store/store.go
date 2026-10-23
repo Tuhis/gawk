@@ -32,6 +32,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Tuhis/gawk/gawk-server/moderation"
+	"github.com/Tuhis/gawk/gawk-server/pops"
 )
 
 // Sentinel errors. Check with errors.Is.
@@ -159,6 +160,15 @@ const (
 	EventRoomSecretRotated = "room.secret_rotated"
 	// EventRoomScreeningChanged audits an exemption toggle (docs/71 D11).
 	EventRoomScreeningChanged = "room.screening_changed"
+
+	// PoP events (R74, docs/76 §7.2): an operator's changes to a PoP relay.
+	// Their payload names the PoP (PayloadPop, PayloadPopDisplayName) and
+	// never its addresses, its pairing string or its credential.
+	EventPopCreated  = "pop.created"
+	EventPopUpdated  = "pop.updated"
+	EventPopRepaired = "pop.repaired"
+	EventPopRevoked  = "pop.revoked"
+	EventPopDeleted  = "pop.deleted"
 )
 
 // AllEventTypes is the closed vocabulary of `type` values a moderation_events
@@ -185,6 +195,11 @@ func AllEventTypes() []string {
 		EventRoomEnded,
 		EventRoomSecretRotated,
 		EventRoomScreeningChanged,
+		EventPopCreated,
+		EventPopUpdated,
+		EventPopRepaired,
+		EventPopRevoked,
+		EventPopDeleted,
 	}
 }
 
@@ -276,6 +291,12 @@ const (
 	// PayloadRoomKind is "static" or "dynamic". The summary sentence names
 	// the kind too; the property is what a consumer filters on.
 	PayloadRoomKind = "kind"
+	// PayloadPop is a pop.* event's PoP: the Pop resource's name, read back
+	// through Event.PopName, which accepts only a DNS label. Delivered as the
+	// event's `pop` and its `subject` (R74).
+	PayloadPop = "pop"
+	// PayloadPopDisplayName is the PoP's name as shown to people.
+	PayloadPopDisplayName = "popDisplayName"
 )
 
 // EnforcementState says whether the Kubernetes object that actually ENFORCES
@@ -361,6 +382,17 @@ func (e Event) RoomKey() string {
 		return ""
 	}
 	return key
+}
+
+// PopName returns the PoP a pop.* event names, or "". Closed like RoomKey:
+// only a DNS label (pops.ValidateName) passes, so an address written under
+// the key by mistake is never delivered as the event's subject (R74).
+func (e Event) PopName() string {
+	name := e.PayloadString(PayloadPop)
+	if pops.ValidateName(name) != nil {
+		return ""
+	}
+	return name
 }
 
 // isHexKey reports whether s looks like a per-process HMAC digest as the relay

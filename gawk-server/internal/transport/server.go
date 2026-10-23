@@ -4,12 +4,10 @@
 package transport
 
 import (
-	"bytes"
 	"context"
 	"crypto/subtle"
 	"crypto/tls"
 	"errors"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -140,7 +138,7 @@ type Server struct {
 	drainSleep func(time.Duration)
 
 	// testHookPostUpgradeSubscribe runs between the session upgrade and the
-	// authoritative Subscribe, widening the CheckSubscribe→Subscribe race
+	// authoritative Subscribe (a viewer's, or a PoP downlink leg's), widening the CheckSubscribe→Subscribe race
 	// window for tests. Atomic because tests install it while handlers are
 	// serving, and in-process UDP loopback gives no happens-before edge.
 	testHookPostUpgradeSubscribe atomic.Pointer[func(id string)]
@@ -164,6 +162,43 @@ type Server struct {
 	// with the bypass, an internal-route origin rejection is invisible to
 	// every test. Atomic, as above.
 	testHookOriginCheckLoopback atomic.Bool
+
+	// R74 PoP seams (docs/76). mintGate is consulted on the mint path
+	// (mint_gate.go); publishObservers are told of every accepted publisher
+	// (publish_observer.go), copy-on-write under publishObserversMu.
+	mintGate           atomic.Pointer[mintGateBox]
+	publishObserversMu sync.Mutex
+	publishObservers   atomic.Pointer[[]PublishObserver]
+	// localRelay (a PoP) and offerer (a home) feed the per-session R74
+	// notices (session_notices.go).
+	localRelay atomic.Pointer[localRelayBox]
+	offerer    atomic.Pointer[offererBox]
+	// popHome serves the /pop/* routes on a home with -pops (pop_routes.go).
+	popHome atomic.Pointer[popHomeBox]
+	// uplink is the R74 uplink's state: the demand hooks and loops on a
+	// home, the legs' linger watchers (pop_demand.go, pop_publish.go).
+	uplink popUplinkState
+	// popDown is a PoP relay's downlink (pop_downlink.go), built on the
+	// first local miss once a link source exists; popDownSrc an explicit
+	// source (SetPopDownlink). popDownMu serialises the build.
+	popDown    atomic.Pointer[popDownlink]
+	popDownSrc atomic.Pointer[popDownlinkBox]
+	popDownMu  sync.Mutex
+	// popLegs counts home's /pop/subscribe legs per PoP and broadcast on
+	// this pod (pop_subscribe.go), under popLegsMu.
+	popLegsMu sync.Mutex
+	popLegs   map[string]map[string]int
+	// popSlots is the fleet-wide leg cap's count on a PoP's link-home pod
+	// (pop_legcap.go), per PoP, under popSlotsMu.
+	popSlotsMu sync.Mutex
+	popSlots   map[string]*popLegCount
+	// testHookPopLegTransport adjusts the downlink's leg dialer before each
+	// dial (a test's packet tap and tracer). Atomic, as above.
+	testHookPopLegTransport atomic.Pointer[func(*webtransport.Transport)]
+	// popMod is the R74 moderation reach (pop_moderation.go, telemetry.go).
+	popMod popModeration
+	// roomForwarder sends a linked PoP's room joins home (room_link.go).
+	roomForwarder atomic.Pointer[roomForwarderBox]
 }
 
 // rejectedDraining rejects a new CONNECT with 503 once the drain has begun,
@@ -332,6 +367,10 @@ func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) 
 		// installed the room store.
 		mux.HandleFunc("CONNECT /internal/room/{code}", s.handleInternalRoom)
 	}
+	// R74 PoP relays (docs/76): the /pop/* routes exist only with -pops on.
+	if cfg.Pops {
+		s.registerPopRoutes(mux)
+	}
 
 	s.wt = &webtransport.Server{
 		// WebTransport flow-control SETTINGS: the three WT_INITIAL_MAX_* are
@@ -391,6 +430,11 @@ func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) 
 			// Edge pulls announce a fixed origin, honored only on the PSK-gated
 			// internal route; the allowlist still governs client-facing paths.
 			if origin == internalEdgeOrigin && strings.HasPrefix(r.URL.Path, "/internal/") {
+				return true
+			}
+			// R74 PoP relays (docs/76) announce a fixed origin too, honored
+			// only on the credential-gated /pop/* routes.
+			if origin == popOrigin && strings.HasPrefix(r.URL.Path, "/pop/") {
 				return true
 			}
 			if slices.Contains(allowed, origin) {
@@ -463,6 +507,7 @@ func (s *Server) Run(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		s.drain()
+		s.stopPopDownlink()
 		closeAll()
 		<-errCh // wait for the accept loop to return
 		return nil
@@ -622,6 +667,10 @@ func (s *Server) SetCluster(c ClusterCoordinator, podName string) {
 	// Every pod that held a killed broadcast counts its own kill, and an
 	// edge's usually arrives as its origin's 4006 rather than a Ban event.
 	em.terminated = s.metrics.Termination
+	// A no-op until SetPopDemand installs the uplink. Set here, before the
+	// manager is published, so installing it while serving writes nothing a
+	// subscribe miss reads.
+	em.onReserved = s.onReservedMiss
 	s.wiring.Store(&clusterWiring{coord: c, edges: em})
 	s.onDrain = func() {
 		em.Stop()
@@ -747,6 +796,15 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
+		// R74 (docs/76 item 14): a PoP's broadcast is claimable only by that
+		// PoP's uplink leg, never by a resume token. Refused here, from the
+		// lease cache, before the come-home below can stop an edge pull that
+		// serves the PoP broadcast's viewers; the claims below refuse the
+		// same way when the cache has not seen the reservation yet.
+		if reservedInCache(s.clusterCoord(), normID) {
+			s.rejectReservedResume(w, r, normID)
+			return
+		}
 		// Come-home: if this pod is edge for the ID, its upstream pull holds
 		// the hub's publisher slot — stop it (and wait) so the claim below
 		// succeeds. The hub and its viewers survive.
@@ -781,6 +839,13 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		if coord := s.clusterCoord(); pub != nil && coord != nil {
 			if _, err := coord.Claim(r.Context(), id, true); err != nil {
 				pub.Close()
+				if isReserved(err) {
+					// Not ours to resume: drop the hub the attempt made (a
+					// no-op when one has viewers, e.g. an edge hub).
+					s.registry.EndBroadcast(id)
+					s.rejectReservedResume(w, r, id)
+					return
+				}
 				s.metrics.Connection("publish", metrics.OutcomeError)
 				s.log.Warn("origin lease claim failed", "id", id, "err", err)
 				w.WriteHeader(http.StatusServiceUnavailable)
@@ -829,6 +894,13 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 			if coord := s.clusterCoord(); coord != nil {
 				if _, cerr := coord.Claim(r.Context(), id, true); cerr != nil {
 					pub.Close()
+					if isReserved(cerr) {
+						s.metrics.Connection("publish", metrics.OutcomeConflict)
+						s.log.Warn("publish takeover refused: broadcast is reserved for a PoP",
+							"broadcast_key", s.broadcastKey(id), "remote", r.RemoteAddr)
+						sess.CloseWithError(webtransport.SessionErrorCode(http.StatusConflict), "broadcast is reserved for a PoP relay")
+						return
+					}
 					s.metrics.Connection("publish", metrics.OutcomeError)
 					s.log.Warn("origin lease claim failed", "id", id, "err", cerr)
 					sess.CloseWithError(webtransport.SessionErrorCode(http.StatusServiceUnavailable), "failed to claim origin lease")
@@ -875,19 +947,12 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		// Cluster mode: create the fresh ID's origin Lease — where the
 		// cluster-wide MaxBroadcasts binds (the registry limit is per-pod). On
 		// rejection the hub goes into grace and is GC'd; nobody knows the ID.
-		if coord := s.clusterCoord(); coord != nil {
-			if _, cerr := coord.Claim(r.Context(), id, false); cerr != nil {
-				pub.Close()
-				s.log.Warn("origin lease create failed for minted broadcast", "id", id, "err", cerr)
-				if errors.Is(cerr, cluster.ErrMaxBroadcasts) {
-					s.metrics.Connection("publish", metrics.OutcomeLimitRejected)
-					sess.CloseWithError(429, "max concurrent broadcasts reached")
-				} else {
-					s.metrics.Connection("publish", metrics.OutcomeError)
-					sess.CloseWithError(500, "failed to claim origin lease")
-				}
-				return
-			}
+		var ok bool
+		if id, pub, ok = s.claimMint(r.Context(), sess, id, pub, s.log); !ok {
+			return
+		}
+		if !s.gateMint(r.Context(), sess, id, pub, s.log) {
+			return
 		}
 	}
 	defer pub.Close()
@@ -911,6 +976,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		closeWithNotice(sess, wire.CloseCodeTerminatedByOperator, terminationReason)
 		return
 	}
+	s.publisherLive(r, id, pub)
 
 	// Bind the session so a later token-bearing claim can depose it. False
 	// means a takeover already won since the pre-upgrade claim.
@@ -970,6 +1036,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	// whether it may open uplink carriers. Best-effort: without it the
 	// producer emits no parity and sends its deltas as datagrams.
 	s.sendRelayCapabilities(sess, log, true)
+	s.sendPublishSessionNotices(sess, r, id)
 
 	// Telemetry identity, also recorded on the hub so /statusz's
 	// publisherSessionId joins the broadcaster's reports. Sent last: a
@@ -1127,7 +1194,9 @@ const maxConcurrentKeyframeStreams = 4
 // acceptKeyframeStreams reads the publisher's uni streams and hands each to
 // the hub: keyframe streams for ingestion + fan-out and, with
 // -uplink-carriers on, R73 uplink carriers to the carrier reader. It returns
-// when the session's context is cancelled (AcceptUniStream errors).
+// when the session's context is cancelled (AcceptUniStream errors). Any
+// stream whose ingest fails is reset; records a carrier delivered before
+// its error were forwarded.
 func (s *Server) acceptKeyframeStreams(ctx context.Context, sess *webtransport.Session, pub *hub.Publisher, log *slog.Logger) {
 	sem := make(chan struct{}, maxConcurrentKeyframeStreams)
 	for {
@@ -1145,50 +1214,23 @@ func (s *Server) acceptKeyframeStreams(ctx context.Context, sess *webtransport.S
 			continue
 		}
 		go func(st *webtransport.ReceiveStream) {
-			release := sync.OnceFunc(func() { <-sem })
-			defer release()
-			var rd io.Reader = st
+			reset := func() { st.CancelRead(0) }
 			if s.cfg.UplinkCarriers {
-				// Peek the stream kind (docs/75 D2): a carrier's first two
-				// bytes are Version‖TypeReliableCarrier, a keyframe stream's
-				// Version‖TypeStreamFrame. The peeked bytes are replayed to
-				// the keyframe reader, so its behaviour is unchanged.
-				var head [wire.CarrierPrologueSize]byte
-				n, _ := io.ReadFull(st, head[:])
-				if n == len(head) && wire.ParseCarrierPrologue(head[:]) == nil {
-					// A carrier lives for a GOP: it must not hold one of the
-					// keyframe slots it was classified in. The hub bounds
-					// carriers per publisher (hub.MaxUplinkCarriers).
-					release()
-					s.ingestUplinkCarrier(st, head[:], pub, log)
-					return
-				}
-				rd = io.MultiReader(bytes.NewReader(head[:n]), st)
+				// The edge pump's classification (edge_streams.go), so a
+				// publisher and a PoP's downlink read streams one way: the
+				// prologue (docs/75 D2) tells a carrier, which gives its slot
+				// back, from a keyframe stream, replayed byte for byte.
+				classifyUniStream(st, reset, sem, pub, log)
+				return
 			}
-			if err := pub.IngestKeyframeStream(rd); err != nil {
-				st.CancelRead(0)
+			// Carriers off: nothing is peeked, every stream is a keyframe
+			// stream (a carrier fails the keyframe reader and is reset).
+			defer func() { <-sem }()
+			if err := pub.IngestKeyframeStream(st); err != nil {
+				reset()
 				log.Debug("keyframe stream ingest failed", "err", err)
 			}
 		}(stream)
-	}
-}
-
-// ingestUplinkCarrier runs one publisher uplink carrier to its end. Any
-// error — over the per-publisher limit, a malformed record, a reset by the
-// broadcaster — resets the stream; records already read were forwarded.
-func (s *Server) ingestUplinkCarrier(st *webtransport.ReceiveStream, prologue []byte, pub *hub.Publisher, log *slog.Logger) {
-	err := pub.IngestUplinkCarrier(io.MultiReader(bytes.NewReader(prologue), st))
-	if err == nil {
-		return
-	}
-	st.CancelRead(0)
-	switch {
-	case errors.Is(err, hub.ErrUplinkCarrierLimit):
-		log.Warn("uplink carrier rejected: too many concurrent", "max", hub.MaxUplinkCarriers)
-	case errors.Is(err, hub.ErrBadUplinkRecord):
-		log.Warn("uplink carrier ended: malformed record", "err", err)
-	default:
-		log.Debug("uplink carrier ended", "err", err)
 	}
 }
 
@@ -1230,13 +1272,27 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A miss on an R74 PoP reservation asks the PoP for the broadcast only
+	// once this session is on the waiting hub (demand.fire, below).
+	demandCtx, demand := withDeferredDemand(withDemandRequest(r))
 	err := s.registry.CheckSubscribe(id)
 	if edges := s.edgeManager(); errors.Is(err, hub.ErrNotFound) && edges != nil {
 		// Cluster mode: we don't host this broadcast, but its
 		// origin may be another pod — demand-create the edge pull, then
 		// re-check (the pull creates the local hub on attach).
-		if edgeErr := edges.EnsureEdge(r.Context(), id); edgeErr == nil {
+		if edgeErr := edges.EnsureEdge(demandCtx, id); edgeErr == nil {
 			err = s.registry.CheckSubscribe(id)
+		}
+	} else if errors.Is(err, hub.ErrNotFound) && s.popWaitSinglePod(demandCtx, id) {
+		// A single-pod home's PoP reservation (docs/76 item 17).
+		err = s.registry.CheckSubscribe(id)
+	} else if errors.Is(err, hub.ErrNotFound) {
+		// A linked R74 PoP relay: a local miss may be a home broadcast,
+		// pulled over the downlink (docs/76 item 23). Home's 404 is ours.
+		if popErr := s.ensurePopDownlink(r.Context(), id); popErr == nil {
+			err = s.registry.CheckSubscribe(id)
+		} else if errors.Is(popErr, ErrPopDownlinkFull) {
+			err = popErr
 		}
 	}
 	if err != nil {
@@ -1247,7 +1303,7 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		if errors.Is(err, hub.ErrFull) || errors.Is(err, hub.ErrTotalSubscribers) {
+		if errors.Is(err, hub.ErrFull) || errors.Is(err, hub.ErrTotalSubscribers) || errors.Is(err, ErrPopDownlinkFull) {
 			s.metrics.Connection("subscribe", metrics.OutcomeLimitRejected)
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
@@ -1324,6 +1380,7 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer sub.Close()
+	demand.fire(s, demandCtx)
 
 	s.metrics.Connection("subscribe", metrics.OutcomeAccepted)
 	log := s.log.With("remote", sess.RemoteAddr(), "route", "subscribe", "broadcast_id", id)
@@ -1398,6 +1455,7 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	sub.SetTelemetrySession(s.sendTelemetryHello(sess, id, wire.TelemetryRoleViewer, log))
 	// Same endpoint advertisement as the publish route.
 	s.sendTelemetryEndpoint(sess, log)
+	s.sendSessionNotices(sess, r, kindSubscribe)
 
 	log.Info("subscriber session started")
 	tsLimiter := newTimeSyncLimiter()
@@ -1596,6 +1654,7 @@ func (s *Server) handleEcho(w http.ResponseWriter, r *http.Request) {
 	// path — a client that grants no uni credit or never reads must not
 	// be able to wedge this handler.
 	go s.sendRelayIdentity(sess, log)
+	s.sendSessionNotices(sess, r, kindEcho)
 	if !quiet {
 		log.Info("session started")
 	}

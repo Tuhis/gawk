@@ -95,6 +95,20 @@ spec:
                   type: integer
                   minimum: 1
                   description: Per-room override of -max-room-broadcasts.
+                maxParticipants:
+                  type: integer
+                  minimum: 1
+                  description: >-
+                    Per-room override of -max-room-participants (R74: a party
+                    wall needs more than the default of 50).
+                pop:
+                  type: string
+                  maxLength: 63
+                  pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+                  description: >-
+                    R74 (docs/76 item 33): the Pop whose party wall this static
+                    room is. Such a room accepts vouched attaches only, from
+                    that PoP's link; an ordinary Attach is refused.
                 integrations:
                   type: object
                   description: >-

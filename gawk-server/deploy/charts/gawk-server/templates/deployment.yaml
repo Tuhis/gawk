@@ -36,6 +36,9 @@ spec:
   {{- if and (not .Values.metrics.enabled) (or .Values.screening.token .Values.screening.tokenSecretRef) }}
   {{- fail "screening.token/tokenSecretRef requires metrics.enabled: true — the keyframe route rides the ops listener (see docs/71-content-flagging.md D1)" }}
   {{- end }}
+  {{- if and .Values.pops.enabled (not .Values.config.clusterMode) }}
+  {{- fail "pops.enabled requires config.clusterMode: true — the Pop CRs are the chart's PoP source and a PoP's reservations are broadcast Leases (see docs/76-pop-relays.md §9)" }}
+  {{- end }}
   replicas: {{ .Values.replicas }}
   # RollingUpdate with surge 1 / unavailable 0: pods drain one at a time and
   # a reconnecting client always has a ready pod to land on. At replicas: 1
@@ -277,6 +280,17 @@ spec:
               value: {{ .Values.rooms.createSecret | quote }}
               {{- end }}
             {{- end }}
+            {{- end }}
+            {{- if .Values.pops.enabled }}
+            # R74 (docs/76 §9): PoP relays, with every knob plumbed.
+            - name: GAWK_POPS
+              value: "true"
+            - name: GAWK_POP_UPLINK_LINGER
+              value: {{ .Values.pops.uplinkLinger | quote }}
+            - name: GAWK_POP_OFFER_DEFER
+              value: {{ .Values.pops.offerDefer | quote }}
+            - name: GAWK_POP_DEMAND_TIMEOUT
+              value: {{ .Values.pops.demandTimeout | quote }}
             {{- end }}
             {{- if .Values.eventbus.url }}
             # R50 (docs/51): the event bus. Everything about it is optional;

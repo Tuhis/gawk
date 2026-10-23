@@ -33,6 +33,11 @@ const (
 	// fixtureSampler is a sampler's client-credentials identity (docs/71
 	// D18), as Keycloak names a service account.
 	fixtureSampler = "service-account-gawk-sampler"
+	// fixturePop names the R74 PoP relay a broadcast is published through
+	// (docs/76): a DNS label, never an address.
+	fixturePop        = "assembly-2026"
+	fixturePopDisplay = "Assembly 2026"
+	fixturePortalP    = "https://admin.example.com/#/pops/" + fixturePop
 )
 
 var fixtureTime = time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
@@ -83,8 +88,8 @@ func fixtures() map[string]Event {
 		TypeContentFlagRaised: admin(TypeContentFlagRaised, fixtureBroadcastID, ContentFlagRaisedData{
 			Actor: fixtureSampler, BroadcastKey: fixtureBroadcastKey, BroadcastID: fixtureBroadcastID,
 			Reason: "sustained explicit signal", FlagID: 42, SamplerID: "gawk-sampler-1",
-			Window: &ContentFlagWindow{Start: "2026-09-17T11:59:35Z", End: "2026-09-17T12:00:00Z", Samples: 6, FlaggedSamples: 4},
-			Scores: &ContentFlagScores{Max: 0.97, Mean: 0.81},
+			Window:              &ContentFlagWindow{Start: "2026-09-17T11:59:35Z", End: "2026-09-17T12:00:00Z", Samples: 6, FlaggedSamples: 4},
+			Scores:              &ContentFlagScores{Max: 0.97, Mean: 0.81},
 			Labels:              []string{"FEMALE_GENITALIA_EXPOSED"},
 			ReturnedAfterReview: true,
 			Delivery: Delivery{
@@ -148,23 +153,44 @@ func fixtures() map[string]Event {
 				PortalURL: fixturePortalR,
 			},
 		}),
+		TypePopCreated: admin(TypePopCreated, fixturePop, PopCreatedData{
+			Actor: "juho@example.com", Pop: fixturePop, DisplayName: fixturePopDisplay,
+			Delivery: Delivery{Summary: "PoP assembly-2026 was created by juho@example.com", PortalURL: fixturePortalP},
+		}),
+		TypePopUpdated: admin(TypePopUpdated, fixturePop, PopUpdatedData{
+			Actor: "juho@example.com", Pop: fixturePop, DisplayName: fixturePopDisplay,
+			Delivery: Delivery{Summary: "PoP assembly-2026 was edited by juho@example.com", PortalURL: fixturePortalP},
+		}),
+		TypePopRepaired: admin(TypePopRepaired, fixturePop, PopRepairedData{
+			Actor: "juho@example.com", Pop: fixturePop, DisplayName: fixturePopDisplay,
+			Delivery: Delivery{Summary: "PoP assembly-2026 was given a new pairing string by juho@example.com", PortalURL: fixturePortalP},
+		}),
+		TypePopRevoked: admin(TypePopRevoked, fixturePop, PopRevokedData{
+			Actor: "juho@example.com", Pop: fixturePop, DisplayName: fixturePopDisplay,
+			Delivery: Delivery{Summary: "PoP assembly-2026 was revoked by juho@example.com", PortalURL: fixturePortalP},
+		}),
+		TypePopDeleted: admin(TypePopDeleted, fixturePop, PopDeletedData{
+			Actor: "juho@example.com", Pop: fixturePop, DisplayName: fixturePopDisplay,
+			Delivery: Delivery{Summary: "PoP assembly-2026 was deleted by juho@example.com", PortalURL: fixturePortalP},
+		}),
 
 		TypeBroadcastStarted: bus(TypeBroadcastStarted, fixtureBroadcastID, BroadcastStartedData{
 			BroadcastID: fixtureBroadcastID, BroadcastKey: fixtureBroadcastKey, Role: RoleOrigin,
-			StartedAt: "2026-09-17T12:00:00Z",
+			StartedAt: "2026-09-17T12:00:00Z", Pop: fixturePop,
 		}),
 		TypeBroadcastPublisherAway: bus(TypeBroadcastPublisherAway, fixtureBroadcastID, BroadcastPublisherAwayData{
-			BroadcastID: fixtureBroadcastID, BroadcastKey: fixtureBroadcastKey,
+			BroadcastID: fixtureBroadcastID, BroadcastKey: fixtureBroadcastKey, Pop: fixturePop,
 		}),
 		TypeBroadcastPublisherBack: bus(TypeBroadcastPublisherBack, fixtureBroadcastID, BroadcastPublisherBackData{
-			BroadcastID: fixtureBroadcastID, BroadcastKey: fixtureBroadcastKey,
+			BroadcastID: fixtureBroadcastID, BroadcastKey: fixtureBroadcastKey, Pop: fixturePop,
 		}),
 		TypeBroadcastEnded: bus(TypeBroadcastEnded, fixtureBroadcastID, BroadcastEndedData{
 			BroadcastID: fixtureBroadcastID, BroadcastKey: fixtureBroadcastKey, Reason: BroadcastEndedKilled,
+			Pop: fixturePop,
 		}),
 		TypeBroadcastViewers: bus(TypeBroadcastViewers, fixtureBroadcastID, BroadcastViewersData{
 			BroadcastID: fixtureBroadcastID, BroadcastKey: fixtureBroadcastKey, Role: RoleEdge,
-			ViewersLocal: 12, ViewersGlobal: 340,
+			ViewersLocal: 12, ViewersGlobal: 340, Pop: fixturePop,
 		}),
 		TypeRoomOpened: bus(TypeRoomOpened, fixtureRoomCode, RoomOpenedData{
 			RoomCode: fixtureRoomCode, RoomKey: fixtureRoomKey, DisplayCode: fixtureRoomDisplay, Kind: RoomKindDynamic,

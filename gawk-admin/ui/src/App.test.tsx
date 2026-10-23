@@ -162,6 +162,19 @@ describe('the shell', () => {
     expect(await screen.findByRole('heading', { name: 'Rooms' })).toBeTruthy();
   });
 
+  // PoPs (R74) follow `features.pops` the same way.
+  it('offers the PoPs link only when the probe reports the feature', async () => {
+    mount(OPERATOR);
+    await screen.findByRole('heading', { name: 'Broadcasts' });
+    expect(screen.queryByRole('link', { name: 'PoPs' })).toBeNull();
+    cleanup();
+
+    mount({ ...OPERATOR, features: { pops: true } });
+    await screen.findByRole('heading', { name: 'Broadcasts' });
+    fireEvent.click(await screen.findByRole('link', { name: 'PoPs' }));
+    expect(await screen.findByRole('heading', { name: 'PoPs' })).toBeTruthy();
+  });
+
   // Calibration (R40) follows `features.screening` the same way, and with it
   // on the fleet view starts reading content flags.
   it('offers Calibration and reads flags only when the probe reports screening', async () => {

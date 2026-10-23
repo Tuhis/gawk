@@ -38,7 +38,7 @@ func TestGoldenSessionClosing(t *testing.T) {
 }
 
 func TestSessionClosingRoundTripsEveryNoticedCode(t *testing.T) {
-	for _, c := range []uint32{CloseCodeBroadcastEnded, CloseCodePublisherSuperseded, CloseCodeTerminatedByOperator} {
+	for _, c := range []uint32{CloseCodeBroadcastEnded, CloseCodePublisherSuperseded, CloseCodeTerminatedByOperator, CloseCodePopUplinkFull} {
 		msg, err := AppendSessionClosing(nil, c)
 		if err != nil {
 			t.Fatalf("AppendSessionClosing(%d): %v", c, err)
@@ -47,6 +47,28 @@ func TestSessionClosingRoundTripsEveryNoticedCode(t *testing.T) {
 		if err != nil || got != c {
 			t.Fatalf("round trip %d = (%d, %v)", c, got, err)
 		}
+	}
+}
+
+// R74 (docs/76 item 28): 4012 PopUplinkFull is noticed in-band too.
+//
+//	01           version
+//	17           type = SessionClosing
+//	00 00 0f ac  code = 4012 (CloseCodePopUplinkFull), big-endian
+const goldenSessionClosingPopUplinkFullHex = "011700000fac"
+
+func TestGoldenSessionClosingPopUplinkFull(t *testing.T) {
+	want := mustHex(t, goldenSessionClosingPopUplinkFullHex)
+	msg, err := AppendSessionClosing(nil, CloseCodePopUplinkFull)
+	if err != nil {
+		t.Fatalf("AppendSessionClosing: %v", err)
+	}
+	if !bytes.Equal(msg, want) {
+		t.Errorf("AppendSessionClosing produced %x, want %x", msg, want)
+	}
+	code, err := ParseSessionClosing(want)
+	if err != nil || code != CloseCodePopUplinkFull {
+		t.Fatalf("ParseSessionClosing = (%d, %v), want 4012", code, err)
 	}
 }
 

@@ -63,6 +63,10 @@ var (
 	// ErrRoomNotDynamic: "end room" addresses a dynamic room; a static room
 	// never ends, it is deleted (docs/44 D7).
 	ErrRoomNotDynamic = errors.New("kube: not a dynamic room")
+	// ErrWallAttachSecret: a party wall (StaticRoom.Pop) was asked for an
+	// attach secret. A wall takes vouched attaches only (docs/76 item 33);
+	// a secret would be a second way in that the design rules out.
+	ErrWallAttachSecret = errors.New("kube: a party wall room takes no attach secret")
 )
 
 // RoomSecretName is the deterministic name of the Secret holding a static
@@ -99,6 +103,17 @@ type StaticRoom struct {
 	// CreatedBy is the caller's `sub`, stamped as AnnotationRoomCreatedBy.
 	// Empty stamps nothing.
 	CreatedBy string
+
+	// Pop makes the room an R74 party wall (docs/76 item 33): spec.pop names
+	// the PoP, and the relay accepts only vouched attaches to it, so a wall
+	// never has an attach secret (ErrWallAttachSecret).
+	Pop string
+	// MaxParticipants is the optional spec.maxParticipants override; 0
+	// leaves the fleet's -max-room-participants.
+	MaxParticipants int
+	// Owner, when set, is the room's ownerReference — a wall's Pop, so
+	// deleting the Pop garbage-collects its wall (PopOwnerReference).
+	Owner *metav1.OwnerReference
 }
 
 // RoomLister is the read surface the reconciler's room sweep needs.
@@ -211,6 +226,9 @@ func (c *RoomClient) CreateStatic(ctx context.Context, req StaticRoom) (string, 
 	if err != nil {
 		return "", err
 	}
+	if req.Pop != "" && req.WithAttachSecret {
+		return "", ErrWallAttachSecret
+	}
 	annotations := map[string]string{AnnotationRoomManaged: "true"}
 	if req.CreatedBy != "" {
 		annotations[AnnotationRoomCreatedBy] = req.CreatedBy
@@ -222,11 +240,16 @@ func (c *RoomClient) CreateStatic(ctx context.Context, req StaticRoom) (string, 
 			Annotations: annotations,
 		},
 		Spec: rooms.RoomSpec{
-			Kind:          rooms.KindStatic,
-			DisplayCode:   strings.TrimSpace(req.Code),
-			DisplayName:   strings.TrimSpace(req.DisplayName),
-			MaxBroadcasts: req.MaxBroadcasts,
+			Kind:            rooms.KindStatic,
+			DisplayCode:     strings.TrimSpace(req.Code),
+			DisplayName:     strings.TrimSpace(req.DisplayName),
+			MaxBroadcasts:   req.MaxBroadcasts,
+			Pop:             req.Pop,
+			MaxParticipants: req.MaxParticipants,
 		},
+	}
+	if req.Owner != nil {
+		room.OwnerReferences = []metav1.OwnerReference{*req.Owner}
 	}
 
 	secret := ""
@@ -425,6 +448,44 @@ func (c *RoomClient) SetScreening(ctx context.Context, name, value string, check
 		return before, RoomObject{}, fmt.Errorf("kube: set screening on room %s: %w", name, err)
 	}
 	return before, decodeRoom(u), nil
+}
+
+// SetWall keeps a PoP's wall room in step with its Pop (R74, docs/76 item
+// 33): spec.maxBroadcasts and spec.displayName, nothing else. It writes only
+// a room whose spec.pop is pop, so it can never retarget another room; any
+// other room is ErrRoomNotFound. Like SetScreening, the merge patch carries
+// the UID read as a precondition and is not bound by resourceVersion.
+func (c *RoomClient) SetWall(ctx context.Context, name, pop string, maxBroadcasts int, displayName string) (RoomObject, error) {
+	before, err := c.Get(ctx, name)
+	if err != nil {
+		return RoomObject{}, err
+	}
+	if pop == "" || before.Room.Spec.Pop != pop {
+		return RoomObject{}, ErrRoomNotFound
+	}
+	spec := map[string]any{"maxBroadcasts": nil, "displayName": nil} // null removes the key
+	if maxBroadcasts > 0 {
+		spec["maxBroadcasts"] = maxBroadcasts
+	}
+	if v := strings.TrimSpace(displayName); v != "" {
+		spec["displayName"] = v
+	}
+	body := map[string]any{"spec": spec}
+	if uid := before.Room.UID; uid != "" {
+		body["metadata"] = map[string]any{"uid": string(uid)}
+	}
+	patch, err := json.Marshal(body)
+	if err != nil {
+		return RoomObject{}, fmt.Errorf("kube: encode wall room patch: %w", err)
+	}
+	u, err := c.ri.Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
+			return RoomObject{}, ErrRoomNotFound
+		}
+		return RoomObject{}, fmt.Errorf("kube: update wall room %s: %w", name, err)
+	}
+	return decodeRoom(u), nil
 }
 
 // writeSecret creates or replaces the portal-named Secret with one key.

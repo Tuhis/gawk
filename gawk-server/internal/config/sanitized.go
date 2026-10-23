@@ -79,6 +79,13 @@ type SanitizedConfig struct {
 	InternalServerName string   `json:"internalServerName"`
 	TrustedCIDRs       []string `json:"trustedCidrs"`
 
+	// PoP relays (R74).
+	Pops             bool   `json:"pops"`
+	PopsFile         string `json:"popsFile"`
+	PopUplinkLinger  string `json:"popUplinkLinger"`
+	PopOfferDefer    string `json:"popOfferDefer"`
+	PopDemandTimeout string `json:"popDemandTimeout"`
+
 	// Telemetry. The key's PRESENCE is the feature switch, so the redacted
 	// form still answers "is this fleet collecting at all?".
 	TelemetryReportInterval string `json:"telemetryReportInterval"`
@@ -176,6 +183,12 @@ func (c Config) Sanitized() SanitizedConfig {
 		ClusterMode:        c.ClusterMode,
 		InternalServerName: c.InternalServerName,
 		TrustedCIDRs:       cidrStrings(c.TrustedCIDRs),
+
+		Pops:             c.Pops,
+		PopsFile:         c.PopsFile,
+		PopUplinkLinger:  dur(c.PopUplinkLinger),
+		PopOfferDefer:    dur(c.PopOfferDefer),
+		PopDemandTimeout: dur(c.PopDemandTimeout),
 
 		TelemetryReportInterval: dur(c.TelemetryReportInterval),
 		TelemetryAdvertiseURL:   c.TelemetryAdvertiseURL,

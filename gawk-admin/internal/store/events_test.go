@@ -346,6 +346,46 @@ func TestSummarizeRoomNamesTheRoom(t *testing.T) {
 	}
 }
 
+// R74: the PoP sentence names the PoP by its name and the operator, and
+// nothing else about it. The grading entry point routes pop types here too.
+func TestSummarizePopNamesThePoP(t *testing.T) {
+	cases := []struct {
+		eventType, name, actor, want string
+	}{
+		{store.EventPopCreated, "assembly-2026", "op@example.com", "PoP assembly-2026 was created by op@example.com"},
+		{store.EventPopUpdated, "assembly-2026", "op@example.com", "PoP assembly-2026 was edited by op@example.com"},
+		{store.EventPopRepaired, "assembly-2026", "op@example.com", "PoP assembly-2026 was given a new pairing string by op@example.com"},
+		{store.EventPopRevoked, "assembly-2026", "", "PoP assembly-2026 was revoked by an operator"},
+		{store.EventPopDeleted, "", "op@example.com", "a PoP was deleted by op@example.com"},
+	}
+	for _, tc := range cases {
+		if got := store.SummarizePop(tc.eventType, tc.name, tc.actor); got != tc.want {
+			t.Errorf("SummarizePop(%s, %q, %q) = %q, want %q", tc.eventType, tc.name, tc.actor, got, tc.want)
+		}
+	}
+	got := store.SummarizeWithEnforcement(store.EventPopRevoked, moderation.TargetBroadcastID, "ABC234", "op@example.com", store.EnforcementPending)
+	if got != "a PoP was revoked by op@example.com" {
+		t.Errorf("SummarizeWithEnforcement(pop.revoked) = %q: a PoP row names no broadcast", got)
+	}
+}
+
+// Event.PopName is a closed vocabulary like RoomKey: only a DNS label passes,
+// so an address written under the key by mistake reads as no PoP at all.
+func TestEventPopNameIsAClosedVocabulary(t *testing.T) {
+	for payload, want := range map[string]string{
+		``:                         "",
+		`{"pop":"assembly-2026"}`:  "assembly-2026",
+		`{"pop":"203.0.113.7"}`:    "",
+		`{"pop":"Assembly 2026"}`:  "",
+		`{"pop":"lanparty:4433"}`:  "",
+		`{"room":"assembly-2026"}`: "",
+	} {
+		if got := (store.Event{Payload: []byte(payload)}).PopName(); got != want {
+			t.Errorf("PopName(%s) = %q, want %q", payload, got, want)
+		}
+	}
+}
+
 // Event.RoomKey is the room twin of EnforcementState's closed vocabulary: only
 // a lower-case hex digest passes, so a producer that wrote the CODE under the
 // webhook-safe key by mistake leaks nothing (docs/44 D16, docs/42 D8).

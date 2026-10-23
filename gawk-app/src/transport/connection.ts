@@ -29,6 +29,12 @@ import {
   type TelemetryHelloMessage,
 } from './wire';
 import {
+  LOCAL_RELAY_STREAM_MAX_BYTES,
+  isLocalRelayType,
+  parseLocalRelayEvent,
+  type LocalRelayEvent,
+} from './local-relay';
+import {
   RELAY_CAPABILITIES_SIZE,
   parseRelayCapabilities,
   type RelayCapabilities,
@@ -38,8 +44,12 @@ export interface ConnectOptions {
   // hex(SHA-256(cert DER)) as logged by gawk-server at startup
   // ("cert_hash_hex"). Required for the self-signed dev cert unless Chrome
   // was launched with the --ignore-certificate-errors-spki-list flag; leave
-  // empty for a real (publicly trusted) certificate.
+  // empty for a real (publicly trusted) certificate. May hold several
+  // comma-separated hashes (the store's selectCertHashList form).
   certHashHex?: string;
+  // R74: every pinned hash, e.g. a PoP's current + next across a rolling
+  // rotation (docs/76 §6.1 item 3). Merged with certHashHex.
+  certHashes?: string[];
   publishSecret?: string;
   // The hex resume token from a previous session of this broadcast
   // (wire 0x09). Required for every /publish/{id} claim; travels as the
@@ -58,6 +68,12 @@ export interface ConnectOptions {
   // not a new viewer. ViewerSession sets it on every pipeline after the
   // first, and ViewerPipeline sends it as `?rejoin=1`.
   rejoin?: boolean;
+  // R74 (docs/76 item 43.7): this client will follow a LocalRelayOffer, so
+  // it says `lr=1` on the CONNECT and home may hold its demand briefly.
+  followOffers?: boolean;
+  // R74 (docs/76 item 34): a broadcaster's remembered party-wall Hide,
+  // `wall=hidden` on /publish, so it never flashes onto the wall.
+  wallHidden?: boolean;
 }
 
 // The WebTransportOptions every gawk session dials with. Shared with the
@@ -72,9 +88,15 @@ export function webTransportInit(opts: ConnectOptions = {}): WebTransportOptions
     requireUnreliable: true,
     congestionControl: 'low-latency',
   };
-  const hash = opts.certHashHex?.trim();
-  if (hash) {
-    init.serverCertificateHashes = [{ algorithm: 'sha-256', value: hexToBytes(hash) }];
+  const hashes: string[] = [];
+  for (const h of [...(opts.certHashHex ?? '').split(','), ...(opts.certHashes ?? [])]) {
+    const clean = h.trim().toLowerCase();
+    if (clean !== '' && !hashes.includes(clean)) hashes.push(clean);
+  }
+  if (hashes.length > 0) {
+    // The browser accepts the session if the presented certificate matches
+    // ANY listed hash.
+    init.serverCertificateHashes = hashes.map((h) => ({ algorithm: 'sha-256', value: hexToBytes(h) }));
   }
   return init;
 }
@@ -272,6 +294,9 @@ export interface ServerStreamCallbacks {
   // in-band because Chrome never reads a webtransport-go close code. The
   // consumer keeps it for when `closed` settles without one.
   onSessionClosing?: (code: number) => void;
+  // R74: a PoP's LocalRelayInfo (0x18) or home's LocalRelayOffer (0x19).
+  // Optional: without it both are read and dropped, never counted malformed.
+  onLocalRelay?: (ev: LocalRelayEvent) => void;
   // One verbatim datagram record off a reliable carrier stream. The
   // transport feeds it into the same handler as a received datagram — the
   // whole point of the carrier design.
@@ -368,7 +393,8 @@ async function readOneServerStream(
         head1 !== TYPE_TELEMETRY_HELLO &&
         head1 !== TYPE_TELEMETRY_ENDPOINT &&
         head1 !== TYPE_RELAY_CAPABILITIES &&
-        head1 !== TYPE_SESSION_CLOSING)
+        head1 !== TYPE_SESSION_CLOSING &&
+        !isLocalRelayType(head1))
     ) {
       // Unknown stream kind or version: cancel without wedging the accept
       // loop. Counted as malformed so it is visible in stats.
@@ -443,6 +469,27 @@ async function readOneServerStream(
       } catch (e) {
         carrier.malformed++;
         log.warn('session closing notice unreadable:', e);
+      }
+      return;
+    }
+
+    if (isLocalRelayType(head1)) {
+      // Variable length, small; read to EOF (bounded) and parse. An
+      // unreadable one costs only the local relay hint, never media.
+      for (;;) {
+        if (total > LOCAL_RELAY_STREAM_MAX_BYTES) {
+          void reader.cancel().catch(() => {});
+          carrier.malformed++;
+          return;
+        }
+        if (!(await readMore())) break;
+      }
+      try {
+        const ev = parseLocalRelayEvent(concatChunks(chunks, total));
+        cb.onLocalRelay?.(ev);
+      } catch (e) {
+        carrier.malformed++;
+        log.warn('local relay message unreadable:', e);
       }
       return;
     }

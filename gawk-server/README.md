@@ -33,6 +33,7 @@ flowchart LR
 | `CONNECT /echo` | Connectivity diagnostic (see `gawk-echo` below) |
 | `GET /healthz` | Liveness |
 | `GET /statusz` | JSON stats: subscribers, frames/datagrams relayed, drops, cached keyframe, per-subscriber detail |
+| `CONNECT /pop/link`, `/pop/addr`, `/pop/publish/{id}`, `/pop/subscribe/{id}` | PoP relays' link and legs ([`../docs/76`](../docs/76-pop-relays.md) §9). Registered only with `-pops`; credential-gated |
 
 A separate plain-TCP **ops endpoint** serves `GET /metrics` (Prometheus),
 `/healthz`, `/readyz` and a mirror of `/statusz` on `-metrics-addr` (default `:2112`)
@@ -137,6 +138,34 @@ then clears (see [`internal/pubsim/fixture/README.md`](internal/pubsim/fixture/R
 ```sh
 CGO_ENABLED=0 go run ./cmd/gawk-pubsim -url https://127.0.0.1:4433 -insecure -duration 60s
 ```
+
+## gawk-relay
+
+`cmd/gawk-relay` is the PoP relay a host runs on a LAN
+([`../docs/76`](../docs/76-pop-relays.md)): the same relay body as
+`gawk-server` (`internal/serve`), LAN-shaped defaults, a loopback console on
+`127.0.0.1:4480` and the web app embedded. It starts with no flags.
+
+```sh
+./cmd/gawk-relay/webapp/stage.sh          # build gawk-app and stage it for the embed
+CGO_ENABLED=0 go build ./cmd/gawk-relay
+./gawk-relay                              # console: http://127.0.0.1:4480
+```
+
+Without `stage.sh` the binary embeds a placeholder page instead of the app;
+release builds run the webapp package's test with `GAWK_RELAY_REQUIRE_APP=1`,
+which fails on the placeholder. The image builds
+from the repo root:
+
+```sh
+docker build -f gawk-server/deploy/Dockerfile.relay -t gawk-relay:dev .    # from the repo root
+docker run -d --network host -v gawk-relay:/data gawk-relay:dev
+```
+
+Use host networking (LAN detection would otherwise find the bridge address,
+and the console is loopback-only) and keep `/data`, or each restart mints
+new keys and certificate hashes. Its own flags:
+[`docs/flags.md`](docs/flags.md#gawk-relay).
 
 ## Docker
 

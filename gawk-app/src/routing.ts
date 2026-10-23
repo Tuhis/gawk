@@ -10,13 +10,20 @@ import { sanitizeNickname } from './features/room/roomPrefs';
 export interface RouteQuery {
   // Normalized https origin from a valid ?relay= value, else null.
   relay: string | null;
-  // Parameters that were present but unusable (today only an invalid relay),
-  // for the quiet note. Unknown parameters are ignored silently.
+  // R74 (docs/76 §6.1 item 5, OD12): the `?certHash=` pins, 1–2 lowercase
+  // hex SHA-256 values of the relay's certificate DER. Non-empty only beside
+  // a `relay` whose host is a private-range IP literal (isPinnableRelay).
+  certHashes: string[];
+  // Parameters that were present but unusable (an invalid relay, a certHash
+  // that is malformed or not beside a private literal), for the quiet note.
+  // Unknown parameters are ignored silently.
   droppedParams: string[];
 }
 
 export type Route =
-  | { view: 'landing' }
+  // The landing page takes the query too: a standalone PoP's join link is
+  // `#/?relay=https://<lan-ip>:4433&certHash=…` (docs/76 §6.1 item 5).
+  | ({ view: 'landing' } & RouteQuery)
   // `room` is a room to join once the stream is live (`?room=<code>`, a link
   // from outside the app, such as a chat bot's room card). App.tsx moves it
   // into the room-return stash before the first render. Null when absent or
@@ -45,8 +52,59 @@ export type Route =
 
 export const HOME = '#/';
 
+const CERT_HASH_RE = /^[0-9a-f]{64}$/;
+export const MAX_CERT_HASHES = 2;
+
+// A `certHash=` value: 1–2 comma-separated lowercase 64-hex hashes, a
+// repeated one collapsed. Anything else is null: the whole list is dropped,
+// never partially used.
+export function parseCertHashList(value: string): string[] | null {
+  const parts = value.split(',');
+  if (parts.length > MAX_CERT_HASHES) return null;
+  const out: string[] = [];
+  for (const p of parts) {
+    if (!CERT_HASH_RE.test(p)) return null;
+    if (!out.includes(p)) out.push(p);
+  }
+  return out;
+}
+
+// True when `hostname` (as `URL.hostname` yields it: canonical dotted IPv4,
+// bracketed IPv6) is an IP literal in 10/8, 172.16/12, 192.168/16 or
+// fc00::/7. Hostnames never qualify, whatever they look like.
+export function isPrivateIpLiteral(hostname: string): boolean {
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    if ([v4[1], v4[2], v4[3], v4[4]].some((o) => Number(o) > 255)) return false;
+    return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+  }
+  const v6 = /^\[([0-9a-f:.]+)\]$/i.exec(hostname);
+  if (v6) {
+    // URL serializes IPv6 compressed and lowercase; the first hextet decides
+    // fc00::/7. An address starting "::" has a zero first hextet.
+    const first = v6[1].toLowerCase().split(':')[0];
+    if (first === '' || first.includes('.')) return false;
+    const n = parseInt(first, 16);
+    return (n & 0xfe00) === 0xfc00;
+  }
+  return false;
+}
+
+// The private-literal rule for pins (docs/76 OD12, revising docs/40 D3): a
+// certificate hash only ever rides with a relay named by a private-range IP
+// literal, so a link can never pin a self-signed relay on the public
+// internet. `relay` is a normalized origin.
+export function isPinnableRelay(relay: string): boolean {
+  try {
+    return isPrivateIpLiteral(new URL(relay).hostname);
+  } catch {
+    return false;
+  }
+}
+
 function parseQuery(query: string): RouteQuery {
-  const out: RouteQuery = { relay: null, droppedParams: [] };
+  const out: RouteQuery = { relay: null, certHashes: [], droppedParams: [] };
   if (query === '') return out;
   let params: URLSearchParams;
   try {
@@ -63,6 +121,15 @@ function parseQuery(query: string): RouteQuery {
       // A typo'd relay in a long-lived link degrades to "joins on the user's
       // own server", surfaced quietly, never to "cannot join".
       out.droppedParams.push('relay');
+    }
+  }
+  const certHash = params.get('certHash');
+  if (certHash !== null) {
+    const hashes = parseCertHashList(certHash);
+    if (hashes !== null && out.relay !== null && isPinnableRelay(out.relay)) {
+      out.certHashes = hashes;
+    } else {
+      out.droppedParams.push('certHash');
     }
   }
   return out;
@@ -141,7 +208,7 @@ export function parseRoute(hash: string): Route {
   // Normalize: strip a leading '/', collapse trailing '/'.
   const path = (qIndex === -1 ? raw : raw.slice(0, qIndex)).replace(/^\//, '').replace(/\/+$/, '');
 
-  if (path === '') return { view: 'landing' };
+  if (path === '') return { view: 'landing', ...parseQuery(query) };
   if (path === 'broadcast') {
     return {
       view: 'broadcaster',

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.pop.updated.json",
+  "title": "PoP updated",
+  "description": "An operator edited a PoP relay's name, expiry, budgets, limits or guest settings (R74, docs/76). The event names the PoP and nothing else about it: never an address, a pairing string or a credential. The `data` of a `fi.ioio.gawk.pop.updated` CloudEvent.",
+  "type": "object",
+  "properties": {
+    "actor": {
+      "$ref": "common.json#/$defs/actor"
+    },
+    "pop": {
+      "$ref": "common.json#/$defs/popName",
+      "description": "The PoP the operator acted on: the Pop resource's name."
+    },
+    "displayName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "The PoP's name as shown to people, after the edit."
+    },
+    "summary": {
+      "$ref": "common.json#/$defs/summary"
+    },
+    "portalUrl": {
+      "$ref": "common.json#/$defs/portalUrl"
+    }
+  },
+  "required": [
+    "actor",
+    "pop"
+  ]
+}

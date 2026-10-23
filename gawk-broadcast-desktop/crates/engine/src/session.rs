@@ -36,6 +36,11 @@ pub struct SessionConfig {
     pub origin: String,
     /// Skip TLS verification — dev certs only.
     pub insecure: bool,
+    /// R74 (docs/76 §6.1 item 5): the server's pinned certificate hashes.
+    /// Non-empty, the relay's certificate must hash to one of them and the
+    /// system store is not consulted — on the first leg, every reclaim and
+    /// the room control session alike. Empty is the system store.
+    pub cert_hashes: Vec<transport::CertHash>,
     /// R42 rooms (docs/44 §4.8): join this code (or static slug) and attach
     /// the broadcast on publish, re-attaching on every resume. Ignored when
     /// `room_new` is set.
@@ -58,6 +63,40 @@ pub struct SessionConfig {
     /// R73 (docs/75 D5): the publish connection's congestion controller,
     /// for the first leg and every reclaim.
     pub congestion: Congestion,
+    /// R74 (docs/76 items 21, 43.7): this client follows a home relay's
+    /// local-relay offer, so every CONNECT it makes — the publish legs and
+    /// the room control session — carries `lr=1`. The shell clears it when
+    /// the session dials the PoP it switched to.
+    pub follow_offers: bool,
+    /// R74 (docs/76 item 34): the broadcaster hid from this PoP's party
+    /// wall, so every publish leg carries `wall=hidden` and the broadcast
+    /// never flashes onto the wall.
+    pub wall_hidden: bool,
+}
+
+impl SessionConfig {
+    /// A publish URL with this session's R74 query parameters added.
+    pub fn decorate_publish_url(&self, url: &str) -> String {
+        let mut url = url.to_owned();
+        if self.follow_offers {
+            url = crate::localrelay::with_follow_offers(&url);
+        }
+        if self.wall_hidden {
+            url = crate::localrelay::with_wall_hidden(&url);
+        }
+        url
+    }
+
+    /// The relay URL the room control session builds its URLs on: with
+    /// `lr=1` when this client follows offers (the room URL builders keep a
+    /// query they are given).
+    pub fn room_relay_url(&self) -> String {
+        if self.follow_offers {
+            crate::localrelay::with_follow_offers(&self.relay_url)
+        } else {
+            self.relay_url.clone()
+        }
+    }
 }
 
 /// What the session tells its shell. The Go engine's `Callbacks`, as events.
@@ -132,6 +171,16 @@ pub enum EngineEvent {
     RoomRejected { reason: String, message: String },
     /// The room control session is being redialed (attempt counter).
     RoomReconnecting { attempt: u32 },
+
+    // --- R74 PoP relays (docs/76 §6.12) ---
+    /// The relay is a party's local relay (0x18): its name, whether it is
+    /// linked to its home fleet, and whether this broadcast is on its party
+    /// wall. Sent at session start and again when that changes.
+    LocalRelay(crate::localrelay::LocalRelay),
+    /// The home relay suggests a party's local relay to this broadcaster
+    /// (0x19). A live broadcast is never moved (item 43.3): the shell says
+    /// "your next broadcast will use it".
+    LocalRelayOffer(crate::localrelay::Offer),
 }
 
 struct Shared {
@@ -210,6 +259,7 @@ impl Session {
             &cfg.publish_secret,
             &cfg.resume_token_hex,
         )
+        .map(|u| cfg.decorate_publish_url(&u))
         .map_err(|e| StartError {
             phase: StartPhase::Connect,
             status: 0,
@@ -217,7 +267,14 @@ impl Session {
         })?;
 
         let relay: Arc<dyn RelaySession> = Arc::new(
-            transport::dial_publish(&url, &cfg.origin, cfg.insecure, cfg.congestion).await?,
+            transport::dial_publish_pinned(
+                &url,
+                &cfg.origin,
+                cfg.insecure,
+                &cfg.cert_hashes,
+                cfg.congestion,
+            )
+            .await?,
         );
 
         Ok(Self::start_with_session(cfg, relay, clock))
@@ -236,6 +293,7 @@ impl Session {
         let dialer: Arc<dyn RoomDialer> = Arc::new(transport::WtRoomDialer {
             origin: cfg.origin.clone(),
             insecure: cfg.insecure,
+            pins: cfg.cert_hashes.clone(),
         });
         Self::start_with_session_and_room_dialer(cfg, relay, clock, dialer)
     }
@@ -251,6 +309,7 @@ impl Session {
         let publish_dialer: Arc<dyn PublishDialer> = Arc::new(transport::WtPublishDialer {
             origin: cfg.origin.clone(),
             insecure: cfg.insecure,
+            pins: cfg.cert_hashes.clone(),
             congestion: cfg.congestion,
         });
         Self::start_with_seams(cfg, relay, clock, room_dialer, publish_dialer)
@@ -402,7 +461,7 @@ impl Session {
 
     fn room_config(&self) -> RoomConfig {
         RoomConfig {
-            relay_url: self.cfg.relay_url.clone(),
+            relay_url: self.cfg.room_relay_url(),
             origin: self.cfg.origin.clone(),
             insecure: self.cfg.insecure,
             code: String::new(),
@@ -804,6 +863,12 @@ fn handle_server_message(
                 screening: notices & wire::RELAY_NOTICE_SCREENING != 0,
             });
         }
+        Ok(ServerMessage::LocalRelayInfo(info)) => {
+            let _ = events.send(EngineEvent::LocalRelay(info));
+        }
+        Ok(ServerMessage::LocalRelayOffer(offer)) => {
+            let _ = events.send(EngineEvent::LocalRelayOffer(offer));
+        }
         // Unknown types and malformed messages: ignored — a newer relay
         // must not break this client, and strict parsing already dropped
         // anything misleading.
@@ -846,8 +911,9 @@ async fn resume(
             "the relay session ended before the broadcast code arrived".into(),
         ));
     }
-    let url =
-        publish_url(&ctx.cfg.relay_url, &id, &ctx.cfg.publish_secret, &token).map_err(Some)?;
+    let url = publish_url(&ctx.cfg.relay_url, &id, &ctx.cfg.publish_secret, &token)
+        .map(|u| ctx.cfg.decorate_publish_url(&u))
+        .map_err(Some)?;
 
     ctx.shared.lock().unwrap().resuming = true;
     let mut backoff = ResumeBackoff::new();

@@ -50,6 +50,9 @@ TAG_STEMS = {
     "gawk-broadcast-macos": ("gawk-broadcast-desktop",),
     # R56 (docs/58 D13): the third distribution of the desktop release.
     "gawk-broadcast-linux": ("gawk-broadcast-desktop",),
+    # R74 PP4 (docs/76 §6.1 item 1): the standalone LAN relay is a second
+    # binary of the gawk-server module, released under its tag.
+    "gawk-relay": ("gawk-server",),
 }
 
 

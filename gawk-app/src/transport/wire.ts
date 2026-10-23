@@ -177,6 +177,18 @@ export const CLOSE_CODE_TERMINATED_BY_OPERATOR = 4006;
 // directly). Never sent on a publish or subscribe session. Mirrored from Go
 // wire.CloseCodeRoomEnded.
 export const CLOSE_CODE_ROOM_ENDED = 4007;
+// 4008–4011 are left unallocated for R43 (docs/45 D3).
+// A home pod closes an outside viewer with this when the broadcast lives on an
+// R74 PoP relay whose uplink budget is spent (docs/76 item 28), after the
+// in-band SessionClosing. NOT terminal: the viewer shows "This stream is at a
+// LAN party with limited internet. Outside viewing is full right now; we'll
+// keep trying." and retries every 20 s. Mirrored from Go
+// wire.CloseCodePopUplinkFull.
+export const CLOSE_CODE_POP_UPLINK_FULL = 4012;
+// Home → a PoP's uplink leg only (Go to Go): the linger after the last outside
+// viewer expired. Browsers never receive it — mirrored for namespace parity.
+// Mirrored from Go wire.CloseCodePopNoDemand.
+export const CLOSE_CODE_POP_NO_DEMAND = 4013;
 
 // SessionClosing: relay→client on its own server-opened uni
 // stream, a settle interval BEFORE the relay closes the session with this
@@ -185,7 +197,8 @@ export const CLOSE_CODE_ROOM_ENDED = 4007;
 // of the close capsule, and Chrome fails the session on it ("Connection
 // lost.", no closeCode; quic-go/webtransport-go#242). A client uses it when
 // `closed` settles without a code, and keeps a code it did read. Sent for
-// the terminal codes only (4000, 4004, 4006) on publish/subscribe sessions;
+// the terminal codes (4000, 4004, 4006) and R74's non-terminal 4012 on
+// publish/subscribe sessions;
 // room control sessions have RoomEnding instead. Layout: version, type 0x17,
 // uint32 BE code in [4000, 4999] — exactly 6 bytes. Mirrored from Go
 // wire.TypeSessionClosing.
@@ -1663,6 +1676,14 @@ class RoomReader {
     return { id, kind, flags, nickname, identity };
   }
 
+  // n raw bytes. A view, not a copy.
+  raw(n: number, field: string): Uint8Array {
+    if (this.off + n > this.buf.length) this.fail(`${field} overruns message`);
+    const v = this.buf.subarray(this.off, this.off + n);
+    this.off += n;
+    return v;
+  }
+
   // Asserts the record was consumed exactly (house strictness).
   done(): void {
     if (this.off !== this.buf.length) this.fail(`${this.buf.length - this.off} trailing bytes`);
@@ -2001,4 +2022,272 @@ export function parseRoomCommand(msg: Uint8Array): RoomCommand {
   }
   r.done();
   return c;
+}
+
+// --- R74 PoP relays: LocalRelayInfo (0x18) and LocalRelayOffer (0x19) --------
+// Mirrors gawk-server/wire/localrelay.go byte for byte; the layout comments
+// there are the spec. Both are relay→client on their own server-opened uni
+// stream right after the upgrade on /echo, /publish, /subscribe and /room.
+// Like RelayIdentity, TRAILING BYTES ARE TOLERATED (appended fields are the
+// extension mechanism) while the flags byte stays strict. LocalRelayInfo's
+// state byte is tolerant: unknown bits are ignored. The URL and origin rules
+// are hand checks, identical in all three wire copies, so no copy leans on its
+// platform's URL parser. The encoders exist for tests and golden vectors;
+// browsers only ever parse.
+
+// LocalRelayInfo: PoP → client — display name, linked / on-wall state, home
+// app origin, wall code. Allocated 2026-10-22. Mirrored from Go
+// wire.TypeLocalRelayInfo.
+export const TYPE_LOCAL_RELAY_INFO = 0x18;
+// LocalRelayOffer: home → client — a suggestion to switch to a PoP relay on
+// the client's network. Mirrored from Go wire.TypeLocalRelayOffer.
+export const TYPE_LOCAL_RELAY_OFFER = 0x19;
+// LocalRelayInfo state bits (byte 3).
+export const LOCAL_RELAY_LINKED = 0x01;
+export const LOCAL_RELAY_ON_WALL = 0x02;
+export const LOCAL_RELAY_INFO_MIN_SIZE = 7;
+export const MAX_LOCAL_RELAY_ORIGIN_LEN = 128;
+export const MAX_LOCAL_RELAY_HANDLE_LEN = 64;
+export const MAX_LOCAL_RELAY_URL_LEN = 256;
+export const MAX_LOCAL_RELAY_CANDIDATES = 4;
+export const MAX_LOCAL_RELAY_HASHES = 2;
+const LOCAL_RELAY_HASH_SIZE = 32;
+const LOCAL_RELAY_OFFER_MIN_SIZE = 3 + 1 + 1 + 1 + 4 + 1;
+
+export interface LocalRelayInfoMessage {
+  linked: boolean;
+  // Shown on a publish session whose broadcast is on the party wall.
+  onWall: boolean;
+  // Attacker-influenced trust UI: render sanitized.
+  name: string;
+  // The home fleet's app origin; '' when unlinked.
+  homeOrigin: string;
+  // The party wall's room code; '' when there is none.
+  wallCode: string;
+}
+
+export interface LocalRelayCandidate {
+  url: string;
+  // Raw SHA-256 certificate hashes to pin, 32 bytes each, 0–2 of them.
+  hashes: Uint8Array[];
+}
+
+export interface LocalRelayOfferMessage {
+  // Opaque PoP handle (the Pop CR's metadata.uid); opt-outs key on it.
+  handle: string;
+  name: string;
+  // Seconds the offer may be acted on, ≥ 1.
+  validity: number;
+  // In the sender's preference order.
+  candidates: LocalRelayCandidate[];
+}
+
+function urlBytesOk(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c <= 0x20 || c > 0x7e) return false;
+  }
+  return true;
+}
+
+// A host[:port] authority: a non-empty host, either a bracketed IPv6 literal
+// or a run with no ':' or brackets; a port, when present, is 1–5 digits valued
+// 1–65535. Returns the host, or null. Mirrors Go splitLocalRelayAuthority.
+function splitLocalRelayAuthority(auth: string): string | null {
+  let host: string;
+  let port = '';
+  let hasPort = false;
+  if (auth.startsWith('[')) {
+    const end = auth.indexOf(']');
+    if (end < 2) return null;
+    host = auth.slice(0, end + 1);
+    if (host.slice(1, end).includes('[')) return null;
+    const rest = auth.slice(end + 1);
+    if (rest !== '') {
+      if (rest[0] !== ':') return null;
+      port = rest.slice(1);
+      hasPort = true;
+    }
+  } else {
+    host = auth;
+    const i = auth.indexOf(':');
+    if (i >= 0) {
+      host = auth.slice(0, i);
+      port = auth.slice(i + 1);
+      hasPort = true;
+    }
+    if (host === '' || host.includes('[') || host.includes(']')) return null;
+  }
+  if (hasPort) {
+    if (port.length === 0 || port.length > 5) return null;
+    let n = 0;
+    for (let i = 0; i < port.length; i++) {
+      const c = port.charCodeAt(i);
+      if (c < 0x30 || c > 0x39) return null;
+      n = n * 10 + (c - 0x30);
+    }
+    if (n === 0 || n > 65535) return null;
+  }
+  return host;
+}
+
+// The home-origin rule: '' or https://host[:port] with no userinfo, path,
+// query or fragment, or http://localhost[:port] / http://127.0.0.1[:port].
+function validateLocalRelayOrigin(origin: string): void {
+  if (origin === '') return;
+  if (origin.length > MAX_LOCAL_RELAY_ORIGIN_LEN) {
+    throw new WireError(`local relay info home origin exceeds ${MAX_LOCAL_RELAY_ORIGIN_LEN} bytes`);
+  }
+  if (!urlBytesOk(origin)) throw new WireError('local relay info home origin has a non-URL byte');
+  let auth: string;
+  let loopbackOnly = false;
+  if (origin.startsWith('https://')) {
+    auth = origin.slice('https://'.length);
+  } else if (origin.startsWith('http://')) {
+    auth = origin.slice('http://'.length);
+    loopbackOnly = true;
+  } else {
+    throw new WireError('local relay info home origin is not https or loopback http');
+  }
+  if (/[/?#@]/.test(auth)) throw new WireError('local relay info home origin is not a bare origin');
+  const host = splitLocalRelayAuthority(auth);
+  if (host === null) throw new WireError('local relay info home origin has a bad host or port');
+  if (loopbackOnly && host !== 'localhost' && host !== '127.0.0.1') {
+    throw new WireError('local relay info home origin: http is allowed only for localhost and 127.0.0.1');
+  }
+}
+
+// The candidate-URL rule: printable ASCII, "https://", a non-empty
+// host[:port] authority with no userinfo, an optional path, no query or
+// fragment.
+function validateLocalRelayUrl(url: string): void {
+  if (url.length === 0 || url.length > MAX_LOCAL_RELAY_URL_LEN) {
+    throw new WireError(`local relay offer URL must be 1-${MAX_LOCAL_RELAY_URL_LEN} bytes`);
+  }
+  if (!urlBytesOk(url)) throw new WireError('local relay offer URL has a non-URL byte');
+  if (!url.startsWith('https://')) throw new WireError('local relay offer URL is not absolute https');
+  if (url.includes('?') || url.includes('#')) {
+    throw new WireError('local relay offer URL carries a query or a fragment');
+  }
+  let auth = url.slice('https://'.length);
+  const slash = auth.indexOf('/');
+  if (slash >= 0) auth = auth.slice(0, slash);
+  if (auth.includes('@')) throw new WireError('local relay offer URL carries userinfo');
+  if (splitLocalRelayAuthority(auth) === null) throw new WireError('local relay offer URL has a bad host or port');
+}
+
+function validateLocalRelayHandle(handle: string): void {
+  if (handle.length === 0 || handle.length > MAX_LOCAL_RELAY_HANDLE_LEN) {
+    throw new WireError(`local relay offer handle must be 1-${MAX_LOCAL_RELAY_HANDLE_LEN} bytes`);
+  }
+  for (let i = 0; i < handle.length; i++) {
+    const c = handle.charCodeAt(i);
+    if (c < 0x20 || c > 0x7e) throw new WireError('local relay offer handle is not printable ASCII');
+  }
+}
+
+function asciiOf(b: Uint8Array): string {
+  let s = '';
+  for (const byte of b) s += String.fromCharCode(byte);
+  return s;
+}
+
+export function encodeLocalRelayInfo(msg: LocalRelayInfoMessage): Uint8Array<ArrayBuffer> {
+  validateLocalRelayOrigin(msg.homeOrigin);
+  const w = new RoomWriter('local relay info');
+  w.u8(WIRE_VERSION, TYPE_LOCAL_RELAY_INFO, 0);
+  w.u8((msg.linked ? LOCAL_RELAY_LINKED : 0) | (msg.onWall ? LOCAL_RELAY_ON_WALL : 0));
+  w.str8(msg.name, RELAY_IDENTITY_MAX_NAME_LEN, 'name');
+  w.str8(msg.homeOrigin, MAX_LOCAL_RELAY_ORIGIN_LEN, 'home origin');
+  w.str8(msg.wallCode, MAX_ROOM_CODE_LEN, 'wall code');
+  return w.finish();
+}
+
+export function parseLocalRelayInfo(msg: Uint8Array): LocalRelayInfoMessage {
+  checkRoomPrefix(msg, TYPE_LOCAL_RELAY_INFO, LOCAL_RELAY_INFO_MIN_SIZE, 'local relay info');
+  const r = new RoomReader(msg, 'local relay info');
+  const flags = r.u8();
+  if (flags !== 0) throw new WireError(`local relay info sets reserved flag bits (0x${flags.toString(16)})`);
+  const state = r.u8();
+  const name = r.str8('name', RELAY_IDENTITY_MAX_NAME_LEN);
+  const homeOrigin = r.str8('home origin', MAX_LOCAL_RELAY_ORIGIN_LEN);
+  const wallCode = r.str8('wall code', MAX_ROOM_CODE_LEN);
+  // No r.done(): bytes past the wall code are the extension space.
+  validateLocalRelayOrigin(homeOrigin);
+  return {
+    linked: (state & LOCAL_RELAY_LINKED) !== 0,
+    onWall: (state & LOCAL_RELAY_ON_WALL) !== 0,
+    name,
+    homeOrigin,
+    wallCode,
+  };
+}
+
+export function encodeLocalRelayOffer(msg: LocalRelayOfferMessage): Uint8Array<ArrayBuffer> {
+  validateLocalRelayHandle(msg.handle);
+  if (!Number.isInteger(msg.validity) || msg.validity < 1 || msg.validity > 0xffffffff) {
+    throw new WireError(`local relay offer validity ${msg.validity} out of range`);
+  }
+  const n = msg.candidates.length;
+  if (n === 0 || n > MAX_LOCAL_RELAY_CANDIDATES) {
+    throw new WireError(`local relay offer has ${n} candidates, want 1-${MAX_LOCAL_RELAY_CANDIDATES}`);
+  }
+  for (const c of msg.candidates) {
+    validateLocalRelayUrl(c.url);
+    if (c.hashes.length > MAX_LOCAL_RELAY_HASHES) {
+      throw new WireError(`local relay offer candidate has ${c.hashes.length} hashes, max ${MAX_LOCAL_RELAY_HASHES}`);
+    }
+    for (const h of c.hashes) {
+      if (h.length !== LOCAL_RELAY_HASH_SIZE) {
+        throw new WireError(`local relay offer hash is ${h.length} bytes, want ${LOCAL_RELAY_HASH_SIZE}`);
+      }
+    }
+  }
+  const w = new RoomWriter('local relay offer');
+  w.u8(WIRE_VERSION, TYPE_LOCAL_RELAY_OFFER, 0, msg.handle.length);
+  for (let i = 0; i < msg.handle.length; i++) w.u8(msg.handle.charCodeAt(i));
+  w.str8(msg.name, RELAY_IDENTITY_MAX_NAME_LEN, 'name');
+  w.u32(msg.validity);
+  w.u8(n);
+  for (const c of msg.candidates) {
+    w.u16(c.url.length);
+    for (let i = 0; i < c.url.length; i++) w.u8(c.url.charCodeAt(i));
+    w.u8(c.hashes.length);
+    for (const h of c.hashes) w.raw(h);
+  }
+  return w.finish();
+}
+
+export function parseLocalRelayOffer(msg: Uint8Array): LocalRelayOfferMessage {
+  checkRoomPrefix(msg, TYPE_LOCAL_RELAY_OFFER, LOCAL_RELAY_OFFER_MIN_SIZE, 'local relay offer');
+  const r = new RoomReader(msg, 'local relay offer');
+  const flags = r.u8();
+  if (flags !== 0) throw new WireError(`local relay offer sets reserved flag bits (0x${flags.toString(16)})`);
+  const handle = asciiOf(r.bytes8('handle', MAX_LOCAL_RELAY_HANDLE_LEN));
+  validateLocalRelayHandle(handle);
+  const name = r.str8('name', RELAY_IDENTITY_MAX_NAME_LEN);
+  const validity = r.u32();
+  if (validity === 0) throw new WireError('local relay offer validity 0');
+  const count = r.u8();
+  if (count === 0 || count > MAX_LOCAL_RELAY_CANDIDATES) {
+    throw new WireError(`local relay offer has ${count} candidates, want 1-${MAX_LOCAL_RELAY_CANDIDATES}`);
+  }
+  const candidates: LocalRelayCandidate[] = [];
+  for (let i = 0; i < count; i++) {
+    const urlLen = r.u16();
+    if (urlLen === 0 || urlLen > MAX_LOCAL_RELAY_URL_LEN) {
+      throw new WireError(`local relay offer urlLen ${urlLen}, want 1-${MAX_LOCAL_RELAY_URL_LEN}`);
+    }
+    const url = asciiOf(r.raw(urlLen, 'URL'));
+    validateLocalRelayUrl(url);
+    const hashCount = r.u8();
+    if (hashCount > MAX_LOCAL_RELAY_HASHES) {
+      throw new WireError(`local relay offer candidate has ${hashCount} hashes, max ${MAX_LOCAL_RELAY_HASHES}`);
+    }
+    const hashes: Uint8Array[] = [];
+    for (let j = 0; j < hashCount; j++) hashes.push(r.raw(LOCAL_RELAY_HASH_SIZE, 'hash').slice());
+    candidates.push({ url, hashes });
+  }
+  // No r.done(): bytes past the last candidate are the extension space.
+  return { handle, name, validity, candidates };
 }

@@ -17,8 +17,9 @@ import { relayHost } from '../../lib/relayUrl';
 import { relayScreens } from '../../transport/wire';
 import {
   DEFAULT_SERVER_ID,
-  certHashWithDevFallback,
+  certHashesWithFallback,
   defaultServerUrl,
+  entryCertHashes,
   useTransportStore,
   type RelayServerEntry,
 } from '../../state/transportStore';
@@ -230,28 +231,28 @@ export function ServerPickerPanel({ onClose, probeFn, fetchFn }: Props) {
       {
         key: DEFAULT_SERVER_ID,
         url: defaultServerUrl(),
-        certHashHex: certHashWithDevFallback(defaultServerUrl(), defaultCreds().certHashHex),
+        certHashHex: certHashesWithFallback(defaultServerUrl(), defaultCreds().certHashes).join(','),
         auto: true,
       },
       ...customServersOf(servers).map((e) => ({
         key: e.id,
         url: e.url,
-        certHashHex: certHashWithDevFallback(e.url, e.certHashHex),
+        certHashHex: certHashesWithFallback(e.url, entryCertHashes(e)).join(','),
         auto: true,
       })),
       ...(Array.isArray(directory) ? directory : []).map((o, i) => ({
         key: `dir-${i}-${o.url}`,
         url: o.url,
-        certHashHex: certHashWithDevFallback(o.url, ''),
+        certHashHex: certHashesWithFallback(o.url, []).join(','),
         auto: false,
       })),
     ],
     probeFn,
   );
 
-  function defaultCreds(): { certHashHex: string } {
+  function defaultCreds(): { certHashes: string[] } {
     const record = servers.find((e) => e.id === DEFAULT_SERVER_ID);
-    return { certHashHex: record?.certHashHex ?? '' };
+    return { certHashes: record ? entryCertHashes(record) : [] };
   }
   function customServersOf(list: RelayServerEntry[]): RelayServerEntry[] {
     return list.filter((e) => e.id !== DEFAULT_SERVER_ID);
@@ -276,7 +277,8 @@ export function ServerPickerPanel({ onClose, probeFn, fetchFn }: Props) {
       label: entry.label,
       url: entry.url,
       publishSecret: entry.publishSecret,
-      certHashHex: entry.certHashHex,
+      // Every pinned hash, comma-separated: the store splits it back.
+      certHashHex: entryCertHashes(entry).join(','),
     });
     setFormError(null);
     setAdvancedOpen(entry.publishSecret !== '' || entry.certHashHex !== '');
@@ -290,7 +292,7 @@ export function ServerPickerPanel({ onClose, probeFn, fetchFn }: Props) {
       label: '',
       url: defaultUrl,
       publishSecret: record?.publishSecret ?? '',
-      certHashHex: record?.certHashHex ?? '',
+      certHashHex: record ? entryCertHashes(record).join(',') : '',
     });
     setFormError(null);
     setEditing({ mode: 'default-credentials' });
@@ -333,7 +335,8 @@ export function ServerPickerPanel({ onClose, probeFn, fetchFn }: Props) {
       label: '',
       url: store.sessionOverrideUrl,
       publishSecret: store.overridePublishSecret,
-      certHashHex: store.overrideCertHashHex,
+      // The resolved list: a session-typed hash, else the link's pins (R74).
+      certHashes: store.certHashes,
     });
     setSavedOverride(true);
   };
@@ -398,7 +401,7 @@ export function ServerPickerPanel({ onClose, probeFn, fetchFn }: Props) {
           </label>
           {showDev && (
             <label className={styles.field}>
-              <span>Dev cert hash (hex; empty for a real cert)</span>
+              <span>Dev cert hash (hex, comma-separated for several; empty for a real cert)</span>
               <input
                 value={draft.certHashHex}
                 onChange={(e) => setDraft((d) => ({ ...d, certHashHex: e.target.value }))}

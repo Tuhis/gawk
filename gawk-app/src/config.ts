@@ -65,6 +65,14 @@ export interface GawkRuntimeConfig {
   // deployment that needs it has a TLS problem, not a missing knob.
   devCertHashHex?: string;
 
+  // R74 (docs/76 §6.1 item 6): hex SHA-256 hashes of the configured relay's
+  // pinned self-signed certificate DER, current and next across a rolling
+  // rotation. A PoP's generated /app/config.js sets it beside a LAN-address
+  // relayUrl. Applies to relayUrl (the default server) only and, unlike
+  // devCertHashHex, is NOT dev-gated: the named tier serves /app/ from a real
+  // hostname.
+  relayCertHashes?: string[];
+
   // Optional server directory JSON the picker offers, fetched when the picker
   // opens, never at boot. Same-origin recommended; a cross-origin URL must
   // serve CORS itself.
@@ -145,6 +153,20 @@ export function getDevCertHashHex(): string {
   if (!isDevEnvironment()) return '';
   const v = getRuntimeConfig().devCertHashHex;
   return (typeof v === 'string' && v.trim()) || '';
+}
+
+// The configured relay's pinned hashes (relayCertHashes), trimmed and
+// lowercased, junk entries dropped; [] when unset. Not dev-gated.
+export function getRelayCertHashes(): string[] {
+  const v = getRuntimeConfig().relayCertHashes;
+  if (!Array.isArray(v)) return [];
+  const out: string[] = [];
+  for (const h of v) {
+    if (typeof h !== 'string') continue;
+    const clean = h.trim().toLowerCase();
+    if (clean !== '' && !out.includes(clean)) out.push(clean);
+  }
+  return out;
 }
 
 export const DEFAULT_DVR_BUFFER_MS = 3000;

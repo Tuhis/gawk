@@ -836,6 +836,49 @@ func TestCheckOriginInternalEdgeOrigin(t *testing.T) {
 	}
 }
 
+// R74 (docs/76): a PoP relay announces popOrigin on its link and leg dials,
+// and no deployment should have to whitelist it — but, like the edge origin,
+// it buys nothing outside the credential-gated /pop/* routes, and a wrong or
+// missing origin on those routes is still rejected.
+func TestCheckOriginPopOrigin(t *testing.T) {
+	r := hub.NewRegistry(discardLog, hub.Options{MaxSubscribers: 1})
+	srv := New(config.Config{MaxSubscribers: 1, AllowedOrigins: []string{"https://gawk.example.com"}},
+		r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, nil }, discardLog, nil)
+
+	cases := []struct {
+		name   string
+		path   string
+		origin string
+		want   bool
+	}{
+		{"pop origin on pop link route", "/pop/link", popOrigin, true},
+		{"pop origin on pop leg route", "/pop/subscribe/NSTMWB", popOrigin, true},
+		{"pop origin buys nothing on a public route", "/subscribe/NSTMWB", popOrigin, false},
+		{"pop origin buys nothing on an internal route", "/internal/subscribe/NSTMWB", popOrigin, false},
+		{"pop origin buys nothing on a /pop prefix lookalike", "/popular", popOrigin, false},
+		{"edge origin buys nothing on a pop route", "/pop/link", internalEdgeOrigin, false},
+		{"wrong origin on pop route still rejected", "/pop/link", "https://evil.example.com", false},
+		{"no origin on pop route", "/pop/link", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Built by hand for the same reason as in
+			// TestCheckOriginInternalEdgeOrigin.
+			u, err := url.Parse("https://relay.example" + tc.path + "?proto=1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := &http.Request{Method: http.MethodConnect, URL: u, Header: http.Header{}, RemoteAddr: "10.11.2.91:33035"}
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
+			if got := srv.wt.CheckOrigin(req); got != tc.want {
+				t.Errorf("CheckOrigin(path=%s, origin=%q) = %v, want %v", tc.path, tc.origin, got, tc.want)
+			}
+		})
+	}
+}
+
 type syncBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer

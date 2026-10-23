@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -216,6 +217,11 @@ func (s *Server) handleRoom(w http.ResponseWriter, r *http.Request) {
 	}
 	reg := s.roomRegistry()
 	code := r.PathValue("code")
+	// A linked PoP sends its guests' joins home (R74 item 36, room_link.go);
+	// a room it holds locally, or any join while unlinked, stays here.
+	if code != "" && s.forwardRoomJoin(w, r, reg, code) {
+		return
+	}
 	if reg == nil || code == "" {
 		s.metrics.Connection(route, metrics.OutcomeNotFound)
 		w.WriteHeader(http.StatusNotFound)
@@ -276,6 +282,7 @@ func roomJoinStatus(err error) (int, string) {
 func (s *Server) serveRoomSession(r *http.Request, sess *webtransport.Session, reg *roomsrv.Registry, code string, grants roomsrv.Grants, creatorToken []byte) {
 	const route = "room"
 	defer s.trackSession(sess)()
+	s.sendSessionNotices(sess, r, kindRoom)
 	if norm, err := rooms.NormalizeCode(code); err == nil {
 		defer s.trackRoomSession(norm, sess)()
 	}
@@ -285,36 +292,49 @@ func (s *Server) serveRoomSession(r *http.Request, sess *webtransport.Session, r
 	ctx := r.Context()
 	helloCtx, cancel := context.WithTimeout(ctx, roomHelloTimeout)
 	stream, err := sess.AcceptStream(helloCtx)
+	cancel()
 	if err != nil {
-		cancel()
 		log.Warn("room session opened no control stream", "err", err)
 		sess.CloseWithError(roomCloseBadRequest, "no control stream")
 		return
 	}
-	conn := &roomConn{sess: sess, stream: stream}
+	conn := &roomConn{stream: stream, closeFn: func(code uint32, reason string) {
+		_ = sess.CloseWithError(webtransport.SessionErrorCode(code), reason)
+	}}
+	s.runRoomControl(ctx, log, conn, reg, code, grants, creatorToken, r.URL.Query().Get("name"))
+}
+
+// runRoomControl runs one participant's control stream once the session is
+// up: read RoomHello, join, then pump commands until the stream or the room
+// ends. Every refusal closes through conn, so the same code path serves a
+// WebTransport session and a room stream a PoP proxies over its link
+// (room_link.go). nickFallback is the join's ?name=.
+func (s *Server) runRoomControl(ctx context.Context, log *slog.Logger, conn *roomConn, reg *roomsrv.Registry, code string,
+	grants roomsrv.Grants, creatorToken []byte, nickFallback string) {
+	helloCtx, cancel := context.WithTimeout(ctx, roomHelloTimeout)
 	rec, err := conn.read(helloCtx)
 	cancel()
 	if err != nil {
 		log.Warn("room hello not received", "err", err)
-		sess.CloseWithError(roomCloseBadRequest, "expected RoomHello")
+		conn.Close(roomCloseBadRequest, "expected RoomHello")
 		return
 	}
 	hello, err := wire.ParseRoomHello(rec)
 	if err != nil {
 		log.Warn("room hello malformed", "err", err)
-		sess.CloseWithError(roomCloseBadRequest, "malformed RoomHello")
+		conn.Close(roomCloseBadRequest, "malformed RoomHello")
 		return
 	}
 	if hello.Nickname == "" {
-		hello.Nickname = r.URL.Query().Get("name")
+		hello.Nickname = nickFallback
 	}
 	p, err := reg.Join(code, hello, grants, creatorToken, conn)
 	if err != nil {
 		switch {
 		case errors.Is(err, roomsrv.ErrFull):
-			sess.CloseWithError(webtransport.SessionErrorCode(http.StatusTooManyRequests), "room full")
+			conn.Close(http.StatusTooManyRequests, "room full")
 		default:
-			sess.CloseWithError(webtransport.SessionErrorCode(http.StatusNotFound), "room ended")
+			conn.Close(http.StatusNotFound, "room ended")
 		}
 		log.Warn("room join rejected post-upgrade", "err", err)
 		return
@@ -332,19 +352,33 @@ func (s *Server) serveRoomSession(r *http.Request, sess *webtransport.Session, r
 		cmd, err := wire.ParseRoomCommand(rec)
 		if err != nil && !errors.Is(err, wire.ErrUnknownRoomKind) {
 			log.Warn("room command malformed", "participant", p.ID(), "err", err)
-			sess.CloseWithError(roomCloseBadRequest, "malformed RoomCommand")
+			conn.Close(roomCloseBadRequest, "malformed RoomCommand")
 			return
 		}
 		p.HandleCommand(cmd)
 	}
 }
 
-// roomConn adapts one bidirectional stream + its session to roomsrv.Conn.
+// roomStream is a control stream as roomConn uses it: a WebTransport bidi
+// stream, or a PoP link's room stream (room_link.go).
+type roomStream interface {
+	io.Reader
+	io.Writer
+	SetReadDeadline(time.Time) error
+	SetWriteDeadline(time.Time) error
+}
+
+// roomConn adapts one control stream and the way its session closes to
+// roomsrv.Conn. closeFn runs once. With inBand (a link's room stream, whose
+// close is a record on the stream itself) it runs under the write lock, so
+// the close never interleaves with a room record; a session close is
+// immediate and unblocks a stuck write instead.
 type roomConn struct {
-	sess   *webtransport.Session
-	stream *webtransport.Stream
-	wmu    sync.Mutex
-	closed atomic.Bool
+	stream  roomStream
+	closeFn func(code uint32, reason string)
+	inBand  bool
+	wmu     sync.Mutex
+	closed  atomic.Bool
 }
 
 func (c *roomConn) Write(ctx context.Context, record []byte) error {
@@ -361,8 +395,19 @@ func (c *roomConn) Write(ctx context.Context, record []byte) error {
 
 func (c *roomConn) Close(code uint32, reason string) {
 	if c.closed.CompareAndSwap(false, true) {
-		_ = c.sess.CloseWithError(webtransport.SessionErrorCode(code), reason)
+		if c.inBand {
+			c.wmu.Lock()
+			defer c.wmu.Unlock()
+		}
+		c.closeFn(code, reason)
 	}
+}
+
+// CloseWithError is Close as a drainSession, so a lease loss can close a
+// link-proxied participant the way it closes a session (trackRoomSession).
+func (c *roomConn) CloseWithError(code webtransport.SessionErrorCode, reason string) error {
+	c.Close(uint32(code), reason)
+	return nil
 }
 
 // read returns the next framed message (Version ‖ Type ‖ payload) or an

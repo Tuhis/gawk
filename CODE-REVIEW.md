@@ -66,7 +66,8 @@ the hub). Anything counted after deletion is silently lost.
 **New config knobs land fully plumbed in the same change:** flag + `GAWK_*`
 env in `config.go`, chart `values.yaml`, chart `templates/deployment.yaml`,
 the flag's docs, **and the production call site** (`registryOptions` in
-`cmd/gawk-server/main.go`). R1 shipped `-broadcast-grace` without the Helm
+`internal/serve/options.go`, which `gawk-server` and `gawk-relay` share since
+R74). R1 shipped `-broadcast-grace` without the Helm
 half — deploys silently ran the default with no values-level override. R2
 shipped all six hardening knobs parsed, charted and documented but wired
 only into the transport *test helper* — `-max-bandwidth` was a complete

@@ -12,6 +12,13 @@
 //   operatorContact: string        — terms contact point.
 //   termsUrl: string               — full terms-body override URL (e.g.
 //                                    "/terms.html"); empty ⇒ bundled default.
+//   relayCertHashes: string[]      — R74: hex SHA-256 hashes of relayUrl's
+//                                    pinned self-signed certificate DER
+//                                    (current + next across a rotation). A
+//                                    PoP's generated /app/config.js sets it
+//                                    beside a LAN-address relayUrl, with
+//                                    requirePublishSecret: false. Applies to
+//                                    relayUrl only; not dev-gated.
 //
 // DEV-ONLY (R38, docs/41 D4) — read only when the page is served from
 // localhost, and deliberately NOT a chart value; the local docker compose

@@ -9,6 +9,7 @@
   "dataschema": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.broadcast.publisher_away.json",
   "data": {
     "broadcastId": "ABC234",
-    "broadcastKey": "3f9a1c2b4d5e"
+    "broadcastKey": "3f9a1c2b4d5e",
+    "pop": "assembly-2026"
   }
 }

@@ -556,9 +556,22 @@ func TestEnsureEdgeSelfAndFluxShortCircuit(t *testing.T) {
 type fakeCoordinator struct {
 	heldID  string
 	heldGen int64
+	// mu guards leases: Lookup runs on the server's goroutines (a demand
+	// loop, the room refresh) while a test moves a lease with setLease.
+	mu sync.Mutex
 	// leases is what Lookup answers (R42 RoomBroadcasts); nil means no
 	// lease for anything.
 	leases map[string]fakeLease
+}
+
+// setLease moves id's lease, as the informer would, while the server reads.
+func (f *fakeCoordinator) setLease(id string, l fakeLease) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.leases == nil {
+		f.leases = map[string]fakeLease{}
+	}
+	f.leases[id] = l
 }
 
 type fakeLease struct {
@@ -573,6 +586,8 @@ func (f *fakeCoordinator) Resolve(context.Context, string) (cluster.Origin, erro
 	return cluster.Origin{}, cluster.ErrNotFound
 }
 func (f *fakeCoordinator) Lookup(id string) (cluster.Origin, bool, bool, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	l, ok := f.leases[id]
 	return l.origin, l.inGrace, l.stalled, ok
 }
@@ -727,4 +742,244 @@ func TestEdgeHonoursTheOriginsTerminalClose(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ---- R74 reservations (docs/76 item 17) -------------------------------------
+
+// reservationWants records onReserved calls.
+type reservationWants struct {
+	mu  sync.Mutex
+	ids []string
+	err error
+}
+
+func (w *reservationWants) hook(_ context.Context, id string, o cluster.Origin) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.ids = append(w.ids, id+"@"+o.Pop)
+	return w.err
+}
+
+func (w *reservationWants) seen() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]string(nil), w.ids...)
+}
+
+// A subscribe miss on a PoP reservation (a gawk/pop lease with no holder)
+// is not a 404: EnsureEdge creates the waiting edge hub at once, so the
+// viewer attaches, fires onReserved (the want), and the waiting pull dials
+// the moment a holder appears — here on the OnOriginClaimed kick — and
+// serves the leg's media byte-identical.
+func TestEnsureEdgeOnAReservationWaitsForTheHolder(t *testing.T) {
+	h := newEdgeHarness(t)
+	h.manager.reservationPoll = time.Hour // only the kick may wake it
+	wants := &reservationWants{}
+	h.manager.onReserved = wants.hook
+	h.resolver.set(cluster.Origin{Pop: "lan-party"}, nil)
+	ctx := context.Background()
+
+	if err := h.manager.EnsureEdge(ctx, "K7XQ2M"); err != nil {
+		t.Fatalf("EnsureEdge on a reservation = %v, want nil (wait, not 404)", err)
+	}
+	if err := h.registry.CheckSubscribe("K7XQ2M"); err != nil {
+		t.Fatalf("waiting hub missing after EnsureEdge: %v", err)
+	}
+	v := &edgeConn{}
+	sub, err := h.registry.Subscribe("K7XQ2M", v)
+	if err != nil {
+		t.Fatalf("Subscribe to the waiting hub: %v", err)
+	}
+	defer sub.Close()
+	// A second viewer's miss re-sends the want on the same waiting pull.
+	if err := h.manager.EnsureEdge(ctx, "K7XQ2M"); err != nil {
+		t.Fatalf("second EnsureEdge: %v", err)
+	}
+	if got := wants.seen(); len(got) != 2 || got[0] != "K7XQ2M@lan-party" {
+		t.Fatalf("onReserved calls = %v, want two for K7XQ2M@lan-party", got)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := h.dialCount(); n != 0 {
+		t.Fatalf("dialed %d times with no holder", n)
+	}
+
+	up := newFakeUpstream()
+	h.queue(up)
+	h.resolver.set(cluster.Origin{Holder: "pod-origin", Addr: "10.0.0.9:4433", Generation: 1, Pop: "lan-party"}, nil)
+	h.manager.KickReservation("K7XQ2M")
+	waitFor(t, 5*time.Second, func() bool { return h.dialCount() == 1 }, "dial on the kick")
+
+	kf := buildStreamKeyframe(t, 3, "avc1.42E02A", 600)
+	up.streams <- bytes.NewReader(kf)
+	waitFor(t, 5*time.Second, func() bool { return v.keyframeCount() == 1 }, "waiting viewer served the leg's keyframe")
+	v.mu.Lock()
+	got := v.keyframes[0]
+	v.mu.Unlock()
+	if !bytes.Equal(got, kf) {
+		t.Fatal("keyframe not byte-identical")
+	}
+	if len(wants.seen()) != 2 {
+		t.Errorf("onReserved fired again after the attach: %v", wants.seen())
+	}
+}
+
+// Without a kick (a missed informer event) the waiting pull still finds the
+// holder on its own poll.
+func TestReservationWaitPollsForTheHolder(t *testing.T) {
+	h := newEdgeHarness(t)
+	h.manager.reservationPoll = 20 * time.Millisecond
+	h.resolver.set(cluster.Origin{Pop: "lan-party"}, nil)
+	if err := h.manager.EnsureEdge(context.Background(), "K7XQ2M"); err != nil {
+		t.Fatalf("EnsureEdge: %v", err)
+	}
+	h.queue(newFakeUpstream())
+	h.resolver.set(cluster.Origin{Holder: "pod-origin", Addr: "10.0.0.9:4433", Generation: 1, Pop: "lan-party"}, nil)
+	waitFor(t, 5*time.Second, func() bool { return h.dialCount() == 1 }, "dial on the poll")
+}
+
+// A reservation deleted while viewers wait (the PoP released the broadcast,
+// or was revoked) ends them with 4000 and removes the hub.
+func TestReservationDeletedWhileWaitingEndsViewers(t *testing.T) {
+	h := newEdgeHarness(t)
+	h.manager.reservationPoll = time.Hour
+	h.resolver.set(cluster.Origin{Pop: "lan-party"}, nil)
+	if err := h.manager.EnsureEdge(context.Background(), "K7XQ2M"); err != nil {
+		t.Fatalf("EnsureEdge: %v", err)
+	}
+	v := &edgeConn{}
+	if _, err := h.registry.Subscribe("K7XQ2M", v); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	h.resolver.set(cluster.Origin{}, cluster.ErrNotFound)
+	h.manager.OnLeaseDeleted("K7XQ2M")
+	h.registry.EndBroadcast("K7XQ2M")
+	if code, closed := v.closeInfo(); !closed || code != uint32(wire.CloseCodeBroadcastEnded) {
+		t.Fatalf("viewer close = (%d, %v), want (4000, true)", code, closed)
+	}
+	if err := h.registry.CheckSubscribe("K7XQ2M"); !errors.Is(err, hub.ErrNotFound) {
+		t.Errorf("waiting hub survived the reservation's deletion: %v", err)
+	}
+
+	// The waiting pull finding the deletion itself (no informer event) ends
+	// them the same way.
+	h.resolver.set(cluster.Origin{Pop: "lan-party"}, nil)
+	if err := h.manager.EnsureEdge(context.Background(), "ABC234"); err != nil {
+		t.Fatalf("EnsureEdge: %v", err)
+	}
+	v2 := &edgeConn{}
+	if _, err := h.registry.Subscribe("ABC234", v2); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	h.resolver.set(cluster.Origin{}, cluster.ErrNotFound)
+	h.manager.KickReservation("ABC234")
+	waitFor(t, 5*time.Second, func() bool { _, closed := v2.closeInfo(); return closed }, "waiting viewer ended")
+	if code, _ := v2.closeInfo(); code != uint32(wire.CloseCodeBroadcastEnded) {
+		t.Errorf("viewer close code = %d, want 4000", code)
+	}
+}
+
+// A waiting hub nobody watches lingers out like any edge hub: deleted, so
+// the next viewer goes through EnsureEdge (and sends the want) again.
+func TestReservationWaitingHubLingersOut(t *testing.T) {
+	h := newEdgeHarness(t)
+	h.manager.linger = time.Millisecond
+	h.manager.reservationPoll = 10 * time.Millisecond
+	h.resolver.set(cluster.Origin{Pop: "lan-party"}, nil)
+	if err := h.manager.EnsureEdge(context.Background(), "K7XQ2M"); err != nil {
+		t.Fatalf("EnsureEdge: %v", err)
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		return errors.Is(h.registry.CheckSubscribe("K7XQ2M"), hub.ErrNotFound)
+	}, "viewerless waiting hub deleted")
+}
+
+// An onReserved refusal (the PoP is unlinked, say) is the viewer's answer,
+// and the waiting hub made for it does not stay behind.
+func TestReservationRefusedByOnReservedLeavesNoHub(t *testing.T) {
+	h := newEdgeHarness(t)
+	h.manager.reservationPoll = time.Hour
+	wants := &reservationWants{err: hub.ErrNotFound}
+	h.manager.onReserved = wants.hook
+	h.resolver.set(cluster.Origin{Pop: "lan-party"}, nil)
+	if err := h.manager.EnsureEdge(context.Background(), "K7XQ2M"); !errors.Is(err, hub.ErrNotFound) {
+		t.Fatalf("EnsureEdge = %v, want the hook's ErrNotFound", err)
+	}
+	if err := h.registry.CheckSubscribe("K7XQ2M"); !errors.Is(err, hub.ErrNotFound) {
+		t.Errorf("refused reservation left a hub: %v", err)
+	}
+}
+
+// The kick is only a wake-up: with no waiting pull it creates nothing, and
+// a HELD pop lease — the self-demote shape HandleLeaseLost hands EnsureEdge
+// after a force-take — takes the ordinary edge path, never the waiting one.
+func TestOriginClaimedKickAndSelfDemoteDoNotMisfire(t *testing.T) {
+	h := newEdgeHarness(t)
+	wants := &reservationWants{}
+	h.manager.onReserved = wants.hook
+	h.manager.KickReservation("K7XQ2M")
+	if err := h.registry.CheckSubscribe("K7XQ2M"); !errors.Is(err, hub.ErrNotFound) {
+		t.Fatalf("a kick with no waiting pull made a hub: %v", err)
+	}
+
+	h.resolver.set(cluster.Origin{Holder: "pod-origin", Addr: "10.0.0.9:4433", Generation: 2, Pop: "lan-party"}, nil)
+	h.queue(newFakeUpstream())
+	if err := h.manager.EnsureEdge(context.Background(), "K7XQ2M"); err != nil {
+		t.Fatalf("EnsureEdge on a held pop lease: %v", err)
+	}
+	if h.dialCount() != 1 {
+		t.Errorf("dials = %d, want 1 (the ordinary pull)", h.dialCount())
+	}
+	if got := wants.seen(); len(got) != 0 {
+		t.Errorf("onReserved fired for a held lease: %v", got)
+	}
+	// And the kick for it (a re-home's informer event) is harmless.
+	h.manager.KickReservation("K7XQ2M")
+	time.Sleep(50 * time.Millisecond)
+	if h.dialCount() != 1 {
+		t.Errorf("a kick re-dialed a running pull: %d dials", h.dialCount())
+	}
+}
+
+// The server's informer dispatch reaches the edge manager's kick, and is a
+// no-op with cluster mode off.
+func TestHandleOriginClaimedKicksTheWaitingPull(t *testing.T) {
+	srv, _, reg := newOutcomeServer(t, config.Config{}, hub.Options{})
+	srv.HandleOriginClaimed("K7XQ2M", cluster.Origin{Holder: "pod-b", Pop: "lan-party"}) // cluster off
+	res := &fakeResolver{}
+	res.set(cluster.Origin{Pop: "lan-party"}, nil)
+	srv.SetCluster(&resolvingCoordinator{res: res}, "pod-self")
+	em := srv.edgeManager()
+	t.Cleanup(em.Stop)
+	em.reservationPoll = time.Hour
+	dialed := make(chan struct{}, 1)
+	em.dial = func(context.Context, string, string) (edgeUpstream, error) {
+		select {
+		case dialed <- struct{}{}:
+		default:
+		}
+		return nil, errors.New("test: no upstream")
+	}
+	if err := em.EnsureEdge(context.Background(), "K7XQ2M"); err != nil {
+		t.Fatalf("EnsureEdge: %v", err)
+	}
+	if err := reg.CheckSubscribe("K7XQ2M"); err != nil {
+		t.Fatalf("waiting hub: %v", err)
+	}
+	res.set(cluster.Origin{Holder: "pod-b", Addr: "10.0.0.2:4433", Generation: 1, Pop: "lan-party"}, nil)
+	srv.HandleOriginClaimed("K7XQ2M", cluster.Origin{Holder: "pod-b", Pop: "lan-party"})
+	select {
+	case <-dialed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("HandleOriginClaimed did not wake the waiting pull")
+	}
+}
+
+// resolvingCoordinator is fakeCoordinator with a switchable Resolve.
+type resolvingCoordinator struct {
+	fakeCoordinator
+	res *fakeResolver
+}
+
+func (c *resolvingCoordinator) Resolve(ctx context.Context, id string) (cluster.Origin, error) {
+	return c.res.Resolve(ctx, id)
 }

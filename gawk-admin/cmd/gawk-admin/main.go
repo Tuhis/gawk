@@ -45,6 +45,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-admin/internal/store"
 	"github.com/Tuhis/gawk/gawk-server/oidcauth"
 
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -133,6 +134,31 @@ func run(args []string, getenv func(string) string) error {
 		if err != nil {
 			return err
 		}
+	}
+
+	// R74 PoPs, only under -pops (docs/76 §7.2), on the same argument: the
+	// chart derives it from the pops.enabled that grants the Role its Pop,
+	// pops/status, CertificateRequest and DNSEndpoint verbs.
+	var popClient *kube.PopClient
+	var popReconciler *kube.PopReconciler
+	if cfg.Pops {
+		popClient, err = kube.NewPopClient(restCfg, cfg.Namespace)
+		if err != nil {
+			return err
+		}
+		dc, err := dynamic.NewForConfig(restCfg)
+		if err != nil {
+			return fmt.Errorf("kube: dynamic client: %w", err)
+		}
+		popReconciler = kube.NewPopReconciler(kube.PopReconcilerOptions{
+			Pops:      popClient,
+			Dynamic:   dc,
+			Namespace: cfg.Namespace,
+			Zone:      cfg.PopDNSZone,
+			Issuer:    cfg.PopCertIssuer,
+			DNSTTL:    cfg.PopDNSTTL,
+			Log:       log,
+		})
 	}
 
 	// The dispatcher is constructed on every replica because Record runs
@@ -235,6 +261,9 @@ func run(args []string, getenv func(string) string) error {
 	if roomClient != nil {
 		apiOpts.Rooms = roomClient
 	}
+	if popClient != nil {
+		apiOpts.Pops = popClient
+	}
 	a, err := api.New(apiOpts)
 	if err != nil {
 		return err
@@ -305,6 +334,11 @@ func run(args []string, getenv func(string) string) error {
 			// deadline kill and calibration-data pruning. A no-op with
 			// -screening off.
 			go a.RunScreening(ctx)
+			// R74's named tier (docs/76 item 38): CertificateRequests and
+			// DNSEndpoints, leader-only, returning when leadership is lost.
+			if popReconciler != nil {
+				go popReconciler.Run(ctx)
+			}
 			reconciler.Run(ctx)
 		},
 		// A clean shutdown hands the Lease over rather than making the next

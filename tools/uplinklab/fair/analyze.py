@@ -23,6 +23,26 @@ def pct(xs, p):
     return xs[min(len(xs) - 1, int((len(xs) - 1) * p / 100))] if xs else None
 
 
+def wire_mbps(d):
+    """The broadcast's rate on the wire from the run's own tc counters, for a
+    sender whose log has no S line (R74's PoP leg writer, quic-go exposes no
+    byte counter): the shaped class's bytes less the pings that share it, and
+    less IP+UDP headers, so it compares with quinn's udp_tx_bytes; over the
+    same window as analyze.py's (first to last frame, plus 1.5 s). Only an
+    *alone* cell's class holds nothing else; None for a cell with TCP in it."""
+    if os.path.exists(os.path.join(d, "iperf.json")):
+        return None
+    m = re.search(r"class prio 2:2 .*?\n Sent (\d+) bytes (\d+) pkt", open(os.path.join(d, "qdisc.txt")).read())
+    if not m:
+        return None
+    pings = sum(1 for l in open(os.path.join(d, "ping.txt")) if "icmp_seq=" in l)
+    ts = [int(l.split(",")[6]) for l in open(os.path.join(d, "send.csv")) if l.startswith("F,")]
+    if not ts:
+        return None
+    udp = int(m.group(1)) - 84 * pings - 28 * (int(m.group(2)) - pings)
+    return udp * 8 / ((ts[-1] - ts[0]) / 1e9 + 1.5) / 1e6
+
+
 def one(d):
     r = {}
     ip = os.path.join(d, "iperf.json")
@@ -39,7 +59,9 @@ def one(d):
         out = subprocess.run(["python3", f"{LAB}/analyze.py", d, "--skip-s", str(TCP_FROM_S),
                               "--viewer-trace", f"{d}/vt.json"], capture_output=True, text=True, check=True)
         t = json.loads(out.stdout)
-        r.update(undec=t["undecodable_pct"], ready99=t["ready_lat_ms"]["p99"], bmbps=t["uplink_mbps"])
+        r.update(undec=t["undecodable_pct"], ready99=t["ready_lat_ms"]["p99"], bmbps=t.get("uplink_mbps"))
+        if r["bmbps"] is None:
+            r["bmbps"] = wire_mbps(d)
         if "engine" in t:
             # The engine's upload-bandwidth warning (RU6): when it first
             # raised, s from the broadcast's start, and its share of the
@@ -47,8 +69,9 @@ def one(d):
             r["warn_first"] = t["warn_first_s"]
             r["warn_pct"] = 100 * t["warn_raised_s"] / t["window_s"] if t["window_s"] else 0
         # quinn's own count; the browser sender's S line has none (Chrome
-        # exposes no loss counter, browser/sender.mjs).
-        if not any(l.startswith("I,cc,") for l in open(os.path.join(d, "send.csv"))):
+        # exposes no loss counter, browser/sender.mjs), and the PoP's leg
+        # writer has no S line at all.
+        if "pkt_loss_pct" in t and not any(l.startswith("I,cc,") for l in open(os.path.join(d, "send.csv"))):
             r["pktloss"] = t["pkt_loss_pct"]
     st = os.path.join(d, "steal.txt")
     if os.path.exists(st):
@@ -122,7 +145,9 @@ MODES = [("datagram", "cubic", "datagram · Cubic (today)"), ("datagram", "bbr",
          ("datagram", "chrome", "Chrome datagrams (today's browser)"), ("carrier", "chrome", "Chrome carrier (prototype)"),
          # RU6: the shipped engine (FAIR_CCS="engine-cubic engine-bbr").
          ("datagram", "engine-cubic", "engine: datagram · Cubic"), ("datagram", "engine-bbr", "engine: datagram · BBR"),
-         ("carrier", "engine-cubic", "engine: carrier · Cubic"), ("carrier", "engine-bbr", "engine: carrier · BBR")]
+         ("carrier", "engine-cubic", "engine: carrier · Cubic"), ("carrier", "engine-bbr", "engine: carrier · BBR"),
+         # R74 PP8: the PoP's leg writer (FAIR_CCS=pop); its quic-go runs Cubic.
+         ("datagram", "pop", "PoP leg: datagram · Cubic"), ("carrier", "pop", "PoP leg: carrier · Cubic")]
 
 print("#### Table O — a shared uplink: the broadcast beside a household's TCP upload (F17, D5)\n")
 print("`tools/uplinklab/fair` (§4): one uplink at 30, 15 or 80 Mbps with a 50 ms\n"

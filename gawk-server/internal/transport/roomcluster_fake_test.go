@@ -326,13 +326,14 @@ func TestRoomProxyClosesTheUpstreamWhenTheUpgradeFails(t *testing.T) {
 }
 
 func TestRoomProxyPathStripsPSKAndGen(t *testing.T) {
-	got := roomProxyPath("k7xq2m", 7, url.Values{"psk": {"stolen"}, "gen": {"1"}, "creator": {"aa"}, "name": {"n"}})
+	// vouch too: a public join must never claim a PoP link's vouch.
+	got := roomProxyPath("k7xq2m", 7, url.Values{"psk": {"stolen"}, "gen": {"1"}, "creator": {"aa"}, "name": {"n"}, "vouch": {"assembly-2026"}})
 	u, err := url.Parse(got)
 	if err != nil {
 		t.Fatal(err)
 	}
 	q := u.Query()
-	if u.Path != "/internal/room/k7xq2m" || q.Has("psk") || q.Get("gen") != "7" || q.Get("creator") != "aa" || q.Get("name") != "n" {
+	if u.Path != "/internal/room/k7xq2m" || q.Has("psk") || q.Has("vouch") || q.Get("gen") != "7" || q.Get("creator") != "aa" || q.Get("name") != "n" {
 		t.Fatalf("roomProxyPath = %q", got)
 	}
 }

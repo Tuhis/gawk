@@ -72,6 +72,13 @@ func TestDefaults(t *testing.T) {
 		// policy that only matters once an operator supplies a credential.
 		AdminOIDCRolesClaim: DefaultAdminOIDCRolesClaim,
 		AdminOIDCRole:       DefaultAdminOIDCRole,
+		// R74 (docs/76): PoP relays are off by default; the timings still
+		// have defaults so turning them on is one value.
+		Pops:             false,
+		PopsFile:         "",
+		PopUplinkLinger:  30 * time.Second,
+		PopOfferDefer:    2 * time.Second,
+		PopDemandTimeout: 5 * time.Second,
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("got %+v, want %+v", cfg, want)
@@ -810,5 +817,56 @@ func TestUplinkKnobs(t *testing.T) {
 
 	if _, err := ParseFlags([]string{"-uplink-max-bitrate", "fast"}, noEnv); err == nil {
 		t.Error("-uplink-max-bitrate=fast accepted, want an error")
+	}
+}
+
+// R74 (docs/76): the home-side PoP knobs parse from the env, the flag wins,
+// -pops needs a Pop source (cluster mode or a file) and every timing must be
+// positive.
+func TestPopKnobs(t *testing.T) {
+	cfg, err := ParseFlags(nil, envMap(map[string]string{
+		"GAWK_POPS":               "true",
+		"GAWK_POPS_FILE":          "/etc/gawk/pops.yaml",
+		"GAWK_POP_UPLINK_LINGER":  "45s",
+		"GAWK_POP_OFFER_DEFER":    "3s",
+		"GAWK_POP_DEMAND_TIMEOUT": "7s",
+	}))
+	if err != nil {
+		t.Fatalf("ParseFlags env: %v", err)
+	}
+	if !cfg.Pops || cfg.PopsFile != "/etc/gawk/pops.yaml" || cfg.PopUplinkLinger != 45*time.Second ||
+		cfg.PopOfferDefer != 3*time.Second || cfg.PopDemandTimeout != 7*time.Second {
+		t.Errorf("env not applied: %+v", cfg)
+	}
+
+	cfg, err = ParseFlags([]string{"-pops-file", "/p.json", "-pop-uplink-linger", "1m",
+		"-pop-offer-defer", "500ms", "-pop-demand-timeout", "2s"},
+		envMap(map[string]string{"GAWK_POPS": "true", "GAWK_POPS_FILE": "/etc/gawk/pops.yaml",
+			"GAWK_POP_UPLINK_LINGER": "45s", "GAWK_POP_OFFER_DEFER": "3s", "GAWK_POP_DEMAND_TIMEOUT": "7s"}))
+	if err != nil {
+		t.Fatalf("ParseFlags flags: %v", err)
+	}
+	if cfg.PopsFile != "/p.json" || cfg.PopUplinkLinger != time.Minute ||
+		cfg.PopOfferDefer != 500*time.Millisecond || cfg.PopDemandTimeout != 2*time.Second {
+		t.Errorf("flags did not win: %+v", cfg)
+	}
+
+	// -pops with cluster mode is enough; no file required.
+	cluster := []string{"-cluster-mode", "-internal-psk", "x", "-internal-server-name", "relay.example.com"}
+	if _, err := ParseFlags(append([]string{"-pops"}, cluster...), noEnv); err != nil {
+		t.Errorf("-pops with -cluster-mode refused: %v", err)
+	}
+	// -pops with neither cluster mode nor a file is a startup error.
+	if _, err := ParseFlags([]string{"-pops"}, noEnv); err == nil {
+		t.Error("-pops without -cluster-mode or -pops-file accepted")
+	}
+	for _, bad := range [][]string{
+		{"-pop-uplink-linger", "0s"}, {"-pop-uplink-linger", "-1s"}, {"-pop-uplink-linger", "soon"},
+		{"-pop-offer-defer", "0s"}, {"-pop-offer-defer", "x"},
+		{"-pop-demand-timeout", "0s"}, {"-pop-demand-timeout", "-5s"},
+	} {
+		if _, err := ParseFlags(bad, noEnv); err == nil {
+			t.Errorf("%v accepted, want an error", bad)
+		}
 	}
 }

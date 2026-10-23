@@ -177,6 +177,19 @@ describe('ViewerPipeline', () => {
     await p.stop();
   });
 
+  // R74 (docs/76 item 43.7): a client that will follow a PoP offer says so
+  // on every CONNECT to home, so home can hold its demand briefly.
+  it('says ?lr=1 when it will follow a local relay offer', async () => {
+    connectWebTransport.mockResolvedValue(makeFakeWT(60_000, {}));
+    readDatagrams.mockReturnValue(new Promise(() => {}));
+    const { cbs } = makeCallbacks();
+    const opts = { followOffers: true };
+    const p = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', opts, cbs);
+    await p.start();
+    expectDialed('https://relay.test:4433/subscribe/K7XQ2M?lr=1', opts);
+    await p.stop();
+  });
+
   it('mints a fresh ?owner= token per attempt (docs/35 §14)', async () => {
     // Legs are per-attempt, and a reconnect's fresh session set must not
     // share the dead set's identity — a reused token would let the old
