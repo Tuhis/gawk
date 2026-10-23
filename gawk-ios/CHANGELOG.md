@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.0](https://github.com/Tuhis/gawk/compare/gawk-ios/v1.3.0...gawk-ios/v1.4.0) (2026-10-23)
+
+
+### Features
+
+* **r74:** PoP relays, a one-click LAN relay that federates with the home fleet ([#553](https://github.com/Tuhis/gawk/issues/553)) ([a60eac9](https://github.com/Tuhis/gawk/commit/a60eac9cfd0d189d451c1e13c48a923317209b8c))
+
+
+### Bug Fixes
+
+* **broadcast-desktop:** fix an mmdevapi.dll crash and a BBR estimate that never fell ([#554](https://github.com/Tuhis/gawk/issues/554)) ([cdd6c35](https://github.com/Tuhis/gawk/commit/cdd6c35e3a0ffb88e1b51527ce73fcf14d4f836d))
+
 ## [1.3.0](https://github.com/Tuhis/gawk/compare/gawk-ios/v1.2.0...gawk-ios/v1.3.0) (2026-10-22)
 
 
