@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.0](https://github.com/Tuhis/gawk/compare/gawk-admin/v1.9.0...gawk-admin/v1.10.0) (2026-10-23)
+
+
+### Features
+
+* **r74:** PoP relays, a one-click LAN relay that federates with the home fleet ([#553](https://github.com/Tuhis/gawk/issues/553)) ([a60eac9](https://github.com/Tuhis/gawk/commit/a60eac9cfd0d189d451c1e13c48a923317209b8c))
+
 ## [1.9.0](https://github.com/Tuhis/gawk/compare/gawk-admin/v1.8.0...gawk-admin/v1.9.0) (2026-10-15)
 
 
