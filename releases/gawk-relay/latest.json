@@ -1,0 +1,56 @@
+{
+  "asset": {
+    "name": "gawk-relay-windows-amd64.exe",
+    "sha256": "c06a6f68da05bd0bf8be70da4d549557a3cc729c9b9117fb36afee39cac2b492",
+    "size": 36126720,
+    "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.36.0/gawk-relay-windows-amd64.exe"
+  },
+  "assets": {
+    "BUILD-INFO.txt": {
+      "sha256": "24f12b4b675337f1dd121669e06ef1745cfc799120e6e7f1d80cb50ce54333a7",
+      "size": 225,
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.36.0/BUILD-INFO.txt"
+    },
+    "LICENSE": {
+      "sha256": "31d34ab1effd9d99ecbc4feeb527b28d4624ddeaff93fd86c136fa0934ddce4f",
+      "size": 11344,
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.36.0/LICENSE"
+    },
+    "SHA256SUMS": {
+      "sha256": "cc37e1d4003e2d18ceb3bef9ec3fcfcf6a146eebe0e6b621412637c280b24353",
+      "size": 638,
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.36.0/SHA256SUMS"
+    },
+    "THIRD-PARTY-NOTICES-app.md": {
+      "sha256": "f578ec345854ea71dc5f6d57817cf14bee34c2ddfe3c0cd143b84fbf0be20453",
+      "size": 4885,
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.36.0/THIRD-PARTY-NOTICES-app.md"
+    },
+    "THIRD-PARTY-NOTICES.md": {
+      "sha256": "c8cd79fa4ac401f5bbd7393c52d9185e1c7adb4e1dbe2f1ed9927257d55c2402",
+      "size": 108254,
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.36.0/THIRD-PARTY-NOTICES.md"
+    },
+    "gawk-relay-linux-amd64.tar.gz": {
+      "sha256": "ad7b5790b6f4a5a130ac14e673ad4f516806484f20b83d59c9e6245ebfe239dc",
+      "size": 11920875,
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.36.0/gawk-relay-linux-amd64.tar.gz"
+    },
+    "gawk-relay-linux-arm64.tar.gz": {
+      "sha256": "d1db1ed1f8562924b8bceb2224d9a035b933d72d24c7d9db4b4ff7ae5fa9d175",
+      "size": 10455943,
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.36.0/gawk-relay-linux-arm64.tar.gz"
+    },
+    "gawk-relay-windows-amd64.exe": {
+      "sha256": "c06a6f68da05bd0bf8be70da4d549557a3cc729c9b9117fb36afee39cac2b492",
+      "size": 36126720,
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.36.0/gawk-relay-windows-amd64.exe"
+    }
+  },
+  "component": "gawk-relay",
+  "published_at": "2026-10-23T12:14:55Z",
+  "release_url": "https://github.com/Tuhis/gawk/releases/tag/gawk-server/v0.36.0",
+  "schema": 1,
+  "tag": "gawk-server/v0.36.0",
+  "version": "0.36.0"
+}
