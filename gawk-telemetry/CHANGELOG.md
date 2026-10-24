@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.14.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.13.0...gawk-telemetry/v1.14.0) (2026-10-24)
+
+
+### Features
+
+* **r76:** broadcaster memory telemetry, a telemetry audit and PoP telemetry (R77) ([#563](https://github.com/Tuhis/gawk/issues/563)) ([61d93d3](https://github.com/Tuhis/gawk/commit/61d93d3e67517d7687dff97d3ad0f289b535a1fa))
+
+
+### Bug Fixes
+
+* **telemetry:** keep the SQL console when its view catalogue is slow to build ([#560](https://github.com/Tuhis/gawk/issues/560)) ([e8a78cc](https://github.com/Tuhis/gawk/commit/e8a78ccdad1347a25af98cf5e714de78a5a32160))
+
 ## [1.13.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.12.1...gawk-telemetry/v1.13.0) (2026-10-22)
 
 

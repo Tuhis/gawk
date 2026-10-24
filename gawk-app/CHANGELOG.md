@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.56.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.55.0...gawk-app/v0.56.0) (2026-10-24)
+
+
+### Features
+
+* **r76:** broadcaster memory telemetry, a telemetry audit and PoP telemetry (R77) ([#563](https://github.com/Tuhis/gawk/issues/563)) ([61d93d3](https://github.com/Tuhis/gawk/commit/61d93d3e67517d7687dff97d3ad0f289b535a1fa))
+
 ## [0.55.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.54.0...gawk-app/v0.55.0) (2026-10-23)
 
 
