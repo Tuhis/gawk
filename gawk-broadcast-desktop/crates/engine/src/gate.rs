@@ -11,6 +11,7 @@
 //!   keyframe cadence rather than artifacts.
 
 use crate::media::AccessUnit;
+use crate::memory::{self, Held};
 use std::collections::VecDeque;
 
 /// Queue capacity, matching the Go frame channel (capacity 8).
@@ -30,7 +31,8 @@ pub enum Offered {
 
 #[derive(Debug)]
 pub struct FrameGate {
-    queue: VecDeque<AccessUnit>,
+    /// Each AU with its bytes in the `encode` memory gauge (docs/77 D4).
+    queue: VecDeque<(AccessUnit, Held)>,
     capacity: usize,
     dropping_gop: bool,
 }
@@ -41,6 +43,7 @@ impl FrameGate {
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
+        memory::declare(memory::Component::Encode);
         Self {
             queue: VecDeque::with_capacity(capacity),
             capacity,
@@ -55,24 +58,29 @@ impl FrameGate {
             if self.queue.len() == self.capacity {
                 self.queue.clear();
                 self.dropping_gop = false;
-                self.queue.push_back(au);
+                self.push(au);
                 return Offered::FlushedBacklog { flushed };
             }
             self.dropping_gop = false;
-            self.queue.push_back(au);
+            self.push(au);
             return Offered::Queued;
         }
         if self.dropping_gop || self.queue.len() == self.capacity {
             self.dropping_gop = true;
             return Offered::DroppedDelta;
         }
-        self.queue.push_back(au);
+        self.push(au);
         Offered::Queued
+    }
+
+    fn push(&mut self, au: AccessUnit) {
+        let held = Held::new(memory::Component::Encode, au.data.len() as u64);
+        self.queue.push_back((au, held));
     }
 
     /// Takes the next AU for the send pump.
     pub fn pop(&mut self) -> Option<AccessUnit> {
-        self.queue.pop_front()
+        self.queue.pop_front().map(|(au, _)| au)
     }
 
     pub fn len(&self) -> usize {

@@ -1041,10 +1041,10 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	// Telemetry identity, also recorded on the hub so /statusz's
 	// publisherSessionId joins the broadcaster's reports. Sent last: a
 	// telemetry failure must never abort setup.
-	pub.SetTelemetrySession(s.sendTelemetryHello(sess, id, wire.TelemetryRoleBroadcaster, log))
-	// Where this session's telemetry should go — composes with the hello,
-	// never sent on /internal/subscribe.
-	s.sendTelemetryEndpoint(sess, log)
+	// On a PoP the identity comes from home (docs/78 D5), late if need be.
+	// The endpoint record — where the telemetry goes — composes with the
+	// hello and is never sent on /internal/subscribe.
+	s.sendSessionTelemetry(sess.Context(), sess, id, wire.TelemetryRoleBroadcaster, pub.SetTelemetrySession, log)
 	// R40's screening notice (docs/71 D13): the broadcaster is told on the
 	// session it always opens. Off its own goroutine like the /echo send —
 	// the datagram loop below must not wait on a client's uni credit.
@@ -1452,9 +1452,8 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 
 	// The viewer half of the correlation ID; a failed hello means a viewer
 	// that never reports, shown as unknown rather than ok.
-	sub.SetTelemetrySession(s.sendTelemetryHello(sess, id, wire.TelemetryRoleViewer, log))
 	// Same endpoint advertisement as the publish route.
-	s.sendTelemetryEndpoint(sess, log)
+	s.sendSessionTelemetry(sess.Context(), sess, id, wire.TelemetryRoleViewer, sub.SetTelemetrySession, log)
 	s.sendSessionNotices(sess, r, kindSubscribe)
 
 	log.Info("subscriber session started")

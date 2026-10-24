@@ -93,7 +93,10 @@ type SessionView struct {
 	BroadcastKey string `json:"broadcastKey"`
 	// RoomKey (R42, RM8) is the HMAC'd room the client said it was in, or
 	// empty. A hint the client stated, not a relay-verified fact.
-	RoomKey     string          `json:"roomKey,omitempty"`
+	RoomKey string `json:"roomKey,omitempty"`
+	// Issuer is the issuer key of the PoP that served the session (docs/78
+	// D3, from its token or from the PoP's observations), empty for home's.
+	Issuer      string          `json:"issuer,omitempty"`
 	Role        string          `json:"role"`
 	Browser     string          `json:"browser,omitempty"`
 	OS          string          `json:"os,omitempty"`
@@ -269,6 +272,9 @@ func (p *Projection) ObserveClient(a ingest.Accepted, browser, os, appVersion st
 	if s.view.RoomKey == "" && a.RoomKey != "" {
 		s.view.RoomKey = a.RoomKey
 	}
+	if a.Issuer != "" {
+		s.view.Issuer = a.Issuer
+	}
 	// Identity is the CLIENT's to state — the relay cannot know what browser is
 	// on the far end — but the relay routinely creates the row first: it is
 	// scraped every 5 s against a 10 s client flush, so setting these only on
@@ -410,6 +416,25 @@ func (s *sessionState) foldUplinkLocked(samples []ingest.Sample) {
 }
 
 // ObserveRelay folds a scrape round into the projection.
+// relaySessionLocked finds or creates the session a relay observation names,
+// marked with the observation's issuer. Caller holds p.mu.
+func (p *Projection) relaySessionLocked(b *broadcastState, o relayscrape.Observation, role string) *sessionState {
+	s, ok := b.sessions[o.SessionID]
+	if !ok {
+		s = &sessionState{
+			view:        SessionView{SessionID: o.SessionID, BroadcastKey: o.BroadcastKey, Role: role},
+			clientFacts: map[string]float64{},
+			relayFacts:  map[string]float64{},
+			textFacts:   map[string]string{},
+		}
+		b.sessions[o.SessionID] = s
+	}
+	if iss := o.Issuer(); iss != "" {
+		s.view.Issuer = iss
+	}
+	return s
+}
+
 func (p *Projection) ObserveRelay(r relayscrape.Round) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -422,9 +447,19 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 		b.lastSeen = now
 		b.lastRelay = now
 		b.missedRounds = 0
+		// docs/78 D8: a PoP's observations feed the sessions it served and
+		// nothing else — never home's per-pod broadcast aggregation.
+		issuer := o.Issuer()
 		switch o.Kind {
 		case "broadcast":
 			if o.Broadcast == nil {
+				continue
+			}
+			if issuer != "" {
+				if o.SessionID != "" {
+					s := p.relaySessionLocked(b, o, "broadcaster")
+					s.lastRelay = now
+				}
 				continue
 			}
 			pv, ok := b.pods[o.Pod]
@@ -479,6 +514,9 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 				}
 				b.sessions[o.SessionID] = s
 			}
+			if issuer != "" {
+				s.view.Issuer = issuer
+			}
 			sub := o.Subscriber
 			s.lastRelay = now
 			// Gauges are read as they stand; counters become this window's
@@ -509,20 +547,32 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 
 	// Peer medians, for the leg-B contrast. Computed here because it is a
 	// cross-session fact no single observation carries.
+	// Peers share a relay: a PoP's viewers are each other's peers, home's
+	// are home's (docs/78 D8).
 	for _, b := range p.bcasts {
-		var drops []float64
+		drops := map[string][]float64{}
 		for _, s := range b.sessions {
 			if v, ok := s.relayFacts["subscriberDropped"]; ok {
-				drops = append(drops, v)
+				drops[s.view.Issuer] = append(drops[s.view.Issuer], v)
 			}
 		}
 		if len(drops) == 0 {
 			continue
 		}
-		sort.Float64s(drops)
-		med := drops[len(drops)/2]
+		for _, d := range drops {
+			sort.Float64s(d)
+		}
 		for _, s := range b.sessions {
-			s.relayFacts["peerMedianDropped"] = med
+			d := drops[s.view.Issuer]
+			if len(d) == 0 {
+				continue
+			}
+			s.relayFacts["peerMedianDropped"] = d[len(d)/2]
+			if s.view.Issuer != "" {
+				// The broadcast-level facts below are home's relay's; a
+				// session a PoP served was not behind it.
+				continue
+			}
 			s.relayFacts["ingressLossRatio"] = b.relayFacts["ingressLossRatio"]
 			// The leg-A units a viewer's rules read to tell leg A from leg B.
 			for _, k := range []string{"ingressFrameLossRatio", "ingressChunkLossRatio"} {
@@ -689,6 +739,7 @@ func (b *broadcastState) aggregateLocked() {
 
 	if origin != nil {
 		f["publisherActive"] = boolToF(origin.cur.PublisherActive)
+		f["publisherPopLeg"] = boolToF(origin.cur.PublisherKind == relayscrape.PublisherKindPopLeg)
 		f["viewersGlobal"] = float64(origin.cur.ViewersGlobal)
 		relayed, relayedOK := deltaOf(origin.cur.FramesRelayed, origin.prev.FramesRelayed, origin.have)
 		lost, lostOK := deltaOf(origin.cur.IngressFramesLost, origin.prev.IngressFramesLost, origin.have)
@@ -1131,9 +1182,14 @@ var liveNumericFields = []string{
 	// hidden tab stops firing rAF, so renderedFps beside it means nothing
 	// without it.
 	"documentHiddenMs",
+	// R76 (docs/77 D11): what the native broadcaster holds right now. The
+	// growth fact is stored-session only: a live window cannot see hours.
+	"memFootprintBytes", "memFootprintPeakBytes", "memHeapBytes", "memGpuBytes",
 }
 
 var liveTextFields = []string{
+	// docs/77 D14: the native broadcaster's uplink, live.
+	"uplinkModeRequested", "uplinkMode", "uplinkCongestion",
 	"deliveryMode", "playoutMode", "renderer", "pipelineContext", "transport",
 	"audioState", "autoRung", "Encoder", "Codec",
 	// D17: the encoder's committed acceleration and codec. An operator looking

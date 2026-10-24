@@ -66,7 +66,9 @@ func StatuszHandler(r *hub.Registry, rooms RoomStatsSource, log *slog.Logger) ht
 //
 // screening adds R40's keyframe route under its own token (docs/71 D1).
 // Nil — or an empty token — registers nothing: the path 404s.
-func Handler(r *hub.Registry, rooms RoomStatsSource, g prometheus.Gatherer, log *slog.Logger, ready func() bool, admin *AdminOptions, screening *ScreeningOptions) http.Handler {
+// extra adds routes only the ops listener serves, unauthenticated like
+// /statusz there: R77's /internal/telemetry/pops (docs/78 D7).
+func Handler(r *hub.Registry, rooms RoomStatsSource, g prometheus.Gatherer, log *slog.Logger, ready func() bool, admin *AdminOptions, screening *ScreeningOptions, extra ...Route) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte("ok"))
@@ -90,7 +92,16 @@ func Handler(r *hub.Registry, rooms RoomStatsSource, g prometheus.Gatherer, log 
 		log.Info("relay screening keyframe route enabled on the ops listener",
 			"route", "/internal/screening/broadcasts/{id}/keyframe")
 	}
+	for _, rt := range extra {
+		mux.Handle(rt.Pattern, rt.Handler)
+	}
 	return mux
+}
+
+// Route is one extra ops-only route (Handler's extra).
+type Route struct {
+	Pattern string
+	Handler http.Handler
 }
 
 // Run listens on addr and serves h until ctx is cancelled. An empty addr

@@ -15,6 +15,7 @@
 //! the Go engine's `captureFpsAvailable` is permanently false because the
 //! GStreamer child owns it.
 
+use crate::memory;
 use serde::Serialize;
 
 fn is_zero_u32(v: &u32) -> bool {
@@ -160,6 +161,73 @@ pub struct Stats {
     /// The application whose audio is captured, by process binary.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub audio_app: String,
+
+    /// R76 (docs/77 D2): the process footprint in the figure the OS's own
+    /// task manager shows (Windows' private working set, Apple's
+    /// `phys_footprint`, Linux's anonymous + shared resident), its peak, and
+    /// every resident page. False where the OS could not be read.
+    pub mem_available: bool,
+    pub mem_footprint_bytes: u64,
+    pub mem_footprint_peak_bytes: u64,
+    pub mem_resident_bytes: u64,
+    /// Windows' committed private memory ("Commit size"): a leak that
+    /// pages out leaves the working set and stays here. Absent elsewhere.
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    pub mem_commit_bytes: u64,
+    /// iOS: bytes left before jetsam kills the app. Absent elsewhere.
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    pub mem_limit_remaining_bytes: u64,
+    /// The Rust heap, live and peak (D3): footprint minus this is memory
+    /// held through libraries — the GPU driver, the media frameworks, the
+    /// UI renderer. False where the shell runs without the counting
+    /// allocator.
+    pub mem_heap_available: bool,
+    pub mem_heap_bytes: u64,
+    pub mem_heap_peak_bytes: u64,
+    /// Video memory charged to the process (D5): DXGI's per-process usage
+    /// on Windows, the kernel's graphics ledger on Apple. False on Linux.
+    pub mem_gpu_available: bool,
+    pub mem_gpu_bytes: u64,
+    /// What each component says it holds (D4); absent until it reports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mem_capture_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mem_encode_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mem_send_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mem_preview_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mem_telemetry_bytes: Option<u64>,
+}
+
+impl Stats {
+    /// Copies a memory snapshot into the `mem*` fields (docs/77 D6).
+    pub fn apply_memory(&mut self, m: &memory::Snapshot) {
+        if let Some(p) = m.process {
+            self.mem_available = true;
+            self.mem_footprint_bytes = p.footprint;
+            self.mem_footprint_peak_bytes = m.footprint_peak;
+            self.mem_resident_bytes = p.resident;
+            self.mem_commit_bytes = p.commit;
+            self.mem_limit_remaining_bytes = p.limit_remaining;
+        }
+        if let Some((live, peak)) = m.heap {
+            self.mem_heap_available = true;
+            self.mem_heap_bytes = live;
+            self.mem_heap_peak_bytes = peak;
+        }
+        if let Some(gpu) = m.gpu {
+            self.mem_gpu_available = true;
+            self.mem_gpu_bytes = gpu;
+        }
+        let [capture, encode, send, preview, telemetry] = m.components;
+        self.mem_capture_bytes = capture;
+        self.mem_encode_bytes = encode;
+        self.mem_send_bytes = send;
+        self.mem_preview_bytes = preview;
+        self.mem_telemetry_bytes = telemetry;
+    }
 }
 
 #[cfg(test)]
@@ -192,6 +260,13 @@ mod tests {
             uplink_mode: "carrier".into(),
             uplink_mode_requested: "reliable".into(),
             uplink_congestion: "bbr".into(),
+            mem_commit_bytes: 1,
+            mem_limit_remaining_bytes: 1,
+            mem_capture_bytes: Some(1),
+            mem_encode_bytes: Some(1),
+            mem_send_bytes: Some(1),
+            mem_preview_bytes: Some(1),
+            mem_telemetry_bytes: Some(1),
             ..Default::default()
         };
         let v = serde_json::to_value(&full).unwrap();
@@ -254,6 +329,22 @@ mod tests {
             "captureRestarts",
             "shareMode",
             "audioApp",
+            "memAvailable",
+            "memFootprintBytes",
+            "memFootprintPeakBytes",
+            "memResidentBytes",
+            "memCommitBytes",
+            "memLimitRemainingBytes",
+            "memHeapAvailable",
+            "memHeapBytes",
+            "memHeapPeakBytes",
+            "memGpuAvailable",
+            "memGpuBytes",
+            "memCaptureBytes",
+            "memEncodeBytes",
+            "memSendBytes",
+            "memPreviewBytes",
+            "memTelemetryBytes",
         ]
         .into_iter()
         .map(String::from)
@@ -279,9 +370,15 @@ mod tests {
             "uplinkMode",
             "uplinkModeRequested",
             "uplinkCongestion",
+            "memCommitBytes",
+            "memLimitRemainingBytes",
+            "memCaptureBytes",
         ] {
             assert!(!obj.contains_key(absent), "{absent} should be absent");
         }
+        assert_eq!(obj["memAvailable"], false);
+        assert_eq!(obj["memHeapAvailable"], false);
+        assert_eq!(obj["memGpuAvailable"], false);
         assert_eq!(obj["captureFpsAvailable"], false);
         assert_eq!(obj["keyframeIntervalAvailable"], false);
         assert_eq!(obj["viewerCountAvailable"], false);

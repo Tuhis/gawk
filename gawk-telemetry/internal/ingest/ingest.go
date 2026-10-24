@@ -94,7 +94,11 @@ type Accepted struct {
 	BroadcastKey string
 	// RoomKey is empty for a session outside any room. When set it is 12 hex
 	// chars; see Validate for why it is shape-checked but not authenticated.
-	RoomKey     string
+	RoomKey string
+	// Issuer is the hex issuer key of the PoP that served this session
+	// (docs/78 D3), read from the verified token — authentic, unlike
+	// RoomKey — and empty for a session the home fleet served itself.
+	Issuer      string
 	Role        string
 	Seq         int
 	Final       bool
@@ -392,8 +396,14 @@ func (h *Handler) Validate(body []byte) (Accepted, int, error) {
 		})
 	}
 
+	var issuer string
+	if k, ok := wire.TelemetryTokenIssuer(h.opts.Key, token); ok {
+		issuer = hex.EncodeToString(k)
+	}
+
 	return Accepted{
 		SessionID:    sessionID,
+		Issuer:       issuer,
 		BroadcastKey: b.BroadcastKey,
 		RoomKey:      b.RoomKey,
 		Role:         b.Role,

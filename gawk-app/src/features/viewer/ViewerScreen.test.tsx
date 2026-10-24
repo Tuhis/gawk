@@ -1333,6 +1333,62 @@ describe('ViewerScreen and local relays (R74)', () => {
     expect(screen.getByText(/Assembly 2026 · local relay/)).toBeTruthy();
   });
 
+  // docs/77 D15: a telemetry session is one relay session. A PoP sends no
+  // telemetry hello (docs/76 §8), so unless the switch ends home's session
+  // the collector goes on posting the PoP connection's stats under home's
+  // token — a home row describing a relay home never saw.
+  it('ends the home telemetry session when it follows an offer, and posts nothing from the PoP', async () => {
+    const posted: string[] = [];
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async (_url, init) => {
+        posted.push(String((init as RequestInit | undefined)?.body ?? ''));
+        return new Response(null, { status: 204 });
+      });
+    Object.defineProperty(navigator, 'sendBeacon', {
+      configurable: true,
+      value: (_url: string, body: Blob) => {
+        void body.text().then((t) => posted.push(t));
+        return true;
+      },
+    });
+    let clock = 10_000;
+    const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    try {
+      const { unmount } = render(<ViewerScreen broadcastId="AB2CD3" />);
+      await waitFor(() => expect(sessions).toHaveLength(1));
+      act(() => sessions[0].cbs.onConnected());
+      act(() =>
+        sessions[0].cbs.onTelemetryHello!({
+          enabled: true,
+          reportIntervalMs: 2000,
+          token: '00012345000102030405060708090a0ba1a2a3a4a5a6a7a8',
+          broadcastKey: '1a2b3c4d5e6f',
+        }),
+      );
+      act(() => sessions[0].cbs.onStats({ receivedFps: 11 }));
+
+      await act(async () => (sessions[0].cbs as LocalRelayCbs).onLocalRelay?.({ kind: 'offer', offer: OFFER }));
+      await waitFor(() => expect(sessions).toHaveLength(2));
+      expect(sessions[1].url).toBe(LAN);
+
+      clock += 5000;
+      act(() => sessions[1].cbs.onConnected());
+      act(() => sessions[1].cbs.onStats({ receivedFps: 77 }));
+      clock += 5000;
+      unmount();
+      await act(async () => {});
+
+      const finals = posted.filter((b) => b.includes('"final":true'));
+      expect(finals).toHaveLength(1);
+      expect(finals[0]).toContain('"receivedFps":11');
+      expect(posted.join('\n')).not.toContain('"receivedFps":77');
+    } finally {
+      fetchSpy.mockRestore();
+      nowSpy.mockRestore();
+    }
+  });
+
   it('a PoP whose session is lost sends the viewer back home, and does not loop it back', async () => {
     useTransportStore.getState().setOfferOverride(LAN, [], 'pop-uid-1', 'Assembly 2026');
     render(<ViewerScreen broadcastId="AB2CD3" />);

@@ -31,6 +31,7 @@
 //!   still be in flight when the next carrier's first frame arrives (review
 //!   of #541).
 
+use crate::memory;
 use crate::relay::{CarrierStream, RelaySession};
 use gawk_wire as wire;
 use std::collections::VecDeque;
@@ -222,13 +223,13 @@ impl FrameRecords {
 
 enum Item {
     /// A keyframe was produced: GOP `gop` begins, on a carrier or not.
-    Gop {
-        gop: u64,
-        carrier: bool,
-    },
+    Gop { gop: u64, carrier: bool },
     Frame {
         gop: u64,
         frame: FrameRecords,
+        /// The frame's bytes in the `send` memory gauge until it is written,
+        /// shed or cleared (docs/77 D4): the queue is unbounded within a GOP.
+        _held: memory::Held,
     },
 }
 
@@ -346,7 +347,8 @@ impl CarrierLane {
             return;
         }
         let gop = st.gop;
-        st.queue.push_back(Item::Frame { gop, frame });
+        let _held = memory::Held::new(memory::Component::Send, frame.bytes.len() as u64);
+        st.queue.push_back(Item::Frame { gop, frame, _held });
         drop(st);
         self.shared.wake.notify_one();
     }
@@ -473,7 +475,7 @@ async fn run(shared: Arc<Shared>, relay: Arc<Mutex<Arc<dyn RelaySession>>>) {
                 }
                 current = open(&shared, &relay, gop).await.map(|c| (gop, c));
             }
-            Item::Frame { gop, frame } => {
+            Item::Frame { gop, frame, .. } => {
                 let Some((_, carrier)) = current.as_mut().filter(|(g, _)| *g == gop) else {
                     // No carrier for this GOP: it failed to open, or died.
                     shared.count(|c| c.records_shed += frame.records);

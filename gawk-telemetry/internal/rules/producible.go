@@ -35,6 +35,9 @@ var ProducibleFacts = map[string]string{
 	"relay.ingressFrameLossRatio": both,
 	"relay.ingressChunkLossRatio": both,
 	"relay.keyframeStreamsIn":     both,
+	// docs/77 D16: home's publisher for this broadcast is a PoP's uplink
+	// leg, so its ingress loss is the venue's internet line, not leg A.
+	"relay.publisherPopLeg": both,
 
 	// --- relay, per subscriber ---------------------------------------------
 	"relay.subscriberDropped":     both,
@@ -121,6 +124,14 @@ var ProducibleFacts = map[string]string{
 	"client.uplinkPacketLossRatio": both,
 	"client.EncoderFps":            live,
 	"client.SentFps":               live,
+	// R76 (docs/77 D11): the native broadcaster's memory. Live reads the
+	// last sample; the stored session reads the whole-session summary,
+	// which alone can say whether it grew.
+	"client.memFootprintBytes":       both,
+	"client.memFootprintPeakBytes":   both,
+	"client.memHeapBytes":            both,
+	"client.memGpuBytes":             both,
+	"client.memFootprintGrowthBytes": readapi,
 
 	// --- client, the configured target (D17) ---------------------------------
 	// What the broadcast was ASKED to be. Every other client fact is an
@@ -143,6 +154,14 @@ var ProducibleFacts = map[string]string{
 	// operator question, not just a post-mortem one.
 	"text.acceleration": both,
 	"text.codec":        both,
+
+	// docs/77 D14: the native broadcaster's uplink — the Delivery setting,
+	// the mode in use and the congestion controller — so a verdict can say
+	// which uplink it is about.
+	"text.uplinkModeRequested": both,
+	"text.uplinkMode":          both,
+	"text.uplinkCongestion":    both,
+	"text.shareMode":           readapi,
 
 	// --- text, stored-session only -------------------------------------------
 	// Config the ROLLUP derives (resolution, the target trio) or that only a

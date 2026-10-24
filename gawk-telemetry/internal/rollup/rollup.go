@@ -50,7 +50,12 @@ type Row struct {
 	// RoomKey (R42, RM8) is the HMAC'd room the session reported itself in.
 	// Additive per rule 1: absent on every pre-R42 row and on every session
 	// outside a room, and a reader must treat both the same.
-	RoomKey    string `json:"roomKey,omitempty"`
+	RoomKey string `json:"roomKey,omitempty"`
+	// Issuer (R77, docs/78 D3) is the hex issuer key of the PoP that served
+	// the session, authenticated by its token; absent for a session the home
+	// fleet served. The PoP's name comes from home's PoP observations
+	// (docs/78 D7), never from the client.
+	Issuer     string `json:"issuer,omitempty"`
 	Role       string `json:"role"`
 	AppVersion string `json:"appVersion,omitempty"`
 	Browser    string `json:"browser,omitempty"`
@@ -111,6 +116,12 @@ type Row struct {
 	// --- Relay side (joined, TM4) ---
 	Relay map[string]float64 `json:"relay,omitempty"`
 
+	// --- Memory (R76, docs/77 D10) ---
+	// The native broadcaster's footprint over the session, from its minute
+	// `memory` events or its samples. Absent for viewers and for every
+	// session that reported no memory.
+	Memory *Memory `json:"memory,omitempty"`
+
 	// --- Verdict (TM6) ---
 	// diagnose()'s ranked output at session end. Storing it is what makes
 	// "has this got better since the R15 fix?" a single query over rollups
@@ -143,6 +154,16 @@ var broadcasterSeries = []string{
 	// The native broadcaster's capitalized spellings (R14 marshals
 	// engine.Stats with Go's default names).
 	"EncoderFps", "SentFps", "TimeSyncRttMs", "ViewerCount", "KeyframeIntervalMs",
+	// The native engine's lowerCamelCase names for the last two above
+	// (docs/77 D14): until R76 only the legacy spellings were listed, so
+	// today's binaries' keyframe cadence and parity level never reached a
+	// row.
+	"keyframeIntervalMs", "parityLevel",
+	// R76 (docs/77 D10): what the native broadcaster's process held, and
+	// where. Over the samples' span only — the whole-session view is Memory.
+	"memFootprintBytes", "memFootprintPeakBytes", "memResidentBytes", "memCommitBytes",
+	"memHeapBytes", "memGpuBytes",
+	"memCaptureBytes", "memEncodeBytes", "memSendBytes", "memPreviewBytes", "memTelemetryBytes",
 }
 
 var viewerCounters = []string{
@@ -193,6 +214,15 @@ var broadcasterCounters = []string{
 	// docs/75 D8: the native broadcaster's QUIC packet counters, so a stored
 	// verdict can tell the uplink's loss from the relay intake's.
 	"uplinkPacketsSent", "uplinkPacketsLost",
+	// docs/77 D14: the rest of the native engine's send-side counters, in
+	// the lowerCamelCase it sends today — the legacy spellings above are
+	// what binaries before the tags sent, so these never reached a row: the
+	// sent and dropped frames, the carrier lane (docs/75 D8), quinn's
+	// datagram drops, parity, resumes and capture rebuilds.
+	"sentFrames", "framesDroppedAtSend", "configsSent", "keyframeBytesSent",
+	"uplinkDatagramsDropped", "uplinkCarriersOpened", "uplinkCarriersExpired", "uplinkRecordsShed",
+	"parityChunksSent", "parityBytesSent",
+	"resumes", "captureRestarts", "audioBytesSent", "audioPacketsDropped",
 	// Recorded for a broadcaster too, but for the opposite purpose: here it
 	// EXPLAINS a real collapse rather than excusing one. A hidden broadcaster
 	// tab is throttled by the browser, so it genuinely sends fewer frames and
@@ -220,6 +250,11 @@ var broadcasterConfig = []string{
 	// D17. `codec` is shared by both producers; `acceleration` is the
 	// browser's.
 	"codec", "acceleration",
+	// docs/77 D14: how the native broadcaster's uplink ran (docs/75 D8) —
+	// the Delivery setting, the mode in use, the congestion controller — and
+	// what the Linux picker shared. Typed since R73 and R35, but only the raw
+	// window had them, so no permanent row said which uplink a session used.
+	"uplinkModeRequested", "uplinkMode", "uplinkCongestion", "shareMode",
 }
 
 // CounterFields and SeriesFields expose what this package treats as cumulative
@@ -260,6 +295,7 @@ type Input struct {
 	SessionID    string
 	BroadcastKey string
 	RoomKey      string
+	Issuer       string
 	Role         string
 	AppVersion   string
 	Browser      string
@@ -296,6 +332,7 @@ func Compute(in Input) Row {
 		SessionID:       in.SessionID,
 		BroadcastKey:    in.BroadcastKey,
 		RoomKey:         in.RoomKey,
+		Issuer:          in.Issuer,
 		Role:            in.Role,
 		AppVersion:      in.AppVersion,
 		Browser:         in.Browser,
@@ -404,6 +441,7 @@ func Compute(in Input) Row {
 	}
 
 	r.Stalls, r.TotalStallMs, r.LongestStallMs = stalls(in.Samples)
+	r.Memory = computeMemory(in)
 
 	// Episodes (D16). Absent rather than zeroed when the window cannot support
 	// the judgement — the same rule the Stat pointers follow.

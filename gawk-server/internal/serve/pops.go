@@ -49,6 +49,7 @@ func wirePops(ctx context.Context, w Wired, log *slog.Logger) (*popsrv.Manager, 
 	w.Server.SetPopHome(m)
 	for _, wire := range []func(context.Context, Wired, *popsrv.Manager, *slog.Logger) error{
 		wirePopUplink, wirePopDownlink, wirePopModeration, wirePopWall, wirePopNamed, wirePopOffers,
+		wirePopTelemetry,
 	} {
 		if err := wire(ctx, w, m, log); err != nil {
 			return nil, err

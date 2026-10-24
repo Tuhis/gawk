@@ -12,14 +12,18 @@
 //! - Sampling decimates to the hello's cadence (floor 250 ms); flushing is
 //!   an independent fixed 10 s.
 //! - Bounded everywhere, shedding OLDEST: 64 samples / 256 events pending,
-//!   8 batches queued, 4 MiB of JSON per session (then events-only, with an
+//!   8 batches queued, 16 MiB of JSON per session (then events-only, with an
 //!   explicit `telemetry-budget-exhausted` event so the wire says so).
+//!   Memory rides a `memory` event once a minute (R76, docs/77 D9), so it
+//!   outlives the budget: about 5.4 hours of samples at the fleet's 2 s
+//!   cadence (it was 4 MiB, about 90 minutes, until docs/77 D12).
 //! - Sends retry twice (2 s, 4 s) on transport errors / 429 / 5xx; other
 //!   4xx are dropped immediately.
 //! - The session token and broadcast key ride in the BODY, hex-encoded;
 //!   there is no auth header and no raw broadcast ID anywhere.
 
 use crate::clock::Clock;
+use crate::memory;
 use crate::stats::Stats;
 use serde::Serialize;
 use std::collections::VecDeque;
@@ -27,7 +31,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 pub const FLUSH_INTERVAL: Duration = Duration::from_secs(10);
-pub const SESSION_BYTE_BUDGET: usize = 4 << 20;
+/// 16 MiB since R76 (docs/77 D12): a native sample is about 1.7 KB, so 4 MiB
+/// stopped the samples after about 90 minutes at the fleet's 2 s cadence.
+pub const SESSION_BYTE_BUDGET: usize = 16 << 20;
 const MIN_REPORT_INTERVAL_MS: u64 = 250;
 const MAX_PENDING_SAMPLES: usize = 64;
 const MAX_PENDING_EVENTS: usize = 256;
@@ -35,6 +41,8 @@ const SEND_QUEUE_DEPTH: usize = 8;
 const MAX_SEND_ATTEMPTS: u32 = 3;
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 const KIND_MAX: usize = 64;
+/// The `memory` event's cadence (R76, docs/77 D9).
+pub const MEMORY_EVENT_INTERVAL: Duration = Duration::from_secs(60);
 const DETAIL_MAX: usize = 256;
 
 /// The identity a TelemetryHello carries (already parsed by dispatch).
@@ -102,6 +110,7 @@ struct SessionState {
     truncated: bool,
     last_sample_at_us: Option<u64>,
     last_flush_at_us: u64,
+    last_memory_at_us: Option<u64>,
 }
 
 struct Inner {
@@ -109,8 +118,12 @@ struct Inner {
     session: Option<SessionState>,
 }
 
-/// A batch bound for `url`; `None` is the sender-shutdown sentinel.
-type Outbound = Option<(String, Vec<u8>)>;
+/// A batch bound for `url`, its JSON in the `telemetry` memory gauge until
+/// it is delivered or shed (docs/77 D4); `None` is the sender-shutdown
+/// sentinel. The pending samples are not counted: at most 64 `Stats`, a
+/// few tens of KB, against up to 8 queued batches of the same samples as
+/// JSON.
+type Outbound = Option<(String, Vec<u8>, memory::Held)>;
 
 struct SendQueue {
     queue: Mutex<VecDeque<Outbound>>,
@@ -129,6 +142,7 @@ pub struct Reporter {
 
 impl Reporter {
     pub fn new(version: &str, clock: Arc<dyn Clock>) -> Self {
+        memory::declare(memory::Component::Telemetry);
         let send = Arc::new(SendQueue {
             queue: Mutex::new(VecDeque::new()),
             ready: Condvar::new(),
@@ -208,6 +222,7 @@ impl Reporter {
             truncated: false,
             last_sample_at_us: None,
             last_flush_at_us: now_us,
+            last_memory_at_us: None,
         });
     }
 
@@ -219,6 +234,23 @@ impl Reporter {
         let Some(s) = inner.session.as_mut() else {
             return;
         };
+        // Ahead of the budget check on purpose: an event, so it still flows
+        // once the samples have stopped (docs/77 D9).
+        if stats.mem_available
+            && s.last_memory_at_us.is_none_or(|last| {
+                now_us.saturating_sub(last) >= MEMORY_EVENT_INTERVAL.as_micros() as u64
+            })
+        {
+            s.last_memory_at_us = Some(now_us);
+            s.events.push(Event {
+                t_ms: (now_us.saturating_sub(s.started_at_us) / 1000) as i64,
+                kind: "memory".into(),
+                detail: memory_detail(&stats),
+            });
+            while s.events.len() > MAX_PENDING_EVENTS {
+                s.events.remove(0);
+            }
+        }
         if s.truncated {
             return;
         }
@@ -331,7 +363,8 @@ impl Reporter {
         while q.len() >= SEND_QUEUE_DEPTH {
             q.pop_front();
         }
-        q.push_back(Some((url, body)));
+        let held = memory::Held::new(memory::Component::Telemetry, body.len() as u64);
+        q.push_back(Some((url, body, held)));
         self.send.ready.notify_one();
     }
 }
@@ -348,6 +381,27 @@ impl Drop for Reporter {
     }
 }
 
+/// The `memory` event's detail: `key=bytes` pairs, the measured ones only,
+/// in a fixed order — `footprint` and `peak` always, then `heap`, `gpu`,
+/// `commit` where measured. At most about 120 characters, inside
+/// [`DETAIL_MAX`]; `gawk-telemetry` parses exactly this.
+fn memory_detail(st: &Stats) -> String {
+    let mut d = format!(
+        "footprint={},peak={}",
+        st.mem_footprint_bytes, st.mem_footprint_peak_bytes
+    );
+    if st.mem_heap_available {
+        d += &format!(",heap={}", st.mem_heap_bytes);
+    }
+    if st.mem_gpu_available {
+        d += &format!(",gpu={}", st.mem_gpu_bytes);
+    }
+    if st.mem_commit_bytes > 0 {
+        d += &format!(",commit={}", st.mem_commit_bytes);
+    }
+    d
+}
+
 fn sender_loop(send: &SendQueue) {
     loop {
         let item = {
@@ -359,7 +413,9 @@ fn sender_loop(send: &SendQueue) {
                 q = send.ready.wait(q).unwrap();
             }
         };
-        let Some((url, body)) = item else { return };
+        let Some((url, body, _held)) = item else {
+            return;
+        };
         deliver(&url, &body);
     }
 }
@@ -517,6 +573,71 @@ mod tests {
         // The sample's stats carry the browser's names.
         assert!(v["samples"][0]["stats"].get("encoderFps").is_some());
         assert!(v["samples"][0]["tMs"].is_number());
+    }
+
+    // R76 (docs/77 D9): memory reaches the service once a minute as a small
+    // event, and keeps reaching it after the byte budget has stopped the
+    // samples — a native session's samples run out after about 5.4 hours,
+    // and memory creep is a multi-hour question.
+    #[test]
+    fn memory_rides_a_minute_event_that_outlives_the_byte_budget() {
+        let clock = Arc::new(FakeClock::default());
+        let r = Reporter::new("", clock.clone());
+        r.begin(&hello());
+        let measured = Stats {
+            mem_available: true,
+            mem_footprint_bytes: 150_000_000,
+            mem_footprint_peak_bytes: 160_000_000,
+            mem_heap_available: true,
+            mem_heap_bytes: 40_000_000,
+            mem_heap_peak_bytes: 41_000_000,
+            mem_gpu_available: true,
+            mem_gpu_bytes: 300_000_000,
+            mem_commit_bytes: 200_000_000,
+            ..Default::default()
+        };
+        let memory_events = |r: &Reporter| -> Vec<String> {
+            let inner = r.inner.lock().unwrap();
+            let s = inner.session.as_ref().unwrap();
+            s.events
+                .iter()
+                .filter(|e| e.kind == "memory")
+                .map(|e| e.detail.clone())
+                .collect()
+        };
+
+        // The first measured sample records one at once, then once a minute.
+        for _ in 0..121 {
+            r.report(measured.clone());
+            clock.advance_ms(1000);
+        }
+        let got = memory_events(&r);
+        assert_eq!(got.len(), 3, "t = 0, 60, 120 s: {got:?}");
+        assert_eq!(
+            got[0],
+            "footprint=150000000,peak=160000000,heap=40000000,gpu=300000000,commit=200000000"
+        );
+
+        // Past the budget the samples stop; the memory events do not.
+        r.inner.lock().unwrap().session.as_mut().unwrap().truncated = true;
+        for _ in 0..60 {
+            r.report(measured.clone());
+            clock.advance_ms(1000);
+        }
+        assert_eq!(memory_events(&r).len(), 4);
+
+        // Unmeasured parts are left out; an unmeasured process sends none.
+        clock.advance_ms(60_000);
+        r.report(Stats {
+            mem_available: true,
+            mem_footprint_bytes: 1,
+            mem_footprint_peak_bytes: 2,
+            ..Default::default()
+        });
+        assert_eq!(memory_events(&r).last().unwrap(), "footprint=1,peak=2");
+        clock.advance_ms(60_000);
+        r.report(Stats::default());
+        assert_eq!(memory_events(&r).len(), 5);
     }
 
     #[test]

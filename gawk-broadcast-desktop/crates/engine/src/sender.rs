@@ -18,6 +18,7 @@ use crate::carrier::{
 };
 use crate::clock::Clock;
 use crate::media::{AUDIO_CONFIG_RESEND_MS, AccessUnit, AudioFormat, AudioPacket};
+use crate::memory;
 use crate::relay::{KeyframeOutcome, PathCounters, RelaySession, SendDatagramError};
 use crate::stats::Stats;
 use gawk_wire as wire;
@@ -56,7 +57,8 @@ struct KfSlot {
     /// The newest keyframe waiting for the in-flight write to finish —
     /// newest wins among waiters (a replaced waiter counts as superseded),
     /// F-12's replacement for cancelling the write itself.
-    pending: Option<Vec<u8>>,
+    /// Counted in the `send` memory gauge while it waits (docs/77 D4).
+    pending: Option<(Vec<u8>, memory::Held)>,
     /// Set by `wait()` to stop new writes being spawned behind it.
     closed: bool,
     /// `closed`, for writers still waiting on their stream to open: an
@@ -417,7 +419,8 @@ impl Sender {
                 let age_ms = self.clock.now_us().saturating_sub(kf.write_started_us) / 1000;
                 if age_ms < KEYFRAME_WRITE_CANCEL_AGE_MS {
                     // In flight and presumed progressing: wait, don't kill.
-                    if kf.pending.replace(msg).is_some() {
+                    let held = memory::Held::new(memory::Component::Send, msg.len() as u64);
+                    if kf.pending.replace((msg, held)).is_some() {
                         self.state.lock().unwrap().st.keyframe_streams_superseded += 1;
                     }
                     return;
@@ -502,13 +505,15 @@ impl Sender {
                     };
 
                     let msg_len = msg.len() as u64;
+                    let held = memory::Held::new(memory::Component::Send, msg_len);
                     let outcome = stream.write(msg, cancel_rx).await;
+                    drop(held);
                     {
                         let mut kf = kf_slot.lock().unwrap();
                         if kf.generation == my_generation {
                             kf.cancel = None;
                             if !kf.closed {
-                                next = kf.pending.take();
+                                next = kf.pending.take().map(|(msg, _)| msg);
                             }
                         }
                     }

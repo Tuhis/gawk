@@ -73,6 +73,7 @@ func ParseTimeline(live Live, lines [][]byte) rollup.Input {
 		SessionID:    live.Ref.SessionID,
 		BroadcastKey: live.Ref.BroadcastKey,
 		RoomKey:      live.RoomKey,
+		Issuer:       live.Issuer,
 		Role:         live.Role,
 		AppVersion:   live.App.Version,
 		Browser:      live.App.Browser,
@@ -105,6 +106,9 @@ func ParseTimeline(live Live, lines [][]byte) rollup.Input {
 		}
 		if in.BroadcastKey == "" && rec.BroadcastKey != "" {
 			in.BroadcastKey = rec.BroadcastKey
+		}
+		if in.Issuer == "" && rec.Issuer != "" {
+			in.Issuer = rec.Issuer
 		}
 		if in.RoomKey == "" && rec.RoomKey != "" {
 			in.RoomKey = rec.RoomKey

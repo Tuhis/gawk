@@ -6,6 +6,7 @@
 package transport
 
 import (
+	"context"
 	"encoding/hex"
 	"log/slog"
 	"time"
@@ -22,6 +23,10 @@ import (
 func (s *Server) telemetryEnabled() bool {
 	return len(s.cfg.TelemetryKey) == wire.TelemetryKeySize
 }
+
+// TelemetryReportIntervalMs is the cadence this relay's hellos ask for, which
+// home tells its PoPs so theirs match (docs/78 D2).
+func (s *Server) TelemetryReportIntervalMs() uint16 { return s.telemetryReportIntervalMs() }
 
 // telemetryReportIntervalMs is the cadence the hello asks clients to use,
 // already clamped by config parsing to fit a uint16 of milliseconds.
@@ -149,4 +154,77 @@ func (s *Server) SetScreeningNotice(on bool) { s.popMod.screening.Store(on) }
 // override home set.
 func (s *Server) screeningNoticeOn() bool {
 	return s.cfg.ScreeningNotice || s.popMod.screening.Load()
+}
+
+// PopTelemetry is a PoP's source of telemetry identities (R77, docs/78):
+// home mints them over the PoP's link, so the fleet key never reaches the
+// PoP (D1). popclient.Client implements it; the transport finds it on the
+// installed LocalRelayProvider, as it finds PopDownlinkSource.
+type PopTelemetry interface {
+	// TelemetryHello returns a hello for one session of broadcast id in
+	// role — home's broadcast key and a token home minted — and the ingest
+	// URL to advertise (empty for none). It waits until ctx is done when no
+	// token is at hand; ok is false when there is none to give (home
+	// collects no telemetry, refused, or the wait ran out).
+	TelemetryHello(ctx context.Context, id string, role wire.TelemetryRole) (hello wire.TelemetryHello, advertiseURL string, ok bool)
+}
+
+// popTelemetryWait bounds how long a session's hello may wait for home to
+// mint (docs/78 D5). The session never waits: the hello is sent late, or
+// not at all.
+const popTelemetryWait = 5 * time.Second
+
+func (s *Server) popTelemetry() PopTelemetry {
+	if s.telemetryEnabled() {
+		// A relay that holds the key mints its own (a home pod); RelayProfile
+		// refuses the key, so a PoP never does (D1).
+		return nil
+	}
+	if b := s.localRelay.Load(); b != nil {
+		if pt, ok := b.p.(PopTelemetry); ok {
+			return pt
+		}
+	}
+	return nil
+}
+
+// sendSessionTelemetry gives a session its telemetry identity and the
+// ingest URL. A relay holding the fleet key mints inline and returns
+// at once; a PoP asks home (sendPopTelemetry) without delaying the session.
+// record receives the sessionId, now or later, when there is one.
+func (s *Server) sendSessionTelemetry(ctx context.Context, sess *webtransport.Session, id string, role wire.TelemetryRole, record func(string), log *slog.Logger) {
+	if pt := s.popTelemetry(); pt != nil {
+		go s.sendPopTelemetry(ctx, pt, sess, id, role, record, log)
+		return
+	}
+	record(s.sendTelemetryHello(sess, id, role, log))
+	s.sendTelemetryEndpoint(sess, log)
+}
+
+// sendPopTelemetry is a PoP session's hello (docs/78 D5): byte-identical to
+// a home pod's, with a token home minted. Runs on its own goroutine.
+func (s *Server) sendPopTelemetry(ctx context.Context, pt PopTelemetry, sess *webtransport.Session, id string, role wire.TelemetryRole, record func(string), log *slog.Logger) {
+	wctx, cancel := context.WithTimeout(ctx, popTelemetryWait)
+	defer cancel()
+	hello, url, ok := pt.TelemetryHello(wctx, id, role)
+	if !ok || ctx.Err() != nil {
+		return
+	}
+	msg, err := wire.AppendTelemetryHello(nil, hello)
+	if err != nil {
+		log.Warn("pop telemetry hello skipped: encode failed", "err", err)
+		return
+	}
+	if err := sendUniMessage(sess, msg); err != nil {
+		log.Warn("pop telemetry hello not sent; this session will not report", "err", err)
+		return
+	}
+	if sid, err := wire.TelemetrySessionID(hello.Token); err == nil {
+		record(sid)
+	}
+	if url != "" {
+		if m, err := wire.AppendTelemetryEndpoint(nil, url); err == nil {
+			_ = sendUniMessage(sess, m)
+		}
+	}
 }

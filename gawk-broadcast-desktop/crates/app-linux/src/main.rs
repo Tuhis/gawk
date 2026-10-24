@@ -1,5 +1,10 @@
 //! `gawk-broadcast-linux` — everything is in the library (`lib.rs`).
 
+/// R76 (docs/77 D3): the Rust heap, counted.
+#[cfg(target_os = "linux")]
+#[global_allocator]
+static ALLOC: gawk_engine::memory::CountingAlloc = gawk_engine::memory::CountingAlloc;
+
 #[cfg(target_os = "linux")]
 fn main() {
     gawk_broadcast_app_linux::run();

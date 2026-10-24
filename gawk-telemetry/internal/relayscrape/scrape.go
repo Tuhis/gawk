@@ -32,6 +32,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -54,13 +55,22 @@ type Statusz struct {
 }
 
 // Broadcast is one broadcast's relay-side view on one pod.
+// PublisherKindPopLeg is gawk-server's hub.PublisherKindPopLeg, restated:
+// this module reads /statusz over the wire, not the relay's internal package.
+const PublisherKindPopLeg = "pop-leg"
+
 type Broadcast struct {
 	PublisherActive    bool   `json:"publisherActive"`
 	PublisherSessionID string `json:"publisherSessionId"`
-	Role               string `json:"role"`
-	Subscribers        int    `json:"subscribers"`
-	EdgeSessions       int    `json:"edgeSessions"`
-	ViewersGlobal      uint32 `json:"viewersGlobal"`
+	// PublisherKind is "pop-leg" when the publisher is a PoP's uplink leg
+	// rather than a broadcaster (docs/77 D16; hub.PublisherKindPopLeg): the
+	// ingress window then measures the venue's internet line. Empty for a
+	// broadcaster and from relays that predate it.
+	PublisherKind string `json:"publisherKind,omitempty"`
+	Role          string `json:"role"`
+	Subscribers   int    `json:"subscribers"`
+	EdgeSessions  int    `json:"edgeSessions"`
+	ViewersGlobal uint32 `json:"viewersGlobal"`
 
 	FramesRelayed             uint64 `json:"framesRelayed"`
 	DatagramsRelayed          uint64 `json:"datagramsRelayed"`
@@ -166,11 +176,54 @@ type Observation struct {
 	BroadcastKey string `json:"broadcastKey"`
 	// SessionID is empty on broadcast records and on edge sessions (which are
 	// never issued a telemetry identity — an edge is plumbing, not a client).
-	SessionID  string          `json:"sessionId,omitempty"`
+	SessionID string `json:"sessionId,omitempty"`
+	// PopName is the display name of the PoP an observation is from (docs/78
+	// D7); empty for the home fleet's own.
+	PopName    string          `json:"popName,omitempty"`
 	Broadcast  *Broadcast      `json:"broadcast,omitempty"`
 	Subscriber *Subscriber     `json:"subscriber,omitempty"`
 	Extra      json.RawMessage `json:"-"`
 }
+
+// PopPodPrefix marks an observation a PoP made, forwarded by the link-home
+// pod (docs/78 D7): its Pod is "pop:<issuer key>" and its Role the PoP hub's
+// own, prefixed "pop-".
+const PopPodPrefix = "pop:"
+
+// Issuer is the issuer key of the PoP an observation is from, or "" for the
+// home fleet's own — the same key a PoP-served session's token names
+// (docs/78 D3), which is what lets the two join and never cross.
+func (o Observation) Issuer() string {
+	if issuer, ok := strings.CutPrefix(o.Pod, PopPodPrefix); ok {
+		return issuer
+	}
+	return ""
+}
+
+// FilterIssuer keeps the stored observation lines whose issuer is issuer:
+// "" for the home fleet's own (broadcast-scope readers, home sessions), an
+// issuer key for one PoP's (the sessions it served). A line that will not
+// parse is dropped, as every reader would skip it.
+func FilterIssuer(lines [][]byte, issuer string) [][]byte {
+	out := make([][]byte, 0, len(lines))
+	for _, ln := range lines {
+		var o struct {
+			Pod string `json:"pod"`
+		}
+		if json.Unmarshal(ln, &o) != nil {
+			continue
+		}
+		if (Observation{Pod: o.Pod}).Issuer() == issuer {
+			out = append(out, ln)
+		}
+	}
+	return out
+}
+
+// IsEdgeRole reports whether a role is a downstream hop — a home edge, or a
+// PoP pulling a home broadcast down — whose ingress window is a leg between
+// relays, never a broadcaster's leg A.
+func IsEdgeRole(role string) bool { return role == "edge" || role == "pop-edge" }
 
 // Round is one scrape pass over the whole fleet.
 //
@@ -349,13 +402,24 @@ func (s *Scraper) scrapePod(ctx context.Context, addr string, now time.Time) ([]
 		return nil, err
 	}
 
-	pod := podName(addr)
 	atMs := now.UnixMilli()
-	out := make([]Observation, 0, len(st.Broadcasts)*2)
-	for key, b := range st.Broadcasts {
+	out := observations(st.Broadcasts, podName(addr), "", "", atMs)
+	// The PoPs this pod holds links for (docs/78 D7). Best-effort: a pod
+	// holding none, or predating R77, 404s and contributes nothing more.
+	for issuer, po := range s.scrapePops(ctx, addr) {
+		out = append(out, observations(po.Broadcasts, PopPodPrefix+issuer, "pop-", po.DisplayName, atMs)...)
+	}
+	return out, nil
+}
+
+// observations turns one /statusz-shaped broadcast map into records.
+func observations(bs map[string]Broadcast, pod, rolePrefix, popName string, atMs int64) []Observation {
+	out := make([]Observation, 0, len(bs)*2)
+	for key, b := range bs {
 		bc := b
+		role := rolePrefix + b.Role
 		out = append(out, Observation{
-			Kind: "broadcast", AtMs: atMs, Pod: pod, Role: b.Role,
+			Kind: "broadcast", AtMs: atMs, Pod: pod, Role: role, PopName: popName,
 			BroadcastKey: key, SessionID: b.PublisherSessionID, Broadcast: &bc,
 		})
 		for i := range b.SubscriberDetails {
@@ -367,12 +431,45 @@ func (s *Scraper) scrapePod(ctx context.Context, addr string, now time.Time) ([]
 				continue
 			}
 			out = append(out, Observation{
-				Kind: "subscriber", AtMs: atMs, Pod: pod, Role: b.Role,
+				Kind: "subscriber", AtMs: atMs, Pod: pod, Role: role, PopName: popName,
 				BroadcastKey: key, SessionID: sub.SessionID, Subscriber: &sub,
 			})
 		}
 	}
-	return out, nil
+	return out
+}
+
+// popsDoc is the subset of a link-home pod's /internal/telemetry/pops read
+// here (gawk-server popsrv.PopsDoc).
+type popsDoc struct {
+	Pops map[string]popObservations `json:"pops"`
+}
+
+// popObservations is one PoP's latest relay-side view.
+type popObservations struct {
+	DisplayName string               `json:"displayName"`
+	Broadcasts  map[string]Broadcast `json:"broadcasts"`
+}
+
+func (s *Scraper) scrapePops(ctx context.Context, addr string) map[string]popObservations {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/internal/telemetry/pops", nil)
+	if err != nil {
+		return nil
+	}
+	resp, err := s.opts.Client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, resp.Body)
+		return nil
+	}
+	var doc popsDoc
+	if json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&doc) != nil {
+		return nil
+	}
+	return doc.Pops
 }
 
 func (s *Scraper) noteSeen(obs []Observation, now time.Time) {

@@ -20,6 +20,11 @@ mod platform;
 #[cfg(target_os = "macos")]
 mod preview;
 
+/// R76 (docs/77 D3): the Rust heap, counted.
+#[cfg(target_os = "macos")]
+#[global_allocator]
+static ALLOC: gawk_engine::memory::CountingAlloc = gawk_engine::memory::CountingAlloc;
+
 #[cfg(target_os = "macos")]
 fn main() {
     // The commit build.rs stamped, for the version badge (crates/ui/build_rev.rs).

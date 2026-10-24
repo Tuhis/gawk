@@ -59,11 +59,13 @@ export const INTERVAL_MIN_FIELDS = [
 ] as const;
 
 // Hard per-session byte budget, counted on the uncompressed JSON we produce.
-// 4 MB is about a five-hour session at the default cadence. On exhaustion the
+// 16 MiB since R76 (docs/77 D12): 4 MiB was meant as a five-hour session, but
+// a native broadcaster's samples filled it in about 90 minutes at the fleet's
+// 2 s cadence, and the two clients share the contract. On exhaustion the
 // collector drops to events-only rather than stopping: the events are what
 // carry the story (reconnects, close codes, mode changes), and a session that
 // went quiet at hour five is still worth knowing about.
-export const SESSION_BYTE_BUDGET = 4 << 20;
+export const SESSION_BYTE_BUDGET = 16 << 20;
 
 // A batch that fails this many times is dropped and never mentioned again.
 // Small on purpose — the point is to ride out a blip, not to guarantee

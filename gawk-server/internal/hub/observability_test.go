@@ -440,3 +440,53 @@ func TestIngressDamagedFramesReachBroadcastAndTotalStats(t *testing.T) {
 		t.Errorf("an origin hub's loss leaked into the edge leg: %+v", tot)
 	}
 }
+
+// docs/77 D16: a PoP's uplink leg (docs/76) holds the home hub's publisher
+// slot, so its ingress window measures the venue's internet line, not a
+// broadcaster's uplink. It is its own leg — in /statusz, which says the
+// publisher is a PoP leg, and in the totals, which keep it out of the
+// broadcaster figures — and the window's past survives the publisher
+// leaving under the leg it was measured on.
+func TestAPopLegsIngressIsItsOwnLeg(t *testing.T) {
+	r := NewRegistry(discardLog, Options{})
+	id, pub, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	pub.SetKind(PublisherKindPopLeg)
+	// Frame 2 never arrives; slide it out of the window.
+	pub.HandleDatagram(chunkDgram(t, false, 1, 0, 1, "d"))
+	for fid := uint32(3); fid <= 2+ingressWindowFrames; fid++ {
+		pub.HandleDatagram(chunkDgram(t, false, fid, 0, 1, "d"))
+	}
+	st := singleBroadcastStats(t, r)
+	if st.PublisherKind != PublisherKindPopLeg {
+		t.Errorf("PublisherKind = %q, want %q", st.PublisherKind, PublisherKindPopLeg)
+	}
+	if st.IngressFramesLost != 1 {
+		t.Errorf("the broadcast still reports its own window: IngressFramesLost = %d, want 1", st.IngressFramesLost)
+	}
+	tot := r.Stats().Totals
+	if tot.IngressFramesLost != 0 || tot.IngressFramesExpected != 0 {
+		t.Errorf("a PoP leg's loss leaked into the broadcaster leg: %+v", tot)
+	}
+	if tot.PopLegIngressFramesLost != 1 || tot.PopLegIngressFramesExpected == 0 {
+		t.Errorf("pop-leg totals lost/expected = %d/%d, want 1/>0",
+			tot.PopLegIngressFramesLost, tot.PopLegIngressFramesExpected)
+	}
+
+	// The leg leaves; a broadcaster reclaims the slot. What the PoP leg lost
+	// stays the PoP leg's, and the broadcaster starts clean.
+	pub.Close()
+	if s := singleBroadcastStats(t, r); s.PublisherKind != "" {
+		t.Errorf("PublisherKind after the leg left = %q, want empty", s.PublisherKind)
+	}
+	if _, _, err = r.StartPublish(id); err != nil {
+		t.Fatalf("StartPublish reclaim: %v", err)
+	}
+	tot = r.Stats().Totals
+	if tot.PopLegIngressFramesLost != 1 || tot.IngressFramesLost != 0 {
+		t.Errorf("after the hand-back: pop-leg lost %d, broadcaster lost %d; want 1, 0",
+			tot.PopLegIngressFramesLost, tot.IngressFramesLost)
+	}
+}

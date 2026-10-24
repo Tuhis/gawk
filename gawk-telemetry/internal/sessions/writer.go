@@ -49,6 +49,10 @@ type Record struct {
 	// Omitted when the session was not in a room, so pre-R42 files and
 	// room-less sessions are byte-identical to before.
 	RoomKey string `json:"roomKey,omitempty"`
+	// Issuer (R77, docs/78 D3) is the hex issuer key of the PoP that served
+	// the session, from its verified token; omitted for home's own sessions,
+	// so their files are byte-identical to before.
+	Issuer string `json:"issuer,omitempty"`
 
 	// Meta lines only.
 	App         *ingest.AppInfo `json:"app,omitempty"`
@@ -70,7 +74,9 @@ type Record struct {
 type Live struct {
 	Ref store.SessionRef
 	// RoomKey is the HMAC'd room this session reported, or empty (R42, RM8).
-	RoomKey      string
+	RoomKey string
+	// Issuer is the serving PoP's issuer key, or empty (docs/78 D3).
+	Issuer       string
 	Role         string
 	App          ingest.AppInfo
 	StartedAtMs  int64
@@ -179,6 +185,7 @@ func (w *Writer) Accept(a ingest.Accepted) error {
 				SessionID:    a.SessionID,
 			},
 			RoomKey:     a.RoomKey,
+			Issuer:      a.Issuer,
 			Role:        a.Role,
 			App:         a.App,
 			StartedAtMs: a.StartedAtMs,
@@ -239,6 +246,7 @@ func (w *Writer) Accept(a ingest.Accepted) error {
 			SessionID:    a.SessionID,
 			BroadcastKey: a.BroadcastKey,
 			RoomKey:      snapshot.RoomKey,
+			Issuer:       snapshot.Issuer,
 			Role:         a.Role,
 			App:          &app,
 			StartedAtMs:  a.StartedAtMs,
@@ -251,6 +259,7 @@ func (w *Writer) Accept(a ingest.Accepted) error {
 			SessionID:    a.SessionID,
 			BroadcastKey: a.BroadcastKey,
 			RoomKey:      snapshot.RoomKey,
+			Issuer:       snapshot.Issuer,
 			Role:         a.Role,
 			TMs:          sm.TMs,
 			Stats:        sm.Stats,
@@ -263,6 +272,7 @@ func (w *Writer) Accept(a ingest.Accepted) error {
 			SessionID:    a.SessionID,
 			BroadcastKey: a.BroadcastKey,
 			RoomKey:      snapshot.RoomKey,
+			Issuer:       snapshot.Issuer,
 			Role:         a.Role,
 			TMs:          ev.TMs,
 			Event:        ev.Kind,
