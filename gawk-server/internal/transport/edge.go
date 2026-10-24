@@ -672,7 +672,7 @@ func (es *edgeSession) run() {
 					es.m.terminated()
 				}
 			} else {
-				es.m.registry.EndBroadcast(es.id)
+				es.m.registry.EndBroadcastWithCode(es.id, code)
 			}
 			es.m.log.Info("edge ended with the origin's close code", "broadcast_id", es.id, "close_code", code)
 			break
@@ -912,7 +912,7 @@ func upstreamTerminalCode(err error) (uint32, bool) {
 		return 0, false
 	}
 	switch code := uint32(se.ErrorCode); code {
-	case wire.CloseCodeBroadcastEnded, wire.CloseCodeTerminatedByOperator:
+	case wire.CloseCodeBroadcastEnded, wire.CloseCodeTerminatedByOperator, wire.CloseCodeBroadcasterStopped:
 		return code, true
 	}
 	return 0, false

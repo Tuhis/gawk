@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.broadcast.ended.json",
   "title": "Broadcast ended",
-  "description": "The broadcast is gone from the fleet: garbage-collected after the grace period, killed by an operator, or replaced by a newer publisher session. The `data` of a `fi.ioio.gawk.broadcast.ended` CloudEvent.",
+  "description": "The broadcast is gone from the fleet: garbage-collected after the grace period, killed by an operator, replaced by a newer publisher session, or stopped on purpose by its broadcaster (ended at once, without the grace period). The `data` of a `fi.ioio.gawk.broadcast.ended` CloudEvent.",
   "type": "object",
   "properties": {
     "broadcastId": {
@@ -17,7 +17,8 @@
       "enum": [
         "gc",
         "killed",
-        "replaced"
+        "replaced",
+        "stopped"
       ]
     },
     "pop": {

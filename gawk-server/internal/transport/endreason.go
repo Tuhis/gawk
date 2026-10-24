@@ -2,9 +2,13 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/quic-go/quic-go"
+	"github.com/quic-go/webtransport-go"
+
+	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
 // Session-end reasons are recovered from the QUIC connection's context
@@ -66,3 +70,36 @@ func sessionEndReason(ctx context.Context, err error) error {
 // own. errors.Is is deliberately not used: a wrapped cause that contains a
 // cancellation is still more informative than the bare sentinel.
 func isBareCancel(err error) bool { return err == context.Canceled }
+
+// sessionCloser is the part of *webtransport.Session publisherStopped reads.
+type sessionCloser interface {
+	Context() context.Context
+	OpenUniStream() (*webtransport.SendStream, error)
+}
+
+// publisherStopped reports whether the peer closed a publish session with
+// 4014, the broadcaster stopping on purpose (R76, docs/77 D2). The code is in
+// the session's close error, not in the datagram loop's (which reads EOF):
+// webtransport-go records the WT_CLOSE_SESSION capsule before it cancels the
+// session context, and OpenUniStream on a closed session returns that error
+// without opening anything. The context can trail the loop's exit, so it is
+// waited for, bounded like sessionEndReason. A session that has not closed
+// (the request context ended first: a shutdown) is not a stop.
+func publisherStopped(sess sessionCloser) bool {
+	done := sess.Context().Done()
+	select {
+	case <-done:
+	default:
+		timer := time.NewTimer(connCauseWait)
+		defer timer.Stop()
+		select {
+		case <-done:
+		case <-timer.C:
+			return false
+		}
+	}
+	_, err := sess.OpenUniStream()
+	var se *webtransport.SessionError
+	return errors.As(err, &se) && se.Remote &&
+		uint32(se.ErrorCode) == wire.CloseCodeBroadcasterStopped
+}

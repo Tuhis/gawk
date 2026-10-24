@@ -61,6 +61,9 @@ const (
 	BroadcastEndedGC       = "gc"
 	BroadcastEndedKilled   = "killed"
 	BroadcastEndedReplaced = "replaced"
+	// BroadcastEndedStopped: the broadcaster stopped on purpose and the
+	// relay ended the broadcast without a grace (R76, docs/77 D10).
+	BroadcastEndedStopped = "stopped"
 
 	// Why a room closed.
 	RoomClosedGrace    = "grace"
@@ -379,8 +382,8 @@ type BroadcastPublisherBackData struct {
 type BroadcastEndedData struct {
 	BroadcastID  string `json:"broadcastId,omitempty"`
 	BroadcastKey string `json:"broadcastKey"`
-	// Reason is BroadcastEndedGC, BroadcastEndedKilled or
-	// BroadcastEndedReplaced.
+	// Reason is BroadcastEndedGC, BroadcastEndedKilled,
+	// BroadcastEndedReplaced or BroadcastEndedStopped.
 	Reason string `json:"reason"`
 	// Pop: as on BroadcastStartedData.
 	Pop string `json:"pop,omitempty"`

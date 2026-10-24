@@ -768,3 +768,45 @@ func TestEdgeViewerIsToldTheOriginsKillCode(t *testing.T) {
 		})
 	}
 }
+
+// R76 (docs/77 D6): a viewer on an EDGE pod of a broadcast whose publisher
+// stopped on purpose is told 4014, as the origin's own viewers are, and not
+// the terminal 4000 the Lease deletion alone would give it.
+func TestEdgeViewerIsToldTheOriginsStop(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cs := fake.NewClientset()
+	cert, err := tlsutil.GenerateDevCert([]string{"localhost", "127.0.0.1"}, time.Hour)
+	if err != nil {
+		t.Fatalf("GenerateDevCert: %v", err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(cert.Leaf)
+	clientTLS := &tls.Config{RootCAs: pool, ServerName: "localhost", NextProtos: []string{"h3"}}
+
+	podA := startClusteredPod(t, ctx, cs, "pod-a", cert, pool, 0)
+	podB := startClusteredPod(t, ctx, cs, "pod-b", cert, pool, 0)
+	for _, p := range []*clusteredPod{podA, podB} {
+		go p.coord.Run(ctx)
+	}
+
+	pub, id, _ := dialStoppablePublisherAt(t, ctx, podA.addr(), clientTLS)
+	sendKeyframeStream(t, pub, buildStreamKeyframe(t, 0, "avc1.42E02A", 1200))
+	waitFor(t, 5*time.Second, func() bool { _, ok := podA.srv.PublisherRemote(id); return ok }, "publisher tracked")
+
+	viewerB := dialSubscriber(t, ctx, podB.port, id, clientTLS)
+	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
+	readNextKeyframeStream(t, recvCtx, viewerB)
+	recvCancel()
+
+	pub.CloseWithError(webtransport.SessionErrorCode(wire.CloseCodeBroadcasterStopped), "broadcaster stopped")
+	// What the origin's OnBroadcastExpired does in production, in its order:
+	// the hub's subscribers (the edge pull among them) are closed first.
+	waitFor(t, 5*time.Second, func() bool { return podA.registry.CheckSubscribe(id) != nil }, "origin ended the broadcast")
+	if err := podA.coord.Delete(ctx, id); err != nil {
+		t.Fatalf("lease delete: %v", err)
+	}
+
+	n, nAt, code, cAt := drainUntilClosed(t, ctx, viewerB)
+	assertNoticedClose(t, "edge viewer", wire.CloseCodeBroadcasterStopped, n, nAt, code, cAt)
+}

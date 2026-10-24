@@ -38,7 +38,7 @@ func TestGoldenSessionClosing(t *testing.T) {
 }
 
 func TestSessionClosingRoundTripsEveryNoticedCode(t *testing.T) {
-	for _, c := range []uint32{CloseCodeBroadcastEnded, CloseCodePublisherSuperseded, CloseCodeTerminatedByOperator, CloseCodePopUplinkFull} {
+	for _, c := range []uint32{CloseCodeBroadcastEnded, CloseCodePublisherSuperseded, CloseCodeTerminatedByOperator, CloseCodePopUplinkFull, CloseCodeBroadcasterStopped} {
 		msg, err := AppendSessionClosing(nil, c)
 		if err != nil {
 			t.Fatalf("AppendSessionClosing(%d): %v", c, err)
@@ -69,6 +69,27 @@ func TestGoldenSessionClosingPopUplinkFull(t *testing.T) {
 	code, err := ParseSessionClosing(want)
 	if err != nil || code != CloseCodePopUplinkFull {
 		t.Fatalf("ParseSessionClosing = (%d, %v), want 4012", code, err)
+	}
+}
+
+// R76 (docs/77 §5): 4014 BroadcasterStopped is noticed in-band to viewers.
+//
+//	01           version
+//	17           type = SessionClosing
+//	00 00 0f ae  code = 4014 (CloseCodeBroadcasterStopped), big-endian
+const goldenSessionClosingBroadcasterStoppedHex = "011700000fae"
+
+func TestGoldenSessionClosingBroadcasterStopped(t *testing.T) {
+	if CloseCodeBroadcasterStopped != 4014 {
+		t.Fatalf("CloseCodeBroadcasterStopped = %d; docs/77 D1 pins 4014", CloseCodeBroadcasterStopped)
+	}
+	want := mustHex(t, goldenSessionClosingBroadcasterStoppedHex)
+	msg, err := AppendSessionClosing(nil, CloseCodeBroadcasterStopped)
+	if err != nil {
+		t.Fatalf("AppendSessionClosing: %v", err)
+	}
+	if !bytes.Equal(msg, want) {
+		t.Errorf("AppendSessionClosing produced %x, want %x", msg, want)
 	}
 }
 

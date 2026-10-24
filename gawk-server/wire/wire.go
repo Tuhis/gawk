@@ -333,6 +333,19 @@ const CloseCodePopUplinkFull = 4012
 // Allocated 2026-10-22 (R74).
 const CloseCodePopNoDemand = 4013
 
+// CloseCodeBroadcasterStopped (4014) means the broadcaster stopped on
+// purpose (R76, docs/77 D1). It is used in both directions. A publisher
+// closes its own session with it when its user presses Stop or End. The
+// relay then ends the broadcast at once instead of holding it through the
+// grace, and closes every subscriber with 4014. Only a publish session's
+// 4014 means anything; the relay ignores it from any other session (D4).
+// Viewers are told in-band first (SessionClosing). It is NOT terminal for a
+// viewer: the viewer shows "Broadcast ended" and keeps dialling the same
+// code every few seconds, so a broadcast that restarts on that code resumes
+// by itself (D7). The relay never sends it to a publisher. Allocated
+// 2026-10-24 (R76).
+const CloseCodeBroadcasterStopped = 4014
+
 // Size constants for the wire format.
 const (
 	// MaxDatagramSize is the largest datagram we ever produce. It is chosen
