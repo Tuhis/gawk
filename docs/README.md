@@ -129,6 +129,8 @@ Reading all of them is not the point. Three give you the shape of the system:
 | [`25`](25-e2e-testing-in-ci.md) | R20 — Real-browser E2E in CI, both tiers |
 | [`33`](33-telemetry-and-diagnostics.md) | R28 — Advanced diagnostics & telemetry |
 | [`36`](36-telemetry-ui-history.md) | R31 — Telemetry UI v2: a diagnosis SPA |
+| [`78`](78-pop-telemetry.md) | R77 — PoP telemetry: home mints a PoP's tokens over its link (the key never leaves the fleet), an issuer key inside the token's nonce, the PoP's relay-side view through home, and joins that keep PoP and home apart |
+| [`77`](77-broadcaster-memory.md) | R76 — Broadcaster memory, measured: the task manager's footprint, the Rust heap, GPU memory and per-component gauges in telemetry; a 100 MB budget while live; a minute memory event that outlives the byte budget; `memory-over-budget` and `memory-growth` |
 | [`41`](41-local-dev-stack.md) | R38 — Local dev stack: `docker compose up`, two certificate lanes |
 | [`42`](42-admin-moderation-portal.md) | R39 — Admin portal for moderation: fleet-wide kill, durable bans, `gawk-admin` |
 | [`43`](43-coverage-reporting.md) | R41 — Test coverage measurement, per-component floors and badges |

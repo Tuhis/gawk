@@ -8,6 +8,13 @@
 
 uniffi::setup_scaffolding!();
 
+/// R76 (docs/77 D3): the Rust core's heap, counted — the app's own share of
+/// the footprint jetsam is charged against. Swift's allocations are not in
+/// it; the footprint is.
+#[cfg(target_os = "ios")]
+#[global_allocator]
+static ALLOC: gawk_engine::memory::CountingAlloc = gawk_engine::memory::CountingAlloc;
+
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod broadcast;
 pub mod identity;

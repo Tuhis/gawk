@@ -92,6 +92,9 @@ type Manager struct {
 	// offers is this pod's offer matcher (NewOffers), for the admin rows'
 	// OffersSent; nil when none is wired.
 	offers atomic.Pointer[Offers]
+	// telemetry mints this pod's links' tokens (StartTelemetry, docs/78);
+	// nil while home collects no telemetry.
+	telemetry atomic.Pointer[Telemetry]
 }
 
 // New builds a Manager. It subscribes to the Pop source so a Re-pair,
@@ -297,6 +300,9 @@ func (m *Manager) config(p *pops.Pop) poplink.Config {
 	if p.Spec.NotAfter != nil {
 		t := p.Spec.NotAfter.Time
 		c.NotAfter = &t
+	}
+	if tel := m.telemetry.Load(); tel != nil {
+		c.Telemetry = tel.config()
 	}
 	return c
 }

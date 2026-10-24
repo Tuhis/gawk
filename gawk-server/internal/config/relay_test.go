@@ -135,6 +135,8 @@ func TestParseRelayFlagsRejects(t *testing.T) {
 		{"-ui-addr", "no-port"},
 		// The shared validation still runs under the relay profile.
 		{"-max-broadcasts", "0"},
+		// docs/78 D1: the fleet's telemetry key never reaches a PoP.
+		{"-telemetry-key", strings.Repeat("ab", 32)},
 	} {
 		if _, _, err := ParseRelayFlags(args, noEnv); err == nil {
 			t.Errorf("ParseRelayFlags(%q) accepted", args)

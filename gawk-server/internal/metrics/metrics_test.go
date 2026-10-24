@@ -391,6 +391,18 @@ func TestLossAttributionByLeg(t *testing.T) {
 	edgePub.HandleDatagram(deltaDgram(t, 3))
 	edgePub.HandleDatagram(deltaDgram(t, 3+1024))
 
+	// docs/77 D16 — PoP-leg hub: frames 1, 5 seen; 2..4 age out ⇒ 3 lost,
+	// the venue's uplink, in neither family above.
+	popID, popPub, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish (pop leg): %v", err)
+	}
+	defer popPub.Close()
+	popPub.SetKind(hub.PublisherKindPopLeg)
+	popPub.HandleDatagram(deltaDgram(t, 1))
+	popPub.HandleDatagram(deltaDgram(t, 5))
+	popPub.HandleDatagram(deltaDgram(t, 5+1024))
+
 	collector := NewRegistryCollector(r)
 	if _, err := testutil.CollectAndLint(collector); err != nil {
 		t.Errorf("CollectAndLint: %v", err)
@@ -404,6 +416,7 @@ func TestLossAttributionByLeg(t *testing.T) {
 
 	obfOrigin := r.ObfuscateID(originID)
 	obfEdge := r.ObfuscateID(edgeID)
+	obfPop := r.ObfuscateID(popID)
 
 	get := func(family string, labels map[string]string) float64 {
 		for _, mf := range mfs {
@@ -444,12 +457,25 @@ func TestLossAttributionByLeg(t *testing.T) {
 	if v := get("gawk_broadcast_edge_ingress_frames_lost_total", map[string]string{"broadcast": obfOrigin}); v != -1 {
 		t.Errorf("origin hub leaked into the edge-leg family: %v", v)
 	}
+	// PoP-leg family: the leg's 3 lost frames, and only there.
+	if v := get("gawk_broadcast_pop_leg_ingress_frames_lost_total", map[string]string{"broadcast": obfPop}); v != 3 {
+		t.Errorf("pop-leg loss = %v, want 3", v)
+	}
+	if v := get("gawk_broadcast_ingress_frames_lost_total", map[string]string{"broadcast": obfPop}); v != -1 {
+		t.Errorf("a PoP leg leaked into the broadcaster-leg family: %v", v)
+	}
+	if v := get("gawk_broadcast_pop_leg_ingress_frames_lost_total", map[string]string{"broadcast": obfOrigin}); v != -1 {
+		t.Errorf("a broadcaster leaked into the pop-leg family: %v", v)
+	}
 	// Relay-lifetime totals keep the split too.
 	if v := get("gawk_relay_ingress_frames_lost_total", nil); v != 2 {
 		t.Errorf("relay broadcaster-leg total = %v, want 2", v)
 	}
 	if v := get("gawk_relay_edge_ingress_frames_lost_total", nil); v != 1 {
 		t.Errorf("relay edge-leg total = %v, want 1", v)
+	}
+	if v := get("gawk_relay_pop_leg_ingress_frames_lost_total", nil); v != 3 {
+		t.Errorf("relay pop-leg total = %v, want 3", v)
 	}
 	// Role labels.
 	if v := get("gawk_broadcast_role", map[string]string{"broadcast": obfOrigin, "role": "origin"}); v != 1 {

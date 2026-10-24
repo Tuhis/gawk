@@ -193,6 +193,12 @@ func ParseRelayFlags(args []string, getenv func(string) string) (Config, RelayCo
 	if err != nil {
 		return Config{}, RelayConfig{}, err
 	}
+	// docs/78 D1: the fleet's telemetry key never reaches a PoP; home mints
+	// a PoP's tokens over its link. A key here would mint tokens the fleet
+	// never scoped or marked.
+	if len(cfg.TelemetryKey) != 0 {
+		return Config{}, RelayConfig{}, fmt.Errorf("-telemetry-key is a fleet secret and gawk-relay refuses it: home mints a PoP's telemetry tokens over its link (docs/78)")
+	}
 	rc.DevMode = cfg.DevCert
 	return cfg, rc, nil
 }

@@ -18,6 +18,7 @@ use gawk_engine::clock::Clock;
 use gawk_engine::clock::QpcMapper;
 use gawk_engine::gate::FrameGate;
 use gawk_engine::media::{AUDIO_SAMPLE_RATE, AccessUnit};
+use gawk_engine::memory;
 use gawk_engine::sender::Sender;
 use gawk_ui::messages::StartFailure;
 use gawk_ui::shell::{Media, MediaEnv, MediaInfo, Thumb};
@@ -260,6 +261,16 @@ impl Pipeline {
                 return Err(StartFailure::Capture(e));
             }
         };
+        // docs/77 D4: SCK's queue of IOSurface-backed NV12 frames at the
+        // fitted size; `update` keeps the size, so this holds for the stream.
+        memory::set(
+            memory::Component::Capture,
+            gawk_capture::sck_policy::QUEUE_DEPTH as u64
+                * u64::from(s.width)
+                * u64::from(s.height)
+                * 3
+                / 2,
+        );
         log::info!(
             "pipeline ready: encoder {}, codec {}",
             accepted.id,
@@ -378,6 +389,7 @@ impl Media for Pipeline {
             log::info!("backpressure dropped {dropped} frames this broadcast");
         }
         self.send_task.abort();
+        memory::set(memory::Component::Capture, 0);
         // The encoder finishes when its last Arc (this one, once the
         // capture's output has released its copy) drops.
     }

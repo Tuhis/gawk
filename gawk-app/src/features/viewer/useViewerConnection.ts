@@ -422,6 +422,15 @@ export function useViewerConnection(
   // group. A reconnect replaces it, because that is a new relay session
   // with a new token and therefore a new row.
   const [telemetrySessionId, setTelemetrySessionId] = useState<string | null>(null);
+  // A telemetry session is one relay session (docs/77 D15). Stopping a
+  // session drops its `ended` event (the generation bump / `active` gate), so
+  // the teardown ends the telemetry session itself — or a redial to a relay
+  // that sends no hello, a PoP above all (docs/76 §8), would go on posting
+  // under the previous relay's token. The next relay's hello begins anew.
+  const endTelemetrySession = useCallback(() => {
+    telemetry.finish();
+    setTelemetrySessionId(null);
+  }, [telemetry]);
 
   // Shared mapping from a worker event (or a synthesized main-thread event) to
   // view state, so both paths render identically.
@@ -680,8 +689,18 @@ export function useViewerConnection(
     });
     return () => {
       controllerRef.current?.stop();
+      endTelemetrySession();
     };
-  }, [useWorker, broadcastId, deliveryMode, parityLevel, serverUrl, certHashHex, resetState]);
+  }, [
+    useWorker,
+    broadcastId,
+    deliveryMode,
+    parityLevel,
+    serverUrl,
+    certHashHex,
+    resetState,
+    endTelemetrySession,
+  ]);
 
   // The playout mode, applied on mount and on every toggle.
   // Worker path: cross into the worker's context; main-thread path: set the
@@ -802,6 +821,7 @@ export function useViewerConnection(
     return () => {
       active = false;
       void session.stop();
+      endTelemetrySession();
     };
   }, [
     useWorker,
@@ -815,6 +835,7 @@ export function useViewerConnection(
     resetState,
     handleAudioChunk,
     handleAudioReset,
+    endTelemetrySession,
   ]);
 
   // Arm the worker muxer (screen calls this at `watching` on gated

@@ -189,6 +189,34 @@ func TestIngestSessionIDComesFromTheToken(t *testing.T) {
 	}
 }
 
+// R77 (docs/78 D3): the issuer a session was served by comes from the
+// token — authenticated by its tag — never from the envelope. Home's own
+// sessions name none.
+func TestIngestIssuerComesFromTheTokenOnly(t *testing.T) {
+	h := newHandler(t, &recordingSink{})
+	issuer := wire.TelemetryIssuerKey(testKey, "pop-uid-1")
+	tok, err := wire.MintTelemetrySessionTokenForIssuer(testKey, testBroadcastKey, wire.TelemetryRoleViewer, testNow, issuer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _, err := h.Validate(body(t, map[string]any{"token": hex.EncodeToString(tok)}))
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if a.Issuer != hex.EncodeToString(issuer) {
+		t.Errorf("issuer = %q, want %x", a.Issuer, issuer)
+	}
+
+	// A home token, claiming an issuer in the envelope, names none.
+	a, _, err = h.Validate(body(t, map[string]any{"issuer": hex.EncodeToString(issuer)}))
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if a.Issuer != "" {
+		t.Errorf("a home session took the envelope's issuer %q", a.Issuer)
+	}
+}
+
 func TestIngestRejectsEnvelopeViolations(t *testing.T) {
 	h := newHandler(t, &recordingSink{})
 	viewerTok := mintToken(t, testKey, wire.TelemetryRoleViewer)

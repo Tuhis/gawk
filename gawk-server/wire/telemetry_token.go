@@ -107,7 +107,83 @@ func MintTelemetrySessionToken(key []byte, broadcastKey []byte, role TelemetryRo
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("wire: crypto/rand unavailable: %w", err)
 	}
+	// The nonce's top bit is the issuer marker (docs/78 D3): clear for a
+	// session the minting relay serves itself.
+	nonce[0] &^= telemetryIssuerBit
 	return mintTelemetrySessionToken(key, broadcastKey, role, now, nonce)
+}
+
+// Issuer tokens (R77, docs/78 D3). Home mints tokens for the sessions a PoP
+// serves, so the fleet key never leaves the fleet, and marks them with the
+// PoP's issuer key INSIDE the nonce, which the tag already covers: the issuer
+// is as authentic as the token, and neither the token's format nor any
+// client changes.
+//
+//	nonce = 1 ‖ check (15 bits) ‖ issuerKey (3 B) ‖ random (7 B)
+//	check = HMAC-SHA256(key, "gawk-telemetry-issuer\x00" ‖ issuerKey)[:2] & 0x7FFF
+//
+// The keyed check is what keeps a random nonce from naming an issuer: a
+// token an older pod minted (before it cleared the bit) passes it 1 time in
+// 2^15. A PoP session keeps 56 random bits, collision-free until about 2^28
+// PoP sessions.
+const (
+	// TelemetryIssuerKeySize is the issuer key's length.
+	TelemetryIssuerKeySize = 3
+	telemetryIssuerBit     = 0x80
+)
+
+// TelemetryIssuerKey is the issuer key of the PoP with this uid: an HMAC
+// under the fleet key, so only the fleet can mint for it and the key names no
+// PoP to anyone who reads it.
+func TelemetryIssuerKey(key []byte, popUID string) []byte {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte("gawk-telemetry-pop\x00"))
+	mac.Write([]byte(popUID))
+	return mac.Sum(nil)[:TelemetryIssuerKeySize]
+}
+
+func telemetryIssuerCheck(key, issuer []byte) uint16 {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte("gawk-telemetry-issuer\x00"))
+	mac.Write(issuer)
+	return binary.BigEndian.Uint16(mac.Sum(nil)[:2]) & 0x7FFF
+}
+
+// MintTelemetrySessionTokenForIssuer mints a token for a session a PoP
+// serves, marked with that PoP's issuer key (TelemetryIssuerKey).
+func MintTelemetrySessionTokenForIssuer(key, broadcastKey []byte, role TelemetryRole, now time.Time, issuer []byte) ([]byte, error) {
+	if len(key) != TelemetryKeySize {
+		return nil, fmt.Errorf("%w: %d bytes, want %d", ErrTelemetryKey, len(key), TelemetryKeySize)
+	}
+	if len(issuer) != TelemetryIssuerKeySize {
+		return nil, fmt.Errorf("%w: issuer key %d bytes, want %d", ErrTelemetryTokenInvalid, len(issuer), TelemetryIssuerKeySize)
+	}
+	nonce := make([]byte, TelemetryNonceSize)
+	binary.BigEndian.PutUint16(nonce, uint16(telemetryIssuerBit)<<8|telemetryIssuerCheck(key, issuer))
+	copy(nonce[2:5], issuer)
+	if _, err := rand.Read(nonce[5:]); err != nil {
+		return nil, fmt.Errorf("wire: crypto/rand unavailable: %w", err)
+	}
+	return mintTelemetrySessionToken(key, broadcastKey, role, now, nonce)
+}
+
+// TelemetryTokenIssuer returns the issuer key a token names, and whether it
+// names one. It does NOT verify the token: call it only on a token
+// VerifyTelemetrySessionToken accepted, which is what makes the issuer
+// authentic.
+func TelemetryTokenIssuer(key, token []byte) ([]byte, bool) {
+	if len(key) != TelemetryKeySize || len(token) != TelemetrySessionTokenSize {
+		return nil, false
+	}
+	nonce := token[4 : 4+TelemetryNonceSize]
+	if nonce[0]&telemetryIssuerBit == 0 {
+		return nil, false
+	}
+	issuer := nonce[2:5]
+	if binary.BigEndian.Uint16(nonce[:2])&0x7FFF != telemetryIssuerCheck(key, issuer) {
+		return nil, false
+	}
+	return append([]byte(nil), issuer...), true
 }
 
 // mintTelemetrySessionToken is the deterministic core, split out so tests can

@@ -22,6 +22,7 @@ use gawk_encode::mft::{self, EncoderInput, EncoderParams, EncoderSession};
 use gawk_engine::clock::Clock;
 use gawk_engine::gate::FrameGate;
 use gawk_engine::media::{AccessUnit, AudioPacket};
+use gawk_engine::memory;
 use gawk_engine::sender::Sender;
 use gawk_ui::messages::StartFailure;
 use gawk_ui::shell::{Media, MediaInfo, Thumb};
@@ -319,6 +320,11 @@ impl Pipeline {
                     }
                     let conv = converter.as_mut().expect("converter just ensured");
                     let nv12 = conv.convert_rotating(&frame.texture)?;
+                    // docs/77 D4: WGC's pool (2 BGRA frames at the source's
+                    // size) and the converter's NV12 targets. A store per
+                    // frame; the ring fills over its first frames.
+                    let pool = 2 * u64::from(frame.width) * u64::from(frame.height) * 4;
+                    memory::set(memory::Component::Capture, pool + conv.pixel_bytes());
 
                     // The 1 Hz confidence thumbnail, in both modes (docs/65
                     // D1): a frame already in hand, downscaled off the
@@ -480,6 +486,7 @@ impl Media for Pipeline {
         }
         self.send_task.abort();
         let _ = &self.gpu;
+        memory::set(memory::Component::Capture, 0);
         // EncoderSession's Drop closes input and joins the pump.
     }
 }

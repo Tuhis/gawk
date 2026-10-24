@@ -661,15 +661,30 @@ func (f *fixture) maximalBroadcasterFacts(t *testing.T) *rules.Facts {
 		"Encoder": "nvh264enc", "Codec": "avc1.42E02A", "CapturePath": "portal",
 		// docs/75 D8: the native engine's QUIC packet counters.
 		"uplinkPacketsSent": 12000.0, "uplinkPacketsLost": 3.0,
+		// docs/77 D14: how the native broadcaster's uplink ran.
+		"uplinkModeRequested": "reliable", "uplinkMode": "carrier", "uplinkCongestion": "bbr",
+		"shareMode": "window",
+		// R76 (docs/77): the native engine's memory.
+		"memAvailable": true, "memFootprintBytes": 150e6, "memFootprintPeakBytes": 160e6,
+		"memHeapAvailable": true, "memHeapBytes": 40e6,
+		"memGpuAvailable": true, "memGpuBytes": 300e6,
 	}
 	samples := []rollup.Sample{
 		{TMs: 0, Stats: stats},
 		{TMs: 2000, Stats: stats},
 	}
+	// Half an hour of minute memory events, so the growth figure exists.
+	var events []rollup.Event
+	for m := 0; m <= 30; m++ {
+		events = append(events, rollup.Event{
+			TMs: float64(m * 60_000), Kind: "memory",
+			Detail: fmt.Sprintf("footprint=%d,peak=160000000", 150_000_000+m*1_000_000),
+		})
+	}
 	in := rollup.Input{
 		SessionID: "bb22bb22bb22bb22bb22bb22", BroadcastKey: bkey, Role: "broadcaster",
-		StartedAtMs: 1000, EndedAtMs: 61000,
-		Samples: samples,
+		StartedAtMs: 1000, EndedAtMs: 1000 + 30*60_000,
+		Samples: samples, Events: events,
 	}
 	row := rollup.Compute(in)
 	return f.api.factsFor(row, in, maximalRelayLines(t, in.SessionID))
@@ -1076,5 +1091,77 @@ func TestReadSurfaceServesNoCORS(t *testing.T) {
 	resp.Body.Close()
 	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
 		t.Fatalf("read listener GET carried allow-origin %q; it must serve none", got)
+	}
+}
+
+// R77 (docs/78 D8): a party broadcast is seen twice — by home (its PoP-leg
+// publisher, its outside viewers) and by the PoP. A session the PoP issued
+// joins the PoP's observations only, and a home session of the same
+// broadcast never reads the PoP's: coverage, pod, counters and the leg-A
+// facts all come from the relay that served the session.
+func TestSessionsJoinOnlyTheRelayThatServedThem(t *testing.T) {
+	const issuer = "a1b2c3"
+	const popSID = "80aaaaaaaaaaaaaaaaaaaaaa"
+	const homeSID = "000102030405060708090a0b"
+	line := func(v map[string]any) []byte {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	lines := [][]byte{
+		// Home: its PoP-leg publisher, and an outside viewer.
+		line(map[string]any{"kind": "broadcast", "atMs": 12000, "pod": "pod-a", "role": "origin", "broadcastKey": bkey,
+			"broadcast": map[string]any{"publisherActive": true, "framesRelayed": 400, "ingressFramesLost": 40,
+				"publisherKind": "pop-leg"}}),
+		line(map[string]any{"kind": "subscriber", "atMs": 12000, "pod": "pod-a", "role": "origin", "broadcastKey": bkey,
+			"sessionId": homeSID, "subscriber": map[string]any{"dropped": 11}}),
+		// The PoP: the broadcaster's own leg A, and a LAN viewer.
+		line(map[string]any{"kind": "broadcast", "atMs": 12000, "pod": "pop:" + issuer, "role": "pop-origin",
+			"popName": "Assembly 2026", "broadcastKey": bkey,
+			"broadcast": map[string]any{"publisherActive": true, "framesRelayed": 900, "ingressFramesLost": 1}}),
+		line(map[string]any{"kind": "subscriber", "atMs": 12000, "pod": "pop:" + issuer, "role": "pop-origin",
+			"popName": "Assembly 2026", "broadcastKey": bkey,
+			"sessionId": popSID, "subscriber": map[string]any{"dropped": 2}}),
+	}
+	row := func(sid, iss string) rollup.Row {
+		return rollup.Row{SessionID: sid, BroadcastKey: bkey, Role: "viewer", Issuer: iss,
+			StartedAt: 1785715200000, EndedAt: 1785715260000, RelayCoverage: "none"}
+	}
+
+	pop := row(popSID, issuer)
+	JoinRelay(&pop, lines, 5*time.Second)
+	if pop.RelayPod != "pop:"+issuer || pop.RelayRole != "pop-origin" {
+		t.Errorf("PoP session joined pod/role %q/%q, want its PoP's", pop.RelayPod, pop.RelayRole)
+	}
+	if pop.Relay["dropped"] != 2 || pop.Relay["ingressFramesLost"] != 1 {
+		t.Errorf("PoP session's counters %v, want the PoP's (dropped 2, ingress lost 1)", pop.Relay)
+	}
+	if pop.Config["pop"] != "Assembly 2026" {
+		t.Errorf("PoP session's config.pop = %q, want the PoP's display name", pop.Config["pop"])
+	}
+
+	home := row(homeSID, "")
+	JoinRelay(&home, lines, 5*time.Second)
+	if home.RelayPod != "pod-a" || home.Relay["dropped"] != 11 || home.Relay["ingressFramesLost"] != 40 {
+		t.Errorf("home session joined pod %q counters %v, want home's only", home.RelayPod, home.Relay)
+	}
+	if _, ok := home.Config["pop"]; ok {
+		t.Error("a home session was named a PoP")
+	}
+
+	// The facts the rules read follow the same split.
+	f := newFixture(t)
+	pf := f.api.factsFor(pop, rollup.Input{SessionID: popSID, BroadcastKey: bkey, Role: "viewer", Issuer: issuer}, lines)
+	if v, _ := pf.Relay("subscriberDropped"); v != 2 {
+		t.Errorf("PoP session's subscriberDropped fact = %v, want the PoP's 2", v)
+	}
+	if v, ok := pf.Relay("publisherPopLeg"); ok && v == 1 {
+		t.Error("a PoP session read home's PoP-leg publisher")
+	}
+	hf := f.api.factsFor(home, rollup.Input{SessionID: homeSID, BroadcastKey: bkey, Role: "viewer"}, lines)
+	if v, _ := hf.Relay("subscriberDropped"); v != 11 {
+		t.Errorf("home session's subscriberDropped fact = %v, want home's 11", v)
 	}
 }

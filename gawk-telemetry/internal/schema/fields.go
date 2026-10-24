@@ -268,6 +268,35 @@ var BroadcasterFields = map[string]Kind{
 	// the complaint these two answer, and an unknown is not queryable.
 	"shareMode": KindString,
 	"audioApp":  KindString,
+	// The native engine's parity (R29, docs/34): typed in ViewerFields since
+	// R29 but never here, so every broadcaster sample counted all three as
+	// unknown (docs/77 D14).
+	"parityLevel":      KindNumber,
+	"parityChunksSent": KindNumber,
+	"parityBytesSent":  KindNumber,
+	// R76 (docs/77): what the native broadcaster's process holds. The
+	// footprint is the OS task manager's figure (Windows' private working
+	// set, Apple's phys_footprint, Linux's anonymous + shared resident);
+	// heap is the Rust heap, GPU the video memory charged to the process,
+	// and the five components what each subsystem says it holds. Each
+	// …Available pairs with its numbers; commit (Windows), the iOS jetsam
+	// headroom and the components are absent where unmeasured.
+	"memAvailable":           KindBool,
+	"memFootprintBytes":      KindNumber,
+	"memFootprintPeakBytes":  KindNumber,
+	"memResidentBytes":       KindNumber,
+	"memCommitBytes":         KindNumber,
+	"memLimitRemainingBytes": KindNumber,
+	"memHeapAvailable":       KindBool,
+	"memHeapBytes":           KindNumber,
+	"memHeapPeakBytes":       KindNumber,
+	"memGpuAvailable":        KindBool,
+	"memGpuBytes":            KindNumber,
+	"memCaptureBytes":        KindNumber,
+	"memEncodeBytes":         KindNumber,
+	"memSendBytes":           KindNumber,
+	"memPreviewBytes":        KindNumber,
+	"memTelemetryBytes":      KindNumber,
 
 	// LEGACY: the same fields under Go's default capitalized names, which the
 	// native broadcaster emitted before it carried JSON tags. Kept because

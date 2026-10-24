@@ -390,6 +390,12 @@ type Stats struct {
 	// publisher session (docs/33), cleared when it goes away. Omitted when
 	// telemetry is disabled.
 	PublisherSessionID string `json:"publisherSessionId,omitempty"`
+	// PublisherKind is what holds the publisher slot when it is not a
+	// broadcaster: PublisherKindPopLeg for a PoP's uplink leg (docs/76),
+	// whose ingress window measures the venue's internet line rather than a
+	// broadcaster's uplink (docs/77 D16). Omitted for a broadcaster. Never
+	// names the PoP: /statusz is public.
+	PublisherKind string `json:"publisherKind,omitempty"`
 	// Role of this hub in the federation: "origin" (hosts the real publisher;
 	// the only role in single-pod mode) or "edge" (derived state fed by an
 	// upstream pull, docs/22).
@@ -540,6 +546,15 @@ type TotalStats struct {
 	EdgeIngressFramesExpected uint64 `json:"edgeIngressFramesExpected"`
 	EdgeIngressChunksExpected uint64 `json:"edgeIngressChunksExpected"`
 
+	// The PoP-uplink-leg (venue→home) loss windows, from hubs whose publisher
+	// is a PoP's leg (docs/76, docs/77 D16) — a third leg with a third owner,
+	// never mixed with the broadcaster's numbers above.
+	PopLegIngressFramesLost     uint64 `json:"popLegIngressFramesLost"`
+	PopLegIngressChunksLost     uint64 `json:"popLegIngressChunksLost"`
+	PopLegIngressFramesDamaged  uint64 `json:"popLegIngressFramesDamaged"`
+	PopLegIngressFramesExpected uint64 `json:"popLegIngressFramesExpected"`
+	PopLegIngressChunksExpected uint64 `json:"popLegIngressChunksExpected"`
+
 	// Reliable delivery — see the Stats field comments.
 	ReliableSubscribers   int    `json:"reliableSubscribers"`
 	CarrierStreams        uint64 `json:"carrierStreams"`
@@ -598,6 +613,7 @@ type Registry struct {
 	totalEgressKeyframeBytes       uint64
 	totalIngress                   ingressTally
 	totalEdgeIngress               ingressTally
+	totalPopLegIngress             ingressTally
 	totalCarrierStreams            uint64
 	totalCarrierRecords            uint64
 	totalCarrierRecordsDropped     uint64
@@ -636,6 +652,10 @@ type broadcastHub struct {
 	// holding the publisher slot. Cleared alongside publisherActive so a
 	// graced broadcast never attributes observations to an ended session.
 	publisherSessionID string
+	// publisherKind is "" for a broadcaster or PublisherKindPopLeg (docs/77
+	// D16). Changed only through setPublisherKindLocked, so ingress-loss
+	// counts never cross legs.
+	publisherKind string
 	// publisherEpoch identifies the publisher session whatever telemetry is
 	// set to (docs/71 §9.1): minted on every claim, KEPT after the publisher
 	// leaves (the admin row of a graced broadcast still names its last
@@ -1224,6 +1244,7 @@ func (r *Registry) claimPublisherLocked(b *broadcastHub) (*Publisher, error) {
 	// The outgoing session's telemetry handle must not be attributed to the
 	// new one, which gets its own after the upgrade.
 	b.publisherSessionID = ""
+	r.setPublisherKindLocked(b, "")
 	// A new session, a new epoch — for a reclaim and a takeover too, which
 	// reset the keyframe cache below for the same reason (frame IDs restart).
 	b.publisherEpoch = newPublisherEpoch()
@@ -1262,26 +1283,71 @@ func (r *Registry) claimPublisherLocked(b *broadcastHub) (*Publisher, error) {
 	return p, nil
 }
 
+// ingressLeg is the leg a hub's ingress window measures right now: the
+// origin→edge pull on an edge hub, a PoP's venue→home uplink on a hub whose
+// publisher is that leg (docs/77 D16), the broadcaster→relay uplink otherwise.
+type ingressLeg int
+
+const (
+	legBroadcaster ingressLeg = iota
+	legEdge
+	legPop
+)
+
+func (b *broadcastHub) ingressLeg() ingressLeg {
+	switch {
+	case b.edge:
+		return legEdge
+	case b.publisherKind == PublisherKindPopLeg:
+		return legPop
+	default:
+		return legBroadcaster
+	}
+}
+
 // foldIngressLocked folds a hub's ingress-loss tally into the registry total
-// of the leg its CURRENT role measures. Caller holds r.mu.
+// of the leg it CURRENTLY measures. Caller holds r.mu.
 func (r *Registry) foldIngressLocked(b *broadcastHub) {
-	if b.edge {
+	switch b.ingressLeg() {
+	case legEdge:
 		r.totalEdgeIngress.add(b.ingressLoss)
-	} else {
+	case legPop:
+		r.totalPopLegIngress.add(b.ingressLoss)
+	default:
 		r.totalIngress.add(b.ingressLoss)
 	}
 }
 
+// setPublisherKindLocked changes what the hub's publisher is, folding the
+// ingress tally into the leg it was measured on first — as setRoleLocked
+// does for the edge leg. Caller holds r.mu.
+func (r *Registry) setPublisherKindLocked(b *broadcastHub, kind string) {
+	if b.publisherKind == kind {
+		return
+	}
+	r.foldIngressLocked(b)
+	b.ingressLoss = ingressTally{}
+	b.publisherKind = kind
+}
+
 // addIngress adds one leg's ingress tally to the totals: an edge hub's window
-// measures origin→edge loss, an origin hub's broadcaster→relay loss. Never
-// mixed.
-func (t *TotalStats) addIngress(edge bool, x ingressTally) {
-	if edge {
+// measures origin→edge loss, a PoP leg's the venue's uplink, any other origin
+// hub's broadcaster→relay loss. Never mixed.
+func (t *TotalStats) addIngress(leg ingressLeg, x ingressTally) {
+	switch leg {
+	case legEdge:
 		t.EdgeIngressFramesLost += x.framesLost
 		t.EdgeIngressChunksLost += x.chunksLost
 		t.EdgeIngressFramesDamaged += x.framesDamaged
 		t.EdgeIngressFramesExpected += x.framesExpected
 		t.EdgeIngressChunksExpected += x.chunksExpected
+		return
+	case legPop:
+		t.PopLegIngressFramesLost += x.framesLost
+		t.PopLegIngressChunksLost += x.chunksLost
+		t.PopLegIngressFramesDamaged += x.framesDamaged
+		t.PopLegIngressFramesExpected += x.framesExpected
+		t.PopLegIngressChunksExpected += x.chunksExpected
 		return
 	}
 	t.IngressFramesLost += x.framesLost
@@ -1717,7 +1783,17 @@ func (r *Registry) ObfuscateID(id string) string {
 }
 
 // Stats returns a point-in-time snapshot of registry state.
-func (r *Registry) Stats() RegistryStats {
+func (r *Registry) Stats() RegistryStats { return r.statsWith(r.ObfuscateID) }
+
+// BroadcastStatsByRawID is Stats().Broadcasts keyed by the RAW broadcast ID
+// rather than its HMAC. Only for a PoP's link home (docs/78 D7), which
+// already carries raw IDs and where home re-keys them with its own HMAC.
+// Never expose it: raw IDs are joinable.
+func (r *Registry) BroadcastStatsByRawID() map[string]Stats {
+	return r.statsWith(func(id string) string { return id }).Broadcasts
+}
+
+func (r *Registry) statsWith(key func(id string) string) RegistryStats {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -1739,7 +1815,7 @@ func (r *Registry) Stats() RegistryStats {
 		// Loss attribution by leg: an edge hub's ingress window
 		// measures origin→edge loss; an origin hub's measures
 		// broadcaster→relay loss. Never mixed.
-		totals.addIngress(b.edge, b.ingressLoss)
+		totals.addIngress(b.ingressLeg(), b.ingressLoss)
 
 		// Per-subscriber counters are folded into the hub only when the
 		// subscriber closes; sum the live ones here for a current view.
@@ -1871,10 +1947,11 @@ func (r *Registry) Stats() RegistryStats {
 		if b.dvr != nil {
 			ringBytes, ringGops = b.dvr.Bytes(), b.dvr.Gops()
 		}
-		obf := r.ObfuscateID(id)
+		obf := key(id)
 		broadcasts[obf] = Stats{
 			PublisherActive:           b.publisherActive,
 			PublisherSessionID:        b.publisherSessionID,
+			PublisherKind:             b.publisherKind,
 			Role:                      role,
 			Subscribers:               b.externalSubsLocked(),
 			ViewersGlobal:             viewersGlobal,
@@ -1951,8 +2028,9 @@ func (r *Registry) Stats() RegistryStats {
 	totals.IngressDatagramBytes += r.totalIngressDatagramBytes
 	totals.EgressDatagramBytes += r.totalEgressDatagramBytes
 	totals.EgressKeyframeBytes += r.totalEgressKeyframeBytes
-	totals.addIngress(false, r.totalIngress)
-	totals.addIngress(true, r.totalEdgeIngress)
+	totals.addIngress(legBroadcaster, r.totalIngress)
+	totals.addIngress(legEdge, r.totalEdgeIngress)
+	totals.addIngress(legPop, r.totalPopLegIngress)
 	totals.CarrierStreams += r.totalCarrierStreams
 	totals.CarrierRecords += r.totalCarrierRecords
 	totals.CarrierRecordsDropped += r.totalCarrierRecordsDropped
@@ -2084,6 +2162,7 @@ func (r *Registry) removeBroadcast(id string, ok func(*broadcastHub) bool, force
 	}
 	b.publisherActive = false
 	b.publisherSessionID = ""
+	r.setPublisherKindLocked(b, "")
 	b.publisher = nil
 
 	r.totalFramesRelayed += b.framesRelayed
@@ -2250,6 +2329,24 @@ func (p *Publisher) SetTelemetrySession(sessionID string) {
 		return
 	}
 	p.hub.publisherSessionID = sessionID
+}
+
+// PublisherKindPopLeg marks a publisher that is a PoP's uplink leg (docs/76)
+// rather than a broadcaster (docs/77 D16).
+const PublisherKindPopLeg = "pop-leg"
+
+// SetKind records what this publisher is: PublisherKindPopLeg for a PoP's
+// uplink leg, "" for a broadcaster (the default). The ingress tally so far is
+// folded into the leg it was measured on. A no-op on a closed or deposed
+// publisher.
+func (p *Publisher) SetKind(kind string) {
+	r := p.hub.registry
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p.closed || p.hub.publisher != p {
+		return
+	}
+	r.setPublisherKindLocked(p.hub, kind)
 }
 
 // BindSend attaches the relay→publisher datagram sender for the count pump.
@@ -2588,6 +2685,7 @@ func (p *Publisher) Close() {
 	p.send = nil
 	b.publisherActive = false
 	b.publisherSessionID = ""
+	r.setPublisherKindLocked(b, "")
 	b.publisher = nil
 	b.publisherLeftAt = time.Now()
 

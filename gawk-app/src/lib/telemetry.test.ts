@@ -423,7 +423,10 @@ describe('TelemetryCollector — byte budget (§4.3)', () => {
     // One fat sample per flush until the budget is gone.
     const fat = { blob: 'x'.repeat(64 * 1024) };
     let guard = 0;
-    while (!h.collector.truncatedSession && guard++ < 200) {
+    // Derived from the budget, so raising it (R76, docs/77 D12) cannot
+    // silently stop the loop short of exhaustion.
+    const maxFlushes = Math.ceil(SESSION_BYTE_BUDGET / (64 * 1024)) + 10;
+    while (!h.collector.truncatedSession && guard++ < maxFlushes) {
       h.advance(300);
       h.collector.sample(fat);
       h.collector.flush(false);

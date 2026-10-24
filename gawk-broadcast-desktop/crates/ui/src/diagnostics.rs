@@ -102,6 +102,51 @@ struct Diagnostics<'a> {
     share_mode: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     audio_app: String,
+
+    /// R76 (docs/77 D7): what the process holds, null where unmeasured.
+    memory: Option<Memory>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Memory {
+    footprint_bytes: u64,
+    footprint_peak_bytes: u64,
+    resident_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    commit_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limit_remaining_bytes: Option<u64>,
+    heap_bytes: Option<u64>,
+    heap_peak_bytes: Option<u64>,
+    gpu_bytes: Option<u64>,
+    /// Per component, null until it reports.
+    capture_bytes: Option<u64>,
+    encode_bytes: Option<u64>,
+    send_bytes: Option<u64>,
+    preview_bytes: Option<u64>,
+    telemetry_bytes: Option<u64>,
+}
+
+impl Memory {
+    fn from(st: &Stats) -> Option<Self> {
+        let nonzero = |v: u64| (v > 0).then_some(v);
+        st.mem_available.then(|| Memory {
+            footprint_bytes: st.mem_footprint_bytes,
+            footprint_peak_bytes: st.mem_footprint_peak_bytes,
+            resident_bytes: st.mem_resident_bytes,
+            commit_bytes: nonzero(st.mem_commit_bytes),
+            limit_remaining_bytes: nonzero(st.mem_limit_remaining_bytes),
+            heap_bytes: st.mem_heap_available.then_some(st.mem_heap_bytes),
+            heap_peak_bytes: st.mem_heap_available.then_some(st.mem_heap_peak_bytes),
+            gpu_bytes: st.mem_gpu_available.then_some(st.mem_gpu_bytes),
+            capture_bytes: st.mem_capture_bytes,
+            encode_bytes: st.mem_encode_bytes,
+            send_bytes: st.mem_send_bytes,
+            preview_bytes: st.mem_preview_bytes,
+            telemetry_bytes: st.mem_telemetry_bytes,
+        })
+    }
 }
 
 fn is_zero_u32(v: &u32) -> bool {
@@ -196,6 +241,7 @@ pub fn render(
         capture_restarts: st.capture_restarts,
         share_mode: st.share_mode.clone(),
         audio_app: st.audio_app.clone(),
+        memory: Memory::from(st),
     };
     serde_json::to_string_pretty(&d).unwrap_or_else(|_| "{}".into())
 }

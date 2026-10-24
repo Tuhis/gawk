@@ -265,6 +265,25 @@ func (s *Server) PopLegSlots(pop string) int {
 	return 0
 }
 
+// PopServesDownlink reports whether PoP pop holds a downlink leg slot for
+// broadcast id, as counted on this pod: true only on the link-home pod,
+// which is also the only pod that mints the PoP's telemetry tokens
+// (docs/78 D4).
+func (s *Server) PopServesDownlink(pop, id string) bool {
+	loc := s.popLinkLocator()
+	if loc == nil {
+		return false
+	}
+	gen, ok := loc.HoldsLink(pop)
+	if !ok {
+		return false
+	}
+	s.popSlotsMu.Lock()
+	defer s.popSlotsMu.Unlock()
+	c := s.popSlots[pop]
+	return c != nil && c.gen == gen && c.ids[id] > 0
+}
+
 // handleInternalPopLeg is /internal/pop/{name}?leg={id}, the link home's
 // half: the PSK and proto are checked (handleInternalPop), then the
 // generation fence as for a want — 404 when this pod does not hold the

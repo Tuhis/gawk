@@ -93,6 +93,8 @@ feature set exists).
 | R73 | [Reliable broadcaster uplink](#r73--reliable-broadcaster-uplink) | 🔧 **designed 2026-10-17** from a lab measurement pass (the shipping quinn and quic-go stacks, real-encoder frame sizes, the shipping viewer replayed), split out of R55, extended 2026-10-18; **owner decisions OD1–OD6 taken 2026-10-18/19**, RU0–RU9 not started — the per-GOP carrier costs nothing on a clean path and keeps GOPs whole through bursts and outages; quinn's Cubic, not the delivery mode, is what breaks a lossy path longer than a LAN, and its BBR fixes that; the relay itself drops ~1 % of a 1440p publisher's chunks in quic-go's 32-deep datagram queue, leaving 39–47 % of frames undecodable, and 512 entries fix it where 4096 only adds delay on a busy relay; viewers on *Smoother* and *Most stable* get no parity, so today 0.1 % uplink loss costs them one frame in eight while *Balanced* loses none, and only the carrier protects them from outages; BBR plus a longer relay queue without the carrier fixes random loss for live-edge viewers and nothing else; beside a household's upload only the carrier with BBR stays watchable, and BBR's cost is on an uplink the stream nearly fills (7–10 % of its own packets lost, the household's upload left about half its share); the browser broadcaster runs Chrome's Cubic whatever it asks, pays per datagram, and queues instead of dropping (tens of seconds of backlog on a lossy long path, `BUGS.md`), while a browser carrier with a keyframe gate gives the default viewer 97.9–99.9 % of frames at 10 ms and 96–99.6 % at 40 ms where Chrome's Cubic holds, at about a round trip per GOP on long clean paths (OD5, decided 2026-10-19: the queue fixed now as RU9, a browser Reliable mode later as its own milestone); decided: the relay's queue to 512, parity for *Smoother*/*Most stable* and the browser's send-queue bug first, then the carrier with BBR, Reliable becoming the default after the hardware pass and BBR with it if its own gates pass, *Lowest latency* a real choice ([docs/75](docs/75-reliable-uplink.md)) |
 | R74 | [PoP relays](#r74--pop-relays) | 🔧 **designed 2026-10-21** in an owner interview (decisions OD1–OD14), revised 2026-10-22 for R73 (OD15–OD16); **in progress: PP2–PP14 implemented 2026-10-22** with their automated rows green, and PP8's uplink lab keeps the carrier as the PoP leg's default; open: PP0's measurements, PP1's sign-off, PP4's first real release and notarization, PP8's time to first frame at 40 ms, PP9's downlink lab, PP12's staging issuance, PP14's device passes, the Swift build and PP15 ([docs/76 §11.1](docs/76-pop-relays.md#111-status-2026-10-22)) — `gawk-relay`, a one-click LAN relay for a party that pairs with the home fleet from `gawk-admin`: party streams stay on the LAN and cross the venue's uplink once, only while someone outside watches, within a budget the operator sets; home streams cross the downlink once; both legs carry deltas on R73's per-GOP carrier, so a loss on the venue's line is retransmitted rather than lost for everyone on the far side; a party wall for outsiders; home recognises guests by the venue's public address and their clients switch to the local relay by themselves; a pinned self-signed certificate always, a named one through cert-manager and external-dns when the fleet is set up for it. Measured first: Chrome 151 blocks WebTransport from a public page to a LAN address until the site has the local-network permission, and pins a certificate by hash without checking its name ([docs/76](docs/76-pop-relays.md)) |
 | R75 | [An upload warning that sees a full uplink](#r75--an-upload-warning-that-sees-a-full-uplink) | 💡 **proposed 2026-10-21** (follow-up to R73's engine lab run), not designed — the native broadcaster's "upload can't keep up" warning keys on send-side capacity signals since R73 and never on packet loss (radio outages misled it), so on an uplink the stream nearly fills with BBR, where BBR's own loss is the only symptom, it stays silent; compare the stream's bitrate with the connection's own bandwidth estimate instead |
+| R76 | [Broadcaster memory, measured](#r76--broadcaster-memory-measured) | 🔧 **designed and implemented 2026-10-24** (MM1–MM4, MM7–MM8: a telemetry audit, PoP traffic kept out of home's data); open: MM5's hardware pass and MM6's baseline and reduction — the native broadcasters report what their process holds (the task manager's footprint, the Rust heap, GPU memory and five component gauges) to telemetry and diagnostics, against a 100 MB budget while live; the per-session telemetry budget goes from 4 to 16 MiB (a native session's samples ran out after about 90 minutes), a minute `memory` event outlives it, and two playbook rules warn on a footprint over budget and on growth during a broadcast ([docs/77](docs/77-broadcaster-memory.md)) |
+| R77 | [PoP telemetry](#r77--pop-telemetry) | 🔧 **designed and implemented 2026-10-24** (PT1–PT6, automated rows green); open: a real party end to end — PoP sessions report like home's without the telemetry key leaving the fleet: home mints a PoP's tokens over its link, scoped to what the PoP serves and rate-limited, marked with the PoP's issuer inside the token's nonce; the PoP's relay-side view reaches the telemetry service through home's ops listener; every join keeps PoP and home apart ([docs/78](docs/78-pop-telemetry.md)) |
 
 ---
 
@@ -5369,6 +5371,58 @@ the uplink carries the stream it does not; measured with the engine-backed
 lab (`sender-engine`, R73 RU6) and replayed as table tests.
 
 **Status**: 💡 proposed 2026-10-21; not designed.
+
+---
+
+## R76 — Broadcaster memory, measured
+
+**Goal**: know what each native broadcaster's process holds and where, from
+telemetry, and hold it to a budget: **100 MB while live** (owner,
+2026-10-24).
+
+**Why**: the owner saw the Windows broadcaster go from about 250 MB to
+almost 750 MB after switching Delivery to Reliable mid-broadcast, and
+telemetry could show neither the step nor the baseline. A lab run ruled out
+the Reliable send path (flat at 7–10 MB in every condition) and found that a
+native session's samples stopped after about 90 minutes, when its 4 MiB
+telemetry budget ran out; the budget is 16 MiB now (about 5.4 hours).
+
+**Design**: [docs/77](docs/77-broadcaster-memory.md) — the footprint in the
+OS task manager's own figure, a counting allocator for the Rust heap, GPU
+memory (DXGI on Windows, the kernel's graphics ledger on Apple), five
+component gauges (capture, encode, send, preview, telemetry), a minute
+`memory` event that outlives the byte budget, a whole-session memory summary
+on the rollup row, and two warn-only playbook rules
+(`memory-over-budget`, `memory-growth`).
+
+**Telemetry audit** (2026-10-24, docs/77 D12–D16): the per-session budget is
+16 MiB; the native shells record the upload warning, the loss notice and the
+network kind as events; the stored row now carries the Delivery setting, the
+uplink mode and the congestion controller, and the counters today's engine
+spells in lowerCamelCase; and PoP traffic is kept out of home's data — a web
+viewer following an offer ends home's telemetry session, and home marks a
+PoP leg's publisher so its loss is the venue's line (`pop-uplink-leg`), never
+the broadcaster's.
+
+**Status**: MM1–MM4 and MM7–MM8 implemented 2026-10-24 with their automated
+rows green; MM5 (hardware pass, the report reproduced) and MM6 (baseline and
+reduction to the budget) not started.
+
+---
+
+## R77 — PoP telemetry
+
+**Goal**: sessions a PoP relay serves (docs/76) report telemetry and join
+their relay-side view, as home's do, without the fleet's telemetry key ever
+reaching a PoP.
+
+**Design**: [docs/78](docs/78-pop-telemetry.md) — owner decisions
+2026-10-24: home mints over the link (not a per-PoP derived key), the issuer
+rides the token's nonce under its tag (no format or client change), and the
+relay-side phase ships with it.
+
+**Status**: PT1–PT6 implemented 2026-10-24 with their automated rows green;
+a real party end to end is open.
 
 ---
 

@@ -27,6 +27,7 @@ import (
 
 	"github.com/Tuhis/gawk/gawk-server/internal/cluster"
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
+	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/popclient"
 	"github.com/Tuhis/gawk/gawk-server/internal/popsrv"
 	"github.com/Tuhis/gawk/gawk-server/pops"
@@ -419,6 +420,14 @@ func TestOutsideViewerGetsTheBroadcastByteIdenticalOnlyOnDemand(t *testing.T) {
 			st := u.f.Pods[2].Registry.Stats().Broadcasts[u.f.Pods[2].Registry.ObfuscateID(p.id)]
 			if (st.UplinkCarriers > 0) != tc.wantCarrier {
 				t.Fatalf("home-2 accepted %d uplink carriers, want carriers %v", st.UplinkCarriers, tc.wantCarrier)
+			}
+			// docs/77 D16: home's publisher is the venue's uplink, and says so;
+			// on the PoP the publisher is the broadcaster.
+			if st.PublisherKind != hub.PublisherKindPopLeg {
+				t.Fatalf("home-2's publisherKind = %q, want %q", st.PublisherKind, hub.PublisherKindPopLeg)
+			}
+			if ps := u.pop.Registry.Stats().Broadcasts[u.pop.Registry.ObfuscateID(p.id)]; ps.PublisherKind != "" {
+				t.Fatalf("the PoP's own publisherKind = %q, want a broadcaster's (empty)", ps.PublisherKind)
 			}
 			if s := u.pop.Client.UplinkStats(); s.Legs != 1 || s.Bytes == 0 || s.Streams != 1 {
 				t.Fatalf("uplink with one outside viewer: %+v", s)

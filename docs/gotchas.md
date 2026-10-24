@@ -1734,6 +1734,49 @@ entries still describe code `gawk-pubsim` runs (now
   quic-go's `SetPriority`, so a Go sender cannot put a keyframe stream
   ahead of a carrier ([docs/76](76-pop-relays.md) item 18).
 
+**Broadcaster memory (R76)**
+
+- **A telemetry session's samples stop at its byte budget; size the budget
+  in samples, not hours.** A native sample is about 1.7 KB and the fleet
+  asks for one every 2 s, so the old 4 MiB budget — documented as five
+  hours — stopped them after about 90 minutes. It is 16 MiB (about 5.4
+  hours) since R76; anything asked of a longer broadcast must ride an event,
+  as the minute `memory` event does ([docs/77](77-broadcaster-memory.md)
+  M2, D9, D12).
+- **Task Manager's "Memory" is the private working set, and its "MB" is
+  MiB.** Not the working set, not the commit charge. Activity Monitor's is
+  `phys_footprint`. A memory figure that should match what a user sees has
+  to be the same one ([docs/77](77-broadcaster-memory.md) D1, D2).
+- **On a party broadcast, home's ingress window is the venue's line.** Home
+  holds a PoP's uplink leg as the publisher, so before docs/77 D16 its loss
+  read as the broadcaster's uplink in `/statusz`, the metrics and the
+  playbook. Anything new that reads ingress loss must check
+  `publisherKind` ([docs/77](77-broadcaster-memory.md) D16).
+- **A telemetry session must end with its relay session.** Stopping a
+  session drops its `ended` event, and a PoP sends no telemetry hello, so a
+  viewer that redials without ending the collector posts the new relay's
+  stats under the old relay's token ([docs/77](77-broadcaster-memory.md) D15).
+- **The engine's memory gauges are process-wide statics.** A test that
+  asserts their exact values races every other test in its binary that
+  touches the same queue: give it its own test binary, as
+  `crates/engine/tests/memory_gauges.rs` has ([docs/77](77-broadcaster-memory.md) MM2).
+
+**PoP telemetry (R77)**
+
+- **A PoP and home obfuscate the same broadcast ID differently.** Each
+  registry HMACs IDs with its own stats key, so a token that verifies under
+  home's key must be minted over home's `ObfuscateID(id)` and the hello must
+  carry that key, not the PoP's ([docs/78](78-pop-telemetry.md) §2).
+- **`/statusz` is served on the public listener too.** One handler serves
+  the HTTP/3 listener and the ops listener, so anything PoP-identifying goes
+  on an ops-only route (`/internal/telemetry/pops`), never into `/statusz`
+  ([docs/78](78-pop-telemetry.md) D7).
+- **A party broadcast is observed by two relays under one broadcast key.**
+  Home sees its PoP-leg publisher and outside viewers, the PoP its own
+  broadcaster and LAN viewers. Every relay-line reader must filter by issuer
+  (`relayscrape.FilterIssuer`) or a home session reads the PoP's counters
+  ([docs/78](78-pop-telemetry.md) D8).
+
 **Relay fleet (R17)**
 
 - **Sessions created as a group must carry their group identity from

@@ -337,6 +337,10 @@ fn notify(summary: &str, body: &str, critical: bool) {
     eprintln!("[{}] {summary}: {body}", if critical { "!" } else { " " });
 }
 
+/// R76 (docs/77 D3): the Rust heap, counted.
+#[global_allocator]
+static ALLOC: gawk_engine::memory::CountingAlloc = gawk_engine::memory::CountingAlloc;
+
 fn main() {
     // The commit build.rs stamped, for the version badge (crates/ui/build_rev.rs).
     gawk_ui::version::set_build_rev(option_env!("GAWK_BUILD_REV"));
@@ -345,6 +349,9 @@ fn main() {
     let launch = launch();
     #[cfg(windows)]
     toast::init();
+    // R76 (docs/77 D5): this process's video memory, for telemetry.
+    #[cfg(windows)]
+    gawk_capture::d3d::install_gpu_memory_probe();
 
     shell::run(
         Box::new(Windows::default()),
