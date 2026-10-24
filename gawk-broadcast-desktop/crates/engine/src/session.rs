@@ -234,6 +234,8 @@ pub struct Session {
     events: mpsc::UnboundedSender<EngineEvent>,
     room: Arc<Mutex<Option<RoomHandle>>>,
     room_dialer: Arc<dyn RoomDialer>,
+    /// The reclaim dialer, kept for [`Session::end`] from Paused.
+    publish_dialer: Arc<dyn PublishDialer>,
     rt: tokio::runtime::Handle,
 }
 
@@ -359,6 +361,7 @@ impl Session {
             events: events_tx.clone(),
             room: room.clone(),
             room_dialer,
+            publish_dialer: publish_dialer.clone(),
             rt: tokio::runtime::Handle::current(),
         });
 
@@ -573,6 +576,61 @@ impl Session {
             let _ = run.await;
         }
         self.sender.current_relay().close();
+    }
+
+    /// Ends the broadcast on purpose (R76, docs/77 D1, D9): [`Session::stop`],
+    /// except that the publish leg is closed with 4014 BroadcasterStopped,
+    /// so the relay ends the broadcast now — viewers see it ended, not
+    /// frozen — instead of holding it through its grace. Only the shell's
+    /// End and the iOS Stop call this; Pause, a restart, a quit and every
+    /// failure keep `stop()`'s plain close. The room control session ends as
+    /// with `stop()` and is never closed with 4014: the code means something
+    /// only on a publish session (D4).
+    ///
+    /// From Paused there is no leg: the pause closed it plainly. One reclaim
+    /// on the code, closed at once with 4014, carries the stop; it is
+    /// best effort and bounded, and if it fails the grace ends the
+    /// broadcast as before.
+    pub async fn end(&self) {
+        let paused = self.publish.borrow().paused;
+        let _ = self.stop_tx.send(true);
+        self.sender.wait().await;
+        let run = self.run.lock().unwrap().take();
+        if let Some(run) = run {
+            let _ = run.await;
+        }
+        if paused {
+            self.end_paused().await;
+        } else {
+            self.sender
+                .current_relay()
+                .close_with_code(wire::CLOSE_CODE_BROADCASTER_STOPPED)
+                .await;
+        }
+    }
+
+    async fn end_paused(&self) {
+        let (id, token) = {
+            let sh = self.shared.lock().unwrap();
+            (sh.broadcast_id.clone(), sh.resume_token_hex.clone())
+        };
+        if id.is_empty() || token.is_empty() {
+            return;
+        }
+        let Ok(url) = publish_url(&self.cfg.relay_url, &id, &self.cfg.publish_secret, &token)
+            .map(|u| self.cfg.decorate_publish_url(&u))
+        else {
+            return;
+        };
+        if let Ok(Ok(leg)) = tokio::time::timeout(
+            transport::DIAL_ATTEMPT_TIMEOUT,
+            self.publish_dialer.dial(&url),
+        )
+        .await
+        {
+            leg.close_with_code(wire::CLOSE_CODE_BROADCASTER_STOPPED)
+                .await;
+        }
     }
 }
 

@@ -1926,6 +1926,7 @@ dependencies = [
  "arboard",
  "gawk-encode",
  "gawk-engine",
+ "gawk-wire",
  "i-slint-backend-testing",
  "log",
  "serde",

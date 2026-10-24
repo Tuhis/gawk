@@ -9,8 +9,8 @@
 
 This is `wtransport` 0.7.1 from crates.io (MIT OR Apache-2.0, © Biagio
 Festa and contributors — license declared in Cargo.toml), vendored via
-`[patch.crates-io]` in the workspace root, with three functional changes.
-All were found by running the WB2 integration tests against the real
+`[patch.crates-io]` in the workspace root, with four functional changes.
+The first three were found by running the WB2 integration tests against the real
 gawk-server (webtransport-go) and are candidates for upstreaming; every
 site is marked `GAWK PATCH` in the source. Sibling patches live in
 `../wtransport-proto/GAWK-PATCH.md`; the integration tests in
@@ -40,6 +40,26 @@ honest (docs/38 D2/D18).
    and silently skipped everything else — losing every session close code
    the gawk relay sends. Unknown frames on the stream are now skipped per
    RFC 9114 §9 instead of feeding the capsule parser.
+
+4. **`Connection::close_session(code, reason)` sends a session close.**
+   Stock wtransport can only close the QUIC connection
+   (`Connection::close`), and a webtransport-go peer never reads that
+   connection-level code as the session's close error: its CONNECT-stream
+   reader just fails. R76 (docs/77 D2, D9) needs the relay to read a
+   publisher's deliberate stop, 4014, from the session, so this writes a
+   CLOSE_WEBTRANSPORT_SESSION capsule in a DATA frame on the CONNECT stream
+   and FINs it, as Chrome's `close({closeCode})` does. The worker then
+   waits for the peer's acknowledgement AND for its reset of the CONNECT
+   stream before it closes the connection: quinn's close discards unsent
+   stream data, and quic-go fails a stream read with the connection's
+   error even over buffered bytes, so a close that merely follows the ack
+   can still beat the relay's reader (a webtransport-go client that closes
+   right after its capsule lost the code in ~25 of 30 runs). webtransport-go
+   resets the stream once it has parsed the close, which is the proof. The
+   wait is unbounded here; the engine bounds it. Sites:
+   `src/connection.rs` (`close_session()`), `src/driver/mod.rs` (the
+   request channel and the worker's branch), `src/driver/streams/connect.rs`
+   (`ConnectStream::close_session`).
 
 When bumping wtransport: re-apply (or hopefully drop) these; the
 integration suite fails loudly if any regresses.

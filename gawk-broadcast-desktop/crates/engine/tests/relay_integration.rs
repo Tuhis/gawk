@@ -424,6 +424,57 @@ async fn a_superseded_publisher_stays_down() {
     session_a.stop().await;
 }
 
+// R76 (docs/77 D1, D2, D9): End's 4014 reaches the real relay, which ends
+// the broadcast and closes its viewer with 4014 — while a plain stop leaves
+// the viewer waiting through the grace. Repeated, because the code rides a
+// CLOSE_WEBTRANSPORT_SESSION capsule that a connection close sent too soon
+// discards (GAWK-PATCH.md item 4): one lucky ordering proves nothing.
+#[tokio::test]
+#[ignore = "builds and runs the real gawk-server (cargo test -- --ignored)"]
+async fn end_closes_the_viewers_with_4014_and_stop_keeps_them() {
+    use gawk_engine::relay::{RelaySession as _, SessionClose};
+    let relay = Relay::start(&["-publish-secret", SECRET]);
+    let viewer = |id: String| {
+        let url = format!("{}/subscribe/{id}", relay.url);
+        async move {
+            gawk_engine::transport::dial_subscribe(&url, gawk_engine::defaults::origin(), true)
+                .await
+                .unwrap()
+        }
+    };
+
+    for round in 0..10 {
+        let (session, mut rx) =
+            Session::start(config(&relay, "", ""), Arc::new(MonotonicClock::new()))
+                .await
+                .unwrap();
+        let (id, _) = collect_identity(&mut rx).await;
+        let sub = viewer(id).await;
+        session.end().await;
+        let close = tokio::time::timeout(Duration::from_secs(3), sub.closed())
+            .await
+            .unwrap_or_else(|_| panic!("round {round}: the viewer was never closed"));
+        assert_eq!(
+            close,
+            SessionClose::Code(gawk_wire::CLOSE_CODE_BROADCASTER_STOPPED),
+            "round {round}"
+        );
+    }
+
+    let (session, mut rx) = Session::start(config(&relay, "", ""), Arc::new(MonotonicClock::new()))
+        .await
+        .unwrap();
+    let (id, _) = collect_identity(&mut rx).await;
+    let sub = viewer(id).await;
+    session.stop().await;
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), sub.closed())
+            .await
+            .is_err(),
+        "a plain stop keeps the broadcast through the grace"
+    );
+}
+
 /// Waits for a RoomState that `ok` accepts; a room or session ending on the
 /// way fails the test.
 async fn room_until(

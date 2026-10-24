@@ -1198,6 +1198,9 @@ const GOLDEN_LOCAL_RELAY_OFFER: &str = concat!(
 // R74: SessionClosing for 4012 PopUplinkFull (closing_test.go
 // goldenSessionClosingPopUplinkFullHex).
 const GOLDEN_SESSION_CLOSING_POP_UPLINK_FULL: &str = "011700000fac";
+// R76 (docs/77 §5): SessionClosing for 4014 BroadcasterStopped
+// (closing_test.go goldenSessionClosingBroadcasterStoppedHex).
+const GOLDEN_SESSION_CLOSING_BROADCASTER_STOPPED: &str = "011700000fae";
 
 const LOCAL_RELAY_H1: [u8; 32] = {
     let mut h = [0u8; 32];
@@ -1691,6 +1694,27 @@ fn golden_session_closing_pop_uplink_full() {
         parse_session_closing(&from_hex(GOLDEN_SESSION_CLOSING_POP_UPLINK_FULL)).unwrap(),
         4012
     );
+}
+
+// R76 (docs/77 D5): the relay tells a viewer the broadcaster stopped in-band
+// before the 4014 close, which Chrome rarely surfaces (docs/59).
+#[test]
+fn golden_session_closing_broadcaster_stopped() {
+    let mut got = Vec::new();
+    append_session_closing(&mut got, CLOSE_CODE_BROADCASTER_STOPPED).unwrap();
+    assert_eq!(to_hex(&got), GOLDEN_SESSION_CLOSING_BROADCASTER_STOPPED);
+    assert_eq!(
+        parse_session_closing(&from_hex(GOLDEN_SESSION_CLOSING_BROADCASTER_STOPPED)).unwrap(),
+        4014
+    );
+}
+
+// R76 (docs/77 §5): 4014 is pinned by value, and it is NOT terminal for a
+// viewer: it shows the ended state and keeps dialling the code (D7).
+#[test]
+fn r76_broadcaster_stopped_is_pinned_and_not_terminal() {
+    assert_eq!(CLOSE_CODE_BROADCASTER_STOPPED, 4014);
+    assert!(!terminal_for_viewer(CLOSE_CODE_BROADCASTER_STOPPED));
 }
 
 #[test]

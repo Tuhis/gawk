@@ -155,6 +155,13 @@ pub const CLOSE_CODE_POP_UPLINK_FULL: u32 = 4012;
 /// Home → a PoP's uplink leg only (R74): no outside demand is left. Never
 /// sent to clients like this one.
 pub const CLOSE_CODE_POP_NO_DEMAND: u32 = 4013;
+/// Both directions (R76, docs/77 D1): the broadcaster stopped on purpose. A
+/// publisher closes its own session with it on End/Stop, and the relay ends
+/// the broadcast now and closes its viewers with it (in-band SessionClosing
+/// first). NOT terminal for a viewer: it shows the ended state and keeps
+/// dialling the code, so a restart on the same code resumes by itself. The
+/// relay never sends it to a publisher.
+pub const CLOSE_CODE_BROADCASTER_STOPPED: u32 = 4014;
 
 /// Whether a close code ends a *viewer* for good (R65, docs/67 D13): the
 /// broadcast was garbage-collected (4000) or the operator killed it (4006).

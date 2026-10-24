@@ -43,6 +43,9 @@ pub struct Driver {
     ready_bi_wt_streams: Mutex<mpsc::Receiver<StreamBiRemoteWT>>,
     ready_datagrams: Mutex<mpsc::Receiver<Datagram>>,
     driver_result: SharedResultGet<DriverError>,
+    /// GAWK PATCH (see GAWK-PATCH.md): asks the worker to end the session
+    /// with a CLOSE_WEBTRANSPORT_SESSION capsule.
+    close_requests: mpsc::Sender<(u32, Box<[u8]>)>,
 }
 
 impl Driver {
@@ -53,6 +56,7 @@ impl Driver {
         let ready_bi_wt_streams = mpsc::channel(1);
         let ready_datagrams = mpsc::channel(1);
         let driver_result = shared_result();
+        let close_requests = mpsc::channel(1);
 
         tokio::spawn(
             worker::Worker::new(
@@ -63,6 +67,7 @@ impl Driver {
                 ready_bi_wt_streams.0,
                 ready_datagrams.0,
                 driver_result.0,
+                close_requests.1,
             )
             .run()
             .instrument(debug_span!("Driver", quic_id = quic_connection.stable_id())),
@@ -76,6 +81,7 @@ impl Driver {
             ready_bi_wt_streams: Mutex::new(ready_bi_wt_streams.1),
             ready_datagrams: Mutex::new(ready_datagrams.1),
             driver_result: driver_result.1,
+            close_requests: close_requests.0,
         }
     }
 
@@ -212,6 +218,22 @@ impl Driver {
         self.driver_result.result().await
     }
 
+    /// GAWK PATCH (see GAWK-PATCH.md): ends the session the way a browser's
+    /// `WebTransport.close({closeCode})` does — a CLOSE_WEBTRANSPORT_SESSION
+    /// capsule on the CONNECT stream, then FIN — and resolves once the peer
+    /// has acknowledged it and the worker has closed the connection (or the
+    /// connection died first). Unbounded: the caller bounds it.
+    pub(crate) async fn close_session(&self, error_code: u32, reason: &[u8]) {
+        if self
+            .close_requests
+            .send((error_code, reason.into()))
+            .await
+            .is_ok()
+        {
+            let _ = self.driver_result.result().await;
+        }
+    }
+
     pub fn send_datagram(
         &self,
         session_id: SessionId,
@@ -274,6 +296,7 @@ mod worker {
         remote_qpack_enc_stream: RemoteQPackEncStream,
         remote_qpack_dec_stream: RemoteQPackDecStream,
         connect_stream: ConnectStream,
+        close_requests: mpsc::Receiver<(u32, Box<[u8]>)>,
     }
 
     impl Worker {
@@ -285,6 +308,7 @@ mod worker {
             ready_bi_wt_streams: mpsc::Sender<StreamBiRemoteWT>,
             ready_datagrams: mpsc::Sender<Datagram>,
             driver_result: SharedResultSet<DriverError>,
+            close_requests: mpsc::Receiver<(u32, Box<[u8]>)>,
         ) -> Self {
             Self {
                 quic_connection,
@@ -299,6 +323,7 @@ mod worker {
                 remote_qpack_enc_stream: RemoteQPackEncStream::empty(),
                 remote_qpack_dec_stream: RemoteQPackDecStream::empty(),
                 connect_stream: ConnectStream::empty(),
+                close_requests,
             }
         }
 
@@ -392,6 +417,15 @@ mod worker {
 
                     () = self.driver_result.closed() => {
                         return Err(DriverError::NotConnected);
+                    }
+
+                    // GAWK PATCH (see GAWK-PATCH.md): the application ends
+                    // the session with a code. The capsule is written and
+                    // acknowledged before run() closes the QUIC connection,
+                    // which would otherwise discard it unsent. A closed
+                    // channel (the Driver is gone) disables the branch.
+                    Some((error_code, reason)) = self.close_requests.recv() => {
+                        return Err(self.connect_stream.close_session(error_code, reason).await);
                     }
                 }
             }

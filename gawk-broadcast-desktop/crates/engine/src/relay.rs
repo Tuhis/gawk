@@ -115,6 +115,18 @@ pub trait RelaySession: Send + Sync + 'static {
     /// is what a shell that still holds the session would otherwise get.
     /// A no-op for a session with nothing to close.
     fn close(&self) {}
+    /// Ends the session with an application close code the relay reads as
+    /// the SESSION's close error (R76, docs/77 D2): a
+    /// CLOSE_WEBTRANSPORT_SESSION capsule, delivered before the connection
+    /// closes. [`RelaySession::close`] cannot carry one — its code is the
+    /// QUIC connection's, which the relay never reads as the session's.
+    /// Bounded by the transport ([`crate::transport::SESSION_CLOSE_WAIT`]);
+    /// the connection is closed when it resolves either way. The default,
+    /// for a transport without session close codes, closes plainly.
+    fn close_with_code(&self, _code: u32) -> BoxFuture<'_, ()> {
+        self.close();
+        Box::pin(async {})
+    }
     /// The QUIC stack's own packet counters for this connection — the one
     /// local view of leg-A loss (docs/57 D5). A datagram lost in the air
     /// "sent" fine as far as every other counter knows; QUIC's ack-based
