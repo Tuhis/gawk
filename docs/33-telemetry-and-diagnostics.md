@@ -621,7 +621,9 @@ Sizing, which is what justifies files-first over any real database:
 - Ten viewers × 2 h/day ≈ **5 MB/day stored**, ≈ **75 MB for the whole 14-day
   window**. A PVC and a prune job cover it; ClickHouse would be answering a
   question nobody asked.
-- Hard per-session byte budget (default 4 MB ≈ a 5-hour session). On
+- Hard per-session byte budget (16 MiB since R76, [docs/77](77-broadcaster-memory.md) D12; it was
+  4 MB, meant as a 5-hour session, which a native broadcaster filled in about
+  90 minutes at the 2 s cadence). On
   exhaustion the collector drops to events-only and records that it did — a
   truncated session must never look like a complete one.
 

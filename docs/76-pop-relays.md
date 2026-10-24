@@ -1417,7 +1417,8 @@ sign-off):
 ## 8. Security and privacy
 
 - **No fleet secret reaches a PoP.** No resume-token key, internal PSK,
-  stats key, stateless-reset key or telemetry key. A PoP holds its own keys
+  stats key, stateless-reset key or telemetry key (`gawk-relay` refuses
+  `-telemetry-key`; home mints a PoP's telemetry tokens, docs/78 D1). A PoP holds its own keys
   and one credential that is scoped to its reservations and its legs. A
   party machine is not part of the fleet.
 - **`/pop/*` routes** require the credential, and are exempt from the per-IP
@@ -1885,8 +1886,12 @@ uplink (25 Mbps up):
   binary (OD2).
 - **Self-update for `gawk-relay`** (the R47 machinery); v1 only shows that an
   update exists.
-- **Telemetry from PoP sessions.** A PoP holds no telemetry key; per-PoP
-  derived keys would be the shape.
+- ~~**Telemetry from PoP sessions.**~~ Built in R77
+  ([docs/78](78-pop-telemetry.md)): home mints a PoP's tokens over its link,
+  marked with the PoP's issuer, so the key still never reaches a PoP, and the
+  PoP's relay-side view reaches the telemetry service through home. PoP
+  traffic stays out of home's data ([docs/77](77-broadcaster-memory.md) D15,
+  D16; docs/78 D8).
 - **Device-scoped bans at a PoP** (a LAN address, for the evening).
 - **Screening party-only streams** with keyframe samples over the link
   (≈ 10–40 kbps per stream; OD14's alternative).
