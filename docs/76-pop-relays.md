@@ -63,7 +63,7 @@ most of this doc: a party relay sits behind the venue's NAT. So **the PoP
 dials out**, and the home fleet asks it for streams over a control link,
 rather than pulling them itself.
 
-## 2. Owner decisions (2026-10-21; OD15–OD16 2026-10-22)
+## 2. Owner decisions (2026-10-21; OD15–OD16 2026-10-22; OD17 2026-10-24)
 
 | # | Question | Decision |
 |---|---|---|
@@ -83,6 +83,7 @@ rather than pulling them itself.
 | OD14 | Screening party streams | **Only what home serves.** R40 screens a party stream whenever the home fleet carries it; LAN-only streams are the host's responsibility (§6.9). |
 | OD15 | How the uplink leg carries a party stream (asked once R73 had landed) | **R73's carrier whenever home offers it.** Keyframes keep their own streams; deltas and parity ride one carrier per GOP. The leg is leg A for every outside viewer, on a venue uplink shared with the guests' own traffic: docs/75 table O's case (§3). Datagrams stay one flag away (`-pop-leg-delivery`), and PP8 measures the PoP's own sender before the default ships (item 18). *Measured 2026-10-22: the carrier stays (§11.2).* |
 | OD16 | How the downlink leg carries a home stream | **The carrier too, in v1.** Home writes the leg the way the PoP writes its uplink, and the PoP reads it with R73's carrier reader (item 23). |
+| OD17 | Whether a party broadcast that joins a room leaves the wall (asked after the first party, 2026-10-24) | **No: the wall is not a room for R42 D1.** A party broadcast stays on its wall and may also be in one ordinary room; only Hide takes it off. The first party joined its own static room and the wall emptied (item 34). |
 
 ## 3. Measured and verified before writing
 
@@ -999,9 +1000,15 @@ PP8 measured the PoP's own carrier sender in R73's lab on 2026-10-22
     sends `Attach`. The PoP checks the broadcaster's local resume token and
     forwards the command vouched. A remembered Hide travels as `wall=hidden`
     on the next `/publish`, so a hidden broadcaster never flashes onto the
-    wall. An explicit attach to another room moves the broadcast off the
-    wall, because R42 D1 allows one room per broadcast and the broadcaster's
-    own choice wins.
+    wall. **Joining a room does not take it off the wall** (OD17): R42 D1's
+    one room per broadcast counts ordinary rooms only, so a party broadcast
+    is on its wall and may be in one room as well. A second ordinary room
+    is still refused. *Revised 2026-10-24:* until then an explicit attach to
+    another room, or a mint, moved the broadcast off the wall, and the
+    automatic attach of a broadcast already in a room was refused (with no
+    word back to the PoP, whose `0x18` kept saying "On the party wall"). At
+    the first party every guest's broadcast joined the group's own static
+    room, and the wall stayed empty.
 
     *Built:* a vouched attach or detach reaches the wall's home pod on a
     new `POST /internal/roomvouch/{code}`, PSK-gated like `/internal/room`
@@ -1010,10 +1017,10 @@ PP8 measured the PoP's own carrier sender in R73's lab on 2026-10-22
     once the broadcaster's resume token proves the broadcast; an `Attach`
     with a valid token proves the ID for the rest of that guest session. A
     home with `-rooms` off has no wall, and the PoP's rooms stay local.
-    The broadcaster's choice moves the broadcast off home's wall either
-    way: a room minted at the PoP (the PoP's registry reports it, and the
-    PoP Hides it), or an `Attach` to a room at home through the PoP. The
-    PoP's resume token never travels home: the PoP zeroes it on an `Attach`
+    The registry keeps wall tiles in their own map beside R42's
+    one-room map (`roomsrv.Registry.walls`), so a mint, an `Attach` and the
+    one-room check never see them, while a broadcast's live state and its
+    expiry reach both its room and its wall. The PoP's resume token never travels home: the PoP zeroes it on an `Attach`
     it verified, and home accepts the link's vouch for a broadcast reserved
     for that PoP (`?vouch=` on `/internal/room` when the room's home pod is
     another, never taken from a public join).

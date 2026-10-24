@@ -408,10 +408,10 @@ func TestAConfigResyncsTheWallHome(t *testing.T) {
 	}
 }
 
-// docs/76 item 34 at a linked PoP: a party broadcaster minting a room at
-// the PoP moves its broadcast off the wall everyone sees, home's, not only
-// off the PoP's local copy; and a config resync does not put it back.
-func TestAMintAtThePoPMovesTheBroadcastOffHomesWall(t *testing.T) {
+// docs/76 item 34 (OD17) at a linked PoP: a party broadcaster minting a
+// room at the PoP keeps its broadcast on the wall everyone sees, home's,
+// and the 0x18 keeps saying so, through a config resync too.
+func TestAMintAtThePoPKeepsTheBroadcastOnHomesWall(t *testing.T) {
 	w := startWallFleet(t)
 	p := w.publish(t, "")
 	WaitFor(t, "the tile on home's wall", func() bool { return w.onWall(p.id) })
@@ -420,23 +420,27 @@ func TestAMintAtThePoPMovesTheBroadcastOffHomesWall(t *testing.T) {
 	if st := mint.state(t); len(st.Attachments) != 1 || st.Attachments[0].BroadcastID != p.id {
 		t.Fatalf("minted room state = %+v", st)
 	}
-	WaitFor(t, "the tile leaves home's wall", func() bool { return !w.onWall(p.id) })
-	p.waitInfo(t, "0x18 off the wall", func(i wire.LocalRelayInfo) bool { return !i.OnWall })
+	time.Sleep(500 * time.Millisecond)
+	if !w.onWall(p.id) {
+		t.Fatal("the mint took the broadcast off home's wall")
+	}
+	p.waitInfo(t, "0x18 on the wall", func(i wire.LocalRelayInfo) bool { return i.OnWall })
 	w.f.UpdateSpec(t, popName, func(s *pops.PopSpec) { s.DisplayName = "Assembly resynced" })
 	WaitFor(t, "the resync's config at the PoP", func() bool {
 		c := w.pop.Client.State().Config
 		return c != nil && c.DisplayName == "Assembly resynced"
 	})
 	time.Sleep(500 * time.Millisecond)
-	if w.onWall(p.id) {
-		t.Fatal("the resync put the minted broadcast back on the wall")
+	if !w.onWall(p.id) {
+		t.Fatal("the resync took the minted broadcast off the wall")
 	}
 }
 
 // docs/76 item 34 the other way: a party broadcaster at the PoP attaching
-// to a friend's room at home. The PoP's resume token never travels home
-// (home could not check it); the PoP vouches for its own broadcast, as it
-// does for the wall, and the broadcast moves off the wall.
+// to a friend's room at home (production, 2026-10-24: the party's own
+// "VIP" room). The PoP's resume token never travels home (home could not
+// check it); the PoP vouches for its own broadcast, as it does for the
+// wall, and the broadcast stays on the wall as well (OD17).
 func TestAPartyBroadcasterAttachesToAHomeRoomThroughThePoP(t *testing.T) {
 	w := startWallFleet(t)
 	if err := w.reg.UpsertStatic(roomsrv.StaticRoom{Code: "lan-team", DisplayCode: "lan-team"}); err != nil {
@@ -457,8 +461,11 @@ func TestAPartyBroadcasterAttachesToAHomeRoomThroughThePoP(t *testing.T) {
 	if ev := friend.event(t, wire.RoomEventAttachmentAdded); ev.Attachment.BroadcastID != p.id {
 		t.Fatalf("the friend's room got %+v", ev)
 	}
-	WaitFor(t, "the tile leaves home's wall", func() bool { return !w.onWall(p.id) })
-	p.waitInfo(t, "0x18 off the wall", func(i wire.LocalRelayInfo) bool { return !i.OnWall })
+	time.Sleep(500 * time.Millisecond)
+	if !w.onWall(p.id) {
+		t.Fatal("the attach took the broadcast off home's wall")
+	}
+	p.waitInfo(t, "0x18 on the wall", func(i wire.LocalRelayInfo) bool { return i.OnWall })
 
 	// A home broadcast the PoP did not reserve is not the PoP's to vouch
 	// for: an Attach of it over the link still needs home's own token.

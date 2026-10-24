@@ -16,7 +16,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -293,10 +292,6 @@ func (s *Server) proxyRoomOverLink(w http.ResponseWriter, r *http.Request, fwd R
 	}
 	log.Info("room link session started")
 
-	// vouching: the broadcasts this session attached at home vouched
-	// (vouchForHome), until home confirms the attach.
-	var vmu sync.Mutex
-	vouching := map[string]bool{}
 	fromGuest := make(chan error, 1)
 	go func() {
 		for {
@@ -308,12 +303,7 @@ func (s *Server) proxyRoomOverLink(w http.ResponseWriter, r *http.Request, fwd R
 			if s.interceptWallCommand(fwd, code, rec[wire.RoomRecordHeaderSize:], proven) {
 				continue
 			}
-			if out, id := vouchForHome(rec, proven); id != "" {
-				rec = out
-				vmu.Lock()
-				vouching[id] = true
-				vmu.Unlock()
-			}
+			rec = vouchForHome(rec, proven)
 			if _, err := up.Write(rec); err != nil {
 				fromGuest <- err
 				return
@@ -327,16 +317,6 @@ func (s *Server) proxyRoomOverLink(w http.ResponseWriter, r *http.Request, fwd R
 			if err != nil {
 				fromHome <- err
 				return
-			}
-			if id := attachedEventID(rec); id != "" {
-				vmu.Lock()
-				confirmed := vouching[id]
-				delete(vouching, id)
-				vmu.Unlock()
-				if l, ok := fwd.(wallLeaver); ok && confirmed {
-					// The broadcaster's own choice: off the party wall.
-					l.LeftWall(id)
-				}
 			}
 			_ = client.SetWriteDeadline(time.Now().Add(roomWriteTimeout))
 			if _, err := client.Write(rec); err != nil {
@@ -382,49 +362,30 @@ func (s *Server) interceptWallCommand(fwd RoomForwarder, code string, msg []byte
 	return fwd.WallCommand(code, cmd)
 }
 
-// wallLeaver is a RoomForwarder that also hears a broadcast leave the
-// party wall for a home room (popclient's wall).
-type wallLeaver interface {
-	LeftWall(id string)
-}
-
 // vouchForHome rewrites a proven Attach going home (one WallCommand did
 // not take: a room at home, not the wall) so this relay's resume token
 // does not travel: home could not check it, and has no business holding
 // it. The token is zeroed and home takes the link's vouch instead
-// (popVouch). id is the broadcast, "" when rec is left as it is.
-func vouchForHome(rec []byte, proven map[string]bool) (out []byte, id string) {
+// (popVouch).
+func vouchForHome(rec []byte, proven map[string]bool) []byte {
 	msg := rec[wire.RoomRecordHeaderSize:]
 	if len(msg) < 2 || msg[1] != wire.TypeRoomCommand {
-		return rec, ""
+		return rec
 	}
 	cmd, err := wire.ParseRoomCommand(msg)
 	if err != nil || cmd.Kind != wire.RoomCommandAttach || !proven[cmd.BroadcastID] {
-		return rec, ""
+		return rec
 	}
 	cmd.ResumeToken = make([]byte, wire.ResumeTokenSize)
 	m, err := wire.AppendRoomCommand(nil, cmd)
 	if err != nil {
-		return rec, ""
+		return rec
 	}
-	if out, err = wire.AppendRoomRecord(nil, m); err != nil {
-		return rec, ""
+	out, err := wire.AppendRoomRecord(nil, m)
+	if err != nil {
+		return rec
 	}
-	return out, cmd.BroadcastID
-}
-
-// attachedEventID is the broadcast an AttachmentAdded or AttachmentUpdated
-// room event names ("" for any other record).
-func attachedEventID(rec []byte) string {
-	msg := rec[wire.RoomRecordHeaderSize:]
-	if len(msg) < 2 || msg[1] != wire.TypeRoomEvent {
-		return ""
-	}
-	ev, err := wire.ParseRoomEvent(msg)
-	if err != nil || (ev.Kind != wire.RoomEventAttachmentAdded && ev.Kind != wire.RoomEventAttachmentUpdated) {
-		return ""
-	}
-	return ev.Attachment.BroadcastID
+	return out
 }
 
 // --- the home side ------------------------------------------------------

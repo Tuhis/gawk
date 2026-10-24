@@ -132,10 +132,10 @@ func TestWallSyncsHomeAndLocal(t *testing.T) {
 	}
 }
 
-// A broadcaster that leaves the wall by its own choice (an attach to a
-// room at home, or a room minted here) is a Hide: home's tile goes, and a
-// relink's resync does not bring it back. Leaving twice sends nothing.
-func TestWallLeave(t *testing.T) {
+// A broadcaster that joins a room keeps its wall tile (docs/76 item 34):
+// a room minted here leaves it on the local wall, sends home no detach,
+// and a relink's resync still attaches it.
+func TestARoomDoesNotTakeABroadcastOffTheWall(t *testing.T) {
 	p := newWallPoP(t)
 	id, pub, err := p.r.StartPublish("")
 	if err != nil {
@@ -144,25 +144,34 @@ func TestWallLeave(t *testing.T) {
 	defer pub.Close()
 	p.c.wall.PublisherLive(httptest.NewRequest("CONNECT", "https://pop/publish", nil), id)
 	expectWall(t, p.l, poplink.WallAttach, id, "Stream 1")
-	p.c.wall.LeftWall(id)
-	expectWall(t, p.l, poplink.WallDetach, id, "Stream 1")
-	p.c.wall.LeftWall(id)
-	p.c.wall.left(wallCode, id)
-	none[*poplink.Wall](t, p.l, 50*time.Millisecond)
-	if wall, _ := p.c.WallRow(id); wall != "hidden" {
-		t.Fatalf("WallRow after leaving = %q", wall)
-	}
-	// Leaving another room's wall, or one the wall never saw, is a no-op.
-	p.c.wall.left("lan-team", id)
-	p.c.wall.left(wallCode, "ZZZ999")
-	none[*poplink.Wall](t, p.l, 30*time.Millisecond)
+	p.waitLocal(t, id+"=Stream 1")
 
-	// A relink resyncs the wall home: the hidden broadcast stays off.
+	p.rooms.SetTokens(anyResume{})
+	res, err := p.rooms.Mint(context.Background(), roomsrv.MintRequest{BroadcastID: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	none[*poplink.Wall](t, p.l, 50*time.Millisecond)
+	p.waitLocal(t, id+"=Stream 1")
+	if len(p.rooms.Attachments(res.Code)) != 1 {
+		t.Fatalf("minted room %v", p.rooms.Attachments(res.Code))
+	}
+	if wall, _ := p.c.WallRow(id); wall != "on" {
+		t.Fatalf("WallRow after the mint = %q", wall)
+	}
+
 	p.l.close(wire.CloseCodeServerDraining, "drain")
 	l2 := p.f.nextLink(t)
 	l2.send(wallConfig)
-	expectWall(t, l2, poplink.WallDetach, id, "Stream 1")
+	expectWall(t, l2, poplink.WallAttach, id, "Stream 1")
 }
+
+// anyResume takes every resume token (the test mints without one).
+type anyResume struct{}
+
+func (anyResume) MintCreator(code string) []byte               { return []byte(code) }
+func (anyResume) VerifyCreator(code string, token []byte) bool { return string(token) == code }
+func (anyResume) VerifyResume(string, []byte) bool             { return true }
 
 // A changed wall code rebuilds the local wall; a home without rooms ends
 // it and the 0x18 carries no wall code.

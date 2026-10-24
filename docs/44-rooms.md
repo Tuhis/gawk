@@ -34,7 +34,7 @@ The integrations are why the model is shaped the way it is.
 
 | # | Decision | Rationale |
 |---|---|---|
-| D1 | **Rooms are a logical construct over unchanged broadcasts.** A broadcast is attached to at most one room; attaching adds a way in and never removes one — the broadcast's own code keeps working while attached. | Zero change to the media path is what keeps this milestone bounded. Room participants learn attached broadcast IDs from the roster; that is acceptable inside a code-gated room, and it is what makes "open this POV full-screen" a plain `#/view/` link. |
+| D1 | **Rooms are a logical construct over unchanged broadcasts.** A broadcast is attached to at most one room; attaching adds a way in and never removes one — the broadcast's own code keeps working while attached. *R74 amendment (2026-10-24):* a PoP's party wall does not count, so a party broadcast may be on its wall and in one room ([docs/76](76-pop-relays.md) OD17). | Zero change to the media path is what keeps this milestone bounded. Room participants learn attached broadcast IDs from the roster; that is acceptable inside a code-gated room, and it is what makes "open this POV full-screen" a plain `#/view/` link. |
 | D2 | **Two kinds of room: static and dynamic.** Static rooms are preconfigured with a stable slug (`TuhisRoom`) and reached by link only. Dynamic rooms are minted on demand with a six-character code and joined exactly like a broadcast, from the same join box. | The owner's split. Static rooms are the "our group's room" that survives everything; dynamic rooms are the zero-setup path for a one-off evening. |
 | D3 | **One join box, and the relay resolves a typed code to a broadcast or a room.** Dynamic room codes come from the same alphabet and length as broadcast IDs; the relay guarantees the two namespaces are disjoint at mint time (§4.2). | The viewer never chooses "room or broadcast". A reserved first character was considered (§7) and dropped: it would cut broadcast ID entropy for every broadcast, change `broadcastid.Mint`, and create a rollout window in which a live broadcast and a new room could share a prefix. |
 | D4 | **Static rooms are `Room` custom resources** the relay pods watch, following the R39 `Ban` CRD pattern, managed by `gawk-admin` (or `kubectl`), with a file source for non-Kubernetes deployments. | Cluster-safe by construction; survives rollouts and admin outages; the relay keeps working with no admin installed. |
@@ -98,7 +98,7 @@ The integrations are why the model is shaped the way it is.
 | **Static room** | Preconfigured; code is a slug (3–32 chars, `[A-Za-z0-9-]`, case-insensitive, stored lower-case, displayed as configured). Reached by link. Never ends. |
 | **Dynamic room** | Minted on demand; code is six characters from the broadcast alphabet. Reached by link or typed code. Ends after the empty grace. |
 | **Participant** | A control session in a room with a nickname. Both viewers and broadcasters are participants. A participant may hold zero or more media sessions. |
-| **Attachment** | A broadcast bound to a room by its publisher. At most one room per broadcast. |
+| **Attachment** | A broadcast bound to a room by its publisher. At most one room per broadcast, plus its PoP's party wall (docs/76 OD17). |
 | **Creator token** | A stateless HMAC over a dynamic room's code, returned once at mint. Grants detach-anyone and end-room. |
 | **Attach secret** | An optional per-static-room secret required to attach. |
 | **Home pod** | The pod holding the room's lease and the authoritative roster. |
