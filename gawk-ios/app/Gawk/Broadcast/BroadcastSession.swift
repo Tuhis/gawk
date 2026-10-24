@@ -275,6 +275,7 @@ final class BroadcastSession {
     /// own) the relay holds the code through its grace.
     func stop(end: Bool = false) {
         media.attach(nil)
+        endedBroadcast = end
         if end {
             broadcaster?.end()
         } else {
@@ -327,6 +328,10 @@ final class BroadcastSession {
 
     /// The capture ended on its own (the system, or an error); the reason
     /// stays on screen after the broadcast stops (D7).
+    /// Whether the last `stop` ended the broadcast for its viewers (4014,
+    /// docs/77 D9) rather than leaving it to the relay's grace.
+    private(set) var endedBroadcast = false
+
     func noteCaptureEnded(_ reason: String?) {
         if let reason { failure = reason }
     }

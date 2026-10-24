@@ -119,15 +119,28 @@ final class Capture {
         screen.present { [weak self, weak session, weak screen] reason in
             // The capture ended: by the user, the system or an error (D7).
             guard let self, let session, let screen, self.screen === screen else { return }
-            session.noteCaptureEnded(reason)
-            self.stop(session)
+            self.captureEnded(reason, session)
         }
         #endif
     }
 
-    /// Capture ending on its own (the system, or an error). The session
-    /// goes first: the broadcast must end even if tearing capture down
-    /// misbehaves. The relay holds the code through its grace.
+    /// Capture ended without the app asking. With no reason the user
+    /// stopped the recording (the indicator or Control Center): that is a
+    /// deliberate stop, so the broadcast ends for its viewers now (4014,
+    /// docs/77 D9). With a reason (an error, a background-mode loss) it
+    /// is a failure, and the relay holds the code through its grace.
+    func captureEnded(_ reason: String?, _ session: BroadcastSession) {
+        session.noteCaptureEnded(reason)
+        if reason == nil {
+            end(session)
+        } else {
+            stop(session)
+        }
+    }
+
+    /// Capture ending on a failure. The session goes first: the broadcast
+    /// must end even if tearing capture down misbehaves. The relay holds
+    /// the code through its grace.
     func stop(_ session: BroadcastSession) {
         live = nil
         session.stop()
