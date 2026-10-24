@@ -177,7 +177,6 @@ func (w *wall) onConfig(rec any) {
 				w.c.log.Warn("local party wall not created", "err", err)
 			} else {
 				newLocal = code
-				reg.OnWallLeave(w.left)
 			}
 		}
 		w.mu.Lock()
@@ -300,37 +299,6 @@ func (w *wall) WallCommand(code string, cmd wire.RoomCommand) bool {
 	w.mu.Unlock()
 	go w.sync(id)
 	return true
-}
-
-// left is the local registry's OnWallLeave: a broadcast left the local
-// wall by its broadcaster's choice (a room minted here). That is a Hide:
-// home stops showing it, and a resync does not put it back.
-func (w *wall) left(code, id string) {
-	w.leave(code, id)
-}
-
-// LeftWall is transport's wallLeaver: a broadcaster at this PoP attached
-// its broadcast to a room at home through the link, which home confirmed.
-// Like a mint here, that moves it off the wall (docs/76 item 34).
-func (w *wall) LeftWall(id string) {
-	w.mu.Lock()
-	code := w.code
-	w.mu.Unlock()
-	w.leave(code, id)
-}
-
-// leave marks id hidden on the wall named code and syncs it (home's tile
-// goes, and the 0x18 follows).
-func (w *wall) leave(code, id string) {
-	w.mu.Lock()
-	e := w.entries[id]
-	if w.code == "" || code != w.code || e == nil || e.hidden {
-		w.mu.Unlock()
-		return
-	}
-	e.hidden = true
-	w.mu.Unlock()
-	go w.sync(id)
 }
 
 // fill adds the wall fields to a session's 0x18: the wall code whenever

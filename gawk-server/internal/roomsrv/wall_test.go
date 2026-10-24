@@ -174,11 +174,12 @@ func TestWallHideAndShow(t *testing.T) {
 	}
 }
 
-// One room per broadcast (R42 D1), and the broadcaster's own choice wins:
-// an explicit attach to another room moves it off the wall, and a mint
-// from it does too. A vouched attach never pulls a broadcast out of a room
-// its broadcaster chose.
-func TestExplicitAttachElsewhereMovesABroadcastOffTheWall(t *testing.T) {
+// The wall is not a room in R42 D1's sense: a party broadcast stays on its
+// PoP's wall and may also be in one ordinary room. Attaching it elsewhere
+// or minting from it leaves the wall tile where it is, and a vouched attach
+// of a broadcast already in a room succeeds (production, 2026-10-24: a
+// party joined its own "VIP" room and the wall emptied).
+func TestABroadcastIsOnTheWallAndInARoom(t *testing.T) {
 	f := newWallFixture(t, 40)
 	_, wallC := f.join(t, "assembly-2026", "guest", Grants{}, nil)
 	wallC.nextState(t)
@@ -196,28 +197,155 @@ func TestExplicitAttachElsewhereMovesABroadcastOffTheWall(t *testing.T) {
 	c.nextState(t)
 	p.HandleCommand(wire.RoomCommand{Kind: wire.RoomCommandAttach, BroadcastID: id, ResumeToken: f.tokens.MintResume(id)})
 	if ev := c.nextEvent(t, wire.RoomEventAttachmentAdded); ev.Attachment.BroadcastID != id {
-		t.Fatalf("attach elsewhere = %+v", ev)
+		t.Fatalf("attach to the room = %+v", ev)
 	}
-	if ev := wallC.nextEvent(t, wire.RoomEventAttachmentRemoved); ev.Attachment.BroadcastID != id {
-		t.Fatalf("the wall did not lose the broadcast: %+v", ev)
-	}
-	if err := f.reg.AttachVouched("assembly-2026", wallPop, id, ""); !errors.Is(err, ErrAlreadyAttached) {
-		t.Fatalf("vouched attach of a broadcast in another room: %v, want ErrAlreadyAttached", err)
+	if !onRoom(f, "assembly-2026", id) || !onRoom(f, "lan-team", id) {
+		t.Fatalf("wall %v, room %v: want the broadcast on both", f.reg.Attachments("assembly-2026"), f.reg.Attachments("lan-team"))
 	}
 
-	// A mint from a wall broadcast moves it too.
+	// Already in a room, it still joins the wall (a reconnect's resync, or
+	// a Show after a Hide).
 	id2 := "ABCDEG"
+	f.bc.set(id2, BroadcastState{Live: true})
+	p.HandleCommand(wire.RoomCommand{Kind: wire.RoomCommandAttach, BroadcastID: id2, ResumeToken: f.tokens.MintResume(id2)})
+	c.nextEvent(t, wire.RoomEventAttachmentAdded)
 	if err := f.reg.AttachVouched("assembly-2026", wallPop, id2, ""); err != nil {
+		t.Fatalf("vouched attach of a broadcast in a room: %v", err)
+	}
+	if !onRoom(f, "assembly-2026", id2) {
+		t.Fatal("the wall refused a broadcast that is in a room")
+	}
+
+	// A mint from a wall broadcast keeps it on the wall too.
+	id3 := "ABCDEH"
+	if err := f.reg.AttachVouched("assembly-2026", wallPop, id3, ""); err != nil {
 		t.Fatal(err)
 	}
-	wallC.nextEvent(t, wire.RoomEventAttachmentAdded)
-	res := f.mint(t, id2)
-	if !rooms.IsDynamicShape(res.Code) {
+	res := f.mint(t, id3)
+	if !rooms.IsDynamicShape(res.Code) || !onRoom(f, res.Code, id3) {
 		t.Fatalf("mint = %+v", res)
 	}
-	if ev := wallC.nextEvent(t, wire.RoomEventAttachmentRemoved); ev.Attachment.BroadcastID != id2 {
-		t.Fatalf("the mint did not move the broadcast off the wall: %+v", ev)
+	if !onRoom(f, "assembly-2026", id3) {
+		t.Fatal("a mint took the broadcast off the wall")
 	}
+}
+
+// The wall does not loosen D1 between ordinary rooms: a broadcast on the
+// wall and in one room is still refused by a second.
+func TestTheWallDoesNotLetABroadcastIntoTwoRooms(t *testing.T) {
+	f := newWallFixture(t, 40)
+	for _, code := range []string{"lan-team", "other-team"} {
+		if err := f.reg.UpsertStatic(StaticRoom{Code: code}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id := "ABCDEF"
+	f.bc.set(id, BroadcastState{Live: true})
+	if err := f.reg.AttachVouched("assembly-2026", wallPop, id, ""); err != nil {
+		t.Fatal(err)
+	}
+	p, c := f.join(t, "lan-team", "tuhis", Grants{AttachOK: true}, nil)
+	c.nextState(t)
+	p.HandleCommand(wire.RoomCommand{Kind: wire.RoomCommandAttach, BroadcastID: id, ResumeToken: f.tokens.MintResume(id)})
+	c.nextEvent(t, wire.RoomEventAttachmentAdded)
+
+	p2, c2 := f.join(t, "other-team", "tuhis", Grants{AttachOK: true}, nil)
+	c2.nextState(t)
+	p2.HandleCommand(wire.RoomCommand{Kind: wire.RoomCommandAttach, BroadcastID: id, ResumeToken: f.tokens.MintResume(id)})
+	if ev := c2.nextEvent(t, wire.RoomEventCommandRejected); ev.Reason != wire.RoomRejectAlreadyAttached {
+		t.Fatalf("second room: reason %d, want already attached", ev.Reason)
+	}
+	if _, err := f.reg.Mint(context.Background(), MintRequest{BroadcastID: id, ResumeToken: f.tokens.MintResume(id)}); !errors.Is(err, ErrAlreadyAttached) {
+		t.Fatalf("mint while in a room: %v, want ErrAlreadyAttached", err)
+	}
+}
+
+// A broadcast on the wall and in a room is one broadcast to both: its
+// publisher going away shows on both tiles, its expiry removes both, and
+// either room ending leaves the other's tile in place.
+func TestTheWallAndARoomShareABroadcastsLifecycle(t *testing.T) {
+	f := newWallFixture(t, 40)
+	if err := f.reg.UpsertStatic(StaticRoom{Code: "lan-team"}); err != nil {
+		t.Fatal(err)
+	}
+	attachBoth := func(id string) {
+		t.Helper()
+		f.bc.set(id, BroadcastState{Live: true})
+		if err := f.reg.AttachVouched("assembly-2026", wallPop, id, ""); err != nil {
+			t.Fatal(err)
+		}
+		p, c := f.join(t, "lan-team", "tuhis", Grants{AttachOK: true}, nil)
+		c.nextState(t)
+		p.HandleCommand(wire.RoomCommand{Kind: wire.RoomCommandAttach, BroadcastID: id, ResumeToken: f.tokens.MintResume(id)})
+		c.nextEvent(t, wire.RoomEventAttachmentAdded)
+	}
+	id := "ABCDEF"
+	attachBoth(id)
+	_, wallC := f.join(t, "assembly-2026", "guest", Grants{}, nil)
+	wallC.nextState(t)
+	_, roomC := f.join(t, "lan-team", "guest", Grants{}, nil)
+	roomC.nextState(t)
+
+	f.reg.PublisherClosed(id)
+	for name, c := range map[string]*fakeConn{"wall": wallC, "room": roomC} {
+		if ev := c.nextEvent(t, wire.RoomEventAttachmentUpdated); ev.Attachment.BroadcastID != id || ev.Attachment.Live {
+			t.Errorf("%s after the publisher left: %+v", name, ev)
+		}
+	}
+
+	f.reg.BroadcastExpired(id)
+	for name, c := range map[string]*fakeConn{"wall": wallC, "room": roomC} {
+		if ev := c.nextEvent(t, wire.RoomEventAttachmentRemoved); ev.Attachment.BroadcastID != id {
+			t.Errorf("%s after the expiry: %+v", name, ev)
+		}
+	}
+	if onRoom(f, "assembly-2026", id) || onRoom(f, "lan-team", id) {
+		t.Fatal("an expired broadcast is still attached")
+	}
+
+	// The room ending keeps the wall tile, and the broadcast may join
+	// another room afterwards.
+	id2 := "ABCDEG"
+	attachBoth(id2)
+	f.reg.EndRoom("lan-team", wire.RoomEndReasonOperator)
+	if !onRoom(f, "assembly-2026", id2) {
+		t.Fatal("the room ending took the broadcast off the wall")
+	}
+	res := f.mint(t, id2)
+	if !onRoom(f, res.Code, id2) {
+		t.Fatalf("mint after the room ended = %+v", res)
+	}
+	// The wall ending keeps the room tile.
+	f.reg.EndRoom("assembly-2026", wire.RoomEndReasonOperator)
+	if !onRoom(f, res.Code, id2) {
+		t.Fatal("the wall ending took the broadcast out of its room")
+	}
+}
+
+// A re-created wall (adoption, a PoP's config) re-attaches its broadcasts
+// even when they are in a room as well.
+func TestARecreatedWallTakesBroadcastsThatAreInARoom(t *testing.T) {
+	f := newFixture(t, nil)
+	if err := f.reg.UpsertStatic(StaticRoom{Code: "lan-team"}); err != nil {
+		t.Fatal(err)
+	}
+	id := "ABCDEF"
+	f.bc.set(id, BroadcastState{Live: true})
+	p, c := f.join(t, "lan-team", "tuhis", Grants{AttachOK: true}, nil)
+	c.nextState(t)
+	p.HandleCommand(wire.RoomCommand{Kind: wire.RoomCommandAttach, BroadcastID: id, ResumeToken: f.tokens.MintResume(id)})
+	c.nextEvent(t, wire.RoomEventAttachmentAdded)
+	if err := f.reg.UpsertStatic(StaticRoom{Code: "assembly-2026", Pop: wallPop, MaxBroadcasts: 40,
+		Attachments: []rooms.Attachment{{BroadcastID: id, Label: "Stream 1"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if !onRoom(f, "assembly-2026", id) {
+		t.Fatal("the re-created wall skipped a broadcast that is in a room")
+	}
+}
+
+func onRoom(f *fixture, code, id string) bool {
+	return slices.ContainsFunc(f.reg.Attachments(code), func(a rooms.Attachment) bool { return a.BroadcastID == id })
 }
 
 // A protocol-1 client parses every snapshot and delta a wall produces:
@@ -279,50 +407,43 @@ func TestIsWall(t *testing.T) {
 	}
 }
 
-// A mint that is refused (here the fleet is at -max-rooms) leaves the
-// broadcast on the wall: the wall tile goes only once the new room exists.
-func TestARefusedMintKeepsTheBroadcastOnTheWall(t *testing.T) {
-	f := newFixture(t, func(o *Options) { o.MaxRooms = 1 })
-	if err := f.reg.UpsertStatic(StaticRoom{Code: "assembly-2026", Pop: wallPop, MaxBroadcasts: 40, MaxParticipants: 500}); err != nil {
-		t.Fatal(err)
-	}
-	f.mint(t, "ZZZZZ2") // the one dynamic room the fleet allows
-	id := "ABCDEF"
-	f.bc.set(id, BroadcastState{Live: true})
-	if err := f.reg.AttachVouched("assembly-2026", wallPop, id, ""); err != nil {
-		t.Fatal(err)
-	}
-	_, err := f.reg.Mint(context.Background(), MintRequest{BroadcastID: id, ResumeToken: f.tokens.MintResume(id)})
-	if !errors.Is(err, ErrMaxRooms) {
-		t.Fatalf("Mint = %v, want ErrMaxRooms", err)
-	}
-	if !slices.ContainsFunc(f.reg.Attachments("assembly-2026"), func(a rooms.Attachment) bool { return a.BroadcastID == id }) {
-		t.Fatal("a refused mint took the broadcast off the wall")
-	}
-}
-
-// The wall's owner (the PoP's popclient) hears when a broadcast leaves its
-// wall by its broadcaster's choice, a mint or an attach elsewhere, so it
-// can stop vouching for it home and stop re-attaching it on a resync.
-func TestLeavingTheWallIsReportedToItsOwner(t *testing.T) {
-	f := newWallFixture(t, 40)
-	var left []string
-	f.reg.OnWallLeave(func(code, id string) { left = append(left, code+"/"+id) })
-	if err := f.reg.UpsertStatic(StaticRoom{Code: "lan-team"}); err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range []string{"ABCDEF", "ABCDEG"} {
-		f.bc.set(id, BroadcastState{Live: true})
-		if err := f.reg.AttachVouched("assembly-2026", wallPop, id, ""); err != nil {
+// A held room that turns into a wall, or stops being one, moves its tiles
+// to the right bookkeeping: a tile whose broadcast is in another room of
+// the kind it now is goes, and the rest follow the rule they now live by.
+func TestARoomTurningIntoAWallMovesItsTiles(t *testing.T) {
+	f := newFixture(t, nil)
+	for _, code := range []string{"lan-team", "other-team"} {
+		if err := f.reg.UpsertStatic(StaticRoom{Code: code}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	f.mint(t, "ABCDEF")
-	p, c := f.join(t, "lan-team", "tuhis", Grants{AttachOK: true}, nil)
-	c.nextState(t)
-	p.HandleCommand(wire.RoomCommand{Kind: wire.RoomCommandAttach, BroadcastID: "ABCDEG", ResumeToken: f.tokens.MintResume("ABCDEG")})
-	c.nextEvent(t, wire.RoomEventAttachmentAdded)
-	if want := []string{"assembly-2026/ABCDEF", "assembly-2026/ABCDEG"}; !slices.Equal(left, want) {
-		t.Fatalf("wall leaves = %v, want %v", left, want)
+	attach := func(code, id string) {
+		t.Helper()
+		f.bc.set(id, BroadcastState{Live: true})
+		p, c := f.join(t, code, "tuhis", Grants{AttachOK: true}, nil)
+		c.nextState(t)
+		p.HandleCommand(wire.RoomCommand{Kind: wire.RoomCommandAttach, BroadcastID: id, ResumeToken: f.tokens.MintResume(id)})
+		c.nextEvent(t, wire.RoomEventAttachmentAdded)
+	}
+	attach("lan-team", "ABCDEF")
+	if err := f.reg.UpsertStatic(StaticRoom{Code: "lan-team", Pop: wallPop}); err != nil {
+		t.Fatal(err)
+	}
+	// Now a wall tile, ABCDEF is free to join an ordinary room.
+	attach("other-team", "ABCDEF")
+	if !onRoom(f, "lan-team", "ABCDEF") || !onRoom(f, "other-team", "ABCDEF") {
+		t.Fatal("the wall tile still counted as a room")
+	}
+	// Back to an ordinary room: ABCDEF is in other-team, so its tile here
+	// goes; the room's own rule applies again.
+	if err := f.reg.UpsertStatic(StaticRoom{Code: "lan-team"}); err != nil {
+		t.Fatal(err)
+	}
+	if onRoom(f, "lan-team", "ABCDEF") || !onRoom(f, "other-team", "ABCDEF") {
+		t.Fatalf("lan-team %v, other-team %v", f.reg.Attachments("lan-team"), f.reg.Attachments("other-team"))
+	}
+	f.reg.EndRoom("lan-team", wire.RoomEndReasonOperator)
+	if !onRoom(f, "other-team", "ABCDEF") {
+		t.Fatal("ending the former wall released a broadcast it no longer held")
 	}
 }

@@ -2193,6 +2193,12 @@ entries still describe code `gawk-pubsim` runs (now
   console.** A cross-site page can POST to `127.0.0.1` with `Host:
   127.0.0.1`. The `Origin`, `Sec-Fetch-Site` and `application/json` checks
   are what refuse it; keep all three. ([docs/76](76-pop-relays.md) §7.1)
+- **A party wall tile is not an R42 attachment for the one-room rule.**
+  Wall tiles live in `roomsrv.Registry.walls`, not `attached`, so anything
+  that looks up "the" room of a broadcast must look at both (`roomsOfLocked`):
+  a lookup in `attached` alone misses the wall's live flag and expiry. Until
+  2026-10-24 joining a room took a broadcast off the wall, and the first
+  party's wall stayed empty. ([docs/76](76-pop-relays.md) OD17, item 34)
 - **The named tier's DNS check compares the answer with the PoP's own LAN
   address, from the system resolver and a public one.** A venue router
   with DNS-rebinding protection drops private answers for public names, so
