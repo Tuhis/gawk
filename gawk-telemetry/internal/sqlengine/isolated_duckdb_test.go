@@ -217,3 +217,38 @@ func TestAWorkerThatDiesWithoutAnsweringIsAnError(t *testing.T) {
 		t.Errorf("error %q does not say the worker failed", err)
 	}
 }
+
+// Building the whole catalogue sniffs every file in the store, and on
+// 2026-10-22 that outlived the budget at startup: the engine was never wired,
+// the console vanished for the life of the pod, and nothing retried. A worker
+// that answers is an engine that works; the catalogue is filled in by the
+// queries (and the probe) that follow.
+func TestASlowCatalogueDoesNotKeepTheEngineFromOpening(t *testing.T) {
+	t.Setenv(testWorkerSlowCatalogueEnv, "1")
+	e, err := OpenIsolated(Options{Root: seedStore(t), Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatalf("the engine did not open: %v", err)
+	}
+	defer e.Close()
+	res, err := e.Query("SELECT role FROM rollups")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RowCount != 1 {
+		t.Errorf("result = %+v", res)
+	}
+	for _, v := range e.Views() {
+		if v.Name == "rollups" && !v.Available {
+			t.Errorf("a query that read rollups left it unavailable: %v", e.Views())
+		}
+	}
+}
+
+// A worker that cannot answer at all is still an engine that failed to open,
+// reported at startup where the alert and the log can see it.
+func TestAWorkerThatCannotAnswerStillFailsTheOpen(t *testing.T) {
+	t.Setenv(testWorkerCrashEnv, "1")
+	if _, err := OpenIsolated(Options{Root: seedStore(t)}); err == nil {
+		t.Fatal("an engine whose worker crashes opened")
+	}
+}

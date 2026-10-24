@@ -28,9 +28,12 @@ type SQLEngine interface {
 type QueryStatus struct {
 	// Enabled is whether an engine is actually wired here. The flag being on is
 	// not the same thing (§8 Q1) and the console must not conflate them.
-	Enabled bool                `json:"enabled"`
-	Reason  string              `json:"reason,omitempty"`
-	Views   []sqlengine.ViewDoc `json:"views,omitempty"`
+	Enabled bool   `json:"enabled"`
+	Reason  string `json:"reason,omitempty"`
+	// Failed is an engine that was configured and failed to open, as opposed
+	// to a build without one.
+	Failed bool                `json:"failed,omitempty"`
+	Views  []sqlengine.ViewDoc `json:"views,omitempty"`
 	// RowLimit and TimeoutMs are stated up front so a truncated result is not a
 	// surprise the operator has to infer.
 	RowLimit  int   `json:"rowLimit"`
@@ -44,7 +47,7 @@ func (a *API) QueryStatus() QueryStatus {
 		TimeoutMs: sqlengine.DefaultTimeout.Milliseconds(),
 	}
 	if a.sql == nil {
-		s.Reason = sqlengine.ErrNoEngine.Error()
+		s.Reason, s.Failed = a.sqlUnavailable()
 		s.Views = sqlengine.Views()
 		return s
 	}

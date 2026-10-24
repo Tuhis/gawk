@@ -6,6 +6,7 @@ package readapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -923,6 +924,40 @@ func TestQueryConsoleWithoutAnEngineExplainsItself(t *testing.T) {
 	defer post.Body.Close()
 	if post.StatusCode != http.StatusNotImplemented {
 		t.Errorf("POST /v1/query = %d, want 501 (the deployment is missing, not the request)", post.StatusCode)
+	}
+}
+
+// An engine that was configured and failed to open is not a build without
+// one. On 2026-10-22 the console answered the no-engine text in production and
+// the page dropped its SQL tab, so the failure looked like a feature nobody
+// enabled. It must say it failed, and why.
+func TestQueryConsoleWhoseEngineFailedToOpenSaysSo(t *testing.T) {
+	f := newFixture(t)
+	api, err := New(Options{
+		Store: f.store, Now: func() time.Time { return f.now },
+		SQLOpenErr: errors.New("sqlengine: query did not finish within 30s"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := api.QueryStatus()
+	if status.Enabled || !status.Failed {
+		t.Errorf("status = %+v, want not enabled and failed", status)
+	}
+	if !strings.Contains(status.Reason, "did not finish within 30s") {
+		t.Errorf("reason %q is not the open error", status.Reason)
+	}
+	m := api.Meta()
+	if m.SQL || !m.SQLFailed || !strings.Contains(m.SQLReason, "did not finish within 30s") {
+		t.Errorf("meta = %+v, want sql false, sqlFailed true and the open error", m)
+	}
+
+	// A build without an engine is not a failure.
+	if s := f.api.QueryStatus(); s.Failed {
+		t.Errorf("a build with no engine reports a failed open: %+v", s)
+	}
+	if m := f.api.Meta(); m.SQLFailed {
+		t.Errorf("a build with no engine reports a failed open in meta: %+v", m)
 	}
 }
 

@@ -70,6 +70,8 @@ type API struct {
 	// sql is TH10's engine. Nil in a build without one (§8 Q1's resolution), and
 	// the console says so plainly rather than rendering a broken editor.
 	sql SQLEngine
+	// sqlOpenErr is why a configured engine is absent, when it failed to open.
+	sqlOpenErr error
 }
 
 // Options configure the API.
@@ -98,6 +100,9 @@ type Options struct {
 	Annotations AnnotationStore
 	// SQL is TH10's engine. Optional; without one the console says so (§8 Q1).
 	SQL SQLEngine
+	// SQLOpenErr is why SQL is nil when the engine was configured and failed
+	// to open. A failure, not a build property, and the console says which.
+	SQLOpenErr error
 }
 
 // New builds the read API.
@@ -119,6 +124,7 @@ func New(opts Options) (*API, error) {
 		scrapeInterval: orDuration(opts.ScrapeInterval, 5*time.Second),
 		annotations:    opts.Annotations,
 		sql:            opts.SQL,
+		sqlOpenErr:     opts.SQLOpenErr,
 	}, nil
 }
 
@@ -1435,14 +1441,17 @@ type Meta struct {
 	RetentionDays int `json:"retentionDays"`
 	// RawFromMs is the raw-retention boundary as an instant, so the UI does not
 	// have to redo the midnight arithmetic and get it subtly different.
-	RawFromMs      int64  `json:"rawFromMs"`
-	RollupsFromMs  int64  `json:"rollupsFromMs,omitempty"`
-	ScrapeMs       int64  `json:"scrapeIntervalMs"`
-	Annotations    bool   `json:"annotations"`
-	SQL            bool   `json:"sql"`
-	SQLReason      string `json:"sqlReason,omitempty"`
-	Resolve        bool   `json:"resolve"`
-	StreamInterval int64  `json:"streamIntervalMs"`
+	RawFromMs     int64  `json:"rawFromMs"`
+	RollupsFromMs int64  `json:"rollupsFromMs,omitempty"`
+	ScrapeMs      int64  `json:"scrapeIntervalMs"`
+	Annotations   bool   `json:"annotations"`
+	SQL           bool   `json:"sql"`
+	SQLReason     string `json:"sqlReason,omitempty"`
+	// SQLFailed is an engine that was configured and failed to open: the
+	// console is shown, saying so, rather than hidden like one nobody enabled.
+	SQLFailed      bool  `json:"sqlFailed,omitempty"`
+	Resolve        bool  `json:"resolve"`
+	StreamInterval int64 `json:"streamIntervalMs"`
 	// ServerNowMs lets the page state the timezone AND detect a browser clock
 	// that disagrees with the service's — which would otherwise silently shift
 	// every absolute timestamp on screen (UD5).
@@ -1464,9 +1473,18 @@ func (a *API) Meta() Meta {
 		ServerNowMs:    a.now().UnixMilli(),
 	}
 	if a.sql == nil {
-		m.SQLReason = sqlengine.ErrNoEngine.Error()
+		m.SQLReason, m.SQLFailed = a.sqlUnavailable()
 	}
 	return m
+}
+
+// sqlUnavailable is why the console has no engine, and whether that is a
+// failure rather than a build without one.
+func (a *API) sqlUnavailable() (reason string, failed bool) {
+	if a.sqlOpenErr != nil {
+		return "the query engine failed to open: " + a.sqlOpenErr.Error(), true
+	}
+	return sqlengine.ErrNoEngine.Error(), false
 }
 
 // DiagnoseTrace is diagnose() plus UD20's per-rule account.
