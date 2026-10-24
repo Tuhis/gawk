@@ -1,7 +1,7 @@
 # R76 — Stop ends the broadcast
 
 **Status**: implemented 2026-10-24 in one PR, chunks **BE1–BE6** (§6).
-Owner decisions taken 2026-10-24 (§2).
+Owner decisions taken 2026-10-24 (§2; OD3–OD5 in PR review).
 
 **Relationship to earlier work**: the relay holds a broadcast through its
 grace period whenever the publisher's session ends (docs/06, default 5
@@ -85,6 +85,8 @@ connection (BE6).
 | A deposed or late session's 4014 never ends its successor | `TestStaleStopDoesNotEndTheSuccessor` |
 | Only a publish session's 4014 counts | `TestViewerStopCodeEndsNothing` |
 | Viewers on edge pods are told 4014, not the terminal 4000 | `TestEdgeViewerIsToldTheOriginsStop` |
+| A LAN-party broadcast's outside viewers are told 4014, and so are party viewers of a home broadcast (D11) | `TestOutsideViewerIsToldThePartyBroadcasterStopped`, `TestPartyViewerOfAHomeBroadcastIsToldItStopped` |
+| An iOS user stopping the recording ends the broadcast; a capture failure keeps the grace | `CaptureTests` `testAUserStoppedRecordingEndsTheBroadcast`, `testACaptureFailureKeepsTheGrace` |
 | A room drops the stopped stream's tile, and the broadcaster's restart puts it back | the stop fires `OnBroadcastExpired` (`hub/stop_test.go`), which is the existing room expiry path, and the existing re-attach tests |
 | The bus says why: `broadcast.ended` with reason `stopped` | `hub/stop_test.go`; the event schema's enum; `gawk-admin` `TestStoppedEndSaysTheBroadcasterStopped` |
 | The three wire mirrors agree on 4014 | close-code pins in `wire_test.go`, `wire.test.ts`, `crates/wire/tests/golden.rs` |
@@ -97,6 +99,9 @@ connection (BE6).
 |---|---|---|
 | OD1 | Which stops end the broadcast? | **Every deliberate stop on every client**: the web Stop button, desktop End, iOS Stop. Desktop Pause and the same-code restarts keep the grace, so viewers wait. A closed tab, a crash or a network loss still falls back to the grace. |
 | OD2 | What does a viewer see, and does it come back? | Viewers are released and see "Broadcast ended". **If the tab or room stays open, a new broadcast on the same code resumes by itself.** |
+| OD3 | Desktop End from Paused has no session to close. Reconnect briefly to send 4014? | **Yes**: the short reclaim to end is fine (D9). |
+| OD4 | Does the iOS user stopping the screen recording from the system UI count? | **Yes**: stopping the recording is a stop (D9). |
+| OD5 | Should outside viewers of a LAN-party (PoP) broadcast wait out the home grace? | **No**: they get the stop like everyone else (D11). |
 
 ---
 
@@ -112,7 +117,8 @@ connection (BE6).
 | D6 | **An edge pod passes 4014 on.** An edge's upstream pull that closes with 4014 ends the edge hub with 4014, like 4000 and 4006 (`edge.go`). The origin closes its internal subscribers before it deletes the Lease, so the pull's close normally beats the informer's lease deletion. If the informer wins, edge viewers get today's 4000 (terminal). That is a known limit, recorded here. | The same pass-through docs/59 CN5 built for kills, without a new channel. |
 | D7 | **The viewer treats 4014 as "ended, waiting".** `ViewerSession` reports the end (`onStopped`), so the screen shows the ended card. It then keeps dialling the same code every 5 s plus up to 1 s of jitter. These dials never spend the reconnect budget, the 4012 pattern. While it waits, every dial failure (a 404 for a missing ID, which the browser can't read) keeps it waiting. A successful dial calls `onConnected` and playback resumes. A terminal code (4000, 4006) during the wait ends it for good. A user stop cancels it. The stopped stream's last frame is hidden until the restarted stream completes a frame. | OD2. A fixed cadence instead of a ladder: the broadcaster's restart is a human action seconds to minutes away, and an exponential ladder would leave a viewer staring at a live stream's ended card. 1000 waiting viewers cost ~200 handshakes/s, which the homelab handles; jitter spreads them. An audience behind one address can exceed the relay's per-IP connect rate (`-conn-rate-limit`, 3/s); a refused redial is just another failure, and the next tick tries again. |
 | D8 | **The ended card says it will come back.** Title "Broadcast ended", body "The broadcaster stopped. Keep this page open and the stream comes back if they start again on this code." Back to home stays. Room tiles need no copy: the hub's expiry removes the attachment (docs/44), and the broadcaster's restart re-attaches it. | The card must tell the truth about the wait. Otherwise the viewer closes a tab that would have resumed. |
-| D9 | **Which client actions send 4014.** Web: the Stop button on the broadcaster screen and the `stream` page (both `stop({ end: true })`). An unmount, a pipeline failure, the background watchdog and a terminal relay close still close plainly. Native engine: a new `Session::end()` that closes the publish leg with 4014. Desktop End calls it. Pause, a restart and quit keep `stop()`. iOS: the Stop button calls `end()`; leaving the app doesn't. | OD1: deliberate stops only. The watchdog is deliberately left out: it stops a tab that is probably abandoned, not one whose user chose to stop. |
+| D9 | **Which client actions send 4014.** Web: the Stop button on the broadcaster screen and the `stream` page (both `stop({ end: true })`). An unmount, a pipeline failure, the background watchdog and a terminal relay close still close plainly. Native engine: a new `Session::end()` that closes the publish leg with 4014. Desktop End calls it. Pause, a restart and quit keep `stop()`. Desktop End from Paused reclaims the code once (bounded by the engine's dial timeout) only to close that leg with 4014 (OD3); if the dial fails, the grace ends it. iOS: the End button, the Live Activity's End, and the user stopping the recording from the system UI (the indicator or Control Center, ScreenCaptureKit's `userStopped`) call `end()` (OD4). A capture error or a background-mode loss, and leaving the app, don't. | OD1: deliberate stops only. The watchdog is deliberately left out: it stops a tab that is probably abandoned, not one whose user chose to stop. |
+| D11 | **A PoP broadcast ends at home too** (OD5). A PoP runs the same publish handler, so its hub ends on 4014 and closes the uplink leg with 4014 as one of its subscribers. Home's `/pop/publish` loop reads the leg's close code the way the publish loop does and calls `Publisher.Stop`, so home's viewers and edges get 4014. The PoP's dialer owns its QUIC connection and closes it `sessionCloseLinger` (1 s) after the session ends, or when home closes it first, so the capsule arrives (§1). The PoP's uplink treats a 4014 leg end as final, like 4000. The other direction needs nothing new: a party viewer of a home broadcast is fed by an edge pull of home, so D6 passes 4014 on. | Outside viewers are viewers. The fix is the same two halves the rest of this milestone needed: read the code where it arrives, and don't close the connection before it can. |
 | D10 | **The bus reason is `stopped`.** `fi.ioio.gawk.broadcast.ended` gains the reason value `stopped` (schema enum, golden vector, AsyncAPI). `gawk-admin` shows it as "stopped by the broadcaster". | A consumer that pages on `killed` or graphs `gc` must not miscount a stop as either. |
 
 ---
@@ -123,22 +129,11 @@ connection (BE6).
   relay, so the grace holds as before. A `pagehide` handler could try to send
   4014. It was left out: `pagehide` also fires on a reload, which must keep
   the broadcast (docs/44 §4.4), and a bfcache entry can be restored.
-- **A PoP broadcast's outside viewers.** A PoP relay runs the same publish
-  handler, so it ends its own hub on 4014 and its LAN viewers get 4014. The
-  hub closes the uplink leg with 4014 too, but home doesn't act on it: the
-  `/pop/publish` loop doesn't read the code, and the PoP dials home with
-  `Transport.Dial`, whose connection close would usually beat the capsule
-  (§1). Outside viewers wait out the home grace as before. Carrying 4014
-  across the leg is a follow-up: read it in the `/pop/publish` loop, and give
-  the PoP dialer a connection that outlives its sessions.
-- **Desktop End from Paused.** The pause already closed the leg plainly, so
-  `end()` while paused reclaims the code once (bounded by the engine's dial
-  timeout) only to close that leg with 4014. If the dial fails, the grace
-  ends the broadcast as before. End on the crash-recovery Paused page
-  (docs/64 D11) has no session at all and keeps the grace.
-- **iOS capture ended by the system** (screen recording stopped from
-  Control Center, for one) closes plainly, per D9: only the End button and
-  the Live Activity's End send 4014.
+- **Desktop End when the paused reclaim fails, and End on the
+  crash-recovery Paused page** (docs/64 D11), which has no session at all.
+  Both keep the grace.
+- **An iOS capture failure** (an error, a background-mode loss) closes
+  plainly, like every client's failures (D9).
 - **Stop pressed while the web broadcaster is between sessions.** If the
   session died and the resume is waiting with nothing dialled, there is no
   session to close with 4014. The broadcast waits out the grace.
