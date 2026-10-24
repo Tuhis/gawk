@@ -26,6 +26,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/Tuhis/gawk/gawk-telemetry/internal/relayscrape"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/rollup"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/rules"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/schema"
@@ -358,7 +359,8 @@ func (a *API) relayLane(key string, fromMs, toMs int64) (*Lane, []Rehome) {
 		if err != nil {
 			continue
 		}
-		for _, ln := range lines {
+		// Broadcast scope is the home fleet's view (docs/78 D8).
+		for _, ln := range relayscrape.FilterIssuer(lines, "") {
 			var o relayObservation
 			if err := json.Unmarshal(ln, &o); err != nil || o.BroadcastKey != key || o.Broadcast == nil {
 				continue
@@ -498,7 +500,8 @@ func (a *API) DiagnoseBroadcast(key string, since time.Time) (*rules.Report, err
 			if !seenDate[date] {
 				seenDate[date] = true
 				if lines, err := a.store.ReadRelay(date); err == nil {
-					relayLines = append(relayLines, lines...)
+					// Broadcast scope is the home fleet's view (docs/78 D8).
+					relayLines = append(relayLines, relayscrape.FilterIssuer(lines, "")...)
 				}
 			}
 		}
@@ -587,6 +590,8 @@ func setBroadcastRelayFacts(f *rules.Facts, lines [][]byte, key string) {
 	setIngressRatios(f, base, last)
 	bc := last.Broadcast
 	f.SetRelay("publisherActive", boolF(bc.PublisherActive))
+	// docs/77 D16: home's publisher is a PoP's uplink leg.
+	f.SetRelay("publisherPopLeg", boolF(bc.PublisherKind == relayscrape.PublisherKindPopLeg))
 	f.SetRelay("framesRelayed", float64(bc.FramesRelayed))
 	f.SetRelay("ingressFramesLost", float64(bc.IngressFramesLost))
 	f.SetRelay("viewersGlobal", float64(bc.ViewersGlobal))

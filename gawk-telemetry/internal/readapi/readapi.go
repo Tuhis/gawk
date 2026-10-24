@@ -16,6 +16,7 @@
 package readapi
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -600,6 +601,10 @@ func (a *API) DiagnoseRow(row rollup.Row, in rollup.Input, relayObs [][]byte) ru
 // should be believed.
 func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *rules.Facts {
 	f := rules.NewFacts(row.SessionID, "session", row.Role)
+	// docs/78 D8: a session reads the relay that served it — a PoP's
+	// observations for a session that PoP issued, the home fleet's for a
+	// home session — never the other's, even for the same broadcast.
+	relayLines = relayscrape.FilterIssuer(relayLines, row.Issuer)
 
 	// Client side: the LAST observed value of each live signal, plus the
 	// worst-case of the experiential series (a session's verdict is about how
@@ -676,6 +681,7 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 	}
 	if row.Role == "broadcaster" {
 		setUplinkLoss(f, row.Counters)
+		setMemory(f, row)
 	}
 	if row.LongestStallMs > 0 {
 		f.SetClient("timeSinceLastFrameMs", row.LongestStallMs)
@@ -700,7 +706,7 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 		if err := json.Unmarshal(ln, &o); err != nil {
 			continue
 		}
-		if o.Broadcast != nil && o.BroadcastKey == row.BroadcastKey && o.Role != "edge" &&
+		if o.Broadcast != nil && o.BroadcastKey == row.BroadcastKey && !relayscrape.IsEdgeRole(o.Role) &&
 			o.AtMs >= in.StartedAtMs && (in.EndedAtMs == 0 || o.AtMs <= in.EndedAtMs) {
 			cur := o
 			if first == nil || cur.AtMs < first.AtMs {
@@ -724,7 +730,8 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 		}
 		if o.BroadcastKey == row.BroadcastKey && o.Broadcast != nil {
 			f.SetRelay("publisherActive", boolF(o.Broadcast.PublisherActive))
-			if o.Role != "edge" && (anyLast == nil || o.AtMs > anyLast.AtMs) {
+			f.SetRelay("publisherPopLeg", boolF(o.Broadcast.PublisherKind == relayscrape.PublisherKindPopLeg))
+			if !relayscrape.IsEdgeRole(o.Role) && (anyLast == nil || o.AtMs > anyLast.AtMs) {
 				a := o
 				anyLast = &a
 			}
@@ -832,6 +839,7 @@ func setEpisodeFacts(f *rules.Facts, episodes map[string]*rollup.Episodes, role 
 // path reads.
 type relayBroadcast struct {
 	PublisherActive           bool   `json:"publisherActive"`
+	PublisherKind             string `json:"publisherKind"`
 	FramesRelayed             uint64 `json:"framesRelayed"`
 	IngressFramesLost         uint64 `json:"ingressFramesLost"`
 	IngressChunksLost         uint64 `json:"ingressChunksLost"`
@@ -854,6 +862,26 @@ func (b *relayBroadcast) ingressLoss() relayscrape.IngressLoss {
 		FramesLost: b.IngressFramesLost, FramesDamaged: b.IngressFramesDamaged,
 		FramesExpected: b.IngressFramesExpected,
 		ChunksLost:     b.IngressChunksLost, ChunksExpected: b.IngressChunksExpected,
+	}
+}
+
+// setMemory publishes the native broadcaster's memory over the session
+// (docs/77 D11): the footprint's median and peak and its growth from the
+// whole-session summary (the minute events outlive the samples' byte
+// budget), and the heap and video memory as the samples' medians. Absent
+// whenever the session reported none — a browser broadcaster never does.
+func setMemory(f *rules.Facts, row rollup.Row) {
+	if m := row.Memory; m != nil {
+		f.SetClient("memFootprintBytes", m.MedianBytes)
+		f.SetClient("memFootprintPeakBytes", m.PeakBytes)
+		if m.GrowthBytes != nil {
+			f.SetClient("memFootprintGrowthBytes", *m.GrowthBytes)
+		}
+	}
+	for _, name := range []string{"memHeapBytes", "memGpuBytes"} {
+		if st := row.Series[name]; st != nil {
+			f.SetClient(name, st.Median)
+		}
 	}
 }
 
@@ -906,6 +934,7 @@ type relayObservation struct {
 	Role         string          `json:"role"`
 	BroadcastKey string          `json:"broadcastKey"`
 	SessionID    string          `json:"sessionId"`
+	PopName      string          `json:"popName"`
 	Broadcast    *relayBroadcast `json:"broadcast"`
 	Subscriber   *struct {
 		Dropped               uint64 `json:"dropped"`
@@ -1084,7 +1113,10 @@ func (a *API) Compare(sessionID string, since time.Time) (*Comparison, error) {
 // shorter than two intervals cannot have been sampled enough to claim full,
 // even if one scrape happened to catch it.
 func JoinRelay(row *rollup.Row, relayLines [][]byte, interval time.Duration) {
+	// docs/78 D8: only the relay that served this session.
+	relayLines = relayscrape.FilterIssuer(relayLines, row.Issuer)
 	var seen bool
+	var popName string
 	relay := map[string]float64{}
 	for _, ln := range relayLines {
 		var o relayObservation
@@ -1093,6 +1125,7 @@ func JoinRelay(row *rollup.Row, relayLines [][]byte, interval time.Duration) {
 		}
 		if o.SessionID == row.SessionID && o.Subscriber != nil {
 			seen = true
+			popName = cmp.Or(o.PopName, popName)
 			if o.Pod != "" {
 				row.RelayPod = o.Pod
 			}
@@ -1111,6 +1144,7 @@ func JoinRelay(row *rollup.Row, relayLines [][]byte, interval time.Duration) {
 		if o.BroadcastKey == row.BroadcastKey && o.Broadcast != nil {
 			if row.Role == "broadcaster" && o.SessionID == row.SessionID {
 				seen = true
+				popName = cmp.Or(o.PopName, popName)
 				if o.Pod != "" {
 					row.RelayPod = o.Pod
 				}
@@ -1124,6 +1158,13 @@ func JoinRelay(row *rollup.Row, relayLines [][]byte, interval time.Duration) {
 	}
 	if len(relay) > 0 {
 		row.Relay = relay
+	}
+	if seen && popName != "" {
+		// docs/78 D8: which PoP served it, by the name home's operator gave.
+		if row.Config == nil {
+			row.Config = map[string]string{}
+		}
+		row.Config["pop"] = popName
 	}
 	start := time.UnixMilli(row.StartedAt)
 	end := time.UnixMilli(row.EndedAt)

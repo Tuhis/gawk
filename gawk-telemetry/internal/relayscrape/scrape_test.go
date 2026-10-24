@@ -390,3 +390,87 @@ func TestRoundCarriesEachObservationOnce(t *testing.T) {
 		t.Errorf("round carries %d observations but %d were stored", len(obs), stored)
 	}
 }
+
+const popsDocBody = `{
+  "pops": {
+    "a1b2c3": {
+      "displayName": "Assembly 2026",
+      "atMs": 1785715200000,
+      "broadcasts": {
+        "1a2b3c4d5e6f": {
+          "publisherActive": true,
+          "publisherSessionId": "800102030405060708090a0b",
+          "role": "origin",
+          "ingressFramesLost": 7,
+          "subscriberDetails": [
+            {"key":"ee55","sessionId":"80aaaaaaaaaaaaaaaaaaaaaa","dropped":3},
+            {"key":"ff66","internal":true}
+          ]
+        }
+      }
+    }
+  }
+}`
+
+// R77 (docs/78 D7): a link-home pod's PoP observations are stored beside its
+// own, as the PoP's — pod "pop:<issuer>", the PoP hub's role prefixed, its
+// display name — and FilterIssuer keeps the two apart for every reader.
+func TestScrapeStoresPopObservationsAsThePops(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/statusz":
+			w.Write([]byte(originStatusz))
+		case "/internal/telemetry/pops":
+			w.Write([]byte(popsDocBody))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	sink := newFakeSink()
+	s, _ := New(Options{Resolve: StaticResolver([]string{addrOf(srv)}), Sink: sink})
+	s.ScrapeOnce(context.Background())
+
+	var pop []Observation
+	for _, r := range sink.records(t) {
+		if r.Issuer() != "" {
+			pop = append(pop, r)
+		}
+	}
+	if len(pop) != 2 {
+		t.Fatalf("pop observations = %d, want the broadcast and its one real viewer", len(pop))
+	}
+	for _, o := range pop {
+		if o.Pod != "pop:a1b2c3" || o.Issuer() != "a1b2c3" || o.Role != "pop-origin" || o.PopName != "Assembly 2026" {
+			t.Errorf("pop observation = pod %q issuer %q role %q name %q", o.Pod, o.Issuer(), o.Role, o.PopName)
+		}
+	}
+
+	var lines [][]byte
+	for _, r := range sink.records(t) {
+		b, _ := json.Marshal(r)
+		lines = append(lines, b)
+	}
+	if got := len(FilterIssuer(lines, "a1b2c3")); got != 2 {
+		t.Errorf("FilterIssuer(pop) kept %d lines, want 2", got)
+	}
+	if got := len(FilterIssuer(lines, "")); got != len(lines)-2 {
+		t.Errorf("FilterIssuer(home) kept %d of %d lines, want every home line and no PoP line", got, len(lines))
+	}
+}
+
+// A pod without the route (no link, or a relay predating R77) is fine.
+func TestScrapeWithoutThePopsRouteStillAnswers(t *testing.T) {
+	origin := podServing(t, originStatusz) // 404s the pops route
+	sink := newFakeSink()
+	s, _ := New(Options{Resolve: StaticResolver([]string{addrOf(origin)}), Sink: sink})
+	s.ScrapeOnce(context.Background())
+	for _, r := range sink.records(t) {
+		if r.Issuer() != "" {
+			t.Fatalf("a pop observation from a pod without the route: %+v", r)
+		}
+	}
+	if len(sink.records(t)) == 0 {
+		t.Fatal("the pod's own observations were lost")
+	}
+}

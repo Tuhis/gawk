@@ -72,6 +72,15 @@ const (
 	// hold one frame's burst and sheds its head every time. Firefox 154
 	// defaults to 1, measured.
 	minSafeDatagramQueue = 16
+	// R76 (docs/77 D1, owner 2026-10-24): what a native broadcaster may hold
+	// while live, in the footprint the OS's own task manager shows. MiB,
+	// because that is the unit Task Manager and Activity Monitor label "MB".
+	memoryBudgetBytes = 100 << 20
+	// docs/77 D11: growth from the window after warm-up to the session's last
+	// window that is more than the 1 Hz footprint's jitter. The one known
+	// leak (BUGS.md, the quinn waiter) costs under 1 MiB an hour; this is
+	// what ten hours of it, or one real leak, would show.
+	memoryGrowthWarnBytes = 32 << 20
 )
 
 // Playbook returns the full rule set.
@@ -82,6 +91,7 @@ func Playbook() []Rule {
 		relayEgressSaturation(),
 		legABroadcasterUplink(),
 		relayIntakeDrops(),
+		popUplinkLeg(),
 		encoderOverload(),
 		sendPathGap(),
 		decoderChoking(),
@@ -98,6 +108,89 @@ func Playbook() []Rule {
 		intermittentFpsDips(),
 		keyframeOnlyDelivery(),
 		deliveredBelowTarget(),
+		memoryOverBudget(),
+		memoryGrowth(),
+	}
+}
+
+// memoryEvidence cites what the footprint is made of, where it was measured:
+// the peak, the Rust heap and the video memory (docs/77 D2–D5). Footprint
+// far above heap is memory held through libraries — the GPU driver, the
+// media frameworks, the UI renderer — and that is where to look first.
+func memoryEvidence(f *Facts) []Evidence {
+	var ev []Evidence
+	for _, s := range []struct{ name, comparison string }{
+		{"memFootprintPeakBytes", "highest seen"},
+		{"memHeapBytes", "the app's own Rust heap"},
+		{"memGpuBytes", "video memory, beside the footprint"},
+	} {
+		if v, ok := f.Client(s.name); ok {
+			ev = append(ev, Evidence{Signal: s.name, Value: v, Unit: "bytes", From: FromClient, Comparison: s.comparison})
+		}
+	}
+	return ev
+}
+
+// R76 (docs/77 D11): the native broadcaster holds more than its budget. A
+// warning however far over: the machine pays, viewers see nothing.
+func memoryOverBudget() Rule {
+	return Rule{
+		ID:       "memory-over-budget",
+		Scope:    "broadcaster",
+		Requires: []string{"client.memFootprintBytes"},
+		Verdict:  "The broadcaster uses more memory than its budget",
+		Action: "Compare the footprint with memHeapBytes and memGpuBytes: footprint far above " +
+			"the heap is library memory (GPU driver, media frameworks, UI renderer); the " +
+			"memCaptureBytes … memTelemetryBytes components say which of the app's own queues " +
+			"hold it (docs/77 §6).",
+		Why: "The native broadcaster runs beside the game it shares, so every megabyte it holds is " +
+			"one the game does not have. The footprint is the figure the OS's own task manager " +
+			"shows, so the verdict matches what the person broadcasting sees. Never worse than a " +
+			"warning: memory costs the machine, not the stream.",
+		Thresholds: []Threshold{
+			{Name: "memoryBudgetBytes", Value: memoryBudgetBytes, Unit: "bytes", Note: "the footprint a live native broadcaster may hold (owner, 2026-10-24)"},
+		},
+		Eval: func(f *Facts) *Finding {
+			fp, _ := f.Client("memFootprintBytes")
+			if fp <= memoryBudgetBytes {
+				return nil
+			}
+			ev := append([]Evidence{
+				{Signal: "memFootprintBytes", Value: fp, Unit: "bytes", From: FromClient, Comparison: "above the budget"},
+			}, memoryEvidence(f)...)
+			return &Finding{Severity: SeverityWarn, Confidence: 0.9, Evidence: ev}
+		},
+	}
+}
+
+// R76 (docs/77 D11): the footprint grew over the session — a leak, or a
+// mid-stream change that costs memory. The session's events (a
+// delivery-changed, a restart) say which.
+func memoryGrowth() Rule {
+	return Rule{
+		ID:       "memory-growth",
+		Scope:    "broadcaster",
+		Requires: []string{"client.memFootprintGrowthBytes"},
+		Verdict:  "The broadcaster's memory grew during the broadcast",
+		Action: "Line the growth up with the session's events: a delivery-changed or restart at the " +
+			"step is a setting that costs memory; a steady climb is a leak. The memory summary on " +
+			"the rollup row has the early and late medians (docs/77 §6).",
+		Why: "Growth is measured from the window after a two-minute warm-up to the session's last " +
+			"window, over the minute memory events, which outlive the telemetry byte budget — so a " +
+			"long broadcast is judged on all of it, not only until its samples ran out.",
+		Thresholds: []Threshold{
+			{Name: "memoryGrowthWarnBytes", Value: memoryGrowthWarnBytes, Unit: "bytes", Note: "late-window median above the early one by more than this"},
+		},
+		Eval: func(f *Facts) *Finding {
+			g, _ := f.Client("memFootprintGrowthBytes")
+			if g <= memoryGrowthWarnBytes {
+				return nil
+			}
+			ev := append([]Evidence{
+				{Signal: "memFootprintGrowthBytes", Value: g, Unit: "bytes", From: FromClient, Comparison: "late window over early"},
+			}, memoryEvidence(f)...)
+			return &Finding{Severity: SeverityWarn, Confidence: 0.8, Evidence: ev}
+		},
 	}
 }
 
@@ -463,7 +556,7 @@ func legABroadcasterUplink() Rule {
 		},
 		Eval: func(f *Facts) *Finding {
 			legA := legALoss(f)
-			if !legA.dirty() || intakeNotUplink(f, legA) {
+			if !legA.dirty() || intakeNotUplink(f, legA) || popLeg(f) {
 				return nil
 			}
 			sev := SeverityWarn
@@ -506,7 +599,7 @@ func relayIntakeDrops() Rule {
 		},
 		Eval: func(f *Facts) *Finding {
 			legA := legALoss(f)
-			if !legA.dirty() || !intakeNotUplink(f, legA) {
+			if !legA.dirty() || !intakeNotUplink(f, legA) || popLeg(f) {
 				return nil
 			}
 			up, _ := f.Client("uplinkPacketLossRatio")
@@ -529,6 +622,49 @@ func relayIntakeDrops() Rule {
 type legA struct {
 	whole, frames, chunks             float64
 	haveWhole, haveFrames, haveChunks bool
+}
+
+// popLeg reports whether home's publisher for this broadcast is a PoP's
+// uplink leg (docs/76, docs/77 D16): its ingress loss is then the venue's
+// internet line, and the broadcaster's rows stand aside for popUplinkLeg.
+func popLeg(f *Facts) bool {
+	v, ok := f.Relay("publisherPopLeg")
+	return ok && v == 1
+}
+
+// docs/77 D16: the relay's ingress loss on a broadcast whose publisher here is
+// a PoP's uplink leg. The broadcaster publishes to the PoP over the venue's
+// LAN; what home is missing, the venue's internet line lost.
+func popUplinkLeg() Rule {
+	return Rule{
+		ID:       "pop-uplink-leg",
+		Scope:    "broadcast",
+		Requires: []string{"relay.ingressLossRatio", "relay.publisherPopLeg"},
+		Verdict:  "The party's internet line is losing frames on the way home — the PoP's uplink leg, not the broadcaster",
+		Action: "Not the broadcaster's settings: it publishes to the PoP over the venue's LAN. Check the " +
+			"PoP's uplink in gawk-admin (its line and its budget, docs/76); a leg on datagrams " +
+			"(-pop-leg-delivery) gives up R73's retransmission.",
+		Why: "Home holds a PoP's uplink leg as this broadcast's publisher, so the ingress window that " +
+			"measures a broadcaster's uplink everywhere else measures the venue's internet line here. " +
+			"Blaming the broadcaster sends them to drop a rung that crosses no internet link at all.",
+		Thresholds: []Threshold{
+			{Name: "ingressLossWarn", Value: ingressLossWarn, Unit: "ratio", Note: "whole frames lost above which ingress loss is real rather than noise"},
+			{Name: "ingressLossBad", Value: ingressLossBad, Unit: "ratio", Note: "whole frames lost above which it is broken rather than degraded"},
+		},
+		Eval: func(f *Facts) *Finding {
+			legA := legALoss(f)
+			if !popLeg(f) || !legA.dirty() {
+				return nil
+			}
+			sev := SeverityWarn
+			if legA.bad() {
+				sev = SeverityBad
+			}
+			ev := append(legA.evidence(), Evidence{Signal: "publisherPopLeg", Value: 1, From: FromRelay,
+				Comparison: "home's publisher is a PoP's uplink leg"})
+			return &Finding{Severity: sev, Confidence: 0.9, Evidence: ev}
+		},
+	}
 }
 
 func legALoss(f *Facts) legA {

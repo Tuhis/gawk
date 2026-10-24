@@ -23,6 +23,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/Tuhis/gawk/gawk-telemetry/internal/relayscrape"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/rollup"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/schema"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/sessions"
@@ -146,7 +147,7 @@ func (a *API) ExplainDips(sessionID string, since time.Time) (*DipReport, error)
 
 	offset := clockOffset(lines, in.StartedAtMs)
 	at := func(tMs float64) int64 { return in.StartedAtMs + int64(tMs) + int64(offset) }
-	relayLines := a.relayLinesForSpan(in.StartedAtMs, in.EndedAtMs)
+	relayLines := relayscrape.FilterIssuer(a.relayLinesForSpan(in.StartedAtMs, in.EndedAtMs), in.Issuer)
 	peers := a.peerSessions(in.BroadcastKey, sessionID, since)
 
 	for _, sp := range spans {
@@ -294,7 +295,7 @@ func relayMovers(lines [][]byte, sessionID string, fromMs, toMs int64) []Mover {
 			record("dvrResyncs", float64(o.Subscriber.DVRResyncs))
 			record("queueDepth", float64(o.Subscriber.QueueDepth))
 		}
-		if o.Broadcast != nil && o.Role != "edge" {
+		if o.Broadcast != nil && !relayscrape.IsEdgeRole(o.Role) {
 			any = true
 			record("ingressFramesLost", float64(o.Broadcast.IngressFramesLost))
 			record("datagramsDropped", float64(o.Broadcast.DatagramsDropped))

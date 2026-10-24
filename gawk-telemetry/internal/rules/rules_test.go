@@ -97,6 +97,24 @@ func TestEveryPlaybookRowFiresAndDoesNot(t *testing.T) {
 			quiet: func() *Facts { return f7Facts(0.012) },
 		},
 		{
+			// docs/77 D16: home's publisher is a PoP's uplink leg, so its
+			// ingress loss is the venue's internet line.
+			id: "pop-uplink-leg",
+			fires: func() *Facts {
+				f := bcastFacts()
+				f.SetRelay("ingressLossRatio", 0.04)
+				f.SetRelay("publisherPopLeg", 1)
+				return f
+			},
+			quiet: func() *Facts {
+				// The same loss from a broadcaster is leg A's, not this row's.
+				f := bcastFacts()
+				f.SetRelay("ingressLossRatio", 0.04)
+				f.SetRelay("publisherPopLeg", 0)
+				return f
+			},
+		},
+		{
 			id: "encoder-overload",
 			fires: func() *Facts {
 				f := castFacts()
@@ -360,6 +378,35 @@ func TestEveryPlaybookRowFiresAndDoesNot(t *testing.T) {
 				f.SetClient("targetFps", 30)
 				f.SetClient("sentFps", 30)
 				f.SetClient("captureFps", 30)
+				return f
+			},
+		},
+		{
+			// R76 (docs/77): the 250 MB the Windows broadcaster held before
+			// anyone looked.
+			id: "memory-over-budget",
+			fires: func() *Facts {
+				f := castFacts()
+				f.SetClient("memFootprintBytes", 250<<20)
+				return f
+			},
+			quiet: func() *Facts {
+				f := castFacts()
+				f.SetClient("memFootprintBytes", 90<<20)
+				return f
+			},
+		},
+		{
+			// …and the 500 MB it gained mid-stream.
+			id: "memory-growth",
+			fires: func() *Facts {
+				f := castFacts()
+				f.SetClient("memFootprintGrowthBytes", 500<<20)
+				return f
+			},
+			quiet: func() *Facts {
+				f := castFacts()
+				f.SetClient("memFootprintGrowthBytes", 8<<20)
 				return f
 			},
 		},
@@ -664,5 +711,57 @@ func TestSourceLimitedShortfallDoesNotBlameTheEncoder(t *testing.T) {
 	}
 	if !strings.Contains(fd.Verdict, "source-limited") {
 		t.Errorf("verdict does not name the source as the limit: %q", fd.Verdict)
+	}
+}
+
+// R76 (docs/77 D11): memory never makes a stream "bad" — viewers see
+// nothing of it — and the evidence names where the memory is.
+func TestMemoryFindingsWarnAndSayWhere(t *testing.T) {
+	f := castFacts()
+	f.SetClient("memFootprintBytes", 750<<20)
+	f.SetClient("memFootprintPeakBytes", 760<<20)
+	f.SetClient("memHeapBytes", 40<<20)
+	f.SetClient("memGpuBytes", 300<<20)
+	f.SetClient("memFootprintGrowthBytes", 500<<20)
+	rep := Evaluate(f, Playbook())
+	for _, id := range []string{"memory-over-budget", "memory-growth"} {
+		got := findingByID(rep, id)
+		if got == nil {
+			t.Fatalf("%s did not fire", id)
+		}
+		if got.Severity != SeverityWarn {
+			t.Errorf("%s: severity %s, want warn however large", id, got.Severity)
+		}
+	}
+	signals := map[string]bool{}
+	for _, e := range findingByID(rep, "memory-over-budget").Evidence {
+		signals[e.Signal] = true
+	}
+	for _, want := range []string{"memFootprintBytes", "memFootprintPeakBytes", "memHeapBytes", "memGpuBytes"} {
+		if !signals[want] {
+			t.Errorf("evidence lacks %s: %v", want, signals)
+		}
+	}
+}
+
+// docs/77 D16: on a broadcast whose home publisher is a PoP's uplink leg,
+// the broadcaster's rows stand aside — the broadcaster's own uplink is the
+// venue's LAN, and no rung change on it fixes the venue's internet line.
+func TestAPopLegsLossIsNeverTheBroadcastersUplink(t *testing.T) {
+	legA := bcastFacts()
+	legA.SetRelay("ingressLossRatio", 0.04)
+	legA.SetRelay("publisherPopLeg", 1)
+	intake := f7Facts(0)
+	intake.SetRelay("publisherPopLeg", 1)
+	for name, f := range map[string]*Facts{"leg A": legA, "intake": intake} {
+		rep := Evaluate(f, Playbook())
+		for _, id := range []string{"leg-a-broadcaster-uplink", "relay-intake-drops"} {
+			if findingByID(rep, id) != nil {
+				t.Errorf("%s: %s fired on a PoP leg", name, id)
+			}
+		}
+		if findingByID(rep, "pop-uplink-leg") == nil {
+			t.Errorf("%s: pop-uplink-leg did not fire", name)
+		}
 	}
 }

@@ -1212,3 +1212,55 @@ func TestDipWindowIsBounded(t *testing.T) {
 		}
 	}
 }
+
+// R77 (docs/78 D8): in the live view a PoP's observations feed only the
+// sessions it served. The broadcast's viewer count and pod come from home;
+// a PoP viewer is marked with its issuer, gets its own relay facts and its
+// own peers, and none of home's broadcast-level facts.
+func TestPopObservationsFeedOnlyTheirSessions(t *testing.T) {
+	p, _ := newProj()
+	const issuer = "a1b2c3"
+	homeSub := relayscrape.Subscriber{SessionID: "000000000000000000000001", Dropped: 50}
+	obs := relayObs(homeSub)
+	popBC := relayscrape.Broadcast{PublisherActive: true, Role: "origin", Subscribers: 3, FramesRelayed: 20000}
+	obs = append(obs, relayscrape.Observation{
+		Kind: "broadcast", Pod: "pop:" + issuer, Role: "pop-origin",
+		BroadcastKey: "1a2b3c4d5e6f", Broadcast: &popBC,
+	})
+	popSub := relayscrape.Subscriber{SessionID: "80aaaaaaaaaaaaaaaaaaaaaa", Dropped: 1}
+	obs = append(obs, relayscrape.Observation{
+		Kind: "subscriber", Pod: "pop:" + issuer, Role: "pop-origin",
+		BroadcastKey: "1a2b3c4d5e6f", SessionID: popSub.SessionID, Subscriber: &popSub,
+	})
+	p.ObserveRelay(round(obs))
+	popSub.Dropped = 4
+	homeSub.Dropped = 90
+	obs2 := relayObs(homeSub)
+	obs2 = append(obs2, obs[len(obs)-2], relayscrape.Observation{
+		Kind: "subscriber", Pod: "pop:" + issuer, Role: "pop-origin",
+		BroadcastKey: "1a2b3c4d5e6f", SessionID: popSub.SessionID, Subscriber: &popSub,
+	})
+	p.ObserveRelay(round(obs2))
+
+	snap := p.Snapshot()
+	if len(snap.Live) != 1 || snap.Live[0].Pod != "pod-a" {
+		t.Fatalf("broadcast pod = %+v, want home's pod-a only", snap.Live)
+	}
+	v := findSession(snap, popSub.SessionID)
+	if v == nil || v.Issuer != issuer {
+		t.Fatalf("PoP viewer = %+v, want issuer %s", v, issuer)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	s := p.bcasts["1a2b3c4d5e6f"].sessions[popSub.SessionID]
+	if s.relayFacts["subscriberDropped"] != 3 || s.relayFacts["peerMedianDropped"] != 3 {
+		t.Errorf("PoP viewer's relay facts %v, want its own delta 3 and its own peer median", s.relayFacts)
+	}
+	if _, ok := s.relayFacts["ingressLossRatio"]; ok {
+		t.Error("a PoP viewer got home's broadcast-level ingress loss")
+	}
+	h := p.bcasts["1a2b3c4d5e6f"].sessions[homeSub.SessionID]
+	if h.relayFacts["peerMedianDropped"] != 40 {
+		t.Errorf("home viewer's peer median %v, want home's own 40", h.relayFacts["peerMedianDropped"])
+	}
+}
