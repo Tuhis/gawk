@@ -718,6 +718,14 @@ async fn run<C, F>(
                     let warning = uplink.observe(&st);
                     let bps = upload_rate.sample(media_bytes(&st), tokio::time::Instant::now());
                     if let Some(l) = live.lock().unwrap().as_mut() {
+                        if l.upload.warning != warning {
+                            // What the broadcaster was told, as the desktop
+                            // shell reports it (docs/77 D13).
+                            reporter.event(
+                                "uplink-warning",
+                                if warning { "raised" } else { "cleared" },
+                            );
+                        }
                         l.upload.warning = warning;
                         l.upload.bps = bps.or(l.upload.bps);
                     }
