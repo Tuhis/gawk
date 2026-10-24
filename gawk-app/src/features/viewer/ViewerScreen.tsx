@@ -147,6 +147,13 @@ function endCardCopy(reason: ViewerEndReason): { title: string; body: string } {
       };
     case 'normal':
       return { title: 'Broadcast ended', body: 'The stream is over.' };
+    // docs/77 D8: the session is still dialling the code, and the card must
+    // say so, or the viewer closes a tab that would have resumed.
+    case 'stopped':
+      return {
+        title: 'Broadcast ended',
+        body: 'The broadcaster stopped. Keep this page open and the stream comes back if they start again on this code.',
+      };
   }
 }
 
@@ -261,6 +268,7 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     errorKind,
     errorFatal,
     endReason,
+    stageStale,
     retryNote,
     telemetrySessionId,
     presentation,
@@ -695,7 +703,15 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
         setMenu({ x: e.clientX, y: e.clientY });
       }}
     >
-      <canvas ref={canvasRef} className={styles.canvas} />
+      {/* Hidden, not cleared, after a broadcaster's Stop (docs/77 D7): the
+          worker owns the OffscreenCanvas, and the restarted stream's first
+          frame replaces the stale one before it is shown again. Visibility,
+          not display, so the canvas keeps its layout and the worker draws on. */}
+      <canvas
+        ref={canvasRef}
+        className={styles.canvas}
+        style={stageStale ? { visibility: 'hidden' } : undefined}
+      />
 
       {/* The hidden native-fullscreen surface — exists only on gated devices
           once armed AND while the probe still passes: a mid-view codec

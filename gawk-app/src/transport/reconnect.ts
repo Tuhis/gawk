@@ -4,6 +4,7 @@
 
 import {
   CLOSE_CODE_BROADCAST_ENDED,
+  CLOSE_CODE_BROADCASTER_STOPPED,
   CLOSE_CODE_POP_UPLINK_FULL,
   CLOSE_CODE_PUBLISHER_SUPERSEDED,
   CLOSE_CODE_ROOM_ENDED,
@@ -70,6 +71,27 @@ export const POP_UPLINK_FULL_RETRY_MS = 20_000;
 
 export function isPopUplinkFull(code: number | null | undefined): boolean {
   return code === CLOSE_CODE_POP_UPLINK_FULL;
+}
+
+// R76 (docs/77 D7): 4014 BroadcasterStopped means the broadcaster pressed
+// Stop. It is NOT terminal and deliberately absent from
+// TERMINAL_VIEWER_CLOSE_CODES: the viewer shows "Broadcast ended" and keeps
+// dialling the same code, so a restart on it resumes playback by itself.
+// A fixed cadence, not the ladder: the restart is a human action seconds to
+// minutes away. The jitter spreads a big audience's redials (~200
+// handshakes/s for 1000 viewers). These dials never spend the reconnect
+// budget, the 4012 pattern.
+export const BROADCASTER_STOPPED_RETRY_MS = 5_000;
+export const BROADCASTER_STOPPED_JITTER_MS = 1_000;
+
+export function isBroadcasterStopped(code: number | null | undefined): boolean {
+  return code === CLOSE_CODE_BROADCASTER_STOPPED;
+}
+
+// One waiting redial's delay; `random` is in [0, 1), Math.random by default
+// and fixed in tests.
+export function broadcasterStoppedRetryMs(random: () => number = Math.random): number {
+  return BROADCASTER_STOPPED_RETRY_MS + Math.floor(random() * BROADCASTER_STOPPED_JITTER_MS);
 }
 
 // The first retry after an *abrupt* session death (no close code — a crashed

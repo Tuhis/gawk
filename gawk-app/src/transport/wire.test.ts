@@ -148,6 +148,7 @@ import {
   TYPE_LOCAL_RELAY_OFFER,
   CLOSE_CODE_POP_UPLINK_FULL,
   CLOSE_CODE_POP_NO_DEMAND,
+  CLOSE_CODE_BROADCASTER_STOPPED,
   LOCAL_RELAY_LINKED,
   LOCAL_RELAY_ON_WALL,
   LOCAL_RELAY_INFO_MIN_SIZE,
@@ -809,6 +810,14 @@ describe('SessionClosing (R57)', () => {
   it('encodes the golden 4012 notice byte-for-byte', () => {
     expect(toHex(encodeSessionClosing(CLOSE_CODE_POP_UPLINK_FULL))).toBe('011700000fac');
     expect(parseSessionClosing(fromHex('011700000fac'))).toBe(4012);
+  });
+
+  // R76: 4014 BroadcasterStopped is noticed to viewers (docs/77 D5).
+  // closing_test.go goldenSessionClosingBroadcasterStoppedHex.
+  it('encodes the golden 4014 notice byte-for-byte', () => {
+    expect(CLOSE_CODE_BROADCASTER_STOPPED).toBe(4014);
+    expect(toHex(encodeSessionClosing(CLOSE_CODE_BROADCASTER_STOPPED))).toBe('011700000fae');
+    expect(parseSessionClosing(fromHex('011700000fae'))).toBe(4014);
   });
 
   it('is strict: exact size, version, type, and the gawk code range', () => {

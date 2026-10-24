@@ -15,6 +15,7 @@ import {
   BroadcastPipeline,
   BroadcastStartError,
   type BroadcastCallbacks,
+  type BroadcastStopOptions,
   type BroadcastStartPhase,
   type BroadcastStats,
   type EncoderSettings,
@@ -51,7 +52,9 @@ export type BroadcastWorkerCommand =
   | { type: 'captureFailed'; message: string }
   | { type: 'setLadder'; selection: ResolutionSelection; framerate: FramerateSelection }
   | { type: 'setEncoderSettings'; settings: EncoderSettings }
-  | { type: 'stop' };
+  // end: a deliberate Stop, closing the session with 4014 (docs/77 D9).
+  // Absent on every other stop.
+  | { type: 'stop'; end?: boolean };
 
 // Worker → main thread. Small control/telemetry messages only — VideoFrames
 // are born, encoded and closed inside the worker and never appear here.
@@ -93,7 +96,7 @@ export interface BroadcastWorkerHost {
 // Injectable for tests; the default wires a real BroadcastPipeline.
 export type BroadcastPipelineLike = {
   start(): Promise<void>;
-  stop(): Promise<void>;
+  stop(opts?: BroadcastStopOptions): Promise<void>;
   setLadder(selection: ResolutionSelection, framerate: FramerateSelection): void;
   setEncoderSettings(settings: EncoderSettings): void;
 };
@@ -262,12 +265,12 @@ export class BroadcastWorkerCore {
   // Stops the live pipeline and always answers with 'ended' — the pipeline's
   // own onEnded is generation-filtered here, and the main-side session awaits
   // this event to resolve its stop().
-  async stop(): Promise<void> {
+  async stop(opts?: BroadcastStopOptions): Promise<void> {
     this.generation++;
     this.rejectPendingCapture(new Error('broadcast stopped'));
     const p = this.pipeline;
     this.pipeline = null;
-    if (p) await p.stop();
+    if (p) await p.stop({ end: opts?.end === true });
     this.host.post({ type: 'ended' });
   }
 

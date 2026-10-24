@@ -288,6 +288,33 @@ describe('WorkerBroadcastSession failure + end mapping', () => {
   });
 });
 
+// docs/77 D9: an end stop says so to the worker; a plain one is unchanged.
+describe('WorkerBroadcastSession end stop (R76)', () => {
+  it('stop({ end: true }) posts an end stop', async () => {
+    const { session, worker } = makeSession();
+    void session.start().catch(() => {});
+    worker.emit({ type: 'awaitingCapture' });
+    await flush();
+    const stopping = session.stop({ end: true });
+    expect(worker.commands()).toContainEqual({ type: 'stop', end: true });
+    worker.emit({ type: 'ended' });
+    await stopping;
+  });
+
+  it('a plain stop posts the plain command', async () => {
+    const { session, worker } = makeSession();
+    void session.start().catch(() => {});
+    worker.emit({ type: 'awaitingCapture' });
+    await flush();
+    const stopping = session.stop();
+    const stops = worker.commands().filter((c) => c.type === 'stop');
+    expect(stops).toEqual([{ type: 'stop' }]);
+    expect('end' in stops[0]).toBe(false);
+    worker.emit({ type: 'ended' });
+    await stopping;
+  });
+});
+
 describe('createBroadcastSession fallback', () => {
   it('falls back to the main-thread BroadcastPipeline without Worker/captureStream (jsdom)', async () => {
     const session = await createBroadcastSession(

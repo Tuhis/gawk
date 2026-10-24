@@ -117,9 +117,14 @@ export interface ViewerConnectionState {
   // to a viewer).
   errorKind: ViewerErrorKind | null;
   errorFatal: boolean;
-  // 'moderated' when close code 4006 ended the broadcast. Only meaningful
-  // while `status` is 'ended'.
+  // 'moderated' when close code 4006 ended the broadcast, 'stopped' when the
+  // broadcaster pressed Stop (4014) and the session waits for a restart.
+  // Only meaningful while `status` is 'ended'.
   endReason: ViewerEndReason;
+  // docs/77 D7: true from a broadcaster's Stop until the restarted stream has
+  // completed a frame. The canvas still holds the stopped stream's last
+  // frame, so the screen hides it rather than leave a static image up.
+  stageStale: boolean;
   retryNote: string | null;
   // R74 (docs/76 item 28): the relay refused this viewer with 4012, because
   // the broadcast is at a LAN party whose internet is full. It stays true
@@ -210,6 +215,8 @@ export function useViewerConnection(
   const [retryNote, setRetryNote] = useState<string | null>(null);
   const [popFull, setPopFull] = useState(false);
   const popFullRef = useRef(false);
+  const [stageStale, setStageStale] = useState(false);
+  const stageStaleRef = useRef(false);
   // The MSE capability verdict, computed on the main thread from the
   // negotiated codec (the codec event re-computes it, so a mid-view codec
   // change — a broadcaster restart with a different encoder — updates the
@@ -402,6 +409,8 @@ export function useViewerConnection(
     setRetryNote(null);
     popFullRef.current = false;
     setPopFull(false);
+    stageStaleRef.current = false;
+    setStageStale(false);
   }, []);
 
   // Telemetry rides the SAME event funnel both paths
@@ -475,6 +484,11 @@ export function useViewerConnection(
         }
         break;
       case 'stats': {
+        // The restarted stream has its own frame on the canvas now.
+        if (stageStaleRef.current && (ev.stats.framesCompleted ?? 0) > 0) {
+          stageStaleRef.current = false;
+          setStageStale(false);
+        }
         if (popFullRef.current && (ev.stats.framesCompleted ?? 0) > 0) {
           popFullRef.current = false;
           setPopFull(false);
@@ -583,6 +597,25 @@ export function useViewerConnection(
         telemetry.finish();
         // A drop before we ever connected is an error, not a clean end.
         setStatus((prev) => (prev === 'connecting' || prev === 'error' ? 'error' : 'ended'));
+        break;
+      // docs/77 D7: the broadcaster pressed Stop. The ended card goes up, and
+      // the session keeps redialling the code underneath it; its next
+      // 'connected' puts the status back to 'watching'.
+      case 'stopped':
+        popFullRef.current = false;
+        setPopFull(false);
+        setRetryNote(null);
+        setEndReason('stopped');
+        stageStaleRef.current = true;
+        setStageStale(true);
+        // The stopped stream's buffered audio must not play on under the
+        // card; the restart's pipeline re-anchors the sink anyway.
+        handleAudioReset();
+        // The relay session is over, so this is its final flush, as for
+        // 'ended'. A restart's hello begins a fresh telemetry session.
+        telemetry.event('stopped');
+        telemetry.finish();
+        setStatus('ended');
         break;
       // Gated-device-only segment stream (the worker emits it only when
       // init carried the presentationMux flag and the screen armed). Straight
@@ -790,6 +823,9 @@ export function useViewerConnection(
         onEnded: (reason) => {
           if (active) applyEvent({ type: 'ended', reason });
         },
+        onStopped: () => {
+          if (active) applyEvent({ type: 'stopped' });
+        },
         // The main-thread pipeline decodes audio in place and feeds the
         // same sink — no worker crossing on this path.
         onAudioChunk: (chunk) => {
@@ -856,6 +892,7 @@ export function useViewerConnection(
     errorKind,
     errorFatal,
     endReason,
+    stageStale,
     retryNote,
     popFull,
     telemetrySessionId,

@@ -20,6 +20,7 @@ import {
   captureMediaSourceFrom,
   DEFAULT_ENCODER_SETTINGS,
   type BroadcastCallbacks,
+  type BroadcastStopOptions,
   type BroadcastSessionLike,
   type EncoderSettings,
 } from '../../transport/broadcaster';
@@ -119,7 +120,7 @@ export class WorkerBroadcastSession implements BroadcastSessionLike {
     });
   }
 
-  async stop(): Promise<void> {
+  async stop(opts?: BroadcastStopOptions): Promise<void> {
     if (this.disposed || this.ended) return;
     // Kill the capture indicator immediately; the worker stops its clone in
     // pipeline teardown.
@@ -128,7 +129,10 @@ export class WorkerBroadcastSession implements BroadcastSessionLike {
       this.handleEnded();
       return;
     }
-    this.post({ type: 'stop' });
+    // The worker's pipeline closes the session (with 4014 for an end stop)
+    // before it answers 'ended'. The timeout below is for a hung worker,
+    // whose session dies with it and falls back to the relay's grace.
+    this.post(opts?.end ? { type: 'stop', end: true } : { type: 'stop' });
     let timer: ReturnType<typeof setTimeout> | null = null;
     await new Promise<void>((resolve) => {
       this.stopWaiter = resolve;

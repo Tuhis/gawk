@@ -49,6 +49,8 @@ import {
   encodeViewerCount,
   parseClockMapping,
   parseTimeSync,
+  CLOSE_CODE_BROADCASTER_STOPPED,
+  CLOSE_CODE_TERMINATED_BY_OPERATOR,
 } from './wire';
 
 // Golden BroadcastAnnounce for ID K7XQ2M.
@@ -57,6 +59,8 @@ const ANNOUNCE_K7XQ2M = new Uint8Array([0x01, 0x03, 0x06, 0x4b, 0x37, 0x58, 0x51
 interface FakeWT {
   wt: WebTransport;
   close: ReturnType<typeof vi.fn>;
+  // Settles `closed` like the relay ending the session.
+  die: (info: unknown) => void;
 }
 
 // announceChunks: byte chunks delivered on the first server-initiated uni
@@ -88,7 +92,7 @@ function makeFakeWT(announceChunks: Uint8Array[] | null, moreStreams: Uint8Array
     datagrams: { maxDatagramSize: 1200 },
     close,
   } as unknown as WebTransport;
-  return { wt, close };
+  return { wt, close, die: (info) => resolveClosed(info) };
 }
 
 function makeCaptureHandle() {
@@ -254,6 +258,73 @@ describe('BroadcastPipeline stop() racing the first dial', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// docs/77 D9: only a deliberate Stop tells the relay to end the broadcast
+// now (4014); every other teardown closes plainly, so the relay's grace keeps
+// the viewers through what may be a reload or a blip.
+describe('BroadcastPipeline stop() close code (R76)', () => {
+  it('an end stop closes the session with 4014', async () => {
+    const fake = makeFakeWT([ANNOUNCE_K7XQ2M]);
+    connectWebTransport.mockResolvedValue(fake.wt);
+    startCapture.mockResolvedValue(makeCaptureHandle());
+    const cbs = makeCallbacks();
+    const pipeline = makePipeline(cbs);
+    await pipeline.start();
+    await pipeline.stop({ end: true });
+    expect(fake.close).toHaveBeenCalledTimes(1);
+    expect(fake.close).toHaveBeenCalledWith({
+      closeCode: CLOSE_CODE_BROADCASTER_STOPPED,
+      reason: 'broadcaster stopped',
+    });
+    expect(cbs.onEnded).toHaveBeenCalledTimes(1);
+  });
+
+  it('a plain stop closes the session without a code', async () => {
+    const fake = makeFakeWT([ANNOUNCE_K7XQ2M]);
+    connectWebTransport.mockResolvedValue(fake.wt);
+    startCapture.mockResolvedValue(makeCaptureHandle());
+    const pipeline = makePipeline(makeCallbacks());
+    await pipeline.start();
+    await pipeline.stop();
+    expect(fake.close).toHaveBeenCalledTimes(1);
+    expect(fake.close.mock.calls[0]).toEqual([]);
+  });
+
+  it('a failure closes the session without a code', async () => {
+    const fake = makeFakeWT([ANNOUNCE_K7XQ2M]);
+    connectWebTransport.mockResolvedValue(fake.wt);
+    startCapture.mockResolvedValue(makeCaptureHandle());
+    const cbs = makeCallbacks();
+    const pipeline = makePipeline(cbs);
+    await pipeline.start();
+    // A terminal relay close: fail() stops the pipeline.
+    fake.die({ closeCode: CLOSE_CODE_TERMINATED_BY_OPERATOR, reason: '' });
+    await vi.waitFor(() => expect(cbs.onEnded).toHaveBeenCalledTimes(1));
+    expect(cbs.onError).toHaveBeenCalledTimes(1);
+    expect(fake.close).toHaveBeenCalledTimes(1);
+    expect(fake.close.mock.calls[0]).toEqual([]);
+    // An end stop after the failure is a no-op: the session is already gone.
+    await pipeline.stop({ end: true });
+    expect(fake.close).toHaveBeenCalledTimes(1);
+  });
+
+  // stop() raced the first dial: the late session is the user's broadcast,
+  // and the user asked to end it.
+  it('an end stop racing the first dial closes the late session with 4014', async () => {
+    const fake = makeFakeWT([ANNOUNCE_K7XQ2M]);
+    let resolveDial!: (wt: unknown) => void;
+    connectWebTransport.mockReturnValue(new Promise((r) => (resolveDial = r)));
+    const pipeline = makePipeline(makeCallbacks());
+    const started = pipeline.start();
+    await pipeline.stop({ end: true });
+    resolveDial(fake.wt);
+    await started;
+    expect(fake.close).toHaveBeenCalledWith({
+      closeCode: CLOSE_CODE_BROADCASTER_STOPPED,
+      reason: 'broadcaster stopped',
+    });
   });
 });
 
