@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.12.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.11.0...gawk-broadcast-desktop/v2.12.0) (2026-10-24)
+
+
+### Features
+
+* **r76:** broadcaster memory telemetry, a telemetry audit and PoP telemetry (R77) ([#563](https://github.com/Tuhis/gawk/issues/563)) ([61d93d3](https://github.com/Tuhis/gawk/commit/61d93d3e67517d7687dff97d3ad0f289b535a1fa))
+
 ## [2.11.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.10.0...gawk-broadcast-desktop/v2.11.0) (2026-10-23)
 
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.37.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.36.0...gawk-server/v0.37.0) (2026-10-24)
+
+
+### Features
+
+* **r76:** broadcaster memory telemetry, a telemetry audit and PoP telemetry (R77) ([#563](https://github.com/Tuhis/gawk/issues/563)) ([61d93d3](https://github.com/Tuhis/gawk/commit/61d93d3e67517d7687dff97d3ad0f289b535a1fa))
+
+
+### Bug Fixes
+
+* **relay:** batch equal-size datagram packets with GSO in the vendored quic-go ([#565](https://github.com/Tuhis/gawk/issues/565)) ([f843d3d](https://github.com/Tuhis/gawk/commit/f843d3d8e8f4f65bf95ac0b17a51ddeaa847fb5a))
+* **relay:** grant pops/status update, the verb the PoP status writer uses ([#558](https://github.com/Tuhis/gawk/issues/558)) ([ca74bbc](https://github.com/Tuhis/gawk/commit/ca74bbc9db0963f708fc1011a6cc79b06c1ba97c))
+* **relay:** keep a party broadcast on the wall when it joins a room ([#562](https://github.com/Tuhis/gawk/issues/562)) ([566e344](https://github.com/Tuhis/gawk/commit/566e344b6e98dd5d98f1ae801f75c85f46b51c89))
+
 ## [0.36.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.35.0...gawk-server/v0.36.0) (2026-10-23)
 
 
