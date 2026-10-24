@@ -1,6 +1,7 @@
 package poplink
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/Tuhis/gawk/gawk-server/adminapi"
@@ -20,6 +21,9 @@ const (
 	TCSR     = "csr"
 	TStats   = "stats"
 	THealth  = "health"
+	// R77 (docs/78 D2, D7): token requests and the PoP's relay-side view.
+	TTelemetryMint = "telemetryMint"
+	TTelemetryObs  = "telemetryObs"
 	// Home → PoP.
 	TCredential  = "credential"
 	TConfig      = "config"
@@ -28,6 +32,9 @@ const (
 	TBan         = "ban"
 	TCertificate = "certificate"
 	TBye         = "bye"
+	// R77 (docs/78 D2): minted tokens, or why not.
+	TTelemetryTokens  = "telemetryTokens"
+	TTelemetryRefused = "telemetryRefused"
 	// The first record on a room-proxy bidi stream (W3-wall).
 	TRoomOpen = "roomOpen"
 )
@@ -51,7 +58,15 @@ const (
 	ByeRepair  = "repair"
 	ByeRevoked = "revoked"
 	ByeExpired = "expired"
+
+	// TelemetryRefused reasons (docs/78 D4).
+	TelemetryRefusedScope = "scope"
+	TelemetryRefusedRate  = "rate"
+	TelemetryRefusedOff   = "off"
 )
+
+// MaxTelemetryMint is the most tokens one TelemetryMint may ask for.
+const MaxTelemetryMint = 8
 
 // DefaultRelayPort is the port a PoP relay serves WebTransport on unless
 // gawk-relay -addr says otherwise.
@@ -147,6 +162,53 @@ type Config struct {
 	ScreeningNotice bool        `json:"screeningNotice,omitempty"`
 	HomeRooms       bool        `json:"homeRooms,omitempty"`
 	NotAfter        *time.Time  `json:"notAfter,omitempty"`
+	// Telemetry is set while home collects telemetry (docs/78 D2): the PoP
+	// then asks home for tokens and sends its sessions hellos. Absent, the
+	// PoP sends none, as before R77.
+	Telemetry *TelemetryConfig `json:"telemetry,omitempty"`
+}
+
+// TelemetryConfig is what a PoP's telemetry hellos and ingest-URL records
+// carry, so they are byte-identical to a home pod's.
+type TelemetryConfig struct {
+	ReportIntervalMs uint16 `json:"reportIntervalMs,omitempty"`
+	AdvertiseURL     string `json:"advertiseURL,omitempty"`
+}
+
+// TelemetryMint asks home for up to N tokens (at most MaxTelemetryMint) for
+// sessions of broadcast ID in Role ("viewer" or "broadcaster").
+type TelemetryMint struct {
+	ID   string `json:"id,omitempty"`
+	Role string `json:"role,omitempty"`
+	N    int    `json:"n,omitempty"`
+}
+
+// TelemetryTokens answers a TelemetryMint: hex tokens minted by home under
+// the fleet key, over home's BroadcastKey (hex) for ID, each marked with
+// this PoP's issuer key (docs/78 D3).
+type TelemetryTokens struct {
+	ID           string   `json:"id,omitempty"`
+	Role         string   `json:"role,omitempty"`
+	BroadcastKey string   `json:"broadcastKey,omitempty"`
+	Tokens       []string `json:"tokens,omitempty"`
+}
+
+// TelemetryRefused answers a TelemetryMint home will not mint for.
+type TelemetryRefused struct {
+	ID     string `json:"id,omitempty"`
+	Role   string `json:"role,omitempty"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// TelemetryObs is one broadcast's relay-side view at the PoP (docs/78 D7):
+// its hub's /statusz entry by raw ID. Part 0 carries Broadcast (the entry
+// without its subscriber details) and starts a new snapshot; Subscribers are
+// the details, split over parts 0..n so a record stays under MaxRecordBytes.
+type TelemetryObs struct {
+	ID          string            `json:"id,omitempty"`
+	Part        int               `json:"part,omitempty"`
+	Broadcast   json.RawMessage   `json:"broadcast,omitempty"`
+	Subscribers []json.RawMessage `json:"subscribers,omitempty"`
 }
 
 // Reserved answers one Reserve ID.
@@ -209,6 +271,11 @@ var factories = map[string]func() any{
 	TCertificate: func() any { return new(Certificate) },
 	TBye:         func() any { return new(Bye) },
 	TRoomOpen:    func() any { return new(RoomOpen) },
+
+	TTelemetryMint:    func() any { return new(TelemetryMint) },
+	TTelemetryObs:     func() any { return new(TelemetryObs) },
+	TTelemetryTokens:  func() any { return new(TelemetryTokens) },
+	TTelemetryRefused: func() any { return new(TelemetryRefused) },
 }
 
 // TypeOf returns a record's type name, value or pointer, or "" for
@@ -249,6 +316,14 @@ func TypeOf(rec any) string {
 		return TBye
 	case RoomOpen, *RoomOpen:
 		return TRoomOpen
+	case TelemetryMint, *TelemetryMint:
+		return TTelemetryMint
+	case TelemetryObs, *TelemetryObs:
+		return TTelemetryObs
+	case TelemetryTokens, *TelemetryTokens:
+		return TTelemetryTokens
+	case TelemetryRefused, *TelemetryRefused:
+		return TTelemetryRefused
 	}
 	return ""
 }

@@ -359,8 +359,16 @@ func Run(ctx context.Context, cfg config.Config, getCert CertFunc, log *slog.Log
 	n := 2 + len(o.Extra)
 	errCh := make(chan error, n)
 	go func() { errCh <- srv.Run(runCtx) }()
+	var opsExtra []ops.Route
+	if popMgr != nil {
+		if t := popMgr.Telemetry(); t != nil {
+			// docs/78 D7: the PoPs' relay-side views, ops listener only —
+			// /statusz is also public.
+			opsExtra = append(opsExtra, ops.Route{Pattern: "GET /internal/telemetry/pops", Handler: t.Handler()})
+		}
+	}
 	go func() {
-		errCh <- ops.Run(runCtx, cfg.MetricsAddr, ops.Handler(r, roomStats, promReg, log, srv.Ready, adminOpts, screeningOpts), log)
+		errCh <- ops.Run(runCtx, cfg.MetricsAddr, ops.Handler(r, roomStats, promReg, log, srv.Ready, adminOpts, screeningOpts, opsExtra...), log)
 	}()
 	for _, extra := range o.Extra {
 		go func() { errCh <- extra(runCtx, w) }()

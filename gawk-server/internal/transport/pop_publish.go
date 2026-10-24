@@ -161,6 +161,9 @@ func (s *Server) handlePopPublish(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	defer pub.Close()
+	// docs/77 D16: this publisher is the venue's uplink, not a broadcaster —
+	// /statusz says so and its ingress loss is the PoP leg's, not leg A's.
+	pub.SetKind(hub.PublisherKindPopLeg)
 	defer s.trackSession(sess)()
 	// The leg is findable by its broadcast ID (an ID ban's kill), never by
 	// its address: an IP ban on the venue must not cut the leg (item 30).

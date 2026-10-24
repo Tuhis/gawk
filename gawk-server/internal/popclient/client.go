@@ -146,6 +146,8 @@ type Client struct {
 	wall *wall
 	// named is the named tier (named.go), nil without one.
 	named atomic.Pointer[Named]
+	// tel is the telemetry token pool (telemetry.go, docs/78).
+	tel *telemetry
 }
 
 // New builds a Client from the state directory's stored credential.
@@ -186,6 +188,7 @@ func New(o Options) *Client {
 	}
 	c.up = newUplink(c)
 	c.wall = newWall(c)
+	c.tel = newTelemetry(c)
 	return c
 }
 
@@ -643,6 +646,8 @@ func (c *Client) statsLoop(stop <-chan struct{}) {
 		if err := c.Send(c.stats()); err != nil && !errors.Is(err, ErrNotLinked) {
 			c.log.Debug("stats write failed", "err", err)
 		}
+		// The relay-side view for home's telemetry, on the same cadence.
+		c.sendObservations()
 		select {
 		case <-stop:
 			return
