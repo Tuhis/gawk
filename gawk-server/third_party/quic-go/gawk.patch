@@ -1,7 +1,13 @@
 diff --git a/datagram_queue.go b/datagram_queue.go
 --- a/datagram_queue.go
 +++ b/datagram_queue.go
-@@ -9,9 +9,14 @@ import (
+@@ -4,16 +4,40 @@
+ 	"context"
+ 	"sync"
+ 
++	"github.com/quic-go/quic-go/internal/protocol"
+ 	"github.com/quic-go/quic-go/internal/utils"
+ 	"github.com/quic-go/quic-go/internal/utils/ringbuffer"
  	"github.com/quic-go/quic-go/internal/wire"
  )
  
@@ -16,7 +22,27 @@ diff --git a/datagram_queue.go b/datagram_queue.go
 +	maxDatagramRcvQueueLen  = 512
  )
  
++// GAWK PATCH (datagram copy): the buffers SendDatagramPrefixed assembles
++// datagrams in. A buffer goes back once its frame is written into a packet
++// (putDatagramBuf); DATAGRAM frames are never retransmitted, so nothing
++// reads it after that. See third_party/quic-go/GAWK-PATCH.md.
++var datagramBufPool = sync.Pool{New: func() any {
++	b := make([]byte, 0, protocol.MaxPacketBufferSize)
++	return &b
++}}
++
++func putDatagramBuf(f *wire.DatagramFrame) {
++	if f.Buf == nil {
++		return
++	}
++	*f.Buf = (*f.Buf)[:0]
++	datagramBufPool.Put(f.Buf)
++	f.Buf = nil
++}
++
  type datagramQueue struct {
+ 	sendMx    sync.Mutex
+ 	sendQueue ringbuffer.RingBuffer[*wire.DatagramFrame]
 --- a/http3/state_tracking_stream.go
 +++ b/http3/state_tracking_stream.go
 @@ -9,7 +9,11 @@
@@ -112,16 +138,10 @@ diff --git a/connection.go b/connection.go
  	}
  }
  
-@@ -2741,6 +2771,21 @@
- 	if err != nil {
- 		return 0, err
- 	}
-+	size := buf.Len() - startLen
-+	c.logShortHeaderPacket(p, ecn, size)
-+	c.registerPackedShortHeaderPacket(p, ecn, now)
-+	return size, nil
-+}
-+
+@@ -2747,6 +2777,21 @@
+ 	return size, nil
+ }
+ 
 +// GAWK PATCH (GSO batching): appendBatchedShortHeaderPacket is
 +// appendOneShortHeaderPacket for a packet after the first in a GSO batch:
 +// at most segSize bytes, without discarding a datagram that doesn't fit.
@@ -131,9 +151,75 @@ diff --git a/connection.go b/connection.go
 +	if err != nil {
 +		return 0, err
 +	}
- 	size := buf.Len() - startLen
- 	c.logShortHeaderPacket(p, ecn, size)
- 	c.registerPackedShortHeaderPacket(p, ecn, now)
++	size := buf.Len() - startLen
++	c.logShortHeaderPacket(p, ecn, size)
++	c.registerPackedShortHeaderPacket(p, ecn, now)
++	return size, nil
++}
++
+ func (c *Conn) registerPackedShortHeaderPacket(p shortHeaderPacket, ecn protocol.ECN, now monotime.Time) {
+ 	if p.IsPathProbePacket {
+ 		c.sentPacketHandler.SentPacket(
+@@ -3042,8 +3087,42 @@
+ // In addition, a datagram may be dropped before being sent out if the available packet size suddenly decreases.
+ // If the payload is too large to be sent at the current time, a [DatagramTooLargeError] is returned.
+ func (c *Conn) SendDatagram(p []byte) error {
++	f, err := c.newDatagramFrame(len(p))
++	if err != nil {
++		return err
++	}
++	f.Data = make([]byte, len(p))
++	copy(f.Data, p)
++	return c.datagramQueue.Add(f)
++}
++
++// GAWK PATCH (datagram copy): SendDatagramPrefixed sends prefix followed by
++// p as one datagram, as SendDatagram(append(prefix, p...)) would, but builds
++// it once in a pooled buffer that goes back to the pool when the datagram
++// is in a packet. http3 sends every WebTransport datagram through it: the
++// prefix is the session's quarter stream ID. Upstream allocated and copied
++// each one twice. See third_party/quic-go/GAWK-PATCH.md.
++func (c *Conn) SendDatagramPrefixed(prefix, p []byte) error {
++	f, err := c.newDatagramFrame(len(prefix) + len(p))
++	if err != nil {
++		return err
++	}
++	bp := datagramBufPool.Get().(*[]byte)
++	*bp = append(append((*bp)[:0], prefix...), p...)
++	f.Data = *bp
++	f.Buf = bp
++	if err := c.datagramQueue.Add(f); err != nil {
++		putDatagramBuf(f)
++		return err
++	}
++	return nil
++}
++
++// GAWK PATCH (datagram copy): SendDatagram's checks, shared with
++// SendDatagramPrefixed; n is the datagram's length.
++func (c *Conn) newDatagramFrame(n int) (*wire.DatagramFrame, error) {
+ 	if !c.supportsDatagrams() {
+-		return errors.New("datagram support disabled")
++		return nil, errors.New("datagram support disabled")
+ 	}
+ 
+ 	f := &wire.DatagramFrame{DataLenPresent: true}
+@@ -3053,12 +3132,10 @@
+ 		f.MaxDataLen(c.peerParams.MaxDatagramFrameSize, c.version),
+ 		protocol.ByteCount(c.maxPayloadSizeEstimate.Load()),
+ 	)
+-	if protocol.ByteCount(len(p)) > maxDataLen {
+-		return &DatagramTooLargeError{MaxDatagramPayloadSize: int64(maxDataLen)}
++	if protocol.ByteCount(n) > maxDataLen {
++		return nil, &DatagramTooLargeError{MaxDatagramPayloadSize: int64(maxDataLen)}
+ 	}
+-	f.Data = make([]byte, len(p))
+-	copy(f.Data, p)
+-	return c.datagramQueue.Add(f)
++	return f, nil
+ }
+ 
+ // ReceiveDatagram gets a message received in a QUIC datagram, as specified in RFC 9221.
 diff --git a/packet_packer.go b/packet_packer.go
 --- a/packet_packer.go
 +++ b/packet_packer.go
@@ -184,3 +270,62 @@ diff --git a/packet_packer.go b/packet_packer.go
  				// The DATAGRAM frame doesn't fit, and the packet doesn't contain an ACK.
  				// Discard this frame. There's no point in retrying this in the next packet,
  				// as it's unlikely that the available packet size will increase.
+@@ -970,6 +987,10 @@
+ 	for _, f := range pl.frames {
+ 		var err error
+ 		raw, err = f.Frame.Append(raw, v)
++		// GAWK PATCH (datagram copy): the datagram is in the packet now.
++		if df, ok := f.Frame.(*wire.DatagramFrame); ok {
++			putDatagramBuf(df)
++		}
+ 		if err != nil {
+ 			return nil, err
+ 		}
+diff --git a/http3/conn.go b/http3/conn.go
+--- a/http3/conn.go
++++ b/http3/conn.go
+@@ -259,21 +259,22 @@
+ }
+ 
+ func (c *rawConn) sendDatagram(streamID quic.StreamID, b []byte) error {
+-	// TODO: this creates a lot of garbage and an additional copy
+-	data := make([]byte, 0, len(b)+8)
++	// GAWK PATCH (datagram copy): upstream allocated a buffer for the prefix
++	// and payload here, which SendDatagram then copied again. See
++	// third_party/quic-go/GAWK-PATCH.md.
++	var buf [8]byte
+ 	quarterStreamID := uint64(streamID / 4)
+-	data = quicvarint.Append(data, uint64(streamID/4))
+-	data = append(data, b...)
++	prefix := quicvarint.Append(buf[:0], quarterStreamID)
+ 	if c.qlogger != nil {
+ 		c.qlogger.RecordEvent(qlog.DatagramCreated{
+ 			QuarterStreamID: quarterStreamID,
+ 			Raw: qlog.RawInfo{
+-				Length:        len(data),
++				Length:        len(prefix) + len(b),
+ 				PayloadLength: len(b),
+ 			},
+ 		})
+ 	}
+-	return c.conn.SendDatagram(data)
++	return c.conn.SendDatagramPrefixed(prefix, b)
+ }
+ 
+ func (c *rawConn) receiveDatagrams() error {
+diff --git a/internal/wire/datagram_frame.go b/internal/wire/datagram_frame.go
+--- a/internal/wire/datagram_frame.go
++++ b/internal/wire/datagram_frame.go
+@@ -17,6 +17,12 @@
+ type DatagramFrame struct {
+ 	DataLenPresent bool
+ 	Data           []byte
++
++	// GAWK PATCH (datagram copy): Buf, when set, is the pooled buffer Data
++	// lives in. The packer returns it to its pool once the frame is written
++	// into a packet; after that only len(Data) may be read. See
++	// third_party/quic-go/GAWK-PATCH.md.
++	Buf *[]byte
+ }
+ 
+ func parseDatagramFrame(b []byte, typ FrameType, _ protocol.Version) (*DatagramFrame, int, error) {
