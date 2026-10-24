@@ -2399,6 +2399,13 @@ entries still describe code `gawk-pubsim` runs (now
 - **A `GITHUB_TOKEN`-authored PR's CI runs wait for manual approval**
   (`action_required`) — release-please therefore runs as a GitHub App.
   ([docs/05](05-resilience-deploy.md))
+- **A PR event's `pull_request.base.sha` can be older than the base its
+  merge ref was built on.** `actions/checkout` checks out
+  `refs/pull/N/merge`, merged into the base branch's tip when the run
+  starts, so a diff from `base.sha` counts the base's newer commits as the
+  PR's (#544: a docs-only PR ran app, e2e and dev-stack for a README fix
+  that had just landed on main). Diff against the merge's first parent;
+  `.github/scripts/diff-base.sh` does.
 - **release-please separate PRs self-conflict in a monorepo** (all release
   PRs edit the shared manifest, and the bot doesn't refresh the stranded
   one) — use one combined release PR (`"separate-pull-requests": false`);
