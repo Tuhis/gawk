@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/webtransport-go"
 
 	"github.com/Tuhis/gawk/gawk-server/adminapi"
@@ -749,8 +750,9 @@ func defaultDialer(roots *x509.CertPool) DialFunc {
 				KeepAlivePeriod:                  poplink.LinkKeepAlive,
 			},
 		}
+		dialAddr := quic.DialAddrEarly
 		if network == "udp4" || network == "udp6" {
-			d.DialAddr = func(ctx context.Context, addr string, tlsCfg *tls.Config, qc *quic.Config) (*quic.Conn, error) {
+			dialAddr = func(ctx context.Context, addr string, tlsCfg *tls.Config, qc *quic.Config) (*quic.Conn, error) {
 				h, port, err := net.SplitHostPort(addr)
 				if err != nil {
 					return nil, err
@@ -762,11 +764,40 @@ func defaultDialer(roots *x509.CertPool) DialFunc {
 				return quic.DialAddrEarly(ctx, net.JoinHostPort(ips[0].Unmap().String(), port), tlsCfg, qc)
 			}
 		}
-		rsp, sess, err := d.Dial(ctx, target, h)
+		// The connection is ours, not Transport.Dial's: Dial closes it the
+		// instant its session ends, and that CONNECTION_CLOSE usually beats
+		// the close capsule, so home would never read a leg's 4014 (docs/77
+		// §1, D11). It lingers for sessionCloseLinger after the session, or
+		// until home closes it.
+		tlsConf := d.TLSClientConfig.Clone()
+		tlsConf.NextProtos = []string{http3.NextProtoH3}
+		qconn, err := dialAddr(ctx, u.Host, tlsConf, d.QUICConfig)
 		if err != nil {
-			_ = d.Close()
+			return nil, nil, err
+		}
+		cc, err := d.NewClientConn(qconn)
+		if err != nil {
+			_ = qconn.CloseWithError(0, "")
+			return nil, nil, err
+		}
+		rsp, sess, err := cc.Dial(ctx, target, h)
+		if err != nil {
+			_ = qconn.CloseWithError(0, "")
 			return nil, rsp, err
 		}
+		context.AfterFunc(sess.Context(), func() {
+			t := time.NewTimer(sessionCloseLinger)
+			defer t.Stop()
+			select {
+			case <-qconn.Context().Done():
+			case <-t.C:
+			}
+			_ = qconn.CloseWithError(0, "")
+		})
 		return poplink.WrapSession(sess), rsp, nil
 	}
 }
+
+// sessionCloseLinger is how long a dialled connection outlives its session,
+// so the session's close capsule (and its code) reaches home first.
+const sessionCloseLinger = time.Second
