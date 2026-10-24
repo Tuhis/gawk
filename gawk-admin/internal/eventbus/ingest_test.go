@@ -341,6 +341,16 @@ func TestHomeChangedSummaryNamesThePodItCameFrom(t *testing.T) {
 	}
 }
 
+// TestStoppedEndSaysTheBroadcasterStopped: R76's `stopped` reason (docs/77
+// D10) reads as the broadcaster's own act, not as a GC or a kill.
+func TestStoppedEndSaysTheBroadcasterStopped(t *testing.T) {
+	got := store.SummarizeActivity(store.EventBroadcastEnded, "aa11bb22cc33",
+		map[string]any{"reason": events.BroadcastEndedStopped})
+	if want := "broadcast aa11bb22cc33 was stopped by its broadcaster"; got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+}
+
 // TestHomeChangedIsStored: a room moving pods is a discrete, low-rate fact
 // worth a row — unlike the coalesced deltas.
 func TestHomeChangedIsStored(t *testing.T) {

@@ -243,6 +243,8 @@ func SummarizeActivity(eventType, key string, data map[string]any) string {
 			return what + " was ended by an operator"
 		case events.BroadcastEndedReplaced:
 			return "the publisher of " + what + " was replaced"
+		case events.BroadcastEndedStopped:
+			return what + " was stopped by its broadcaster"
 		default:
 			return what + " ended"
 		}
