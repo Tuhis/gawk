@@ -107,6 +107,9 @@ struct PlayerScreen: View {
             PlayerCard(card: WatchStatusText.unsupported(codec), close: close, retry: model.watch)
         } else if case .ended(let reason) = model.status, let card = WatchStatusText.card(reason, code: code) {
             PlayerCard(card: card, close: close, retry: model.watch)
+        } else if model.status == .broadcastStopped {
+            // docs/77 D7: the core waits on the code; `.live` replaces this.
+            PlayerCard(card: WatchStatusText.stopped, close: close, retry: model.watch)
         } else if model.status == .connecting {
             VStack(spacing: 14) {
                 ProgressView().controlSize(.large).tint(Theme.text)

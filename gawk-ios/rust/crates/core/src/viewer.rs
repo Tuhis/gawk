@@ -100,6 +100,10 @@ pub enum ViewerStatus {
         /// [`pop_uplink_full_message`].
         party_full: bool,
     },
+    /// R76 (docs/77 D7, D8): the broadcaster stopped (4014). Show the ended
+    /// card that says the stream comes back; the core keeps dialling the
+    /// code, and [`ViewerStatus::Live`] follows when a broadcast is back.
+    BroadcastStopped,
     Ended {
         reason: ViewerEnd,
     },
@@ -120,6 +124,7 @@ impl From<ViewerState> for ViewerStatus {
                 draining: close_code == Some(gawk_wire::CLOSE_CODE_SERVER_DRAINING),
                 party_full: close_code == Some(gawk_wire::CLOSE_CODE_POP_UPLINK_FULL),
             },
+            ViewerState::BroadcastStopped => Self::BroadcastStopped,
             ViewerState::Ended(r) => Self::Ended {
                 reason: match r {
                     EndReason::Closed(gawk_wire::CLOSE_CODE_TERMINATED_BY_OPERATOR) => {
@@ -541,6 +546,10 @@ mod tests {
                 ..
             }
         ));
+        // R76 (docs/77 D7): a stopped broadcaster is its own status, not an
+        // end: the player waits on the code.
+        let s: ViewerStatus = ViewerState::BroadcastStopped.into();
+        assert_eq!(s, ViewerStatus::BroadcastStopped);
         // R74 (docs/76 item 28): 4012 waits with its own copy, 20 s apart.
         let s: ViewerStatus = ViewerState::Reconnecting {
             attempt: 1,

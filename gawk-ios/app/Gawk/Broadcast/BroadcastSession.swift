@@ -269,10 +269,17 @@ final class BroadcastSession {
 
     /// Ends the broadcast. The screen leaves the live state at once
     /// (`.stopping`); `.ended` follows when the core has closed the session,
-    /// or after `stopGrace` with a reason if it never confirms.
-    func stop() {
+    /// or after `stopGrace` with a reason if it never confirms. `end` is the
+    /// user's End (docs/77 D9): the relay is told the broadcaster stopped
+    /// (4014) and ends it for viewers now. Without it (capture ending on its
+    /// own) the relay holds the code through its grace.
+    func stop(end: Bool = false) {
         media.attach(nil)
-        broadcaster?.stop()
+        if end {
+            broadcaster?.end()
+        } else {
+            broadcaster?.stop()
+        }
         broadcaster = nil
         screeningRelay = nil
         switch phase {

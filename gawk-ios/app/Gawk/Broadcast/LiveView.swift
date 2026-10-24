@@ -195,7 +195,7 @@ struct LiveView: View {
 
     /// End (D11): a danger outline, no confirmation; Go live again undoes it.
     private var end: some View {
-        Button("End broadcast") { capture.stop(session) }
+        Button("End broadcast") { capture.end(session) }
             .buttonStyle(.gawkDangerPinned)
             .disabled(session.phase == .stopping)
             .accessibilityIdentifier("broadcast.end")

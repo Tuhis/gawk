@@ -319,7 +319,8 @@ impl Identity {
 #[derive(uniffi::Object)]
 pub struct Broadcaster {
     live: Arc<Mutex<Option<Live>>>,
-    stop: Mutex<Option<oneshot::Sender<()>>>,
+    /// True for the Stop button's end (docs/77 D9), false for a plain stop.
+    stop: Mutex<Option<oneshot::Sender<bool>>>,
     commands: mpsc::UnboundedSender<Command>,
 }
 
@@ -327,7 +328,7 @@ pub struct Broadcaster {
 struct Wiring {
     live: Arc<Mutex<Option<Live>>>,
     commands: mpsc::UnboundedReceiver<Command>,
-    stop: oneshot::Receiver<()>,
+    stop: oneshot::Receiver<bool>,
 }
 
 impl Broadcaster {
@@ -567,9 +568,24 @@ impl Broadcaster {
     }
 
     /// Ends the broadcast cleanly; the relay keeps the code for its grace.
+    /// Leaving the app, a failure, a drop: everything but the Stop button.
     pub fn stop(&self) {
+        self.send_stop(false);
+    }
+
+    /// The Stop button (R76, docs/77 D9): ends the broadcast and tells the
+    /// relay the broadcaster stopped on purpose (4014), so it ends the
+    /// broadcast for its viewers now instead of holding it through its
+    /// grace. A Go live on the same code later starts it again.
+    pub fn end(&self) {
+        self.send_stop(true);
+    }
+}
+
+impl Broadcaster {
+    fn send_stop(&self, end: bool) {
         if let Some(tx) = self.stop.lock().unwrap().take() {
-            let _ = tx.send(());
+            let _ = tx.send(end);
         }
     }
 }
@@ -701,8 +717,14 @@ async fn run<C, F>(
     let mut wanted_quality: Option<Quality> = None;
     loop {
         tokio::select! {
-            _ = &mut stop => {
-                session.stop().await;
+            ending = &mut stop => {
+                // A dropped Broadcaster is a plain stop: only the Stop
+                // button says the broadcaster stopped (docs/77 D9).
+                if matches!(ending, Ok(true)) {
+                    session.end().await;
+                } else {
+                    session.stop().await;
+                }
                 reporter.event("ended", "");
                 reporter.finish();
                 break;
@@ -1539,6 +1561,8 @@ mod live_tests {
     struct Leg {
         streams: Mutex<VecDeque<Vec<u8>>>,
         closed: AtomicBool,
+        /// Every close's application code, in order: 0 for a plain close.
+        close_codes: Mutex<Vec<u32>>,
         fail_datagrams: AtomicBool,
         death: watch::Sender<Option<SessionClose>>,
     }
@@ -1553,6 +1577,7 @@ mod live_tests {
             Arc::new(Self {
                 streams: Mutex::new(VecDeque::from([announce, token])),
                 closed: AtomicBool::new(false),
+                close_codes: Mutex::new(Vec::new()),
                 fail_datagrams: AtomicBool::new(false),
                 death: watch::channel(None).0,
             })
@@ -1600,6 +1625,12 @@ mod live_tests {
         }
         fn close(&self) {
             self.closed.store(true, Ordering::SeqCst);
+            self.close_codes.lock().unwrap().push(0);
+        }
+        fn close_with_code(&self, code: u32) -> BoxFuture<'_, ()> {
+            self.closed.store(true, Ordering::SeqCst);
+            self.close_codes.lock().unwrap().push(code);
+            Box::pin(async {})
         }
     }
 
@@ -1874,6 +1905,47 @@ mod live_tests {
             "the notice ends nothing: {heard:?}"
         );
         h.stop().await;
+    }
+
+    // --- R76 (docs/77 D9): Stop ends the broadcast ------------------------
+
+    // The Stop button (`end`) closes the publish leg with 4014, so the relay
+    // ends the broadcast for its viewers now.
+    #[tokio::test(start_paused = true)]
+    async fn the_stop_button_closes_the_leg_with_4014() {
+        let first = Leg::announcing();
+        let mut h = Harness::start(
+            options(),
+            first.clone(),
+            Arc::new(Reclaims::default()),
+            Arc::new(Rooms::default()),
+        );
+        h.live().await;
+        h.b.end();
+        h.until(|h| matches!(h, Heard::Status(BroadcastStatus::Ended { error: None, .. })))
+            .await;
+        assert_eq!(
+            *first.close_codes.lock().unwrap(),
+            [wire::CLOSE_CODE_BROADCASTER_STOPPED]
+        );
+    }
+
+    // Leaving the app (`stop`, and the Broadcaster dropped) keeps the grace:
+    // a plain close only.
+    #[tokio::test(start_paused = true)]
+    async fn a_plain_stop_closes_the_leg_plainly() {
+        let first = Leg::announcing();
+        let mut h = Harness::start(
+            options(),
+            first.clone(),
+            Arc::new(Reclaims::default()),
+            Arc::new(Rooms::default()),
+        );
+        h.live().await;
+        h.stop().await;
+        let codes = first.close_codes.lock().unwrap().clone();
+        assert!(!codes.is_empty());
+        assert!(codes.iter().all(|&c| c == 0), "{codes:?}");
     }
 
     // --- R73: the uplink follows the engine's defaults (docs/75 OD3) -------

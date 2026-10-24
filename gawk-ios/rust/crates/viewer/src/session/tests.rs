@@ -317,3 +317,137 @@ async fn a_404_while_reconnecting_is_a_restarted_relay_not_an_unknown_broadcast(
     );
     assert_eq!(dialer.dials.lock().unwrap().len(), 4);
 }
+
+// --- R76 (docs/77 D7): the broadcaster stopped (4014) -------------------------
+
+const STOPPED: u32 = gawk_wire::CLOSE_CODE_BROADCASTER_STOPPED;
+
+fn stopped_states(sink: &Sink) -> usize {
+    sink.states
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|s| **s == ViewerState::BroadcastStopped)
+        .count()
+}
+
+// 4014 is reported once, then the same code is dialled every 5 s plus up to
+// 1 s of jitter, through more failed dials than the reconnect budget holds,
+// with no Reconnecting narration; a dial that lands plays again.
+#[tokio::test(start_paused = true)]
+async fn a_stopped_broadcast_waits_on_a_fixed_cadence_and_resumes() {
+    let mut script = vec![closes_with(Some(STOPPED), 100)];
+    script.extend((0..15).map(|_| Err(404)));
+    script.push(closes_with(
+        Some(gawk_wire::CLOSE_CODE_BROADCAST_ENDED),
+        100,
+    ));
+    let dialer = FakeDialer::new(script);
+    let (reason, sink, _tx) = run_with(dialer.clone()).await;
+    assert_eq!(
+        reason,
+        EndReason::Closed(gawk_wire::CLOSE_CODE_BROADCAST_ENDED)
+    );
+    assert_eq!(
+        dialer.dials.lock().unwrap().len(),
+        1 + 15 + 1,
+        "never gave up"
+    );
+    let gaps = dialer.gaps_ms();
+    assert!((5100..=6100).contains(&gaps[0]), "{gaps:?}");
+    for g in &gaps[1..] {
+        assert!((5000..=6000).contains(g), "{gaps:?}");
+    }
+    assert!(
+        gaps.windows(2).any(|w| w[0] != w[1]) || gaps.len() < 3,
+        "jittered: {gaps:?}"
+    );
+    assert!(dialer.dials.lock().unwrap()[1].0.contains("rejoin=1"));
+    let states = sink.states.lock().unwrap().clone();
+    assert_eq!(stopped_states(&sink), 1, "reported once: {states:?}");
+    assert!(
+        !states
+            .iter()
+            .any(|s| matches!(s, ViewerState::Reconnecting { .. })),
+        "the wait is not narrated as reconnecting: {states:?}"
+    );
+    let at = states
+        .iter()
+        .position(|s| *s == ViewerState::BroadcastStopped)
+        .unwrap();
+    assert_eq!(states[at + 1], ViewerState::Live, "playing again");
+    assert!(
+        sink.events.lock().unwrap().contains(&ViewerEvent::Flush),
+        "the stopped stream's frames are let go"
+    );
+}
+
+// A terminal close while waiting (the code came back and was killed, or
+// garbage-collected) ends the viewer for good.
+#[tokio::test(start_paused = true)]
+async fn a_terminal_close_during_the_wait_ends_it() {
+    for code in [
+        gawk_wire::CLOSE_CODE_BROADCAST_ENDED,
+        gawk_wire::CLOSE_CODE_TERMINATED_BY_OPERATOR,
+    ] {
+        let dialer = FakeDialer::new(vec![
+            closes_with(Some(STOPPED), 0),
+            Err(404),
+            closes_with(Some(code), 0),
+        ]);
+        let (reason, _sink, _tx) = run_with(dialer.clone()).await;
+        assert_eq!(reason, EndReason::Closed(code));
+        assert_eq!(dialer.dials.lock().unwrap().len(), 3);
+    }
+}
+
+// Chrome-shaped: the close carries no code, the in-band SessionClosing names
+// 4014 (docs/77 D5), and the viewer waits all the same.
+#[tokio::test(start_paused = true)]
+async fn the_in_band_notice_of_a_stop_waits_too() {
+    let mut closing = Vec::new();
+    gawk_wire::append_session_closing(&mut closing, STOPPED).unwrap();
+    let mut script = vec![Ok(FakeSession {
+        close: SessionClose::Abrupt("no code".into()),
+        live_for: Duration::from_millis(500),
+        stream: Mutex::new(Some(closing)),
+    })];
+    script.extend((0..12).map(|_| Err(404)));
+    script.push(closes_with(Some(gawk_wire::CLOSE_CODE_BROADCAST_ENDED), 0));
+    let dialer = FakeDialer::new(script);
+    let (reason, sink, _tx) = run_with(dialer.clone()).await;
+    assert_eq!(
+        reason,
+        EndReason::Closed(gawk_wire::CLOSE_CODE_BROADCAST_ENDED)
+    );
+    assert_eq!(stopped_states(&sink), 1);
+    assert_eq!(dialer.dials.lock().unwrap().len(), 1 + 12 + 1);
+}
+
+// The user leaving cancels the wait: no more dials.
+#[tokio::test(start_paused = true)]
+async fn stop_cancels_the_wait() {
+    let mut script = vec![closes_with(Some(STOPPED), 0)];
+    script.extend((0..100).map(|_| Err(404)));
+    let dialer = FakeDialer::new(script);
+    let sink = Arc::new(Sink::default());
+    let (tx, rx) = mpsc::unbounded_channel();
+    let task = tokio::spawn(run(
+        cfg(),
+        dialer.clone(),
+        sink.clone(),
+        ViewerClock::new(),
+        rx,
+    ));
+    tokio::time::sleep(Duration::from_secs(14)).await;
+    tx.send(Command::Stop).unwrap();
+    assert_eq!(task.await.unwrap(), EndReason::Stopped);
+    let dials = dialer.dials.lock().unwrap().len();
+    assert!((2..=3).contains(&dials), "{dials}");
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    assert_eq!(dialer.dials.lock().unwrap().len(), dials);
+    assert_eq!(
+        sink.states.lock().unwrap().last(),
+        Some(&ViewerState::Ended(EndReason::Stopped))
+    );
+}

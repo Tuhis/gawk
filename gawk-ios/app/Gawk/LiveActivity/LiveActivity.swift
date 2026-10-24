@@ -90,6 +90,6 @@ final class LiveActivityBridge {
     /// End from the Lock Screen or the Island: the app's own End.
     func endBroadcast() {
         guard let capture, let session, session.isActive else { return }
-        capture.stop(session)
+        capture.end(session)
     }
 }

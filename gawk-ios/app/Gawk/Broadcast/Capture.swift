@@ -125,11 +125,20 @@ final class Capture {
         #endif
     }
 
-    /// End, and capture ending on its own. The session goes first: the
-    /// broadcast must end even if tearing capture down misbehaves.
+    /// Capture ending on its own (the system, or an error). The session
+    /// goes first: the broadcast must end even if tearing capture down
+    /// misbehaves. The relay holds the code through its grace.
     func stop(_ session: BroadcastSession) {
         live = nil
         session.stop()
+        stopSources()
+    }
+
+    /// The user's End (the button, the Live Activity): as `stop`, and the
+    /// relay ends the broadcast for its viewers now (docs/77 D9).
+    func end(_ session: BroadcastSession) {
+        live = nil
+        session.stop(end: true)
         stopSources()
     }
 

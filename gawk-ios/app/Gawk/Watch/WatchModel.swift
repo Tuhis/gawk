@@ -215,6 +215,14 @@ enum WatchStatusText {
         }
     }
 
+    /// R76 (docs/77 D8): the broadcaster stopped (4014). The player keeps
+    /// dialling the code, so the card says it comes back, and there is no
+    /// Try again: the core is already trying.
+    static let stopped = Card(
+        systemImage: "stop.circle", title: "Broadcast ended",
+        body: "The broadcaster stopped. Keep this open and the stream comes back if they start again on this code.",
+        canRetry: false)
+
     static func unsupported(_ codec: String) -> Card {
         Card(
             systemImage: "film", title: "Can't play this stream",

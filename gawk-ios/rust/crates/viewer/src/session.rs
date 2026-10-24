@@ -9,7 +9,7 @@
 
 use crate::pipeline::{Pipeline, ViewerEvent};
 use crate::playout::PlayoutPreset;
-use crate::reconnect::{RECONNECT_MAX_ATTEMPTS, reconnect_delay_ms};
+use crate::reconnect::{RECONNECT_MAX_ATTEMPTS, broadcaster_stopped_delay_ms, reconnect_delay_ms};
 use gawk_engine::relay::{BoxFuture, RelaySession, SessionClose, StartError};
 use gawk_wire::MAX_KEYFRAME_BYTES;
 use std::sync::Arc;
@@ -103,6 +103,12 @@ pub enum ViewerState {
         delay_ms: u64,
         close_code: Option<u32>,
     },
+    /// R76 (docs/77 D7): the broadcaster stopped (4014). Reported once; the
+    /// viewer then waits on the code, dialling it on a fixed cadence outside
+    /// the reconnect budget, and [`ViewerState::Live`] follows when a
+    /// broadcast is back on it. Not an end: only the app's stop or a
+    /// terminal close ends the wait.
+    BroadcastStopped,
     Ended(EndReason),
 }
 
@@ -200,9 +206,17 @@ pub async fn run(
     // after a relay restart the broadcast is unknown until its publisher
     // reclaims it, and a reconnecting viewer must ride that out.
     let mut ever_connected = false;
+    // R76 (docs/77 D7): waiting on a stopped broadcaster's code.
+    let mut stopped = false;
     sink.state(ViewerState::Connecting);
     loop {
-        if attempt > 0 {
+        if stopped {
+            // Not narrated: the ended state stays on screen through the wait.
+            let delay_ms = broadcaster_stopped_delay_ms();
+            if !wait(delay_ms, &mut commands, &mut preset).await {
+                return end(&*sink, EndReason::Stopped);
+            }
+        } else if attempt > 0 {
             if attempt > RECONNECT_MAX_ATTEMPTS {
                 return end(&*sink, EndReason::GaveUp);
             }
@@ -212,17 +226,8 @@ pub async fn run(
                 delay_ms,
                 close_code,
             });
-            let sleep = tokio::time::sleep(Duration::from_millis(delay_ms));
-            tokio::pin!(sleep);
-            loop {
-                tokio::select! {
-                    _ = &mut sleep => break,
-                    cmd = commands.recv() => match cmd {
-                        None | Some(Command::Stop) => return end(&*sink, EndReason::Stopped),
-                        Some(Command::SetPreset(p)) => preset = p,
-                        Some(_) => {}
-                    },
-                }
+            if !wait(delay_ms, &mut commands, &mut preset).await {
+                return end(&*sink, EndReason::Stopped);
             }
         }
         let url = match subscribe_url(&cfg.relay_url, &cfg.broadcast_id, &mint_owner(), rejoin) {
@@ -234,6 +239,9 @@ pub async fn run(
         rejoin = true;
         let session = match dialer.dial(&url).await {
             Ok(s) => s,
+            // Waiting on a stopped broadcast: a 404 (no broadcast on the code
+            // yet) or any other failure keeps waiting, budget untouched.
+            Err(_) if stopped => continue,
             Err(e) if e.status == 404 && !ever_connected => {
                 return end(&*sink, EndReason::NotFound);
             }
@@ -246,6 +254,7 @@ pub async fn run(
             }
         };
         ever_connected = true;
+        stopped = false;
         sink.state(ViewerState::Live);
         let mut pipeline = Pipeline::new(preset);
         let outcome = run_session(
@@ -269,11 +278,39 @@ pub async fn run(
                 if let Some(c) = code.filter(|&c| gawk_wire::terminal_for_viewer(c)) {
                     return end(&*sink, EndReason::Closed(c));
                 }
+                if code == Some(gawk_wire::CLOSE_CODE_BROADCASTER_STOPPED) {
+                    // The stopped stream's queued frames and audio go now.
+                    sink.event(ViewerEvent::Flush);
+                    sink.state(ViewerState::BroadcastStopped);
+                    stopped = true;
+                    continue;
+                }
                 close_code = code;
             }
         }
         // The session connected, so the count restarts: this is attempt 1.
         attempt = 1;
+    }
+}
+
+/// Sleeps `delay_ms`, taking preset changes meanwhile; false when the app
+/// stopped the viewer.
+async fn wait(
+    delay_ms: u64,
+    commands: &mut mpsc::UnboundedReceiver<Command>,
+    preset: &mut PlayoutPreset,
+) -> bool {
+    let sleep = tokio::time::sleep(Duration::from_millis(delay_ms));
+    tokio::pin!(sleep);
+    loop {
+        tokio::select! {
+            _ = &mut sleep => return true,
+            cmd = commands.recv() => match cmd {
+                None | Some(Command::Stop) => return false,
+                Some(Command::SetPreset(p)) => *preset = p,
+                Some(_) => {}
+            },
+        }
     }
 }
 
