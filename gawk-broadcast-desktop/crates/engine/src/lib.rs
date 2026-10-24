@@ -21,6 +21,7 @@ pub mod link;
 pub mod localrelay;
 pub mod lossnotice;
 pub mod media;
+pub mod memory;
 pub mod notices;
 pub mod probe;
 pub mod relay;

@@ -556,6 +556,7 @@ impl Session {
             st.time_sync_rtt_ms = s.rtt_ms;
             st.time_sync_offset_us = s.offset_us;
         }
+        st.apply_memory(&crate::memory::snapshot());
         st
     }
 

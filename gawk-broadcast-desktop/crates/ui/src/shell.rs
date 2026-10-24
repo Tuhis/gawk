@@ -2159,13 +2159,44 @@ fn update_preview(ui: &MainWindow, sh: &mut Shell) {
 
 fn show_preview(ui: &MainWindow, frame: PreviewFrame) {
     match frame {
-        PreviewFrame::Hidden => ui.set_has_preview(false),
+        PreviewFrame::Hidden => {
+            if ui.get_has_preview() {
+                // Let the picture go with the card, not at the next one.
+                ui.set_preview(slint::Image::default());
+                picture_bytes(Picture::Preview, 0);
+            }
+            ui.set_has_preview(false);
+        }
         PreviewFrame::Keep => {}
         PreviewFrame::New((w, h, rgba)) => {
+            picture_bytes(Picture::Preview, rgba.len() as u64);
             ui.set_preview(rgba_image(w, h, &rgba));
             ui.set_has_preview(true);
         }
     }
+}
+
+/// The two pictures the shell keeps on screen (docs/77 D4).
+#[derive(Clone, Copy)]
+enum Picture {
+    Preview,
+    Thumbnail,
+}
+
+/// Records one picture's pixel bytes and reports the pair as the `preview`
+/// memory component.
+fn picture_bytes(which: Picture, bytes: u64) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static PREVIEW: AtomicU64 = AtomicU64::new(0);
+    static THUMBNAIL: AtomicU64 = AtomicU64::new(0);
+    match which {
+        Picture::Preview => PREVIEW.store(bytes, Ordering::Relaxed),
+        Picture::Thumbnail => THUMBNAIL.store(bytes, Ordering::Relaxed),
+    }
+    gawk_engine::memory::set(
+        gawk_engine::memory::Component::Preview,
+        PREVIEW.load(Ordering::Relaxed) + THUMBNAIL.load(Ordering::Relaxed),
+    );
 }
 
 /// Resolves a start, a resume or a restart — with the preview stopped
@@ -2302,6 +2333,9 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                 {
                     log::info!("delivery changed to {}", delivery.as_str());
                     session.set_uplink_delivery(delivery);
+                    // On the session's timeline, so a change in what the
+                    // broadcast costs lines up with its cause (docs/77 D8).
+                    sh.reporter.event("delivery-changed", delivery.as_str());
                 }
                 // docs/64 D13: a quality change while live applies itself,
                 // once typing and dragging settle.
@@ -5204,6 +5238,10 @@ fn tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                 log::info!("uplink warning cleared");
                 ui.set_uplink_warning("".into());
             }
+            // What the broadcaster was told, on the session's timeline:
+            // whether the warning was right is R75's question (docs/77 D13).
+            sh.reporter
+                .event("uplink-warning", if warned { "raised" } else { "cleared" });
         }
     }
 
@@ -5217,6 +5255,13 @@ fn tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         if facts != sh.network {
             log::info!("network: {facts:?}");
             sh.network = facts;
+            // The link's kind, never its name or address (docs/77 D13).
+            if let Some(f) = facts {
+                sh.reporter.event(
+                    "network",
+                    &format!("wifi={},vpn={},awdl={}", f.wifi, f.vpn, f.awdl_up),
+                );
+            }
         }
         let was_raised = sh.loss.raised();
         let notice = sh.loss.observe(&st, facts);
@@ -5233,6 +5278,7 @@ fn tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                 st.uplink_packets_lost,
                 st.uplink_packets_sent,
             );
+            sh.reporter.event("uplink-loss", what);
         }
         sh.loss_notice = notice;
         // The bandwidth line speaks first: when the upload can't keep up,
@@ -5247,7 +5293,7 @@ fn tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
     let sh = shell.borrow();
     if log_health {
         log::info!(
-            "health: capture {} fps, encode {:.1} fps, sent {:.1} fps, keyframe streams {} sent / {} superseded / {} failed, frames dropped at send {}, packets lost {} of {}, viewers {}, audio {}",
+            "health: capture {} fps, encode {:.1} fps, sent {:.1} fps, keyframe streams {} sent / {} superseded / {} failed, frames dropped at send {}, packets lost {} of {}, viewers {}, audio {}, memory {}",
             if st.capture_fps_available {
                 format!("{:.1}", st.capture_fps)
             } else {
@@ -5262,7 +5308,8 @@ fn tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
             st.uplink_packets_lost,
             st.uplink_packets_sent,
             st.viewer_count,
-            st.audio_state
+            st.audio_state,
+            memory_summary(&st)
         );
     }
 
@@ -5303,6 +5350,7 @@ fn tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
             .into(),
         );
         if let Some((w, h, rgba)) = p.take_thumbnail() {
+            picture_bytes(Picture::Thumbnail, rgba.len() as u64);
             ui.set_thumbnail(rgba_image(w, h, &rgba));
         }
     }
@@ -5312,6 +5360,11 @@ fn tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
 /// cannot: the rung, the accepted encoder, real capture fps, audio state.
 fn merged_stats(sh: &Shell) -> gawk_engine::stats::Stats {
     let mut st = sh.session.as_ref().map(|s| s.stats()).unwrap_or_default();
+    if sh.session.is_none() {
+        // Not live, but the process still holds memory: diagnostics copied
+        // from the Ready page say how much (docs/77 D7).
+        st.apply_memory(&gawk_engine::memory::snapshot());
+    }
     let (w, h, fps, bps) = sh.cfg.resolve_rung();
     st.width = w;
     st.height = h;
@@ -5344,6 +5397,38 @@ fn merged_stats(sh: &Shell) -> gawk_engine::stats::Stats {
         st.audio_state = "off".into();
     }
     st
+}
+
+/// The health line's memory clause (docs/77 D7): footprint, heap and GPU in
+/// MiB, then each component that reports.
+fn memory_summary(st: &gawk_engine::stats::Stats) -> String {
+    use gawk_engine::memory::mib;
+    if !st.mem_available {
+        return "n/a".into();
+    }
+    let mut out = format!(
+        "{:.0} MiB (peak {:.0})",
+        mib(st.mem_footprint_bytes),
+        mib(st.mem_footprint_peak_bytes)
+    );
+    if st.mem_heap_available {
+        out += &format!(", heap {:.0}", mib(st.mem_heap_bytes));
+    }
+    if st.mem_gpu_available {
+        out += &format!(", gpu {:.0}", mib(st.mem_gpu_bytes));
+    }
+    for (name, v) in [
+        ("capture", st.mem_capture_bytes),
+        ("encode", st.mem_encode_bytes),
+        ("send", st.mem_send_bytes),
+        ("preview", st.mem_preview_bytes),
+        ("telemetry", st.mem_telemetry_bytes),
+    ] {
+        if let Some(v) = v {
+            out += &format!(", {name} {:.1}", mib(v));
+        }
+    }
+    out
 }
 
 fn or_dash(s: &str) -> String {

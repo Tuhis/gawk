@@ -24,7 +24,10 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709,
     DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_NV12, DXGI_SAMPLE_DESC,
 };
-use windows::Win32::Graphics::Dxgi::IDXGIDevice;
+use windows::Win32::Graphics::Dxgi::{
+    CreateDXGIFactory1, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL,
+    DXGI_QUERY_VIDEO_MEMORY_INFO, IDXGIAdapter3, IDXGIDevice, IDXGIFactory1,
+};
 use windows::Win32::System::WinRT::Direct3D11::CreateDirect3D11DeviceFromDXGIDevice;
 use windows::core::{Interface, Result};
 
@@ -116,6 +119,58 @@ impl GpuDevice {
     }
 }
 
+/// Installs the engine's GPU-memory probe (R76, docs/77 D5): the video
+/// memory THIS process holds, summed over every adapter — dedicated
+/// (`LOCAL`) and shared system memory the GPU maps (`NON_LOCAL`), which is
+/// all an integrated GPU has. The capture device, the MFT's surfaces and the
+/// UI's renderer all count, on whichever adapter they landed. DXGI keeps the
+/// count per process, so no device of ours is needed to read it.
+pub fn install_gpu_memory_probe() {
+    /// DXGI adapters are free-threaded; the windows crate just does not
+    /// mark them so.
+    struct Adapters(Vec<IDXGIAdapter3>);
+    unsafe impl Send for Adapters {}
+    unsafe impl Sync for Adapters {}
+
+    let adapters = || -> Result<Vec<IDXGIAdapter3>> {
+        let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1()? };
+        let mut out = Vec::new();
+        let mut i = 0;
+        while let Ok(a) = unsafe { factory.EnumAdapters1(i) } {
+            if let Ok(a3) = a.cast::<IDXGIAdapter3>() {
+                out.push(a3);
+            }
+            i += 1;
+        }
+        Ok(out)
+    };
+    let adapters = match adapters() {
+        Ok(a) if !a.is_empty() => Adapters(a),
+        Ok(_) => return,
+        Err(e) => {
+            log::warn!("GPU memory probe unavailable: {e}");
+            return;
+        }
+    };
+    gawk_engine::memory::set_gpu_probe(move || {
+        let mut total = 0u64;
+        let mut read = false;
+        for a in &adapters.0 {
+            for group in [
+                DXGI_MEMORY_SEGMENT_GROUP_LOCAL,
+                DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL,
+            ] {
+                let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+                if unsafe { a.QueryVideoMemoryInfo(0, group, &mut info) }.is_ok() {
+                    total += info.CurrentUsage;
+                    read = true;
+                }
+            }
+        }
+        read.then_some(total)
+    });
+}
+
 /// One VideoProcessor pass: BGRA in at a fixed source size, NV12 (and
 /// optionally a BGRA thumbnail) out at fixed target sizes. Recreated when
 /// the source size changes — WGC window capture resizes with the window.
@@ -157,6 +212,13 @@ unsafe impl Send for Converter {}
 pub const RING_SLOTS: usize = 4;
 
 impl Converter {
+    /// The pixel bytes of the textures this converter has allocated: the
+    /// reused NV12 output and the ring slots filled so far (docs/77 D4).
+    pub fn pixel_bytes(&self) -> u64 {
+        let nv12 = u64::from(self.out_width) * u64::from(self.out_height) * 3 / 2;
+        nv12 * (1 + self.ring.len() as u64)
+    }
+
     pub fn new(
         gpu: &GpuDevice,
         in_width: u32,
