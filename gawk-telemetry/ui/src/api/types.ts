@@ -126,6 +126,8 @@ export interface Meta {
   annotations: boolean;
   sql: boolean;
   sqlReason?: string;
+  /** The engine was configured and failed to open — not a build without one. */
+  sqlFailed?: boolean;
   resolve: boolean;
   streamIntervalMs: number;
   /** The SERVICE's clock, so the page can detect a browser that disagrees. */
@@ -525,6 +527,8 @@ export interface ViewDoc {
 export interface QueryStatus {
   enabled: boolean;
   reason?: string;
+  /** The engine was configured and failed to open — not a build without one. */
+  failed?: boolean;
   views?: ViewDoc[];
   rowLimit: number;
   timeoutMs: number;

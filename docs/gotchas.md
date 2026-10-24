@@ -77,6 +77,14 @@ Add to it when a new gotcha lands in `docs/`.
   returns it, so the service runs every query in a short-lived worker
   (`sqlengine.OpenIsolated`); never open DuckDB in the service process.
   ([docs/36](36-telemetry-ui-history.md) §TH10)
+- **Registering every telemetry SQL view at once grows with the store, so
+  it must never gate the engine.** The open once also built the whole view
+  catalogue in a single worker, which sniffs every file under `/data`, and a
+  failed open is never retried. On 2026-10-22 that hit the 30 s budget on a
+  1.13.0 rollout: the engine stayed unwired for the life of the pod and the
+  dashboard hid its SQL tab. The open now fails only if a worker that
+  registers no views cannot answer; the catalogue is best effort, and the
+  meta says `sqlFailed` so the tab stays and states the error.
 - **A stored telemetry field never changes type and is never renamed.** The
   SQL views union partitions by name, so a field that is a number in old
   rows and a string in new ones turns the column into JSON for every query

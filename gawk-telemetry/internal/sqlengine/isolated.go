@@ -156,9 +156,9 @@ type isolated struct {
 }
 
 // OpenIsolated opens the engine the service runs: the in-process engine,
-// behind a process boundary per query. It runs one worker to learn the view
-// catalogue, so an engine that cannot open fails here, at startup, rather than
-// on an operator's first query.
+// behind a process boundary per query. It runs a worker before returning, so
+// an engine that cannot open fails here, at startup, rather than on an
+// operator's first query.
 func OpenIsolated(opts Options) (Engine, error) {
 	if !Compiled() {
 		return nil, ErrNoEngine
@@ -175,12 +175,28 @@ func OpenIsolated(opts Options) (Engine, error) {
 		turn:  make(chan struct{}, 1),
 		views: viewDocs(func(string) bool { return false }),
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout())
-	defer cancel()
-	if _, err := e.run(ctx, "", nil); err != nil {
+	// Two workers, so the open fails only on what is fatal. The first
+	// registers no view: it proves the binary re-executes and DuckDB opens,
+	// and if it cannot answer, no query will. The second learns the whole
+	// catalogue, which sniffs every file in the store and so grows with it;
+	// on 2026-10-22 it outlived the budget, and failing the open on that cost
+	// the console for the life of the pod. A catalogue left incomplete here is
+	// filled in by the queries that follow (merge), the probe's first among
+	// them, and a view that really cannot answer is the probe's to report.
+	if err := e.refresh([]string{}); err != nil {
 		return nil, err
 	}
+	_ = e.refresh(nil)
 	return e, nil
+}
+
+// refresh runs one catalogue-only worker registering views (nil: all), under
+// the query budget.
+func (e *isolated) refresh(views []string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), e.opts.timeout())
+	defer cancel()
+	_, err := e.run(ctx, "", views)
+	return err
 }
 
 func (e *isolated) Query(q string) (*Result, error) {

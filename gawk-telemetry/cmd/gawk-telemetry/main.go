@@ -97,6 +97,7 @@ func run() error {
 	// short-lived worker process: DuckDB keeps what it allocates for the life
 	// of the process it runs in, and that must not be this one.
 	var engine readapi.SQLEngine
+	var engineErr error
 	var probeTarget sqlengine.Querier
 	metrics := opsmetrics.New(version, cfg.enableSQL)
 	if cfg.enableSQL {
@@ -112,6 +113,7 @@ func run() error {
 				"rebuild with -tags duckdb (the deployed image does)")
 		case err != nil:
 			log.Warn("query engine failed to open; the console will report itself unavailable", "err", err)
+			engineErr = err
 		default:
 			engine = e
 			probeTarget = e
@@ -127,6 +129,7 @@ func run() error {
 		ScrapeInterval: cfg.scrapeInterval,
 		Annotations:    notes,
 		SQL:            engine,
+		SQLOpenErr:     engineErr,
 	})
 	if err != nil {
 		return err

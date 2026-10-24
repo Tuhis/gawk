@@ -29,7 +29,10 @@ const NAV: Array<{ view: ViewName; label: string; hint: string }> = [
 export function Nav() {
   const route = useRoute();
   const sql = useMetaStore((s) => s.meta?.sql);
-  const items = NAV.filter((n) => n.view !== 'sql' || sql !== false);
+  // An engine that failed to open keeps its tab: the console says why, where
+  // a missing tab reads as a feature nobody enabled.
+  const sqlFailed = useMetaStore((s) => s.meta?.sqlFailed);
+  const items = NAV.filter((n) => n.view !== 'sql' || sql !== false || sqlFailed);
   // `session` and `broadcast` are reached FROM the sections rather than from
   // the nav, but they still have to light one up — landing on a permalink and
   // seeing no section selected reads as being lost.

@@ -102,6 +102,21 @@ export function SqlView() {
     return [{ key: chartY, label: chartY, data }];
   }, [result, chartX, chartY]);
 
+  if (status?.failed) {
+    return (
+      <div className={view.page}>
+        <h1 className={view.title}>SQL</h1>
+        <p className={view.rollupOnly}>
+          <strong>The query engine is configured but did not start.</strong> {status.reason}
+        </p>
+        <p className={view.note}>
+          This is a failure, not a setting: the engine opens once, when the pod starts, and the pod log
+          carries the error. Restarting the pod tries again.
+        </p>
+      </div>
+    );
+  }
+
   if (status && !status.enabled) {
     return (
       <div className={view.page}>

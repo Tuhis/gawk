@@ -1,14 +1,23 @@
 package sqlengine
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // testWorkerCrashEnv makes a worker exit without answering, standing in for the
 // OOM killer or a crash inside DuckDB.
 const testWorkerCrashEnv = "GAWK_TELEMETRY_TEST_SQL_WORKER_CRASH"
+
+// testWorkerSlowCatalogueEnv makes a worker asked for the whole catalogue hang
+// past any budget, standing in for a store too large to sniff in one go — what
+// happened in production on 2026-10-22. Every other request answers.
+const testWorkerSlowCatalogueEnv = "GAWK_TELEMETRY_TEST_SQL_WORKER_SLOW_CATALOGUE"
 
 // The isolated engine re-executes its own binary as the worker. Under `go test`
 // that binary is this test binary, so it must dispatch the way the service's
@@ -18,7 +27,14 @@ func TestMain(m *testing.M) {
 		if os.Getenv(testWorkerCrashEnv) == "1" {
 			os.Exit(3)
 		}
-		os.Exit(RunWorker(os.Stdin, os.Stdout))
+		in, _ := io.ReadAll(os.Stdin)
+		if os.Getenv(testWorkerSlowCatalogueEnv) == "1" {
+			var req workerRequest
+			if json.Unmarshal(in, &req) == nil && req.SQL == "" && req.Views == nil {
+				time.Sleep(time.Hour)
+			}
+		}
+		os.Exit(RunWorker(bytes.NewReader(in), os.Stdout))
 	}
 	os.Exit(m.Run())
 }
