@@ -2037,8 +2037,11 @@ jobs:
             echo "::error::pops.enabled=true does not render the Pop CRD"; exit 1; }
           rbac=$(grep -A3 '"pops/status"' <<<"$on") || {
             echo "::error::pops.enabled=true renders no pops/status RBAC"; exit 1; }
-          grep -q '"patch"' <<<"$rbac" || {
-            echo "::error::the pops/status rule does not grant patch"; echo "$rbac"; exit 1; }
+          # popsrc.k8sStatus writes with UpdateStatus (a resourceVersion-
+          # fenced read-modify-write), so the verb is update. 0.36.0 granted
+          # patch and checked for it here, and every pairing failed with 503.
+          grep -q '"update"' <<<"$rbac" || {
+            echo "::error::the pops/status rule does not grant update (popsrc writes with UpdateStatus)"; echo "$rbac"; exit 1; }
           helm lint "$relay" --set pops.enabled=true --set config.clusterMode=true
           aoff=$(helm template "$admin" $ADMIN_PG)
           if grep -qE 'certificaterequests|dnsendpoints' <<<"$aoff"; then

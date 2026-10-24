@@ -190,7 +190,7 @@ rooms:
 # Requires config.clusterMode: the Pop CRs this chart installs are the PoP
 # source, written by gawk-admin's PoPs pages (or kubectl), and a PoP's
 # reservations are broadcast Leases. rbac.yaml grants pops get/list/watch
-# and pops/status get/patch — the relay never creates, deletes or edits the
+# and pops/status get/update — the relay never creates, deletes or edits the
 # spec of a Pop. A file source (-pops-file) exists for non-Kubernetes
 # deployments and is not exposed here, the rooms posture.
 pops:
