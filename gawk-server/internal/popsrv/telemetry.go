@@ -121,6 +121,9 @@ func (t *Telemetry) mint(pop string, r poplink.TelemetryMint) {
 	}
 	l := t.m.local(pop)
 	if l == nil {
+		// The link left this pod after the request was read: nothing to
+		// answer on. The PoP's request expires and it asks again over its
+		// new link (popclient telemetryAskExpiry).
 		return
 	}
 	role := wire.TelemetryRole(r.Role)
@@ -139,6 +142,7 @@ func (t *Telemetry) mint(pop string, r poplink.TelemetryMint) {
 	}
 	bk, err := hex.DecodeString(t.m.opts.Registry.ObfuscateID(r.ID))
 	if err != nil {
+		refuse(poplink.TelemetryRefusedError)
 		return
 	}
 	issuer := wire.TelemetryIssuerKey(t.opts.Key, l.uid)
@@ -148,6 +152,7 @@ func (t *Telemetry) mint(pop string, r poplink.TelemetryMint) {
 		tok, err := wire.MintTelemetrySessionTokenForIssuer(t.opts.Key, bk, role, now, issuer)
 		if err != nil {
 			t.m.log.Warn("pop telemetry mint failed", "pop", pop, "err", err)
+			refuse(poplink.TelemetryRefusedError)
 			return
 		}
 		out.Tokens = append(out.Tokens, hex.EncodeToString(tok))

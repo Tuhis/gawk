@@ -26,6 +26,11 @@ const (
 	// link-home pod a moment after the session starts, and a scope refusal
 	// in that moment is not the answer (docs/78 D5).
 	telemetryRetry = 500 * time.Millisecond
+	// telemetryAskExpiry is how long a mint request may go unanswered before
+	// the pool asks again: home does not always answer (the link dropped
+	// after the request was written, or home failed), and an answer that
+	// never comes must not stop the pool for good (review of #563).
+	telemetryAskExpiry = 4 * telemetryRetry
 	// telemetryPoolIdle drops a pool nobody has drawn from in this long.
 	telemetryPoolIdle = 10 * time.Minute
 	// telemetryObsBudget keeps a TelemetryObs record well under
@@ -37,6 +42,7 @@ type telemetryPool struct {
 	broadcastKey []byte
 	tokens       [][]byte
 	asked        bool // a TelemetryMint is outstanding
+	askedAt      time.Time
 	refused      bool // home refused the last one
 	refusedAt    time.Time
 	used         time.Time
@@ -44,13 +50,15 @@ type telemetryPool struct {
 }
 
 type telemetry struct {
-	c     *Client
+	c *Client
+	// send writes a record home: c.Send, or a test's.
+	send  func(rec any) error
 	mu    sync.Mutex
 	pools map[string]*telemetryPool
 }
 
 func newTelemetry(c *Client) *telemetry {
-	t := &telemetry{c: c, pools: map[string]*telemetryPool{}}
+	t := &telemetry{c: c, send: c.Send, pools: map[string]*telemetryPool{}}
 	c.OnRecord(poplink.TTelemetryTokens, func(rec any) {
 		if r, ok := rec.(*poplink.TelemetryTokens); ok {
 			t.tokens(r)
@@ -98,10 +106,12 @@ func (t *telemetry) take(ctx context.Context, id string, role wire.TelemetryRole
 			t.pools[key] = p
 		}
 		p.used = time.Now()
-		if len(p.tokens) < telemetryPoolLow && !p.asked && (!p.refused || time.Since(p.refusedAt) >= telemetryRetry) {
+		outstanding := p.asked && time.Since(p.askedAt) < telemetryAskExpiry
+		if len(p.tokens) < telemetryPoolLow && !outstanding && (!p.refused || time.Since(p.refusedAt) >= telemetryRetry) {
 			p.asked = true
+			p.askedAt = time.Now()
 			p.refused = false
-			if err := t.c.Send(poplink.TelemetryMint{ID: id, Role: string(role), N: telemetryPoolSize}); err != nil {
+			if err := t.send(poplink.TelemetryMint{ID: id, Role: string(role), N: telemetryPoolSize}); err != nil {
 				p.asked = false
 				if errors.Is(err, ErrNotLinked) && len(p.tokens) == 0 {
 					t.mu.Unlock()
@@ -131,25 +141,23 @@ func (t *telemetry) take(ctx context.Context, id string, role wire.TelemetryRole
 }
 
 func (t *telemetry) tokens(r *poplink.TelemetryTokens) {
-	bk, err := hex.DecodeString(r.BroadcastKey)
-	if err != nil || len(bk) != wire.TelemetryBroadcastKeySize {
-		return
-	}
-	var toks [][]byte
-	for _, s := range r.Tokens {
-		if b, err := hex.DecodeString(s); err == nil && len(b) == wire.TelemetrySessionTokenSize {
-			toks = append(toks, b)
-		}
-	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	p := t.pools[poolKey(r.ID, wire.TelemetryRole(r.Role))]
 	if p == nil {
 		return // nobody asked, or the pool went idle
 	}
-	p.broadcastKey = bk
-	p.tokens = append(p.tokens, toks...)
+	// Any answer settles the request, a malformed one too: the pool asks
+	// again rather than waiting on an answer that has come.
 	p.asked = false
+	if bk, err := hex.DecodeString(r.BroadcastKey); err == nil && len(bk) == wire.TelemetryBroadcastKeySize {
+		for _, s := range r.Tokens {
+			if b, err := hex.DecodeString(s); err == nil && len(b) == wire.TelemetrySessionTokenSize {
+				p.tokens = append(p.tokens, b)
+			}
+		}
+		p.broadcastKey = bk
+	}
 	close(p.ready)
 	p.ready = make(chan struct{})
 }

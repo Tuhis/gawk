@@ -73,7 +73,7 @@ Additive, in `internal/poplink` (not a wire type; no mirrors):
   telemetry; absent otherwise (the PoP then sends no hello, as today).
 - PoP → home `telemetryMint {id, role, n}`: up to `n` (≤ 8) tokens.
 - Home → PoP `telemetryTokens {id, role, broadcastKey, tokens[]}`, or
-  `telemetryRefused {id, role, reason}` (`scope`, `rate`, `off`).
+  `telemetryRefused {id, role, reason}` (`scope`, `rate`, `off`, `error`).
 
 ### D3 — The issuer key rides the nonce
 
@@ -107,7 +107,11 @@ and drops a pool nobody has drawn from for 10 minutes. A refusal is asked
 again every 500 ms within the session's wait: a new party broadcast's
 reservation, or a downlink viewer's leg slot, reaches the link-home pod a
 moment after the session starts, and a `scope` refusal in that moment is
-not the answer. A session takes one token; when
+not the answer. A request with no answer at all expires after 2 s (four
+retry intervals) and is asked again: the link can drop after the request was
+written, and an answer that never comes must not stop the pool for good
+(review of #563). Any answer settles the request, a malformed one too, and
+home answers its own failures with `error`. A session takes one token; when
 the pool is empty it waits up to 5 s in its own goroutine and then sends the
 hello late — or not at all — never delaying the session. The hello and the
 ingest-URL record are byte-identical to a home pod's.

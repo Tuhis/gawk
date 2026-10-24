@@ -63,6 +63,8 @@ const (
 	TelemetryRefusedScope = "scope"
 	TelemetryRefusedRate  = "rate"
 	TelemetryRefusedOff   = "off"
+	// TelemetryRefusedError: home failed to mint; ask again later.
+	TelemetryRefusedError = "error"
 )
 
 // MaxTelemetryMint is the most tokens one TelemetryMint may ask for.
