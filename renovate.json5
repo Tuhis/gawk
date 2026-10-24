@@ -5,6 +5,17 @@
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
   postUpdateOptions: ["gomodTidy"],
 
+  // An issue listing every pending, rate-limited and failing update. Without
+  // it a stuck run is invisible: in 2026-10 the bot aborted every gawk run a
+  // few branches in, ~70 updates queued up behind it, and the only symptom was
+  // Dependabot alerts with no matching PRs.
+  dependencyDashboard: true,
+
+  // The bot runs once a day, so the default prHourlyLimit of 2 is really two
+  // new PRs a day, and a backlog takes weeks to drain. prConcurrentLimit
+  // (default 10 open at once) stays the cap on review load.
+  prHourlyLimit: 0,
+
   // Regenerate the third-party attribution files in the same PR as the bump
   // that invalidated them. Renovate is how dependencies change here, so
   // without this the notices drift on every bump and the `licenses-fresh` CI
@@ -72,6 +83,11 @@
     {
       description: "The uplink lab's Rust sender (docs/75) is its own Cargo workspace but keeps no versions of its own: tools/uplinklab/build.sh builds it from a copy of the desktop workspace's Cargo.lock, and CI never builds it, so a bump here would only drift it off the stack it measures.",
       matchFileNames: ["gawk-broadcast-desktop/tools/uplinklab/**"],
+      enabled: false,
+    },
+    {
+      description: "gawk-broadcast-desktop/vendor holds patched copies of quinn-proto, wtransport and wtransport-proto (each one's GAWK-PATCH.md), excluded from the workspace. Their Cargo.toml files are upstream's published manifests, so an edit there is never right, and Renovate runs `cargo update --manifest-path vendor/<crate>/Cargo.toml` outside the workspace, which fails or commits nothing. Their dependencies resolve through the workspaces' Cargo.lock and move with lock file maintenance; a new upstream version of a copy is re-derived by hand.",
+      matchFileNames: ["gawk-broadcast-desktop/vendor/**"],
       enabled: false,
     },
   ],
