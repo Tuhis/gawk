@@ -126,8 +126,11 @@ subjects:
 {{- if and .Values.pops.enabled .Values.config.clusterMode }}
 ---
 # R74 (docs/76 §9): the relay READS Pop CRs (gawk-admin or kubectl writes
-# spec) and patches its own status paths — credential at pairing, lease on
+# spec) and writes its own status paths — credential at pairing, lease on
 # every link and renewal, link, tls.csr — through the status subresource.
+# The verb is update, not patch: popsrc writes with UpdateStatus, a
+# read-modify-write fenced on resourceVersion (popsrc/rbac_test.go checks
+# this rule against the calls).
 # Nothing else: no create, no delete, no spec write, so a compromised relay
 # cannot mint itself a PoP or un-revoke one. The broadcast reservations a
 # PoP holds are ordinary origin Leases, covered by the -leases Role above.
@@ -147,7 +150,7 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: ["gawk.ioio.fi"]
     resources: ["pops/status"]
-    verbs: ["get", "patch"]
+    verbs: ["get", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
