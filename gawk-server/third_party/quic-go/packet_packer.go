@@ -21,6 +21,8 @@ type packer interface {
 	PackCoalescedPacket(onlyAck bool, maxPacketSize protocol.ByteCount, now monotime.Time, v protocol.Version) (*coalescedPacket, error)
 	PackAckOnlyPacket(maxPacketSize protocol.ByteCount, now monotime.Time, v protocol.Version) (shortHeaderPacket, *packetBuffer, error)
 	AppendPacket(_ *packetBuffer, maxPacketSize protocol.ByteCount, now monotime.Time, v protocol.Version) (shortHeaderPacket, error)
+	// GAWK PATCH (GSO batching): see AppendBatchedPacket.
+	AppendBatchedPacket(_ *packetBuffer, segmentSize protocol.ByteCount, now monotime.Time, v protocol.Version) (shortHeaderPacket, error)
 	PackPTOProbePacket(_ protocol.EncryptionLevel, _ protocol.ByteCount, addPingIfEmpty bool, now monotime.Time, v protocol.Version) (*coalescedPacket, error)
 	PackConnectionClose(*qerr.TransportError, protocol.ByteCount, protocol.Version) (*coalescedPacket, error)
 	PackApplicationClose(*qerr.ApplicationError, protocol.ByteCount, protocol.Version) (*coalescedPacket, error)
@@ -135,6 +137,9 @@ type packetPacker struct {
 	rand                rand.Rand
 
 	numNonAckElicitingAcks int
+
+	// GAWK PATCH (GSO batching): set while AppendBatchedPacket packs.
+	keepUnfitDatagram bool
 }
 
 var _ packer = &packetPacker{}
@@ -470,6 +475,18 @@ func (p *packetPacker) AppendPacket(buf *packetBuffer, maxSize protocol.ByteCoun
 	return p.appendPacket(buf, false, maxSize, now, v)
 }
 
+// GAWK PATCH (GSO batching): AppendBatchedPacket packs a packet that follows
+// others in a GSO batch, so it may be at most the batch's segment size, which
+// can be less than the path's maximum. A DATAGRAM frame that doesn't fit
+// under that cap stays queued for a later packet: AppendPacket discards a
+// datagram that doesn't fit, because there its limit is the largest packet
+// the path takes. See third_party/quic-go/GAWK-PATCH.md.
+func (p *packetPacker) AppendBatchedPacket(buf *packetBuffer, segmentSize protocol.ByteCount, now monotime.Time, v protocol.Version) (shortHeaderPacket, error) {
+	p.keepUnfitDatagram = true
+	defer func() { p.keepUnfitDatagram = false }()
+	return p.appendPacket(buf, false, segmentSize, now, v)
+}
+
 func (p *packetPacker) appendPacket(
 	buf *packetBuffer,
 	onlyAck bool,
@@ -657,7 +674,7 @@ func (p *packetPacker) composeNextPacket(
 				pl.frames = append(pl.frames, ackhandler.Frame{Frame: f})
 				pl.length += size
 				p.datagramQueue.Pop()
-			} else if pl.ack == nil {
+			} else if pl.ack == nil && !p.keepUnfitDatagram {
 				// The DATAGRAM frame doesn't fit, and the packet doesn't contain an ACK.
 				// Discard this frame. There's no point in retrying this in the next packet,
 				// as it's unlikely that the available packet size will increase.
