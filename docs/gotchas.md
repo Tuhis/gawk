@@ -1614,10 +1614,18 @@ entries still describe code `gawk-pubsim` runs (now
   128 already took it to zero — but size it for a burst, not a backlog: on a
   relay short of CPU every extra entry is delay, and 4096 had the worst tail
   of the depths measured ([docs/75](75-reliable-uplink.md) F7, F16, D7).
+- **Stock quic-go sends every DATAGRAM packet in its own `sendmsg`.** Its
+  GSO batching only continues after a packet of exactly the path's maximum
+  size, and a datagram packet never is (a full chunk is about 1235 bytes
+  against 1280–1452). That cost the relay a system call per chunk per
+  viewer, the largest single item in its CPU profile. The vendored copy
+  batches runs of equal-size packets instead; don't pad datagrams to the
+  maximum to get batching, which costs up to ~18 % of the bandwidth
+  (`third_party/quic-go/GAWK-PATCH.md`, patch 2).
 - **gawk-server's quic-go is a vendored, patched copy, so bumping quic-go
   means re-deriving it.** `gawk-server/go.mod` replaces quic-go with
   `third_party/quic-go` (upstream at the required version, 512-deep
-  session queue, D7). Moving the `require` line alone changes nothing that
+  session queue, D7, and GSO batching of equal-size packets). Moving the `require` line alone changes nothing that
   is built; Renovate leaves quic-go alone, and CI's `tidy` job fails until
   `third_party/quic-go/gawk-derive.sh` has re-derived the copy (its
   `GAWK-PATCH.md` has the steps). A `replace` only applies in the main

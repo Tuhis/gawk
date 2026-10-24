@@ -2598,11 +2598,23 @@ func (c *Conn) sendPacketsWithoutGSO(now monotime.Time) error {
 func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 	buf := getLargePacketBuffer()
 	maxSize := c.maxPacketSize()
+	// GAWK PATCH (GSO batching): the batch's segment size, the size of its
+	// first packet; 0 until that packet is packed. Upstream batches only
+	// packets of exactly maxSize, which a DATAGRAM packet almost never is, so
+	// every datagram cost a sendmsg of its own. A run of equal-size packets
+	// is batched instead. See third_party/quic-go/GAWK-PATCH.md.
+	var segSize protocol.ByteCount
 
 	ecn := c.sentPacketHandler.ECNMode(true)
 	for {
 		var dontSendMore bool
-		size, err := c.appendOneShortHeaderPacket(buf, maxSize, ecn, now)
+		var size protocol.ByteCount
+		var err error
+		if segSize == 0 || segSize == maxSize {
+			size, err = c.appendOneShortHeaderPacket(buf, maxSize, ecn, now)
+		} else {
+			size, err = c.appendBatchedShortHeaderPacket(buf, segSize, ecn, now)
+		}
 		if err != nil {
 			if err != errNothingToPack {
 				return err
@@ -2612,6 +2624,11 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 				return nil
 			}
 			dontSendMore = true
+			// GAWK PATCH (GSO batching): a datagram larger than the segment
+			// may be waiting; pack it without the cap.
+			if segSize != 0 && segSize < maxSize {
+				c.scheduleSending()
+			}
 		}
 
 		if !dontSendMore {
@@ -2627,16 +2644,28 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 		// Don't send more packets in this batch if they require a different ECN marking than the previous ones.
 		nextECN := c.sentPacketHandler.ECNMode(true)
 
+		// GAWK PATCH (GSO batching): a first packet of at least QUIC's minimum
+		// packet size sets the segment size. A shorter one (an ACK, the tail
+		// of a stream) is sent alone, so it never caps the packets after it.
+		if segSize == 0 && size >= protocol.MinInitialPacketSize {
+			segSize = size
+		}
+
 		// Append another packet if
 		// 1. The congestion controller and pacer allow sending more
-		// 2. The last packet appended was a full-size packet
+		// 2. The last packet appended was a full segment (GAWK PATCH: upstream
+		//    requires a full-size packet)
 		// 3. The next packet will have the same ECN marking
 		// 4. We still have enough space for another full-size packet in the buffer
-		if !dontSendMore && size == maxSize && nextECN == ecn && buf.Len()+maxSize <= buf.Cap() {
+		if !dontSendMore && segSize != 0 && size == segSize && nextECN == ecn && buf.Len()+maxSize <= buf.Cap() {
 			continue
 		}
 
-		c.sendQueue.Send(buf, uint16(maxSize), ecn)
+		gsoSize := maxSize
+		if segSize != 0 {
+			gsoSize = segSize
+		}
+		c.sendQueue.Send(buf, uint16(gsoSize), ecn)
 
 		if dontSendMore {
 			return nil
@@ -2656,6 +2685,7 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 
 		ecn = nextECN
 		buf = getLargePacketBuffer()
+		segSize = 0
 	}
 }
 
@@ -2738,6 +2768,21 @@ func (c *Conn) sendProbePacket(sendMode ackhandler.SendMode, now monotime.Time) 
 func (c *Conn) appendOneShortHeaderPacket(buf *packetBuffer, maxSize protocol.ByteCount, ecn protocol.ECN, now monotime.Time) (protocol.ByteCount, error) {
 	startLen := buf.Len()
 	p, err := c.packer.AppendPacket(buf, maxSize, now, c.version)
+	if err != nil {
+		return 0, err
+	}
+	size := buf.Len() - startLen
+	c.logShortHeaderPacket(p, ecn, size)
+	c.registerPackedShortHeaderPacket(p, ecn, now)
+	return size, nil
+}
+
+// GAWK PATCH (GSO batching): appendBatchedShortHeaderPacket is
+// appendOneShortHeaderPacket for a packet after the first in a GSO batch:
+// at most segSize bytes, without discarding a datagram that doesn't fit.
+func (c *Conn) appendBatchedShortHeaderPacket(buf *packetBuffer, segSize protocol.ByteCount, ecn protocol.ECN, now monotime.Time) (protocol.ByteCount, error) {
+	startLen := buf.Len()
+	p, err := c.packer.AppendBatchedPacket(buf, segSize, now, c.version)
 	if err != nil {
 		return 0, err
 	}

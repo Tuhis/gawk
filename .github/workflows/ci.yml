@@ -1228,7 +1228,7 @@ jobs:
             exit 1
           fi
       # R73 RU2 (docs/75 D7): gawk-server builds against a vendored quic-go
-      # carrying one patch. Re-deriving it from the version go.mod requires
+      # carrying gawk's patches (its GAWK-PATCH.md). Re-deriving it from the version go.mod requires
       # must change nothing, so the copy is never hand-edited and a bump of
       # the require line cannot leave the old copy behind it.
       - name: the vendored quic-go is upstream plus gawk.patch
