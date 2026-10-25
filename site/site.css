@@ -250,6 +250,10 @@ strong { color: var(--fg); font-weight: 500; }
 .link-row:last-child { border-bottom: 0; }
 .link-row a { font-weight: 600; font-size: 15px; }
 .link-row span { font-size: 14px; color: var(--fg-2); }
+/* Party relay page: a short label beside each fact, not a half-width column. */
+.facts .link-row { grid-template-columns: 160px minmax(0, 1fr); }
+.facts .link-row strong { font-size: 15px; }
+@media (max-width: 560px) { .facts .link-row { grid-template-columns: 1fr; } }
 .components { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 16px; }
 .component { padding: 22px 24px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-2); }
 .component .path { font-family: var(--mono); font-size: 13px; color: var(--fg); }
