@@ -563,7 +563,7 @@ services:
   # getDisplayMedia and WebCodecs would be unavailable. ./dev/certs.sh turns
   # this on by writing COMPOSE_PROFILES=tls into .env.
   caddy:
-    image: caddy:2.10-alpine
+    image: caddy:2.11-alpine
     profiles: ["tls"]
     ports:
       - "${BIND_ADDR:-127.0.0.1}:${APP_PORT:-8443}:443"
