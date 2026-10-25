@@ -42,6 +42,10 @@ type Rooms interface {
 	// SetWall sets a PoP's wall room's broadcast cap and title (R74); it
 	// writes only a room whose spec.pop is pop, else ErrRoomNotFound.
 	SetWall(ctx context.Context, name, pop string, maxBroadcasts int, displayName string) (kube.RoomObject, error)
+	// SetMumble replaces spec.integrations.mumble (nil removes it, R79,
+	// docs/80 D13) when check admits the object as read, bound to that
+	// object, and returns the room before and after.
+	SetMumble(ctx context.Context, name string, m *rooms.MumbleIntegration, check func(kube.RoomObject) error) (before, after kube.RoomObject, err error)
 }
 
 // Room error codes, in the {"error":{"code","message"}} envelope.
@@ -72,6 +76,16 @@ type createRoomRequest struct {
 	// WithAttachSecret mints an attach secret (docs/44 D8), returned ONCE in
 	// the 201 body and never readable again.
 	WithAttachSecret bool `json:"withAttachSecret,omitempty"`
+	// Mumble gives the room voice on an existing Mumble channel (R79,
+	// docs/80 D14); absent or null means no voice. A static room never asks
+	// for a temporary channel.
+	Mumble *rooms.MumbleIntegration `json:"mumble,omitempty"`
+}
+
+// roomVoiceRequest is PUT /api/v1/rooms/{name}/voice: the room's whole voice
+// mapping. Absent or null removes it — the body replaces, it does not merge.
+type roomVoiceRequest struct {
+	Mumble *rooms.MumbleIntegration `json:"mumble"`
 }
 
 type roomJSON struct {
@@ -116,6 +130,10 @@ type roomJSON struct {
 	// absent for a screened room. It reports what the CR says; a value the
 	// room's shape does not allow is screened anyway.
 	Screening string `json:"screening,omitempty"`
+	// Mumble is the CR's spec.integrations.mumble (R79, docs/80 D13): the
+	// room's voice channel, absent for a room without voice. Like Screening
+	// it reports what the CR says; a relay with no bridge ignores it.
+	Mumble *rooms.MumbleIntegration `json:"mumble,omitempty"`
 }
 
 type roomLinksJSON struct {
@@ -186,6 +204,10 @@ func renderRoom(obj kube.RoomObject) roomJSON {
 		HasAttachSecret: r.Spec.AttachSecretRef != nil,
 		Managed:         obj.Managed,
 		Screening:       r.Spec.Screening,
+	}
+	if m := r.Spec.Integrations.Mumble; m != nil {
+		cp := *m
+		out.Mumble = &cp
 	}
 	if r.Status.Lease != nil {
 		out.HomeHolder = r.Status.Lease.Holder
@@ -290,12 +312,17 @@ func (a *API) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, CodeBadRequest, "displayName must be at most 128 characters")
 		return
 	}
+	if msg := staticMumbleError(req.Mumble); msg != "" {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, msg)
+		return
+	}
 
 	secret, err := a.opts.Rooms.CreateStatic(r.Context(), kube.StaticRoom{
 		Code:             strings.TrimSpace(req.Code),
 		DisplayName:      displayName,
 		MaxBroadcasts:    req.MaxBroadcasts,
 		WithAttachSecret: req.WithAttachSecret,
+		Mumble:           req.Mumble,
 		// Every portal room records its creator (docs/62 D2); a
 		// rooms-manager caller may later delete exactly these.
 		CreatedBy: id.Subject,
@@ -308,6 +335,7 @@ func (a *API) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 	created.Room.Spec = rooms.RoomSpec{
 		Kind: rooms.KindStatic, DisplayCode: strings.TrimSpace(req.Code),
 		DisplayName: displayName, MaxBroadcasts: req.MaxBroadcasts,
+		Integrations: rooms.Integrations{Mumble: req.Mumble},
 	}
 	if secret != "" {
 		created.Room.Spec.AttachSecretRef = &rooms.SecretKeyRef{Name: kube.RoomSecretName(code), Key: kube.RoomSecretKey}
@@ -318,10 +346,83 @@ func (a *API) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 	a.kick()
 	// The code is a joinable secret (docs/44 D16); no key exists until a pod
 	// homes the room, so the log names nothing but the kind.
-	a.log.Info("static room created", "actor", id.Actor(), "withAttachSecret", secret != "")
+	a.log.Info("static room created", "actor", id.Actor(), "withAttachSecret", secret != "", "voice", req.Mumble != nil)
 	room := renderRoom(created)
 	room.Links = a.roomLinks(room.Code)
 	writeJSON(w, http.StatusCreated, roomWithSecretJSON{Room: room, AttachSecret: secret})
+}
+
+// staticMumbleError validates a static room's voice mapping (docs/80 D13,
+// D14) and returns the 400's message, or "" when it is acceptable. Nil is no
+// voice. A static room names an existing channel: a temporary one is what a
+// dynamic room's creator gets, and the relay would never create it here.
+func staticMumbleError(m *rooms.MumbleIntegration) string {
+	if m == nil {
+		return ""
+	}
+	if m.Temporary {
+		return "a static room's voice uses an existing Mumble channel: temporary channels are for dynamic rooms (docs/80 D13)"
+	}
+	if err := rooms.ValidateMumble(m); err != nil {
+		return fmt.Sprintf("mumble.channel must be a \"/\"-separated channel path of at most %d bytes with no control characters (empty is the root channel)",
+			rooms.MaxMumbleChannelLen)
+	}
+	return ""
+}
+
+// errVoiceNotStatic is handleSetRoomVoice's refusal from inside the write.
+var errVoiceNotStatic = errors.New("api: voice is set here on a static room only")
+
+// handleSetRoomVoice replaces a static room's voice mapping (R79, docs/80
+// D14: the operator's room form). A dynamic room is refused: its voice is a
+// temporary channel its creator asked for, and the room ends with it.
+//
+// No event is recorded: the R51 catalogue has no type for a voice change yet,
+// and an event type is a gawk-server/events change. The log line is the trail.
+func (a *API) handleSetRoomVoice(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.caller(w, r)
+	if !ok {
+		return
+	}
+	name, ok := roomName(w, r)
+	if !ok {
+		return
+	}
+	var req roomVoiceRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	if msg := staticMumbleError(req.Mumble); msg != "" {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, msg)
+		return
+	}
+	// The kind is checked inside the write, on the object it changes.
+	check := func(obj kube.RoomObject) error {
+		if obj.Err != nil || obj.Room.Spec.Kind != rooms.KindStatic {
+			return errVoiceNotStatic
+		}
+		return nil
+	}
+	_, after, err := a.opts.Rooms.SetMumble(r.Context(), name, req.Mumble, check)
+	if errors.Is(err, errVoiceNotStatic) {
+		writeError(w, http.StatusConflict, CodeRoomNotStatic,
+			"only a static room's voice channel is set here; a dynamic room's is the temporary one its creator asked for (docs/80 D14)")
+		return
+	}
+	if err != nil {
+		a.failRoom(w, r, "set the room's voice channel", err)
+		return
+	}
+	a.log.Info("room voice set", "actor", id.Actor(), "roomKey", after.Room.Status.Key, "voice", req.Mumble != nil)
+	live := a.liveRooms(r.Context())
+	for code := range live {
+		if code != name {
+			delete(live, code)
+		}
+	}
+	rows := a.mergeRooms([]kube.RoomObject{after}, live, false)
+	writeJSON(w, http.StatusOK, rows[0])
 }
 
 // handleRotateRoomSecret mints a fresh attach secret for a static room and

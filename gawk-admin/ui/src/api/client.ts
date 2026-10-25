@@ -32,6 +32,7 @@ import type {
   ReplayResponse,
   Room,
   RoomScreening,
+  RoomMumble,
   RoomWithSecret,
   CreateRoomRequest,
   CreatePopRequest,
@@ -270,6 +271,18 @@ export class ApiClient {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ screening }),
+    });
+  }
+
+  /**
+   * Replace a static room's voice channel (R79, docs/80 D14); `null` removes
+   * it. A dynamic room is `409 room_not_static`.
+   */
+  setRoomVoice(name: string, mumble: RoomMumble | null): Promise<Room> {
+    return this.json<Room>(`rooms/${encodeURIComponent(name)}/voice`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mumble }),
     });
   }
 

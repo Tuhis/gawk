@@ -524,6 +524,90 @@ func TestRoomClientSetScreeningIsBoundToTheCheckedObjectsUID(t *testing.T) {
 	}
 }
 
+// R79 (docs/80 D13): CreateStatic writes the voice mapping into
+// spec.integrations.mumble, an empty mapping (the root channel) included.
+func TestRoomClientCreateStaticWritesTheVoiceMapping(t *testing.T) {
+	c, _ := newFakeRoomClient(t)
+	ctx := context.Background()
+	if _, err := c.CreateStatic(ctx, kube.StaticRoom{Code: "friends", Mumble: &rooms.MumbleIntegration{Channel: "Friends/Gaming"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.CreateStatic(ctx, kube.StaticRoom{Code: "lobby", Mumble: &rooms.MumbleIntegration{}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.CreateStatic(ctx, kube.StaticRoom{Code: "quiet"}); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]*rooms.MumbleIntegration{
+		"friends": {Channel: "Friends/Gaming"}, "lobby": {}, "quiet": nil,
+	} {
+		got, err := c.Get(ctx, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := got.Room.Spec.Integrations.Mumble
+		if (m == nil) != (want == nil) || (m != nil && *m != *want) {
+			t.Errorf("%s: mumble = %+v, want %+v", name, m, want)
+		}
+	}
+}
+
+// SetMumble replaces the mapping whole — a new channel drops a stale
+// temporary flag rather than merging beside it — removes it on nil, keeps
+// the rest of the spec, and writes nothing when the check refuses.
+func TestRoomClientSetMumble(t *testing.T) {
+	room := kubectlRoom("crew", &rooms.SecretKeyRef{Name: "s", Key: "k"})
+	room.Spec.Integrations.Mumble = &rooms.MumbleIntegration{Temporary: true}
+	room.UID = types.UID("uid-checked")
+	c, _, dc := newFakeRoomClientWithDynamic(t, room)
+	var patch string
+	dc.PrependReactor("patch", "rooms", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		patch = string(action.(k8stesting.PatchActionImpl).GetPatch())
+		return false, nil, nil
+	})
+	ctx := context.Background()
+	before, after, err := c.SetMumble(ctx, "crew", &rooms.MumbleIntegration{Channel: "Friends/Gaming"}, nil)
+	if err != nil {
+		t.Fatalf("SetMumble: %v", err)
+	}
+	if !strings.Contains(patch, `"uid":"uid-checked"`) {
+		t.Fatalf("patch = %s, want the checked UID", patch)
+	}
+	if m := before.Room.Spec.Integrations.Mumble; m == nil || !m.Temporary {
+		t.Fatalf("before = %+v", m)
+	}
+	want := rooms.MumbleIntegration{Channel: "Friends/Gaming"}
+	got, _ := c.Get(ctx, "crew")
+	for _, m := range []*rooms.MumbleIntegration{after.Room.Spec.Integrations.Mumble, got.Room.Spec.Integrations.Mumble} {
+		if m == nil || *m != want {
+			t.Fatalf("mumble after SetMumble = %+v, want %+v", m, want)
+		}
+	}
+	if got.Room.Spec.AttachSecretRef == nil || got.Room.Spec.Kind != rooms.KindStatic {
+		t.Fatalf("stored spec = %+v: the patch must keep the rest", got.Room.Spec)
+	}
+
+	// The root channel is an empty mapping, kept as one.
+	if _, after, err = c.SetMumble(ctx, "crew", &rooms.MumbleIntegration{}, nil); err != nil || after.Room.Spec.Integrations.Mumble == nil ||
+		*after.Room.Spec.Integrations.Mumble != (rooms.MumbleIntegration{}) {
+		t.Fatalf("root channel: %+v, %v", after.Room.Spec.Integrations.Mumble, err)
+	}
+	if _, after, err = c.SetMumble(ctx, "crew", nil, nil); err != nil || after.Room.Spec.Integrations.Mumble != nil {
+		t.Fatalf("removal: %+v, %v", after.Room.Spec.Integrations.Mumble, err)
+	}
+
+	refuse := errors.New("refused")
+	if _, _, err := c.SetMumble(ctx, "crew", &rooms.MumbleIntegration{Channel: "x"}, func(kube.RoomObject) error { return refuse }); !errors.Is(err, refuse) {
+		t.Fatalf("a refusing check: %v", err)
+	}
+	if got, _ := c.Get(ctx, "crew"); got.Room.Spec.Integrations.Mumble != nil {
+		t.Fatal("a refused SetMumble wrote the room")
+	}
+	if _, _, err := c.SetMumble(ctx, "nosuchroom", nil, nil); !errors.Is(err, kube.ErrRoomNotFound) {
+		t.Fatalf("a missing room: %v", err)
+	}
+}
+
 // --- the reconciler's room sweep ------------------------------------------
 
 // A dynamic room that vanishes between two sweeps was ended by the RELAY

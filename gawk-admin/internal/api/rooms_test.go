@@ -67,6 +67,10 @@ func (f *fakeRooms) CreateStatic(_ context.Context, req kube.StaticRoom) (string
 	obj.Room.Name = code
 	obj.Room.Spec = rooms.RoomSpec{Kind: rooms.KindStatic, DisplayCode: req.Code,
 		DisplayName: req.DisplayName, MaxBroadcasts: req.MaxBroadcasts, Pop: req.Pop}
+	if req.Mumble != nil {
+		m := *req.Mumble
+		obj.Room.Spec.Integrations.Mumble = &m
+	}
 	secret := ""
 	if req.WithAttachSecret {
 		f.secrets++
@@ -143,6 +147,31 @@ func (f *fakeRooms) SetWall(_ context.Context, name, pop string, maxBroadcasts i
 	obj.Room.Spec.MaxBroadcasts, obj.Room.Spec.DisplayName = maxBroadcasts, displayName
 	f.rooms[name] = obj
 	return obj, nil
+}
+
+func (f *fakeRooms) SetMumble(_ context.Context, name string, m *rooms.MumbleIntegration, check func(kube.RoomObject) error) (kube.RoomObject, kube.RoomObject, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return kube.RoomObject{}, kube.RoomObject{}, f.err
+	}
+	obj, ok := f.rooms[name]
+	if !ok {
+		return kube.RoomObject{}, kube.RoomObject{}, kube.ErrRoomNotFound
+	}
+	if check != nil {
+		if err := check(obj); err != nil {
+			return obj, kube.RoomObject{}, err
+		}
+	}
+	after := obj
+	after.Room.Spec.Integrations.Mumble = nil
+	if m != nil {
+		cp := *m
+		after.Room.Spec.Integrations.Mumble = &cp
+	}
+	f.rooms[name] = after
+	return obj, after, nil
 }
 
 func dynamicRoomObject(name, key, holder string, attachments int) kube.RoomObject {
