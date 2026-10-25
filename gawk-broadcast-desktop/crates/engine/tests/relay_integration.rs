@@ -424,7 +424,7 @@ async fn a_superseded_publisher_stays_down() {
     session_a.stop().await;
 }
 
-// R76 (docs/77 D1, D2, D9): End's 4014 reaches the real relay, which ends
+// R78 (docs/79 D1, D2, D9): End's 4014 reaches the real relay, which ends
 // the broadcast and closes its viewer with 4014 — while a plain stop leaves
 // the viewer waiting through the grace. Repeated, because the code rides a
 // CLOSE_WEBTRANSPORT_SESSION capsule that a connection close sent too soon

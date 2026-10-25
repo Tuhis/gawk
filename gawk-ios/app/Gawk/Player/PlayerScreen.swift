@@ -108,7 +108,7 @@ struct PlayerScreen: View {
         } else if case .ended(let reason) = model.status, let card = WatchStatusText.card(reason, code: code) {
             PlayerCard(card: card, close: close, retry: model.watch)
         } else if model.status == .broadcastStopped {
-            // docs/77 D7: the core waits on the code; `.live` replaces this.
+            // docs/79 D7: the core waits on the code; `.live` replaces this.
             PlayerCard(card: WatchStatusText.stopped, close: close, retry: model.watch)
         } else if model.status == .connecting {
             VStack(spacing: 14) {

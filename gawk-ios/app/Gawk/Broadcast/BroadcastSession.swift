@@ -270,7 +270,7 @@ final class BroadcastSession {
     /// Ends the broadcast. The screen leaves the live state at once
     /// (`.stopping`); `.ended` follows when the core has closed the session,
     /// or after `stopGrace` with a reason if it never confirms. `end` is the
-    /// user's End (docs/77 D9): the relay is told the broadcaster stopped
+    /// user's End (docs/79 D9): the relay is told the broadcaster stopped
     /// (4014) and ends it for viewers now. Without it (capture ending on its
     /// own) the relay holds the code through its grace.
     func stop(end: Bool = false) {
@@ -329,7 +329,7 @@ final class BroadcastSession {
     /// The capture ended on its own (the system, or an error); the reason
     /// stays on screen after the broadcast stops (D7).
     /// Whether the last `stop` ended the broadcast for its viewers (4014,
-    /// docs/77 D9) rather than leaving it to the relay's grace.
+    /// docs/79 D9) rather than leaving it to the relay's grace.
     private(set) var endedBroadcast = false
 
     func noteCaptureEnded(_ reason: String?) {

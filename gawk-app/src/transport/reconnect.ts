@@ -73,7 +73,7 @@ export function isPopUplinkFull(code: number | null | undefined): boolean {
   return code === CLOSE_CODE_POP_UPLINK_FULL;
 }
 
-// R76 (docs/77 D7): 4014 BroadcasterStopped means the broadcaster pressed
+// R78 (docs/79 D7): 4014 BroadcasterStopped means the broadcaster pressed
 // Stop. It is NOT terminal and deliberately absent from
 // TERMINAL_VIEWER_CLOSE_CODES: the viewer shows "Broadcast ended" and keeps
 // dialling the same code, so a restart on it resumes playback by itself.

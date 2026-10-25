@@ -79,7 +79,7 @@ export type ViewerWorkerEvent =
   // `reason` distinguishes a moderator kill (close code 4006) from any other
   // clean ending, so the screen can say which happened.
   | { type: 'ended'; reason: ViewerEndReason }
-  // The broadcaster stopped (4014, docs/77 D7). Not an ending: the session
+  // The broadcaster stopped (4014, docs/79 D7). Not an ending: the session
   // waits for a restart in the worker, and a later 'connected' resumes.
   | { type: 'stopped' }
   // Gated devices only, after 'arm': one fMP4 segment from the worker

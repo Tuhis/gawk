@@ -2248,7 +2248,7 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
     {
         // End (docs/64 D10): live or paused, the session ends and Ready
         // shows the summary card. It closes the publish leg with 4014
-        // (docs/77 D9), so viewers see the broadcast end instead of a frozen
+        // (docs/79 D9), so viewers see the broadcast end instead of a frozen
         // frame; Pause, restarts, a quit and failures keep stop()'s grace.
         // The card's "Resume on CODE" still works: the relay recreates the
         // broadcast on a token-bearing reclaim of the code.
@@ -7762,7 +7762,7 @@ mod tests {
         }
     }
 
-    // R76 (docs/77 D9): End says the broadcaster stopped — the publish leg
+    // R78 (docs/79 D9): End says the broadcaster stopped — the publish leg
     // closes with 4014 and the relay ends the broadcast now.
     #[test]
     fn end_closes_the_publish_leg_with_4014() {
@@ -7776,7 +7776,7 @@ mod tests {
         shell.borrow_mut().session = None;
     }
 
-    // R76 (docs/77 D9, docs/64 D9): Pause keeps the grace — a plain close,
+    // R78 (docs/79 D9, docs/64 D9): Pause keeps the grace — a plain close,
     // so viewers wait for Resume.
     #[test]
     fn pause_closes_the_publish_leg_plainly() {

@@ -2073,7 +2073,7 @@ func (r *Registry) EndBroadcast(id string) {
 }
 
 // EndBroadcastWithCode is EndBroadcast closing subscribers with code
-// instead of 4000: an edge passing on its origin's 4014 (docs/77 D6), so its
+// instead of 4000: an edge passing on its origin's 4014 (docs/79 D6), so its
 // viewers wait for the code to come back rather than give up. 4006 has
 // TerminateBroadcast, which also deposes a live publisher; this keeps
 // EndBroadcast's guard.
@@ -2302,7 +2302,7 @@ type Publisher struct {
 	closed bool
 	// generation is the hub generation this session claimed. A Stop ends the
 	// broadcast only while the hub is still on it, so a deposed or late
-	// session never ends its successor (docs/77 D3). Immutable.
+	// session never ends its successor (docs/79 D3). Immutable.
 	generation uint64
 	// conn is the session close handle bound after the upgrade (BindConn);
 	// nil until then. Guarded by the registry lock, like closed.
@@ -2735,7 +2735,7 @@ func (p *Publisher) Close() {
 	}
 }
 
-// Stop is Close for a publisher that stopped on purpose (R76, docs/77 D2):
+// Stop is Close for a publisher that stopped on purpose (R78, docs/79 D2):
 // it releases the slot and then ends the broadcast now, closing every
 // subscriber with 4014, instead of holding it through the grace. It reports
 // whether it removed the hub. Only while the hub is still this session's —

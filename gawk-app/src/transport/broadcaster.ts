@@ -319,7 +319,7 @@ export interface EncoderSettings {
   codecOverride: string | null;
 }
 
-// docs/77 D9: `end` marks a deliberate Stop. The session then closes with
+// docs/79 D9: `end` marks a deliberate Stop. The session then closes with
 // 4014, so the relay ends the broadcast now instead of holding it through
 // its grace. Every other stop (unmount, a failure, the background watchdog,
 // a terminal relay close) leaves it unset and closes plainly.
@@ -421,7 +421,7 @@ export class BroadcastPipeline {
   private encoder: Encoder | null = null;
   private stopping = false;
   // Set by stop({ end: true }) before teardown: every close from then on,
-  // including a late dial's that raced the stop, carries 4014 (docs/77 D9).
+  // including a late dial's that raced the stop, carries 4014 (docs/79 D9).
   private endOnClose = false;
 
   // Ladder: gate + scale before encode. The encoder is recreated — not
@@ -1608,7 +1608,7 @@ export class BroadcastPipeline {
   }
 
   // Closes the current session: with 4014 after an end stop (the relay reads
-  // it off the close capsule and ends the broadcast, docs/77 D2), plainly
+  // it off the close capsule and ends the broadcast, docs/79 D2), plainly
   // otherwise, which keeps the relay's grace for viewers.
   private closeSession(): void {
     try {

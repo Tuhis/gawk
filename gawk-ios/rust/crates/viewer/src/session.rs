@@ -103,7 +103,7 @@ pub enum ViewerState {
         delay_ms: u64,
         close_code: Option<u32>,
     },
-    /// R76 (docs/77 D7): the broadcaster stopped (4014). Reported once; the
+    /// R78 (docs/79 D7): the broadcaster stopped (4014). Reported once; the
     /// viewer then waits on the code, dialling it on a fixed cadence outside
     /// the reconnect budget, and [`ViewerState::Live`] follows when a
     /// broadcast is back on it. Not an end: only the app's stop or a
@@ -206,7 +206,7 @@ pub async fn run(
     // after a relay restart the broadcast is unknown until its publisher
     // reclaims it, and a reconnecting viewer must ride that out.
     let mut ever_connected = false;
-    // R76 (docs/77 D7): waiting on a stopped broadcaster's code.
+    // R78 (docs/79 D7): waiting on a stopped broadcaster's code.
     let mut stopped = false;
     sink.state(ViewerState::Connecting);
     loop {

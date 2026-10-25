@@ -61,7 +61,7 @@ export type ViewerErrorKind = 'unreachable' | 'lost' | 'unplayable';
 //   instead of reusing 4000.
 // - 'stopped': close code 4014 — the broadcaster pressed Stop. Never an
 //   onEnded reason: the session reports it through onStopped and waits for a
-//   restart (docs/77 D7). Here because the screens render it as an ending.
+//   restart (docs/79 D7). Here because the screens render it as an ending.
 export type ViewerEndReason = 'normal' | 'moderated' | 'stopped';
 
 export interface ViewerSessionCallbacks {
@@ -73,7 +73,7 @@ export interface ViewerSessionCallbacks {
   // Fired when a reconnect attempt has been scheduled. Not for the waiting
   // redials after onStopped: those are not a reconnect the viewer sees.
   onReconnecting: (info: ReconnectInfo) => void;
-  // The broadcaster stopped (close code 4014, docs/77 D7): fired once per
+  // The broadcaster stopped (close code 4014, docs/79 D7): fired once per
   // stop. The session is NOT over. It keeps redialling the same code and
   // fires onConnected when a broadcast is back, or onEnded if a terminal
   // code or the user ends the wait.
@@ -137,7 +137,7 @@ export class ViewerSession {
   // Set when the pipeline reported a non-recoverable error (e.g. an unsupported
   // codec). Reconnecting can't help, so the session surfaces it and stops.
   private lastFatal = false;
-  // Between a 4014 and the next successful dial (docs/77 D7).
+  // Between a 4014 and the next successful dial (docs/79 D7).
   private waitingForRestart = false;
   // The waiting redials' jitter source; injectable so tests are exact.
   private random: () => number;
@@ -278,7 +278,7 @@ export class ViewerSession {
     this.scheduleReconnect();
   }
 
-  // docs/77 D7: the ended card is up, and this redials quietly on a fixed
+  // docs/79 D7: the ended card is up, and this redials quietly on a fixed
   // cadence. No onReconnecting (the screen must not swap the card for a
   // "Reconnecting…" pill) and no budget: the browser can't read the 404 a
   // missing broadcast answers with, so every failure looks the same and all

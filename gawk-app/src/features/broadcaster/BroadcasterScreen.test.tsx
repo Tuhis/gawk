@@ -197,9 +197,9 @@ describe('BroadcasterScreen start failure after capture', () => {
   });
 });
 
-// docs/77 D9: the Stop button ends the broadcast for its viewers (4014);
+// docs/79 D9: the Stop button ends the broadcast for its viewers (4014);
 // leaving the page keeps the relay's grace.
-describe('BroadcasterScreen Stop ends the broadcast (R76)', () => {
+describe('BroadcasterScreen Stop ends the broadcast (R78)', () => {
   it('the Stop button requests an end stop', async () => {
     scripts.push(async (cbs) => {
       cbs.onBroadcastId?.('AB2CD3');

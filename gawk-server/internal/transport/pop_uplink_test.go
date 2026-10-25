@@ -844,7 +844,7 @@ func (b *udpBlackhole) back(peer *net.UDPConn, to *net.UDPAddr) {
 	}
 }
 
-// R76 (docs/77): a party broadcaster's Stop ends the broadcast for everyone,
+// R78 (docs/79): a party broadcaster's Stop ends the broadcast for everyone,
 // not only on the LAN. The party relay ends its hub with 4014, its uplink
 // leg carries that code home, and home ends the broadcast with it, so an
 // outside viewer (on a pod other than the leg's) is told 4014 too, well
@@ -891,7 +891,7 @@ func TestOutsideViewerIsToldThePartyBroadcasterStopped(t *testing.T) {
 
 // dialStoppableOn publishes on addr over a QUIC connection the test owns,
 // so a session close reaches the relay with its code, as Chrome's does
-// (Transport.Dial closes the connection with the session, docs/77 §1).
+// (Transport.Dial closes the connection with the session, docs/79 §1).
 func dialStoppableOn(t *testing.T, tlsCfg *tls.Config, addr string) (*webtransport.Session, string) {
 	t.Helper()
 	conf := tlsCfg.Clone()

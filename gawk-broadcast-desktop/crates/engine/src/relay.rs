@@ -116,7 +116,7 @@ pub trait RelaySession: Send + Sync + 'static {
     /// A no-op for a session with nothing to close.
     fn close(&self) {}
     /// Ends the session with an application close code the relay reads as
-    /// the SESSION's close error (R76, docs/77 D2): a
+    /// the SESSION's close error (R78, docs/79 D2): a
     /// CLOSE_WEBTRANSPORT_SESSION capsule, delivered before the connection
     /// closes. [`RelaySession::close`] cannot carry one — its code is the
     /// QUIC connection's, which the relay never reads as the session's.

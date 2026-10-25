@@ -261,10 +261,10 @@ describe('BroadcastPipeline stop() racing the first dial', () => {
   });
 });
 
-// docs/77 D9: only a deliberate Stop tells the relay to end the broadcast
+// docs/79 D9: only a deliberate Stop tells the relay to end the broadcast
 // now (4014); every other teardown closes plainly, so the relay's grace keeps
 // the viewers through what may be a reload or a blip.
-describe('BroadcastPipeline stop() close code (R76)', () => {
+describe('BroadcastPipeline stop() close code (R78)', () => {
   it('an end stop closes the session with 4014', async () => {
     const fake = makeFakeWT([ANNOUNCE_K7XQ2M]);
     connectWebTransport.mockResolvedValue(fake.wt);

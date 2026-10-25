@@ -34,8 +34,8 @@ const closeNoticeWriteTimeout = 100 * time.Millisecond
 // noticedCloseCode reports whether code is one a client acts on differently
 // from a plain drop — the terminal ones, plus two that are not terminal but
 // change what the viewer shows while it retries: R74's 4012 PopUplinkFull
-// (docs/76 item 28) and R76's 4014 BroadcasterStopped, the ended card that
-// waits for the code to come back (docs/77 D5). 4001/4002/4005 all mean
+// (docs/76 item 28) and R78's 4014 BroadcasterStopped, the ended card that
+// waits for the code to come back (docs/79 D5). 4001/4002/4005 all mean
 // "reconnect", which is what a client does with no code anyway; 4013 reaches
 // only the Go PoP, which reads the code itself.
 func noticedCloseCode(code uint32) bool {

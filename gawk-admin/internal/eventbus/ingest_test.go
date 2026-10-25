@@ -341,7 +341,7 @@ func TestHomeChangedSummaryNamesThePodItCameFrom(t *testing.T) {
 	}
 }
 
-// TestStoppedEndSaysTheBroadcasterStopped: R76's `stopped` reason (docs/77
+// TestStoppedEndSaysTheBroadcasterStopped: R78's `stopped` reason (docs/79
 // D10) reads as the broadcaster's own act, not as a GC or a kill.
 func TestStoppedEndSaysTheBroadcasterStopped(t *testing.T) {
 	got := store.SummarizeActivity(store.EventBroadcastEnded, "aa11bb22cc33",

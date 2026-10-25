@@ -318,7 +318,7 @@ async fn a_404_while_reconnecting_is_a_restarted_relay_not_an_unknown_broadcast(
     assert_eq!(dialer.dials.lock().unwrap().len(), 4);
 }
 
-// --- R76 (docs/77 D7): the broadcaster stopped (4014) -------------------------
+// --- R78 (docs/79 D7): the broadcaster stopped (4014) -------------------------
 
 const STOPPED: u32 = gawk_wire::CLOSE_CODE_BROADCASTER_STOPPED;
 
@@ -402,7 +402,7 @@ async fn a_terminal_close_during_the_wait_ends_it() {
 }
 
 // Chrome-shaped: the close carries no code, the in-band SessionClosing names
-// 4014 (docs/77 D5), and the viewer waits all the same.
+// 4014 (docs/79 D5), and the viewer waits all the same.
 #[tokio::test(start_paused = true)]
 async fn the_in_band_notice_of_a_stop_waits_too() {
     let mut closing = Vec::new();

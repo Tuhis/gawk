@@ -148,7 +148,7 @@ describe('ViewerScreen states', () => {
     expect(screen.queryByText('The stream is over.')).toBeNull();
   });
 
-  // docs/77 D7/D8: the broadcaster pressed Stop (4014). The ended card says
+  // docs/79 D7/D8: the broadcaster pressed Stop (4014). The ended card says
   // the stream comes back, the stopped stream's last frame leaves the stage,
   // and the session's own redial brings the viewer back to live.
   it('shows the stopped card, then returns to watching when the broadcast restarts', async () => {

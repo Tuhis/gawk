@@ -502,7 +502,7 @@ impl PublishDialer for WtPublishDialer {
 
 /// How long a coded session close ([`RelaySession::close_with_code`]) waits
 /// for the relay to have the capsule before closing the connection anyway
-/// (R76, docs/77 D9): a few round trips on any path a broadcast survives,
+/// (R78, docs/79 D9): a few round trips on any path a broadcast survives,
 /// and short enough that an End never feels stuck.
 pub const SESSION_CLOSE_WAIT: Duration = Duration::from_secs(1);
 
@@ -577,7 +577,7 @@ impl RelaySession for WtSession {
             // capsule, waits for its acknowledgement and the relay's reset of
             // the CONNECT stream, then closes the connection. A relay that
             // never answers still sees the connection go, just without the
-            // code: the grace then holds the broadcast, as before R76.
+            // code: the grace then holds the broadcast, as before R78.
             let _ = tokio::time::timeout(
                 SESSION_CLOSE_WAIT,
                 self.conn.close_session(VarInt::from_u32(code), b""),

@@ -1,9 +1,9 @@
 package transport
 
-// R76 (docs/77 BE2): a publisher that closes its session with 4014 stopped on
+// R78 (docs/79 BE2): a publisher that closes its session with 4014 stopped on
 // purpose, and the relay ends the broadcast at once instead of holding it
 // through the grace. Driven through the real relay with a Go client, which
-// sends the close code exactly as Chrome does (docs/77 §1).
+// sends the close code exactly as Chrome does (docs/79 §1).
 
 import (
 	"context"
@@ -33,7 +33,7 @@ func stopTestConfig() config.Config {
 // webtransport-go's Transport.Dial closes the connection the instant its
 // session ends, and that CONNECTION_CLOSE usually beats the close capsule
 // carrying the code (a client that closes like that never stops a broadcast;
-// docs/77 §1). The connection is closed at cleanup.
+// docs/79 §1). The connection is closed at cleanup.
 func dialStoppablePublisher(t *testing.T, ctx context.Context, port int, clientTLS *tls.Config) (*webtransport.Session, string, string) {
 	t.Helper()
 	return dialStoppablePublisherAt(t, ctx, fmt.Sprintf("127.0.0.1:%d", port), clientTLS)
@@ -104,7 +104,7 @@ func TestPublisherPlainCloseKeepsTheGrace(t *testing.T) {
 	}
 }
 
-// docs/77 D4: only a publish session's 4014 means anything.
+// docs/79 D4: only a publish session's 4014 means anything.
 func TestViewerStopCodeEndsNothing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

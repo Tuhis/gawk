@@ -578,7 +578,7 @@ impl Session {
         self.sender.current_relay().close();
     }
 
-    /// Ends the broadcast on purpose (R76, docs/77 D1, D9): [`Session::stop`],
+    /// Ends the broadcast on purpose (R78, docs/79 D1, D9): [`Session::stop`],
     /// except that the publish leg is closed with 4014 BroadcasterStopped,
     /// so the relay ends the broadcast now — viewers see it ended, not
     /// frozen — instead of holding it through its grace. Only the shell's

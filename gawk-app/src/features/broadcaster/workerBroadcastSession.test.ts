@@ -288,8 +288,8 @@ describe('WorkerBroadcastSession failure + end mapping', () => {
   });
 });
 
-// docs/77 D9: an end stop says so to the worker; a plain one is unchanged.
-describe('WorkerBroadcastSession end stop (R76)', () => {
+// docs/79 D9: an end stop says so to the worker; a plain one is unchanged.
+describe('WorkerBroadcastSession end stop (R78)', () => {
   it('stop({ end: true }) posts an end stop', async () => {
     const { session, worker } = makeSession();
     void session.start().catch(() => {});

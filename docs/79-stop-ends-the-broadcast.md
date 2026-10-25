@@ -1,4 +1,4 @@
-# R76 — Stop ends the broadcast
+# R78 — Stop ends the broadcast
 
 **Status**: implemented 2026-10-24 in one PR, chunks **BE1–BE6** (§6).
 Owner decisions taken 2026-10-24 (§2; OD3–OD5 in PR review).

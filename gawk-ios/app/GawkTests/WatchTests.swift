@@ -41,7 +41,7 @@ final class WatchTests: XCTestCase {
         XCTAssertFalse(vp9.canRetry)
     }
 
-    /// R76 (docs/77 D8): a stopped broadcaster's card says the stream comes
+    /// R78 (docs/79 D8): a stopped broadcaster's card says the stream comes
     /// back, and offers no Try again — the core already waits on the code.
     func testTheStoppedCardSaysItComesBack() {
         let card = WatchStatusText.stopped

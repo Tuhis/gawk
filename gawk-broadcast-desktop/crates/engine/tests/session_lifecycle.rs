@@ -328,7 +328,7 @@ async fn stopping_while_paused_ends_cleanly_and_dials_nothing() {
     assert!(reclaims.urls.lock().unwrap().is_empty());
 }
 
-// --- R76 (docs/77 D1, D9): End says the broadcaster stopped -----------------
+// --- R78 (docs/79 D1, D9): End says the broadcaster stopped -----------------
 
 const STOPPED: u32 = gawk_wire::CLOSE_CODE_BROADCASTER_STOPPED;
 
@@ -396,7 +396,7 @@ async fn end_while_paused_reclaims_once_to_close_with_4014() {
 }
 
 // End from Paused against a relay that can't be reached ends all the same:
-// the grace then lets the broadcast go, as before R76.
+// the grace then lets the broadcast go, as before R78.
 #[tokio::test(start_paused = true)]
 async fn end_while_paused_with_no_relay_still_ends() {
     let (session, mut rx, first, reclaims) = publishing(vec![]);

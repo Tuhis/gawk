@@ -21,7 +21,7 @@ final class CaptureTests: XCTestCase {
         capture.stop(session)
     }
 
-    /// docs/77 D9: the user stopping the recording from the system UI (no
+    /// docs/79 D9: the user stopping the recording from the system UI (no
     /// reason) is a deliberate stop and ends the broadcast for its viewers;
     /// a capture failure leaves it to the relay's grace.
     func testAUserStoppedRecordingEndsTheBroadcast() {

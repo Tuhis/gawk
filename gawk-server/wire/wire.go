@@ -334,7 +334,7 @@ const CloseCodePopUplinkFull = 4012
 const CloseCodePopNoDemand = 4013
 
 // CloseCodeBroadcasterStopped (4014) means the broadcaster stopped on
-// purpose (R76, docs/77 D1). It is used in both directions. A publisher
+// purpose (R78, docs/79 D1). It is used in both directions. A publisher
 // closes its own session with it when its user presses Stop or End. The
 // relay then ends the broadcast at once instead of holding it through the
 // grace, and closes every subscriber with 4014. Only a publish session's
@@ -343,7 +343,7 @@ const CloseCodePopNoDemand = 4013
 // viewer: the viewer shows "Broadcast ended" and keeps dialling the same
 // code every few seconds, so a broadcast that restarts on that code resumes
 // by itself (D7). The relay never sends it to a publisher. Allocated
-// 2026-10-24 (R76).
+// 2026-10-24 (R78).
 const CloseCodeBroadcasterStopped = 4014
 
 // Size constants for the wire format.

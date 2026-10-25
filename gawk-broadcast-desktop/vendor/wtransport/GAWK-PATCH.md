@@ -45,7 +45,7 @@ honest (docs/38 D2/D18).
    Stock wtransport can only close the QUIC connection
    (`Connection::close`), and a webtransport-go peer never reads that
    connection-level code as the session's close error: its CONNECT-stream
-   reader just fails. R76 (docs/77 D2, D9) needs the relay to read a
+   reader just fails. R78 (docs/79 D2, D9) needs the relay to read a
    publisher's deliberate stop, 4014, from the session, so this writes a
    CLOSE_WEBTRANSPORT_SESSION capsule in a DATA frame on the CONNECT stream
    and FINs it, as Chrome's `close({closeCode})` does. The worker then

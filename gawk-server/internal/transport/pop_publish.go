@@ -204,7 +204,7 @@ func (s *Server) handlePopPublish(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			// The party's broadcaster pressed Stop: the PoP's hub closed
 			// the leg with 4014, and home ends the broadcast with it too,
-			// for the outside viewers (docs/77 D2, D11).
+			// for the outside viewers (docs/79 D2, D11).
 			if publisherStopped(sess) {
 				log.Info("pop uplink leg ended", "reason", "broadcaster stopped",
 					"broadcast_ended", pub.Stop())

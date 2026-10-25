@@ -589,7 +589,7 @@ func (u *uplink) legOnce(ctx context.Context, b *upBroadcast) (end legEnd, retry
 		case wire.CloseCodePopNoDemand:
 			return legNoDemand, false
 		// 4014: the party's broadcaster stopped and the hub is gone
-		// (docs/77); a restart on the same code is a new broadcast.
+		// (docs/79); a restart on the same code is a new broadcast.
 		case wire.CloseCodeTerminatedByOperator, wire.CloseCodeBroadcastEnded, wire.CloseCodeBroadcasterStopped:
 			return legTerminal, false
 		}

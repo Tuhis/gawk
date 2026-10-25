@@ -1067,7 +1067,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		dgram, err := sess.ReceiveDatagram(r.Context())
 		if err != nil {
 			if publisherStopped(sess) {
-				// The broadcaster pressed Stop (docs/77 D2): end the
+				// The broadcaster pressed Stop (docs/79 D2): end the
 				// broadcast now rather than hold it through the grace.
 				log.Info("publisher session ended", "reason", "broadcaster stopped",
 					"broadcast_ended", pub.Stop())

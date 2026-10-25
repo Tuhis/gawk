@@ -769,7 +769,7 @@ func TestEdgeViewerIsToldTheOriginsKillCode(t *testing.T) {
 	}
 }
 
-// R76 (docs/77 D6): a viewer on an EDGE pod of a broadcast whose publisher
+// R78 (docs/79 D6): a viewer on an EDGE pod of a broadcast whose publisher
 // stopped on purpose is told 4014, as the origin's own viewers are, and not
 // the terminal 4000 the Lease deletion alone would give it.
 func TestEdgeViewerIsToldTheOriginsStop(t *testing.T) {

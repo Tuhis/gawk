@@ -247,7 +247,7 @@ describe('BroadcastWorkerCore stop', () => {
     expect(events.filter((e) => e.type === 'ended')).toHaveLength(1);
   });
 
-  // docs/77 D9: the end flag crosses the worker boundary untouched.
+  // docs/79 D9: the end flag crosses the worker boundary untouched.
   it('passes an end stop through to the pipeline, and a plain stop as plain', async () => {
     const { core, fake } = makeCore();
     core.start(START_PARAMS);

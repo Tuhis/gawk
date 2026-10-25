@@ -78,7 +78,7 @@ type sessionCloser interface {
 }
 
 // publisherStopped reports whether the peer closed a publish session with
-// 4014, the broadcaster stopping on purpose (R76, docs/77 D2). The code is in
+// 4014, the broadcaster stopping on purpose (R78, docs/79 D2). The code is in
 // the session's close error, not in the datagram loop's (which reads EOF):
 // webtransport-go records the WT_CLOSE_SESSION capsule before it cancels the
 // session context, and OpenUniStream on a closed session returns that error

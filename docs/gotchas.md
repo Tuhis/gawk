@@ -338,7 +338,7 @@ Add to it when a new gotcha lands in `docs/`.
   (`context.AfterFunc` on the session), and its CONNECTION_CLOSE beat the
   capsule in 25 of 30 runs, as quinn's `Connection::close` can. To send a
   code a relay must act on, keep the connection until the capsule is
-  delivered. ([docs/77](77-stop-ends-the-broadcast.md) §1)
+  delivered. ([docs/79](79-stop-ends-the-broadcast.md) §1)
 - **Since v0.12.0, `webtransport.Server.Config` must be set or WebKit refuses
   every session** — with a nil `Config` the library advertises
   `WT_MAX_SESSIONS` without the three `WT_INITIAL_MAX_*` SETTINGS the draft

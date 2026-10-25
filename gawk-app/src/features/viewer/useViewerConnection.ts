@@ -121,7 +121,7 @@ export interface ViewerConnectionState {
   // broadcaster pressed Stop (4014) and the session waits for a restart.
   // Only meaningful while `status` is 'ended'.
   endReason: ViewerEndReason;
-  // docs/77 D7: true from a broadcaster's Stop until the restarted stream has
+  // docs/79 D7: true from a broadcaster's Stop until the restarted stream has
   // completed a frame. The canvas still holds the stopped stream's last
   // frame, so the screen hides it rather than leave a static image up.
   stageStale: boolean;
@@ -598,7 +598,7 @@ export function useViewerConnection(
         // A drop before we ever connected is an error, not a clean end.
         setStatus((prev) => (prev === 'connecting' || prev === 'error' ? 'error' : 'ended'));
         break;
-      // docs/77 D7: the broadcaster pressed Stop. The ended card goes up, and
+      // docs/79 D7: the broadcaster pressed Stop. The ended card goes up, and
       // the session keeps redialling the code underneath it; its next
       // 'connected' puts the status back to 'watching'.
       case 'stopped':

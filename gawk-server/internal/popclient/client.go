@@ -766,7 +766,7 @@ func defaultDialer(roots *x509.CertPool) DialFunc {
 		}
 		// The connection is ours, not Transport.Dial's: Dial closes it the
 		// instant its session ends, and that CONNECTION_CLOSE usually beats
-		// the close capsule, so home would never read a leg's 4014 (docs/77
+		// the close capsule, so home would never read a leg's 4014 (docs/79
 		// §1, D11). It lingers for sessionCloseLinger after the session, or
 		// until home closes it.
 		tlsConf := d.TLSClientConfig.Clone()

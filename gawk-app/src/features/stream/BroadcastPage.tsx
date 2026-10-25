@@ -137,7 +137,7 @@ export function BroadcastPage() {
     if (!pipelineRef.current) return;
     setStatus('stopping');
     // The one deliberate Stop: the relay ends the broadcast now, so viewers
-    // see the ended card instead of a frozen frame (docs/77 D9).
+    // see the ended card instead of a frozen frame (docs/79 D9).
     await pipelineRef.current.stop({ end: true });
   }, []);
 

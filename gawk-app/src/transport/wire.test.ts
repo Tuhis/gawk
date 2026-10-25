@@ -812,7 +812,7 @@ describe('SessionClosing (R57)', () => {
     expect(parseSessionClosing(fromHex('011700000fac'))).toBe(4012);
   });
 
-  // R76: 4014 BroadcasterStopped is noticed to viewers (docs/77 D5).
+  // R78: 4014 BroadcasterStopped is noticed to viewers (docs/79 D5).
   // closing_test.go goldenSessionClosingBroadcasterStoppedHex.
   it('encodes the golden 4014 notice byte-for-byte', () => {
     expect(CLOSE_CODE_BROADCASTER_STOPPED).toBe(4014);

@@ -319,7 +319,7 @@ impl Identity {
 #[derive(uniffi::Object)]
 pub struct Broadcaster {
     live: Arc<Mutex<Option<Live>>>,
-    /// True for the Stop button's end (docs/77 D9), false for a plain stop.
+    /// True for the Stop button's end (docs/79 D9), false for a plain stop.
     stop: Mutex<Option<oneshot::Sender<bool>>>,
     commands: mpsc::UnboundedSender<Command>,
 }
@@ -573,7 +573,7 @@ impl Broadcaster {
         self.send_stop(false);
     }
 
-    /// The Stop button (R76, docs/77 D9): ends the broadcast and tells the
+    /// The Stop button (R78, docs/79 D9): ends the broadcast and tells the
     /// relay the broadcaster stopped on purpose (4014), so it ends the
     /// broadcast for its viewers now instead of holding it through its
     /// grace. A Go live on the same code later starts it again.
@@ -719,7 +719,7 @@ async fn run<C, F>(
         tokio::select! {
             ending = &mut stop => {
                 // A dropped Broadcaster is a plain stop: only the Stop
-                // button says the broadcaster stopped (docs/77 D9).
+                // button says the broadcaster stopped (docs/79 D9).
                 if matches!(ending, Ok(true)) {
                     session.end().await;
                 } else {
@@ -1907,7 +1907,7 @@ mod live_tests {
         h.stop().await;
     }
 
-    // --- R76 (docs/77 D9): Stop ends the broadcast ------------------------
+    // --- R78 (docs/79 D9): Stop ends the broadcast ------------------------
 
     // The Stop button (`end`) closes the publish leg with 4014, so the relay
     // ends the broadcast for its viewers now.

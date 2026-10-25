@@ -100,7 +100,7 @@ pub enum ViewerStatus {
         /// [`pop_uplink_full_message`].
         party_full: bool,
     },
-    /// R76 (docs/77 D7, D8): the broadcaster stopped (4014). Show the ended
+    /// R78 (docs/79 D7, D8): the broadcaster stopped (4014). Show the ended
     /// card that says the stream comes back; the core keeps dialling the
     /// code, and [`ViewerStatus::Live`] follows when a broadcast is back.
     BroadcastStopped,
@@ -546,7 +546,7 @@ mod tests {
                 ..
             }
         ));
-        // R76 (docs/77 D7): a stopped broadcaster is its own status, not an
+        // R78 (docs/79 D7): a stopped broadcaster is its own status, not an
         // end: the player waits on the code.
         let s: ViewerStatus = ViewerState::BroadcastStopped.into();
         assert_eq!(s, ViewerStatus::BroadcastStopped);

@@ -13,7 +13,7 @@ pub const ABRUPT_DROP_RETRY_DELAY_MS: u64 = 250;
 /// up on it (each refused session connected, so the ladder restarts).
 pub const POP_UPLINK_FULL_RETRY_MS: u64 = 20_000;
 
-/// R76 (docs/77 D7): the broadcaster stopped (4014). Not terminal: the
+/// R78 (docs/79 D7): the broadcaster stopped (4014). Not terminal: the
 /// viewer waits, dialling the same code every 5 s plus up to 1 s of jitter,
 /// forever and outside the reconnect budget, so a restart on the same code
 /// resumes by itself. A fixed cadence, not a ladder: the restart is a human
@@ -76,7 +76,7 @@ mod tests {
         assert_eq!(reconnect_delay_ms(3, full), 20_000);
     }
 
-    // R76 (docs/77 D7): 4014 waits 5 s plus up to 1 s, and is not terminal.
+    // R78 (docs/79 D7): 4014 waits 5 s plus up to 1 s, and is not terminal.
     #[test]
     fn a_stopped_broadcast_waits_5s_plus_jitter() {
         assert!(!gawk_wire::terminal_for_viewer(

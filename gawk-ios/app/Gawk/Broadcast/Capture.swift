@@ -127,7 +127,7 @@ final class Capture {
     /// Capture ended without the app asking. With no reason the user
     /// stopped the recording (the indicator or Control Center): that is a
     /// deliberate stop, so the broadcast ends for its viewers now (4014,
-    /// docs/77 D9). With a reason (an error, a background-mode loss) it
+    /// docs/79 D9). With a reason (an error, a background-mode loss) it
     /// is a failure, and the relay holds the code through its grace.
     func captureEnded(_ reason: String?, _ session: BroadcastSession) {
         session.noteCaptureEnded(reason)
@@ -148,7 +148,7 @@ final class Capture {
     }
 
     /// The user's End (the button, the Live Activity): as `stop`, and the
-    /// relay ends the broadcast for its viewers now (docs/77 D9).
+    /// relay ends the broadcast for its viewers now (docs/79 D9).
     func end(_ session: BroadcastSession) {
         live = nil
         session.stop(end: true)

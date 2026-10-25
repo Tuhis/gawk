@@ -535,7 +535,7 @@ func TestPopDownlinkResetsARefusedStream(t *testing.T) {
 	}
 }
 
-// R76 (docs/77): a home broadcaster's Stop reaches a party viewer as 4014,
+// R78 (docs/79): a home broadcaster's Stop reaches a party viewer as 4014,
 // through the downlink leg, like any edge viewer: the viewer waits for the
 // code to come back instead of being told the broadcast is over for good.
 func TestPartyViewerOfAHomeBroadcastIsToldItStopped(t *testing.T) {

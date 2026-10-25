@@ -72,7 +72,7 @@ func TestGoldenSessionClosingPopUplinkFull(t *testing.T) {
 	}
 }
 
-// R76 (docs/77 §5): 4014 BroadcasterStopped is noticed in-band to viewers.
+// R78 (docs/79 §5): 4014 BroadcasterStopped is noticed in-band to viewers.
 //
 //	01           version
 //	17           type = SessionClosing
@@ -81,7 +81,7 @@ const goldenSessionClosingBroadcasterStoppedHex = "011700000fae"
 
 func TestGoldenSessionClosingBroadcasterStopped(t *testing.T) {
 	if CloseCodeBroadcasterStopped != 4014 {
-		t.Fatalf("CloseCodeBroadcasterStopped = %d; docs/77 D1 pins 4014", CloseCodeBroadcasterStopped)
+		t.Fatalf("CloseCodeBroadcasterStopped = %d; docs/79 D1 pins 4014", CloseCodeBroadcasterStopped)
 	}
 	want := mustHex(t, goldenSessionClosingBroadcasterStoppedHex)
 	msg, err := AppendSessionClosing(nil, CloseCodeBroadcasterStopped)

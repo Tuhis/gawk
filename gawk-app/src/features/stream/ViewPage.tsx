@@ -83,7 +83,7 @@ export function ViewPage() {
         setRetryNote(null);
         setStatus('watching');
       },
-      // The session waits for a restart on this code (docs/77 D7); the
+      // The session waits for a restart on this code (docs/79 D7); the
       // debug page just says so in the retry note.
       onStopped: () => {
         setStatus('reconnecting');

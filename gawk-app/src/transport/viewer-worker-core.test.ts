@@ -185,7 +185,7 @@ describe('ViewerWorkerCore mapping (fake session)', () => {
     expect(events).toContainEqual({ type: 'ended', reason: 'normal' });
   });
 
-  // docs/77 D7: the broadcaster's Stop crosses as its own event; the session
+  // docs/79 D7: the broadcaster's Stop crosses as its own event; the session
   // keeps running (no 'ended'), so a later 'connected' resumes the screen.
   it('emits stopped for the current session, and drops a superseded one’s', () => {
     const { sink } = fakeSink();
@@ -342,7 +342,7 @@ describe('ViewerWorkerCore integration (real pipeline, mocked I/O)', () => {
     await core.stop();
   });
 
-  // docs/77 D5/D7, the path Chrome actually takes: the relay's 4014 close
+  // docs/79 D5/D7, the path Chrome actually takes: the relay's 4014 close
   // code never arrives (wt.closed rejects "Connection lost." with none), and
   // the in-band SessionClosing is what says the broadcaster stopped. It must
   // reach the main thread as 'stopped', not as a reconnect.

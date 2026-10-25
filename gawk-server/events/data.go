@@ -62,7 +62,7 @@ const (
 	BroadcastEndedKilled   = "killed"
 	BroadcastEndedReplaced = "replaced"
 	// BroadcastEndedStopped: the broadcaster stopped on purpose and the
-	// relay ended the broadcast without a grace (R76, docs/77 D10).
+	// relay ended the broadcast without a grace (R78, docs/79 D10).
 	BroadcastEndedStopped = "stopped"
 
 	// Why a room closed.

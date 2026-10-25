@@ -104,7 +104,7 @@ interface Harness {
 
 // startResults[i] applies to the i-th created pipeline; past the end of the
 // array, pipelines start successfully. `random` is the session's jitter
-// source (docs/77 D7), fixed here so the waits are exact.
+// source (docs/79 D7), fixed here so the waits are exact.
 function makeHarness(startResults: StartResult[] = [], random: () => number = () => 0): Harness {
   const pipelines: FakePipeline[] = [];
   const events: string[] = [];
@@ -433,11 +433,11 @@ describe('ViewerSession', () => {
   });
 });
 
-// docs/77 D7: a 4014 (the broadcaster pressed Stop) is "ended, waiting". The
+// docs/79 D7: a 4014 (the broadcaster pressed Stop) is "ended, waiting". The
 // session reports the end once, then redials the same code every 5 s plus up
 // to 1 s of jitter, forever and off the reconnect budget, until a broadcast
 // is back, a terminal code ends it or the user stops.
-describe('ViewerSession broadcaster stopped (R76)', () => {
+describe('ViewerSession broadcaster stopped (R78)', () => {
   const JITTER = 300; // random() = 0.3 → 300 ms of the 1000 ms jitter
   const WAIT = BROADCASTER_STOPPED_RETRY_MS + JITTER;
   const random = () => JITTER / 1000;
@@ -564,7 +564,7 @@ describe('terminal close-code sets', () => {
     // 4001 eviction, 4002 drain, 4003 origin-moved, 4005 leg-orphaned are all
     // explicitly retryable; an abrupt drop (no code) is the reconnect case.
     // 4012 PopUplinkFull is temporary by design (docs/76 item 28).
-    // 4014 BroadcasterStopped waits for a restart (docs/77 D7).
+    // 4014 BroadcasterStopped waits for a restart (docs/79 D7).
     for (const code of [4001, 4002, 4003, 4004, 4005, 4012, 4014, 429, 0]) {
       expect(isTerminalViewerClose(code)).toBe(false);
     }

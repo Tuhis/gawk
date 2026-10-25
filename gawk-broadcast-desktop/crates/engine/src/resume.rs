@@ -46,7 +46,7 @@ pub fn terminal_for_publisher(code: u32) -> bool {
 pub const POP_UPLINK_FULL_MESSAGE: &str = "This stream is at a LAN party with limited internet. Outside viewing is full right now; we'll keep trying.";
 
 /// The user-facing sentence for a close: the terminal codes, plus R74's
-/// non-terminal 4012, whose copy says why the session waits, and R76's 4014.
+/// non-terminal 4012, whose copy says why the session waits, and R78's 4014.
 pub fn close_code_message(code: u32) -> String {
     match code {
         gawk_wire::CLOSE_CODE_POP_UPLINK_FULL => POP_UPLINK_FULL_MESSAGE.into(),
@@ -57,7 +57,7 @@ pub fn close_code_message(code: u32) -> String {
         gawk_wire::CLOSE_CODE_TERMINATED_BY_OPERATOR => {
             "this broadcast was terminated by the server operator".into()
         }
-        // R76 (docs/77 §5): the relay never sends it to a publisher; should
+        // R78 (docs/79 §5): the relay never sends it to a publisher; should
         // one arrive, it is not terminal and reads as what it means.
         gawk_wire::CLOSE_CODE_BROADCASTER_STOPPED => {
             "the broadcaster stopped this broadcast".into()
@@ -171,7 +171,7 @@ mod tests {
         ));
     }
 
-    // R76 (docs/77 §5): 4014 is the publisher's own goodbye. The relay never
+    // R78 (docs/79 §5): 4014 is the publisher's own goodbye. The relay never
     // sends it back; if it did, it is not terminal and says what it means.
     #[test]
     fn broadcaster_stopped_is_not_terminal_and_has_its_sentence() {

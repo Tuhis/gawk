@@ -8,7 +8,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
-// R76 (docs/77): a publisher that stops on purpose ends its broadcast now,
+// R78 (docs/79): a publisher that stops on purpose ends its broadcast now,
 // through the same removal a GC takes, instead of leaving it in grace.
 
 func TestPublisherStopEndsTheBroadcastNow(t *testing.T) {
@@ -72,7 +72,7 @@ func TestPlainPublisherCloseKeepsTheGrace(t *testing.T) {
 	}
 }
 
-// docs/77 D3: a stop ends only the session that sent it. A session deposed
+// docs/79 D3: a stop ends only the session that sent it. A session deposed
 // by a token-bearing reclaim must not end its successor on the way out.
 func TestStaleStopDoesNotEndTheSuccessor(t *testing.T) {
 	r := NewRegistry(discardLog, Options{BroadcastGrace: 5 * time.Minute})

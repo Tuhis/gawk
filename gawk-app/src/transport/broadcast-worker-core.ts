@@ -52,7 +52,7 @@ export type BroadcastWorkerCommand =
   | { type: 'captureFailed'; message: string }
   | { type: 'setLadder'; selection: ResolutionSelection; framerate: FramerateSelection }
   | { type: 'setEncoderSettings'; settings: EncoderSettings }
-  // end: a deliberate Stop, closing the session with 4014 (docs/77 D9).
+  // end: a deliberate Stop, closing the session with 4014 (docs/79 D9).
   // Absent on every other stop.
   | { type: 'stop'; end?: boolean };
 
