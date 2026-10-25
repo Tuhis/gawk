@@ -987,6 +987,10 @@ func (p *packetPacker) appendPacketPayload(raw []byte, pl payload, paddingLen pr
 	for _, f := range pl.frames {
 		var err error
 		raw, err = f.Frame.Append(raw, v)
+		// GAWK PATCH (datagram copy): the datagram is in the packet now.
+		if df, ok := f.Frame.(*wire.DatagramFrame); ok {
+			putDatagramBuf(df)
+		}
 		if err != nil {
 			return nil, err
 		}

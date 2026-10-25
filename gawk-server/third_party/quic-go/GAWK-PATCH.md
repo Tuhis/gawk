@@ -1,10 +1,11 @@
-# Vendored quic-go v0.62.0 + two gawk patches
+# Vendored quic-go v0.62.0 + three gawk patches
 
 > **Modification notice**: the files in this directory are a copy of
 > upstream `github.com/quic-go/quic-go` v0.62.0 (MIT, © the quic-go
 > authors & Google, Inc — `LICENSE` alongside this file) **modified by the
 > gawk authors**. The changed files are `http3/state_tracking_stream.go`,
-> `datagram_queue.go`, `connection.go` and `packet_packer.go`; each changed
+> `http3/conn.go`, `datagram_queue.go`, `connection.go`, `packet_packer.go`,
+> `internal/wire/datagram_frame.go` and `internal/wire/log.go`; each changed
 > site carries a `GAWK PATCH` marker.
 
 `gawk-server/go.mod` points at this directory with
@@ -100,6 +101,59 @@ about 30. Its second test sends datagrams of two sizes and fails (about 76
 of 400 never arrive) if a datagram that doesn't fit under the cap is
 discarded instead of kept.
 
+## Patch 3: one pooled buffer per sent datagram
+
+Upstream allocates every WebTransport datagram it sends twice. http3's
+`rawConn.sendDatagram` builds a new buffer to put the session's quarter
+stream ID in front of the payload (its own comment: "this creates a lot of
+garbage and an additional copy"), and `Conn.SendDatagram` copies that into
+the DATAGRAM frame. On the relay that is about 2.5 KB of garbage per
+chunk per viewer, which was most of what it allocated and, through that,
+most of its GC work.
+
+http3 now passes the prefix and the payload to a new
+`Conn.SendDatagramPrefixed` (`connection.go`), which assembles them once in
+a buffer from a `sync.Pool` (`datagram_queue.go`). The frame carries the
+buffer (`DatagramFrame.Buf`, `internal/wire/datagram_frame.go`), and the
+packer returns it to the pool as soon as the frame is written into a packet
+(`packet_packer.go`). Nothing reads a DATAGRAM frame's bytes after that:
+datagrams are never retransmitted, and the logging that sees the frame
+later reads only its length, which the frame keeps. That includes
+`wire.LogFrame` (`internal/wire/log.go`). Upstream printed a DATAGRAM
+frame there with `%#v`, bytes and all, so with `QUIC_GO_LOG_LEVEL=DEBUG`
+it read a buffer another connection could already be refilling. It now
+logs the length, as it does for STREAM and CRYPTO frames. A datagram the queue
+refuses (a closed connection) goes back at once. One that is dropped
+without being sent (too large for the packet) is left to the GC.
+`SendDatagram` itself still copies, because its caller keeps the slice.
+
+An intermediate step was measured on the way: letting `Conn` take
+http3's buffer without the second copy, but no pool, saved only about
+14 % at 50 viewers and 6 % at 25.
+
+Measured as patch 2 was, with patch 2 in both builds, alternating runs
+(2026-10-24). Delivered bytes and frame gaps were the same either way.
+
+| Viewers | Without | With |
+|---|---|---|
+| 50 datagram viewers, 4 runs | 1.21–1.35 cores (mean 1.30) | 1.01–1.03 cores (mean 1.02), −21 % |
+| 25 datagram viewers, 4 runs | 0.79–1.04 cores (mean 0.96) | 0.70–0.83 cores (mean 0.78), −18 % |
+
+An earlier prototype of the same change (a callback in place of
+`DatagramFrame.Buf`) measured −23 % at 50 viewers and −24 % at 25.
+
+`internal/transport/datagram_alloc_test.go` keeps it honest. It fans 2000
+full chunks out to a datagram viewer through the relay and reads the heap
+profile under the subscriber's `Session.SendDatagram`. With stock quic-go
+that allocates 2592 bytes per chunk, two 1280-byte buffers and the frame;
+with the patch, 69–80. The viewer checks every chunk's bytes, so a buffer
+reused before its datagram left shows up as corruption. Under `-race`,
+`sync.Pool` drops a quarter of what is put back, so the bound is looser
+there. Its `TestDebugLogReadsNoPooledDatagram` runs the same fan-out in a
+child test binary with `QUIC_GO_LOG_LEVEL=DEBUG` (quic-go reads the level
+once, at start). In a `-race` build it fails on a race report if anything
+in the debug log reads a returned buffer, as `LogFrame` did.
+
 ## What is in the copy
 
 Every non-test `.go` file of the module, its `LICENSE`, `go.mod` and
@@ -121,7 +175,7 @@ only make the line lie. To bump:
    `third_party/quic-go/gawk-derive.sh`. It downloads that version,
    re-copies it here and re-applies `gawk.patch`; if the patch no longer
    applies, update it against the new upstream files.
-2. `go mod tidy`, `go test -race ./...` (the burst and GSO tests must pass), and
+2. `go mod tidy`, `go test -race ./...` (the burst, GSO and allocation tests must pass), and
    `python3 tools/licenses/gen-notices.py` from the repository root.
 3. Review `git diff` of this directory: upstream's changes plus the
    `GAWK PATCH` sites, nothing else.
@@ -132,9 +186,10 @@ shows no change; that is how to check nobody edited the copy.
 ## Dropping it
 
 The goal is to delete this directory: once upstream makes the
-per-session datagram queue length configurable (or long enough) and
-batches equal-size packets with GSO, set the length from the relay, drop
-the `replace` and remove the Renovate rule. Until then, re-derive it on
-every quic-go bump. Dropping only patch 1 means keeping the copy for patch
-2, and the relay's viewer egress costs a `sendmsg` per datagram again
-without it.
+per-session datagram queue length configurable (or long enough),
+batches equal-size packets with GSO and sends a datagram without copying
+it twice, set the length from the relay, drop the `replace` and remove
+the Renovate rule. Until then, re-derive it on every quic-go bump.
+Dropping only patch 1 still means keeping the copy for patches 2 and 3,
+and without them the relay's viewer egress costs a `sendmsg` and two
+allocations per datagram again.

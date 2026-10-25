@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/quic-go/quic-go/internal/protocol"
 	"github.com/quic-go/quic-go/internal/utils"
 	"github.com/quic-go/quic-go/internal/utils/ringbuffer"
 	"github.com/quic-go/quic-go/internal/wire"
@@ -18,6 +19,24 @@ const (
 	maxDatagramSendQueueLen = 32
 	maxDatagramRcvQueueLen  = 512
 )
+
+// GAWK PATCH (datagram copy): the buffers SendDatagramPrefixed assembles
+// datagrams in. A buffer goes back once its frame is written into a packet
+// (putDatagramBuf); DATAGRAM frames are never retransmitted, so nothing
+// reads it after that. See third_party/quic-go/GAWK-PATCH.md.
+var datagramBufPool = sync.Pool{New: func() any {
+	b := make([]byte, 0, protocol.MaxPacketBufferSize)
+	return &b
+}}
+
+func putDatagramBuf(f *wire.DatagramFrame) {
+	if f.Buf == nil {
+		return
+	}
+	*f.Buf = (*f.Buf)[:0]
+	datagramBufPool.Put(f.Buf)
+	f.Buf = nil
+}
 
 type datagramQueue struct {
 	sendMx    sync.Mutex

@@ -259,21 +259,22 @@ func (c *rawConn) handleControlStream(str *quic.ReceiveStream) {
 }
 
 func (c *rawConn) sendDatagram(streamID quic.StreamID, b []byte) error {
-	// TODO: this creates a lot of garbage and an additional copy
-	data := make([]byte, 0, len(b)+8)
+	// GAWK PATCH (datagram copy): upstream allocated a buffer for the prefix
+	// and payload here, which SendDatagram then copied again. See
+	// third_party/quic-go/GAWK-PATCH.md.
+	var buf [8]byte
 	quarterStreamID := uint64(streamID / 4)
-	data = quicvarint.Append(data, uint64(streamID/4))
-	data = append(data, b...)
+	prefix := quicvarint.Append(buf[:0], quarterStreamID)
 	if c.qlogger != nil {
 		c.qlogger.RecordEvent(qlog.DatagramCreated{
 			QuarterStreamID: quarterStreamID,
 			Raw: qlog.RawInfo{
-				Length:        len(data),
+				Length:        len(prefix) + len(b),
 				PayloadLength: len(b),
 			},
 		})
 	}
-	return c.conn.SendDatagram(data)
+	return c.conn.SendDatagramPrefixed(prefix, b)
 }
 
 func (c *rawConn) receiveDatagrams() error {

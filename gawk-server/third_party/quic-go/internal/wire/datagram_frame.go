@@ -17,6 +17,12 @@ var MaxDatagramSize protocol.ByteCount = 16383
 type DatagramFrame struct {
 	DataLenPresent bool
 	Data           []byte
+
+	// GAWK PATCH (datagram copy): Buf, when set, is the pooled buffer Data
+	// lives in. The packer returns it to its pool once the frame is written
+	// into a packet; after that only len(Data) may be read. See
+	// third_party/quic-go/GAWK-PATCH.md.
+	Buf *[]byte
 }
 
 func parseDatagramFrame(b []byte, typ FrameType, _ protocol.Version) (*DatagramFrame, int, error) {

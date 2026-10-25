@@ -1625,8 +1625,9 @@ entries still describe code `gawk-pubsim` runs (now
 - **gawk-server's quic-go is a vendored, patched copy, so bumping quic-go
   means re-deriving it.** `gawk-server/go.mod` replaces quic-go with
   `third_party/quic-go` (upstream at the required version, 512-deep
-  session queue, D7, and GSO batching of equal-size packets). Moving the `require` line alone changes nothing that
-  is built; Renovate leaves quic-go alone, and CI's `tidy` job fails until
+  session queue, D7, GSO batching of equal-size packets, and one pooled
+  buffer per sent datagram). Moving the `require` line alone changes
+  nothing that is built; Renovate leaves quic-go alone, and CI's `tidy` job fails until
   `third_party/quic-go/gawk-derive.sh` has re-derived the copy (its
   `GAWK-PATCH.md` has the steps). A `replace` only applies in the main
   module: anything that builds gawk-server packages from *another* module
