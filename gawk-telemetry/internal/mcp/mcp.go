@@ -115,9 +115,10 @@ func (s *Server) buildTools(opts Options) []Tool {
 		{
 			Name:  "list_broadcasts",
 			Title: "List broadcasts",
-			Description: "Recent broadcasts, worst-first, with session counts and the worst verdict " +
-				"seen. Start here when you do not know which broadcast to look at. Finished sessions " +
-				"only: a broadcast whose sessions are all still open is not listed yet — use `live`.",
+			Description: "Recent broadcasts, live first then worst-first, with session counts and the worst " +
+				"verdict seen. Start here when you do not know which broadcast to look at. A live " +
+				"broadcast is listed (flagged `live`), but its session and viewer counts cover " +
+				"finished sessions only — its open sessions are in `live`.",
 			InputSchema: obj(map[string]any{
 				"since": str("How far back, as a Go duration (\"24h\") or RFC3339 timestamp. Default 24h."),
 				"limit": num("Maximum rows. Default 50."),
