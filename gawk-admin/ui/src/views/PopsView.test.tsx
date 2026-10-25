@@ -165,7 +165,11 @@ describe('the New PoP wizard', () => {
     expect(input.readOnly).toBe(true);
     expect(screen.getByText(new RegExp(`GAWK_PAIR='${PAIRING.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`))).toBeTruthy();
     expect(screen.getByText(/Shown once/)).toBeTruthy();
-    expect(screen.getByRole('link', { name: /Download gawk-relay/ })).toBeTruthy();
+    // The relay's site page, which explains it before the download (not the
+    // bare releases list).
+    expect(screen.getByRole('link', { name: /Download gawk-relay/ }).getAttribute('href')).toBe(
+      'https://tuhis.github.io/gawk/party.html',
+    );
 
     const post = session.calls.find((c) => c.path === 'api/v1/pops' && c.init.method === 'POST');
     expect(post).toBeTruthy();

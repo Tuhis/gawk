@@ -425,7 +425,7 @@ function PairingReveal({ result, onDone }: { result: PopWithPairing; onDone: () 
         <code className={ui.mono}>{docker}</code>
       </p>
       <p>
-        <a href="https://github.com/Tuhis/gawk/releases?q=gawk-server%2F" target="_blank" rel="noreferrer">
+        <a href="https://tuhis.github.io/gawk/party.html" target="_blank" rel="noreferrer">
           Download gawk-relay (Windows, macOS, Linux)
         </a>
       </p>
