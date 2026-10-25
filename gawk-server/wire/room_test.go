@@ -289,11 +289,12 @@ func TestRoomReservedKinds(t *testing.T) {
 	if e.Seq != 1 || e.Kind != 0x40 {
 		t.Fatalf("event header = %+v", e)
 	}
-	c, err := ParseRoomCommand(mustHex(t, "01165000"))
+	// 0x50 is VoiceJoin since R79; 0x5e is still reserved.
+	c, err := ParseRoomCommand(mustHex(t, "01165e00"))
 	if !errors.Is(err, ErrUnknownRoomKind) {
-		t.Fatalf("command 0x50: %v", err)
+		t.Fatalf("command 0x5e: %v", err)
 	}
-	if c.Kind != 0x50 {
+	if c.Kind != 0x5e {
 		t.Fatalf("command kind = %d", c.Kind)
 	}
 	if _, err := AppendRoomEvent(nil, RoomEvent{Kind: 0x4f}); !errors.Is(err, ErrUnknownRoomKind) {

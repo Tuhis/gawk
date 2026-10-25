@@ -234,3 +234,103 @@ participant `identity` field stays empty).
   and so on, in different channels. If that reads badly in Mumble, the
   alternative is one observer per bridge pod watching every channel. That
   is cheaper, but temporary channels would then need a different keeper.
+
+---
+
+## 11. Implementation contract (2026-10-26)
+
+MV2–MV7 were built against this section. It fixes what §3 left to the
+chunks (layouts, routes, knobs) and records where the build departs from a
+§3 decision and why. Where the two disagree, this section is what the code
+does.
+
+### 11.1 Departures from §3
+
+| # | §3 said | Built | Why |
+|---|---|---|---|
+| C1 | D6, OD21: a thin fork of gumble in `tuhis/gumble` | **A first-party Mumble client** in `gawk-mumble-bridge/internal/mumble` (TLS control channel, the handful of protobuf messages the bridge needs encoded with `protowire`, the legacy UDPTunnel audio format). It keeps D6's three properties: raw Opus with sender session, sequence, target and end-of-transmission; a bounded, drop-oldest delivery queue that never blocks the read loop; a configurable reported client version. | gumble is MPL-2.0, which is not on the Go license allowlist (`tools/licenses/gen-notices.py`; adding it is a licensing decision, CONTRIBUTING.md), and the `tuhis/gumble` repository could not be created from this change. The client the bridge needs is small; a fork would have carried a decoder, a UDP stack and a plugin model the bridge does not use. |
+| C2 | D15: `RoomState` gains a voice-roster section | `RoomState` is **unchanged**. The roster is a `VoiceRosterUpdated` event (0x51) the home sends right after every `RoomState` and on every change, only to participants whose `RoomHello` asked for `RoomCapVoice`. It is out of sequence: it carries the room's current `seq` without advancing it, like `CommandRejected`. | `RoomState`'s parser is strict (exact length), and the released desktop and iOS clients join rooms: a trailing section would make every voice room unreadable to them. Sending the roster only to clients that asked keeps every existing vector and every existing client byte-identical. |
+| C3 | D14: the dynamic room's Voice toggle is sent in `RoomHello` | `CONNECT /room/new?voice=1`. | The room is minted before the upgrade, from the query, and `wantCaps` already means "send me voice events" for every voice-capable client; one bit cannot mean both. |
+| C4 | D17 named kills and bans only | A participant's voice session also ends when its **room control session** ends, with **4002** (non-terminal): the browser rejoins voice with a fresh ticket once its room session is back. | A voice session is bound to a participant ID, and a reconnected room session is a new participant. |
+
+### 11.2 Wire (MV2)
+
+Layouts and golden vectors: `gawk-server/wire/voice.go` (VoiceHello 0x1A,
+VoiceFrame 0x1B, VoiceState 0x1C, VoiceControl 0x1D, close codes 4015 and
+4016) and `gawk-server/wire/room.go` (`RoomCommandVoiceJoin` 0x50,
+`RoomEventVoiceTicket` 0x50, `RoomEventVoiceRosterUpdated` 0x51, the voice
+roster entry). Mirrored in `wire.ts` and `crates/wire` with the same vectors.
+
+The ticket, the temporary channel key and the two internal links are the
+public package `gawk-server/voice` (the `screening` precedent: the bridge
+compiles it in, nobody restates it). Link messages are JSON, framed as
+`uint32 length ‖ JSON` on one bidirectional stream.
+
+### 11.3 Topology and routes
+
+| Where | Listener | Route | Who dials |
+|---|---|---|---|
+| bridge, public (UDP LoadBalancer) | QUIC `:4443` | `CONNECT /voice` | the browser, with the ticket in its first record |
+| bridge, internal (ClusterIP, never public) | QUIC `:4444` | `CONNECT /internal/observe?psk=` | the room's home relay pod |
+| bridge, internal | TCP `:2113` | `GET /healthz`, `/readyz`, `/metrics`, `/statusz` | probes, Prometheus, operators |
+| relay | its QUIC listener | `CONNECT /internal/voice/{code}?psk=` | a bridge pod (via the relay's Service); in cluster mode a non-home pod proxies it to the home with the cluster PSK and the lease generation, as `/internal/room` |
+
+`/internal/voice/{code}` is registered only when rooms are on and voice is
+configured. Both links send Origin `gawk-server://native-internal-edge`.
+
+### 11.4 Knobs
+
+Relay (all through `roomOptions`, flags, `GAWK_*` envs and the chart; voice
+is configured only when the first four are all set, a partial set refuses
+to start, and voice needs `-rooms`):
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `-voice-bridge-addr` | — | the bridge's internal QUIC address the home dials for observer links (`host:port`) |
+| `-voice-bridge-public-url` | — | the https URL a browser opens a voice session on, sent in `VoiceTicket` |
+| `-voice-bridge-psk` | — | gates both links |
+| `-voice-ticket-secret` | — | HMAC key for tickets and the temporary channel key; ≥16 bytes; the bridge holds the same |
+| `-voice-bridge-server-name` | host of `-voice-bridge-addr` | TLS name verified on the observer dial |
+| `-voice-bridge-ca-file` | system roots | extra roots for the observer dial (the dev stack's self-signed certificate) |
+| `-voice-max-rooms` | 10 | voice-live dynamic rooms (per pod; fleet-wide in cluster mode, counted from CRs) |
+| `-voice-max-users-per-room` | 25 | voice sessions per room |
+
+Bridge (`gawk-mumble-bridge`, flags and `GAWK_*` envs and the chart):
+`-listen`, `-internal-listen`, `-ops-listen`, `-cert-file`, `-key-file`,
+`-dev-cert`, `-allowed-origins`, `-psk`, `-ticket-secret`, `-relay-url`,
+`-relay-server-name`, `-relay-ca-file`, `-mumble-addr`, `-mumble-password`,
+`-mumble-access-token`, `-mumble-ca-file`, `-mumble-cert-sha256`,
+`-mumble-insecure-skip-verify`, `-mumble-name-template` (`{nick} [web]`),
+`-mumble-observer-name` (`gawk`), `-mumble-temp-parent`,
+`-mumble-temp-channel-template` (`gawk {key}`), `-mumble-client-version`
+(`1.4.0`, so murmur speaks the legacy audio format on the TCP tunnel),
+`-max-voice-sessions` (200), `-max-temp-channels` (50), `-drain-timeout`
+(10s), `-stats-key`. The bridge's own README is the reference.
+
+### 11.5 Behaviour the chunks share
+
+- **Epoch** (D7): the room lease generation in cluster mode; a random
+  per-process value on a single pod. The home keeps every nonce it accepted
+  until its ticket expires and refuses a repeat.
+- **Register at the home**: ticket MAC and expiry, epoch, nonce, the
+  participant still in the room under that ID, the room still voice-live,
+  `-voice-max-users-per-room`, and the voice client's address against the
+  ban set. Then newest wins (4015 to the older session), then `Accepted`,
+  which carries the channel (path or `temporary`) so the bridge pod hosting
+  the user needs nothing from the observer's pod.
+- **Ends of a voice session**, as the browser sees them: 4015 for a room
+  ending, a gawk IP ban covering the voice client, a kill of a broadcast the
+  participant attached, voice turned off for the room, a newer session of
+  the same participant, or a Mumble kick or ban; 4016 for a refused or
+  expired ticket's retryable cases and every Mumble-side failure (murmur
+  unreachable, autoban, full, a channel it may not enter, the bridge cap);
+  4002 for a bridge drain and for the participant's room session ending
+  (C4). Every one is sent in-band first.
+- **Names** (D9): `{nick} [web]`, then ` 2`… up to 10 on `UsernameInUse`.
+  Murmur's default `username` rule refuses spaces, so on
+  `InvalidUsername` the bridge retries once with every character outside
+  that rule replaced by `_`, then suffixes `_2`…. `docs/self-hosting.md`
+  lists relaxing the rule as a prerequisite for the pretty form.
+- **Speaking indicators** (D16) never touch the relay.
+- **Privacy** (D24): no package of the bridge writes, logs or exposes voice
+  audio; a source-walk test enforces it, as `gawk-sampler`'s D8 test does.
