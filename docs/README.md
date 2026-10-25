@@ -122,6 +122,7 @@ Reading all of them is not the point. Three give you the shape of the system:
 | [`40`](40-relay-server-picker.md) | R37 — Streamlined relay server picker |
 | [`44`](44-rooms.md) | R42 — Rooms: static and dynamic collections of broadcasts, joined as participants |
 | [`46`](46-site-downloads.md) | R46 — Download section on the project site, fed by per-component release manifests |
+| [`80`](80-mumble-bridge.md) | R79 — Room voice through a Mumble bridge: web participants talk with a room's Mumble channel through `gawk-mumble-bridge`, one Mumble user each |
 
 ## Testing, telemetry, operations
 
