@@ -162,7 +162,7 @@ services:
   # gawk-app chart uses via its ConfigMap, so the frontend needs no dev-only
   # code path. Runs once per `up` and exits.
   config-gen:
-    image: alpine:3.21
+    image: alpine:3.24
     entrypoint: ["/bin/sh", "/dev-scripts/config-gen.sh"]
     volumes:
       - ./certs:/certs:ro
@@ -272,7 +272,7 @@ services:
   # the API accepts application/yaml, so no gigabyte kubectl image is needed
   # for a handful of idempotent POSTs.
   kube-bootstrap:
-    image: alpine:3.21
+    image: alpine:3.24
     entrypoint: ["/bin/sh", "/dev-scripts/kube-bootstrap.sh"]
     volumes:
       - kube-pki:/kube:ro
@@ -563,7 +563,7 @@ services:
   # getDisplayMedia and WebCodecs would be unavailable. ./dev/certs.sh turns
   # this on by writing COMPOSE_PROFILES=tls into .env.
   caddy:
-    image: caddy:2.10-alpine
+    image: caddy:2.11-alpine
     profiles: ["tls"]
     ports:
       - "${BIND_ADDR:-127.0.0.1}:${APP_PORT:-8443}:443"
