@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gawk — party relay (experimental)</title>
+<meta name="description" content="gawk-relay: an experimental relay for LAN parties. Run it on one machine on the venue's network and the party's streams stay off the venue's internet line.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+
+<!-- R74 (docs/76 §6.1): gawk-relay's own page. It is a server, not one of
+     the broadcaster apps, and experimental, so it stays off the front
+     page's download grid, where the web app sends broadcasters (docs/46);
+     the front page links here in one line. Copy is provisional until the
+     PP1 design pass. -->
+<div class="glow docs-head">
+  <div class="wrap">
+    <nav class="nav">
+      <a class="nav-brand" href="./">gawk</a>
+      <div class="nav-links">
+        <a href="./">Overview</a>
+        <a href="./#download">Download the apps</a>
+        <a class="btn-outline-sm" href="https://github.com/Tuhis/gawk" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </nav>
+
+    <header class="docs-hero">
+      <div class="kicker">Experimental · for LAN parties</div>
+      <h1>A relay you bring to the party.</h1>
+      <p><code>gawk-relay</code> runs on one machine on the venue's network, so everyone there streams and watches over the LAN instead of the venue's internet line. You don't need it to broadcast or watch: the browser and the native apps work without it.</p>
+    </header>
+  </div>
+</div>
+
+<main class="wrap">
+
+  <section class="docs-section first">
+    <h2>When it helps</h2>
+    <div class="links facts">
+      <div class="link-row"><strong>Without it</strong><span>Every stream goes up to the relay server and comes back down once per viewer, even between two people on the same switch. 30 guests, 6 streaming at 8 Mbps, each watching two: about 48 Mbps up and 480 Mbps down through the venue's line.</span></div>
+      <div class="link-row"><strong>With it</strong><span>Party streams stay on the LAN. It works with or without an internet connection, and the host's network card is the limit, not the venue's line.</span></div>
+    </div>
+  </section>
+
+  <section class="docs-section">
+    <h2>Two ways to run it</h2>
+    <div class="components">
+      <div class="component">
+        <div class="path">Standalone</div>
+        <p>Start it with no options. Its page opens at <code>http://127.0.0.1:4480</code> on that machine and shows the join link and a QR code; guests on the network use those. Only people on the LAN can watch.</p>
+      </div>
+      <div class="component">
+        <div class="path">Paired with a gawk server</div>
+        <p>An operator of that deployment's admin portal creates the relay there and gets a one-time pairing string to paste into the relay's page. Then people outside can watch party streams (each crosses the venue's uplink once, only while someone outside watches, within a budget the operator sets), a home stream crosses the downlink once however many guests watch it, outsiders get one party-wall link, and guests who open the usual site at the venue are moved to the local relay by themselves.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="docs-section">
+    <h2>Before the party</h2>
+    <div class="links facts">
+      <div class="link-row"><strong>Firewall</strong><span>It listens on UDP 4433. Allow it when Windows asks, and set the venue network to Private: a rule for private networks doesn't apply to a network Windows calls Public.</span></div>
+      <div class="link-row"><strong>Browser prompt</strong><span>Chrome and Edge ask once whether a web page may reach devices on your local network. Allow it, or the stream won't connect.</span></div>
+      <div class="link-row"><strong>Certificate</strong><span>Self-signed, and the join link carries its fingerprint, so there is no warning to click through. A printed link or QR code keeps working for at least six days.</span></div>
+      <div class="link-row"><strong>Safari</strong><span>Untested against the self-signed certificate. Use Chrome, Edge or the native apps.</span></div>
+    </div>
+  </section>
+
+  <section class="docs-section">
+    <h2>Download</h2>
+    <div class="cards cards-2 dl-cards">
+      <div class="card dl" data-dl="gawk-relay">
+        <div class="dl-hd">
+          <h3>gawk-relay</h3>
+          <span class="dl-tag">Experimental</span>
+        </div>
+        <p class="dl-ver" data-dl-version>Latest release</p>
+        <a class="btn btn-outline dl-btn" data-dl-link href="https://github.com/Tuhis/gawk/releases?q=gawk-server%2F" target="_blank" rel="noopener">Windows x86-64 <span aria-hidden="true">↓</span></a>
+        <div data-dl-alt="gawk-relay-macos-universal.zip" hidden>
+          <a class="btn btn-outline dl-btn" data-dl-alt-link href="https://github.com/Tuhis/gawk/releases?q=gawk-server%2F" download>macOS <span aria-hidden="true">↓</span></a>
+        </div>
+        <div data-dl-alt="gawk-relay-linux-amd64.tar.gz" hidden>
+          <a class="btn btn-outline dl-btn" data-dl-alt-link href="https://github.com/Tuhis/gawk/releases?q=gawk-server%2F" download>Linux x86-64 <span aria-hidden="true">↓</span></a>
+        </div>
+        <div data-dl-alt="gawk-relay-linux-arm64.tar.gz" hidden>
+          <a class="btn btn-outline dl-btn" data-dl-alt-link href="https://github.com/Tuhis/gawk/releases?q=gawk-server%2F" download>Linux ARM64 <span aria-hidden="true">↓</span></a>
+        </div>
+        <p class="dl-sum" data-dl-sum hidden><span>sha256</span><code data-dl-sha></code></p>
+      </div>
+      <div class="term">
+        <div class="term-hd">
+          <span>Or as a container</span>
+          <button class="copy" type="button" data-copy-target="#snippet-relay">Copy</button>
+        </div>
+        <pre id="snippet-relay"><span class="p">$ </span>docker run --network host -v gawk-relay:/data ghcr.io/tuhis/gawk-relay</pre>
+        <p>Host networking, so guests reach it on the machine's own LAN address. Keys, certificates and the pairing live in the volume.</p>
+      </div>
+    </div>
+    <p class="section-note">The Windows and Linux binaries aren't signed, so the checksum is the only integrity check you get; each release also ships a <code>SHA256SUMS</code> file. The design, and what is still unmeasured, is in <a href="https://github.com/Tuhis/gawk/blob/main/docs/76-pop-relays.md" target="_blank" rel="noopener">docs/76</a>.</p>
+  </section>
+
+  <footer class="footer" style="margin-top:96px">
+    <span>Apache-2.0 — copyright (c) 2026 Juho Kuusisto.</span>
+    <span class="footer-links">
+      <a href="./">Overview</a>
+      <a href="docs.html">Docs</a>
+      <a href="https://github.com/Tuhis/gawk" target="_blank" rel="noopener">Repository</a>
+      <a href="https://gawk.ioio.fi" target="_blank" rel="noopener">gawk.ioio.fi</a>
+    </span>
+  </footer>
+</main>
+
+<script src="site.js"></script>
+</body>
+</html>
