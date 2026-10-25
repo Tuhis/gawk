@@ -21,6 +21,25 @@ final class CaptureTests: XCTestCase {
         capture.stop(session)
     }
 
+    /// docs/79 D9: the user stopping the recording from the system UI (no
+    /// reason) is a deliberate stop and ends the broadcast for its viewers;
+    /// a capture failure leaves it to the relay's grace.
+    func testAUserStoppedRecordingEndsTheBroadcast() {
+        let (capture, session, settings) = make()
+        capture.start(session: session, settings: settings)
+        capture.captureEnded(nil, session)
+        XCTAssertTrue(session.endedBroadcast, "a stopped recording kept the relay's grace")
+        XCTAssertFalse(capture.isCapturing)
+    }
+
+    func testACaptureFailureKeepsTheGrace() {
+        let (capture, session, settings) = make()
+        capture.start(session: session, settings: settings)
+        capture.captureEnded("The stream stopped.", session)
+        XCTAssertFalse(session.endedBroadcast, "a capture failure ended the broadcast")
+        XCTAssertFalse(capture.isCapturing)
+    }
+
     func testStartingAgainStopsTheOldSource() throws {
         let (capture, session, settings) = make()
         capture.start(session: session, settings: settings)

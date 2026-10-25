@@ -50,6 +50,7 @@ Reading all of them is not the point. Three give you the shape of the system:
 | [`45`](45-relay-refusal-reasons.md) | R43 — Relay refusal reasons the browser can see (close codes 4008–4011) |
 | [`59`](59-close-notice.md) | R57 — Close codes Chrome can read: the in-band close notice (`SessionClosing`, 0x17) |
 | [`76`](76-pop-relays.md) | R74 — PoP relays: `gawk-relay`, a one-click LAN relay paired with the home fleet; streams cross the venue's internet once, on demand, within a budget; a party wall; guests' clients switch to the local relay by themselves; pinned and named certificates |
+| [`79`](79-stop-ends-the-broadcast.md) | R78 — Stop ends the broadcast: a publisher's close code 4014 ends it at once instead of a frozen grace; viewers see "Broadcast ended" and pick the stream up again by themselves if it restarts on the same code |
 
 ## Delivery and resilience
 

@@ -52,7 +52,7 @@ import {
 } from './viewer-worker-core';
 import type { RenderSink } from './render-sink';
 import type { ViewerSessionCallbacks } from './viewer-session';
-import { encodeDecoderConfig, encodeVideoChunk } from './wire';
+import { CLOSE_CODE_BROADCASTER_STOPPED, encodeDecoderConfig, encodeVideoChunk } from './wire';
 
 function fakeSink() {
   const drawn: VideoFrame[] = [];
@@ -183,6 +183,22 @@ describe('ViewerWorkerCore mapping (fake session)', () => {
     new ViewerWorkerCore(host, factory).start(startParams);
     sessions[0].cbs.onEnded('normal');
     expect(events).toContainEqual({ type: 'ended', reason: 'normal' });
+  });
+
+  // docs/79 D7: the broadcaster's Stop crosses as its own event; the session
+  // keeps running (no 'ended'), so a later 'connected' resumes the screen.
+  it('emits stopped for the current session, and drops a superseded one’s', () => {
+    const { sink } = fakeSink();
+    const { host, events } = fakeHost(sink);
+    const { factory, sessions } = fakeFactory();
+    const core = new ViewerWorkerCore(host, factory);
+    core.start(startParams);
+    sessions[0].cbs.onStopped();
+    expect(events).toEqual([{ type: 'stopped' }]);
+
+    core.start({ ...startParams, broadcastId: 'AB2CD3' }); // supersede
+    sessions[0].cbs.onStopped();
+    expect(events).toEqual([{ type: 'stopped' }]);
   });
 
   it('ignores a superseded session’s late callbacks (generation guard)', () => {
@@ -323,6 +339,35 @@ describe('ViewerWorkerCore integration (real pipeline, mocked I/O)', () => {
     expect(events).toContainEqual({ type: 'connected' });
     expect(events.some((e) => e.type === 'codec')).toBe(true);
 
+    await core.stop();
+  });
+
+  // docs/79 D5/D7, the path Chrome actually takes: the relay's 4014 close
+  // code never arrives (wt.closed rejects "Connection lost." with none), and
+  // the in-band SessionClosing is what says the broadcaster stopped. It must
+  // reach the main thread as 'stopped', not as a reconnect.
+  it('turns a 4014 SessionClosing notice into stopped, not a reconnect', async () => {
+    const lost = Object.assign(new Error('Connection lost.'), { source: 'session' });
+    let die!: () => void;
+    const closed = new Promise((_, rej) => (die = () => rej(lost)));
+    closed.catch(() => {});
+    connectWebTransport.mockResolvedValue({ closed, close: vi.fn() } as unknown as WebTransport);
+    readDatagrams.mockReturnValue(new Promise(() => {}));
+    readServerStreams.mockImplementation((_wt: unknown, cb: { onSessionClosing?: (c: number) => void }) => {
+      cb.onSessionClosing?.(CLOSE_CODE_BROADCASTER_STOPPED);
+      return new Promise(() => {});
+    });
+
+    const { sink } = fakeSink();
+    const { host, events } = fakeHost(sink);
+    const core = new ViewerWorkerCore(host);
+    core.start(startParams);
+    await vi.waitFor(() => expect(events).toContainEqual({ type: 'connected' }));
+    die();
+    await vi.waitFor(() => expect(events).toContainEqual({ type: 'stopped' }));
+    expect(events.some((e) => e.type === 'reconnecting' || e.type === 'ended' || e.type === 'error')).toBe(false);
+
+    // The wait's redial timer is the session's; stop() cancels it.
     await core.stop();
   });
 });

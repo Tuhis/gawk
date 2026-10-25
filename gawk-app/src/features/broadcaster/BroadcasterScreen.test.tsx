@@ -17,8 +17,9 @@ const { created, scripts, sessionGate } = vi.hoisted(() => {
     broadcastId?: string;
     grant?: Promise<unknown>;
     start(): Promise<void>;
-    stop(): Promise<void>;
+    stop(opts?: { end?: boolean }): Promise<void>;
     stopped: boolean;
+    stopOpts: Array<{ end?: boolean } | undefined>;
     setLadder(): void;
     setEncoderSettings(): void;
   }
@@ -49,9 +50,11 @@ vi.mock('./workerBroadcastSession', () => ({
       broadcastId,
       grant,
       stopped: false,
+      stopOpts: [] as Array<{ end?: boolean } | undefined>,
       start: () => script(callbacks),
-      stop: async () => {
+      stop: async (opts?: { end?: boolean }) => {
         session.stopped = true;
+        session.stopOpts.push(opts);
         callbacks.onEnded();
       },
       setLadder: () => {},
@@ -191,6 +194,36 @@ describe('BroadcasterScreen start failure after capture', () => {
 
     await waitFor(() => expect(screen.getByText('Couldn’t start')).toBeTruthy());
     expect(screen.queryByText('LIVE')).toBeNull();
+  });
+});
+
+// docs/79 D9: the Stop button ends the broadcast for its viewers (4014);
+// leaving the page keeps the relay's grace.
+describe('BroadcasterScreen Stop ends the broadcast (R78)', () => {
+  it('the Stop button requests an end stop', async () => {
+    scripts.push(async (cbs) => {
+      cbs.onBroadcastId?.('AB2CD3');
+      cbs.onSourceStream(fakeStream);
+    });
+    render(<BroadcasterScreen />);
+    startBroadcast();
+    await waitFor(() => expect(screen.getByText('LIVE')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /stop broadcast/i }));
+    await waitFor(() => expect(created[0].stopped).toBe(true));
+    expect(created[0].stopOpts).toEqual([{ end: true }]);
+  });
+
+  it('unmounting stops plainly', async () => {
+    scripts.push(async (cbs) => {
+      cbs.onBroadcastId?.('AB2CD3');
+      cbs.onSourceStream(fakeStream);
+    });
+    const { unmount } = render(<BroadcasterScreen />);
+    startBroadcast();
+    await waitFor(() => expect(screen.getByText('LIVE')).toBeTruthy());
+    unmount();
+    expect(created[0].stopped).toBe(true);
+    expect(created[0].stopOpts.every((o) => !o?.end)).toBe(true);
   });
 });
 

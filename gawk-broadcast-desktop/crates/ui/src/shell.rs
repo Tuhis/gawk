@@ -2246,13 +2246,17 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         });
     }
     {
-        // End (docs/64 D10): live or paused, the session stops and Ready
-        // shows the summary card.
+        // End (docs/64 D10): live or paused, the session ends and Ready
+        // shows the summary card. It closes the publish leg with 4014
+        // (docs/79 D9), so viewers see the broadcast end instead of a frozen
+        // frame; Pause, restarts, a quit and failures keep stop()'s grace.
+        // The card's "Resume on CODE" still works: the relay recreates the
+        // broadcast on a token-bearing reclaim of the code.
         let shell = shell.clone();
         ui.on_stop_broadcast(move || {
             let sh = shell.borrow();
             if let Some(session) = sh.session.clone() {
-                sh.rt.spawn(async move { session.stop().await });
+                sh.rt.spawn(async move { session.end().await });
             }
         });
     }
@@ -7681,6 +7685,107 @@ mod tests {
         fn closed(&self) -> gawk_engine::relay::BoxFuture<'_, gawk_engine::relay::SessionClose> {
             Box::pin(std::future::pending())
         }
+    }
+
+    /// A quiet relay that records every close's application code (0 for a
+    /// plain close).
+    #[derive(Default)]
+    struct ClosingRelay {
+        codes: std::sync::Mutex<Vec<u32>>,
+    }
+
+    impl gawk_engine::relay::RelaySession for ClosingRelay {
+        fn send_datagram(&self, d: &[u8]) -> Result<(), gawk_engine::relay::SendDatagramError> {
+            QuietRelay.send_datagram(d)
+        }
+        fn open_keyframe_stream(
+            &self,
+        ) -> gawk_engine::relay::BoxFuture<
+            '_,
+            Result<Box<dyn gawk_engine::relay::KeyframeWriter>, String>,
+        > {
+            Box::pin(std::future::pending())
+        }
+        fn accept_uni(
+            &self,
+        ) -> gawk_engine::relay::BoxFuture<
+            '_,
+            Result<Box<dyn gawk_engine::relay::ServerStream>, String>,
+        > {
+            Box::pin(std::future::pending())
+        }
+        fn receive_datagram(&self) -> gawk_engine::relay::BoxFuture<'_, Result<Vec<u8>, String>> {
+            Box::pin(std::future::pending())
+        }
+        fn closed(&self) -> gawk_engine::relay::BoxFuture<'_, gawk_engine::relay::SessionClose> {
+            Box::pin(std::future::pending())
+        }
+        fn close(&self) {
+            self.codes.lock().unwrap().push(0);
+        }
+        fn close_with_code(&self, code: u32) -> gawk_engine::relay::BoxFuture<'_, ()> {
+            self.codes.lock().unwrap().push(code);
+            Box::pin(async {})
+        }
+    }
+
+    /// A live shell on a session over `relay`.
+    fn live_on(relay: Arc<ClosingRelay>) -> (MainWindow, Rc<RefCell<Shell>>) {
+        let ui = window();
+        let (shell, _) = test_shell();
+        wire_callbacks(&ui, &shell);
+        let session = {
+            let sh = shell.borrow();
+            let _rt = sh.rt.enter();
+            Session::start_with_session(
+                SessionConfig::default(),
+                relay,
+                Arc::new(MonotonicClock::new()),
+            )
+            .0
+        };
+        let mut sh = shell.borrow_mut();
+        sh.session = Some(session);
+        sh.state = UiState::Live;
+        drop(sh);
+        (ui, shell)
+    }
+
+    fn wait_for_codes(relay: &ClosingRelay, n: usize) -> Vec<u32> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let codes = relay.codes.lock().unwrap().clone();
+            if codes.len() >= n || std::time::Instant::now() > deadline {
+                return codes;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    // R78 (docs/79 D9): End says the broadcaster stopped — the publish leg
+    // closes with 4014 and the relay ends the broadcast now.
+    #[test]
+    fn end_closes_the_publish_leg_with_4014() {
+        let relay = Arc::new(ClosingRelay::default());
+        let (ui, shell) = live_on(relay.clone());
+        ui.invoke_stop_broadcast();
+        assert_eq!(
+            wait_for_codes(&relay, 1),
+            [gawk_wire::CLOSE_CODE_BROADCASTER_STOPPED]
+        );
+        shell.borrow_mut().session = None;
+    }
+
+    // R78 (docs/79 D9, docs/64 D9): Pause keeps the grace — a plain close,
+    // so viewers wait for Resume.
+    #[test]
+    fn pause_closes_the_publish_leg_plainly() {
+        let relay = Arc::new(ClosingRelay::default());
+        let (ui, shell) = live_on(relay.clone());
+        ui.invoke_pause_broadcast();
+        assert_eq!(wait_for_codes(&relay, 1), [0]);
+        assert_eq!(shell.borrow().state, UiState::Paused);
+        shell.borrow_mut().session = None;
     }
 
     // RU5 (docs/75 D4): a Delivery change while live reaches the session —

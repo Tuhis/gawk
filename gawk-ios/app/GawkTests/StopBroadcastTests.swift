@@ -2,7 +2,7 @@
 import XCTest
 
 /// "Stop broadcasting" ends a live broadcast: the path the button takes
-/// (`Capture.stop`), with D27's test source feeding a real `Broadcaster`
+/// (`Capture.end`, which tells the relay with 4014, docs/79 D9), with D27's test source feeding a real `Broadcaster`
 /// against a local relay. Needs `GAWK_SMOKE_RELAY_URL` (and
 /// `GAWK_SMOKE_SECRET`) via `TEST_RUNNER_`-prefixed environment; skipped
 /// otherwise.
@@ -48,7 +48,7 @@ final class StopBroadcastTests: XCTestCase {
         let source = try XCTUnwrap(capture.testSource)
 
         // The button.
-        capture.stop(session)
+        capture.end(session)
         XCTAssertFalse(source.isRunning, "the source outlived the stop")
         XCTAssertEqual(session.phase, .stopping, "Stop gave no feedback")
         var ended = false

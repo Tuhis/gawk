@@ -5,6 +5,8 @@ use wtransport_proto::frame::FrameKind;
 use wtransport_proto::varint::VarInt;
 
 use super::session::StreamSession;
+use std::borrow::Cow;
+use wtransport_proto::frame::Frame;
 use super::ProtoReadError;
 use crate::driver::DriverError;
 use crate::error::ApplicationClose;
@@ -112,6 +114,65 @@ impl ConnectStream {
                 }
             }
         }
+    }
+}
+
+impl ConnectStream {
+    // GAWK PATCH (see GAWK-PATCH.md): the sending half of a session close.
+    // Stock wtransport can only close the QUIC connection, whose application
+    // code a webtransport-go peer never reads as the SESSION's close code
+    // (its CONNECT-stream reader just fails). The gawk relay reads a
+    // publisher's deliberate stop (4014) from the session's close error, so
+    // the code must travel the way a browser sends it: a
+    // CLOSE_WEBTRANSPORT_SESSION capsule in a DATA frame on the CONNECT
+    // stream, then FIN (RFC 9297 §3.2, draft-ietf-webtrans-http3 §6). The
+    // FIN's wait resolves once the peer's QUIC stack has acknowledged every
+    // byte (or stopped the stream, or the connection died). That is not yet
+    // enough: quic-go fails a stream read with the connection's error even
+    // over buffered bytes, so a CONNECTION_CLOSE that lands before the
+    // relay's reader ran still loses the capsule. The read loop after it
+    // waits for the peer's own answer — webtransport-go resets the CONNECT
+    // stream once it has parsed the close — and only then may the worker
+    // close the connection. A peer that never answers is the caller's to
+    // bound (`Connection::close_session`).
+    pub async fn close_session(&mut self, error_code: u32, reason: Box<[u8]>) -> DriverError {
+        const CLOSE_WEBTRANSPORT_SESSION: u64 = 0x2843;
+        // The value's own limit (4-byte code + at most 1024 reason bytes).
+        let reason_len = reason.len().min(1024);
+        let mut capsule = Vec::with_capacity(4 + 4 + 4 + reason_len);
+        put_varint(&mut capsule, CLOSE_WEBTRANSPORT_SESSION);
+        put_varint(&mut capsule, (4 + reason_len) as u64);
+        capsule.extend_from_slice(&error_code.to_be_bytes());
+        capsule.extend_from_slice(&reason[..reason_len]);
+        if let Some(mut stream) = self.stream.take() {
+            if stream
+                .write_frame(Frame::new_data(Cow::Owned(capsule)))
+                .await
+                .is_ok()
+            {
+                stream.finish().await;
+                // Until the peer resets or ends its half, or the connection
+                // dies: anything it still sends is of no interest.
+                while stream.read_frame().await.is_ok() {}
+            }
+        }
+        DriverError::ApplicationClosed(ApplicationClose::new(
+            VarInt::from_u32(error_code),
+            reason,
+        ))
+    }
+}
+
+/// Appends one QUIC variable-length integer (RFC 9000 §16), shortest form.
+fn put_varint(buf: &mut Vec<u8>, v: u64) {
+    if v < 1 << 6 {
+        buf.push(v as u8);
+    } else if v < 1 << 14 {
+        buf.extend_from_slice(&((v as u16) | 0x4000).to_be_bytes());
+    } else if v < 1 << 30 {
+        buf.extend_from_slice(&((v as u32) | 0x8000_0000).to_be_bytes());
+    } else {
+        buf.extend_from_slice(&(v | 0xc000_0000_0000_0000).to_be_bytes());
     }
 }
 

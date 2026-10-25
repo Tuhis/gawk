@@ -88,6 +88,7 @@ import {
   TYPE_LOCAL_RELAY_OFFER,
   TYPE_VIEWER_COUNT,
   VIEWER_COUNT_SIZE,
+  CLOSE_CODE_BROADCASTER_STOPPED,
   type TelemetryHelloMessage,
 } from './wire';
 
@@ -318,6 +319,14 @@ export interface EncoderSettings {
   codecOverride: string | null;
 }
 
+// docs/79 D9: `end` marks a deliberate Stop. The session then closes with
+// 4014, so the relay ends the broadcast now instead of holding it through
+// its grace. Every other stop (unmount, a failure, the background watchdog,
+// a terminal relay close) leaves it unset and closes plainly.
+export interface BroadcastStopOptions {
+  end?: boolean;
+}
+
 export const DEFAULT_ENCODER_SETTINGS: EncoderSettings = {
   hwPreference: 'auto',
   bitrateOverride: null,
@@ -329,7 +338,7 @@ export const DEFAULT_ENCODER_SETTINGS: EncoderSettings = {
 // so the screen's reclaim/mint/error logic is path-agnostic.
 export interface BroadcastSessionLike {
   start(): Promise<void>;
-  stop(): Promise<void>;
+  stop(opts?: BroadcastStopOptions): Promise<void>;
   setLadder(selection: ResolutionSelection, framerate: FramerateSelection): void;
   setEncoderSettings(settings: EncoderSettings): void;
 }
@@ -411,6 +420,9 @@ export class BroadcastPipeline {
   private mediaSource: BroadcastMediaSourceFactory;
   private encoder: Encoder | null = null;
   private stopping = false;
+  // Set by stop({ end: true }) before teardown: every close from then on,
+  // including a late dial's that raced the stop, carries 4014 (docs/79 D9).
+  private endOnClose = false;
 
   // Ladder: gate + scale before encode. The encoder is recreated — not
   // reconfigured — whenever the preprocessed frames stop matching its
@@ -1456,11 +1468,7 @@ export class BroadcastPipeline {
     // a fresh keyframe). A stop counts nothing.
     this.keyframes.detach(!this.stopping);
     this.connSampler = null;
-    try {
-      this.wt?.close();
-    } catch {
-      // already closed — fine
-    }
+    this.closeSession();
     this.wt = null;
     // Re-publish the mapping promptly on the next session: the new pod's
     // hub cache starts empty, and viewers need it for absolute latency.
@@ -1591,11 +1599,27 @@ export class BroadcastPipeline {
     void this.stop();
   }
 
-  async stop(): Promise<void> {
+  async stop(opts?: BroadcastStopOptions): Promise<void> {
     if (this.stopping) return;
     this.stopping = true;
+    this.endOnClose = opts?.end === true;
     await this.teardown();
     this.cb.onEnded();
+  }
+
+  // Closes the current session: with 4014 after an end stop (the relay reads
+  // it off the close capsule and ends the broadcast, docs/79 D2), plainly
+  // otherwise, which keeps the relay's grace for viewers.
+  private closeSession(): void {
+    try {
+      if (this.endOnClose) {
+        this.wt?.close({ closeCode: CLOSE_CODE_BROADCASTER_STOPPED, reason: 'broadcaster stopped' });
+      } else {
+        this.wt?.close();
+      }
+    } catch {
+      // already closed by the server — fine
+    }
   }
 
   // Releases everything start() acquired. Shared by stop() and start()'s own
@@ -1625,11 +1649,7 @@ export class BroadcastPipeline {
     this.encoder?.dispose();
     this.media?.stop();
     this.sender?.close();
-    try {
-      this.wt?.close();
-    } catch {
-      // already closed by the server — fine
-    }
+    this.closeSession();
 
     this.encoder = null;
     this.media = null;

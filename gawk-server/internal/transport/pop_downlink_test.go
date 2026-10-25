@@ -534,3 +534,21 @@ func TestPopDownlinkResetsARefusedStream(t *testing.T) {
 		t.Fatalf("legs opened = %d, want 1", got)
 	}
 }
+
+// R78 (docs/79): a home broadcaster's Stop reaches a party viewer as 4014,
+// through the downlink leg, like any edge viewer: the viewer waits for the
+// code to come back instead of being told the broadcast is over for good.
+func TestPartyViewerOfAHomeBroadcastIsToldItStopped(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rig := startPopRig(t, ctx, 50_000_000/8, 0, true)
+	pub, id, _ := dialStoppablePublisher(t, ctx, rig.homePort, rig.homeTLS)
+	sendKeyframeStream(t, pub, buildStreamKeyframe(t, 0, "avc1.42E02A", 2000))
+	viewer := dialSubscriber(t, ctx, rig.popPort, id, rig.popTLS)
+	obf := rig.pop.ObfuscateID(id)
+	waitFor(t, 10*time.Second, func() bool { return rig.pop.Stats().Broadcasts[obf].KeyframeStreamsIn > 0 }, "the PoP primed")
+
+	pub.CloseWithError(webtransport.SessionErrorCode(wire.CloseCodeBroadcasterStopped), "broadcaster stopped")
+	n, nAt, code, cAt := drainUntilClosed(t, ctx, viewer)
+	assertNoticedClose(t, "party viewer", wire.CloseCodeBroadcasterStopped, n, nAt, code, cAt)
+}

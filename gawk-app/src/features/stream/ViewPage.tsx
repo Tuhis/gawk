@@ -83,6 +83,12 @@ export function ViewPage() {
         setRetryNote(null);
         setStatus('watching');
       },
+      // The session waits for a restart on this code (docs/79 D7); the
+      // debug page just says so in the retry note.
+      onStopped: () => {
+        setStatus('reconnecting');
+        setRetryNote('Broadcaster stopped — waiting for a restart on this code.');
+      },
       onReconnecting: ({ attempt, reason }) => {
         setStatus('reconnecting');
         setRetryNote(`Connection lost — retrying (attempt ${attempt}/${RECONNECT_MAX_ATTEMPTS}): ${reason}`);

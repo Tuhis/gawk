@@ -329,6 +329,16 @@ Add to it when a new gotcha lands in `docs/`.
   or the context error its sibling's cancel caused. Take the error from the
   loop that has it, or ask the session afterwards (`AcceptUniStream` on a
   closed session returns its close error). ([docs/59](59-close-notice.md))
+- **The other direction works: the relay does read a close code Chrome
+  sends.** `wt.close({closeCode})` reached webtransport-go in 180 of 180
+  trials, from the main thread and from a worker terminated right after.
+  The code is in the session's close error, and the datagram loop sees a
+  bare `EOF`. **A client that closes its QUIC connection along with the
+  session loses it**: webtransport-go's `Transport.Dial` does exactly that
+  (`context.AfterFunc` on the session), and its CONNECTION_CLOSE beat the
+  capsule in 25 of 30 runs, as quinn's `Connection::close` can. To send a
+  code a relay must act on, keep the connection until the capsule is
+  delivered. ([docs/79](79-stop-ends-the-broadcast.md) §1)
 - **Since v0.12.0, `webtransport.Server.Config` must be set or WebKit refuses
   every session** — with a nil `Config` the library advertises
   `WT_MAX_SESSIONS` without the three `WT_INITIAL_MAX_*` SETTINGS the draft

@@ -14,6 +14,7 @@ const { sessions, sessionState, FakeViewerSession } = vi.hoisted(() => {
     onStats: (s: unknown) => void;
     onError: (e: Error) => void;
     onEnded: (reason: 'normal' | 'moderated') => void;
+    onStopped: () => void;
     // The audio crossing (optional — a session consumer without audio
     // never sets them).
     onAudioChunk?: (chunk: {
@@ -145,6 +146,38 @@ describe('ViewerScreen states', () => {
     act(() => sessions[0].cbs.onEnded('moderated'));
     expect(screen.getByText('This broadcast was ended by a moderator.')).toBeTruthy();
     expect(screen.queryByText('The stream is over.')).toBeNull();
+  });
+
+  // docs/79 D7/D8: the broadcaster pressed Stop (4014). The ended card says
+  // the stream comes back, the stopped stream's last frame leaves the stage,
+  // and the session's own redial brings the viewer back to live.
+  it('shows the stopped card, then returns to watching when the broadcast restarts', async () => {
+    const { container } = render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onConnected());
+    const canvas = container.querySelector('canvas')!;
+    expect(canvas.style.visibility).toBe('');
+
+    act(() => sessions[0].cbs.onStopped());
+    expect(screen.getByText('Broadcast ended')).toBeTruthy();
+    expect(
+      screen.getByText(
+        'The broadcaster stopped. Keep this page open and the stream comes back if they start again on this code.',
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText('Back to home')).toBeTruthy();
+    expect(screen.queryByText(/Reconnecting/)).toBeNull();
+    expect(canvas.style.visibility).toBe('hidden');
+
+    act(() => sessions[0].cbs.onConnected());
+    expect(screen.queryByText('Broadcast ended')).toBeNull();
+    expect(screen.getByText('live')).toBeTruthy();
+    // The old frame stays hidden until the restarted stream has drawn its own.
+    expect(canvas.style.visibility).toBe('hidden');
+    act(() => sessions[0].cbs.onStats({ viewerCount: 1, framesCompleted: 0 }));
+    expect(canvas.style.visibility).toBe('hidden');
+    act(() => sessions[0].cbs.onStats({ viewerCount: 1, framesCompleted: 2 }));
+    expect(canvas.style.visibility).toBe('');
   });
 
   // Error-card copy is keyed on the structured kind, never the raw transport
@@ -1263,6 +1296,20 @@ describe('ViewerScreen screen wake lock', () => {
 
     await act(async () => sessions[0].cbs.onEnded('normal'));
     await waitFor(() => expect(locks[0].released).toBe(true));
+  });
+
+  it('releases the lock while the broadcaster is stopped and takes it again on resume', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    await act(async () => sessions[0].cbs.onConnected());
+    await waitFor(() => expect(locks).toHaveLength(1));
+
+    await act(async () => sessions[0].cbs.onStopped());
+    await waitFor(() => expect(locks[0].released).toBe(true));
+
+    await act(async () => sessions[0].cbs.onConnected());
+    await waitFor(() => expect(locks).toHaveLength(2));
+    expect(locks[1].released).toBe(false);
   });
 
   it('keeps the lock across a reconnect — a blip is still someone watching', async () => {

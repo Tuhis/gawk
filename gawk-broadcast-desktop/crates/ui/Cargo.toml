@@ -29,3 +29,5 @@ slint-build = "1"
 # internal crates require. Test-only: never in the shipped graph.
 i-slint-backend-testing = "=1.17.1"
 
+# The close codes the shell tests pin End and Pause to (docs/79 D9).
+gawk-wire = { path = "../wire" }

@@ -136,7 +136,9 @@ export function BroadcastPage() {
   const handleStop = useCallback(async () => {
     if (!pipelineRef.current) return;
     setStatus('stopping');
-    await pipelineRef.current.stop();
+    // The one deliberate Stop: the relay ends the broadcast now, so viewers
+    // see the ended card instead of a frozen frame (docs/79 D9).
+    await pipelineRef.current.stop({ end: true });
   }, []);
 
   const handleCopy = () => {

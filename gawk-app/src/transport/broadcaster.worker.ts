@@ -62,7 +62,7 @@ ctx.onmessage = (e: MessageEvent) => {
       core.setEncoderSettings(cmd.settings);
       break;
     case 'stop':
-      void core.stop();
+      void core.stop({ end: cmd.end === true });
       break;
   }
 };

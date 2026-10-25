@@ -189,6 +189,13 @@ export const CLOSE_CODE_POP_UPLINK_FULL = 4012;
 // viewer expired. Browsers never receive it — mirrored for namespace parity.
 // Mirrored from Go wire.CloseCodePopNoDemand.
 export const CLOSE_CODE_POP_NO_DEMAND = 4013;
+// R78 (docs/79 D1): the broadcaster stopped on purpose, in both directions.
+// A publisher closes its own session with it on Stop. The relay then ends the
+// broadcast now and closes its viewers with it, after the in-band
+// SessionClosing. NOT terminal for a viewer: it shows "Broadcast ended" and
+// keeps dialling the code, so a restart on the same code resumes by itself.
+// Mirrored from Go wire.CloseCodeBroadcasterStopped.
+export const CLOSE_CODE_BROADCASTER_STOPPED = 4014;
 
 // SessionClosing: relay→client on its own server-opened uni
 // stream, a settle interval BEFORE the relay closes the session with this
@@ -197,7 +204,8 @@ export const CLOSE_CODE_POP_NO_DEMAND = 4013;
 // of the close capsule, and Chrome fails the session on it ("Connection
 // lost.", no closeCode; quic-go/webtransport-go#242). A client uses it when
 // `closed` settles without a code, and keeps a code it did read. Sent for
-// the terminal codes (4000, 4004, 4006) and R74's non-terminal 4012 on
+// the terminal codes (4000, 4004, 4006), R74's non-terminal 4012 and R78's
+// non-terminal 4014 on
 // publish/subscribe sessions;
 // room control sessions have RoomEnding instead. Layout: version, type 0x17,
 // uint32 BE code in [4000, 4999] — exactly 6 bytes. Mirrored from Go

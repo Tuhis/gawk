@@ -22,6 +22,8 @@ import {
 import type { DecodedFrame } from '../media/decoder';
 import {
   RECONNECT_MAX_ATTEMPTS,
+  broadcasterStoppedRetryMs,
+  isBroadcasterStopped,
   isPopUplinkFull,
   isTerminalViewerClose,
   reconnectDelayMs,
@@ -32,6 +34,7 @@ import {
 // auto-resume); re-exported so existing importers keep working.
 export {
   ABRUPT_DROP_RETRY_DELAY_MS,
+  BROADCASTER_STOPPED_RETRY_MS,
   RECONNECT_MAX_ATTEMPTS,
   reconnectDelayMs,
   type ReconnectInfo,
@@ -56,7 +59,10 @@ export type ViewerErrorKind = 'unreachable' | 'lost' | 'unplayable';
 // - 'moderated': close code 4006 — the operator terminated this broadcast.
 //   Telling the viewer is the whole reason 4006 exists as a code of its own
 //   instead of reusing 4000.
-export type ViewerEndReason = 'normal' | 'moderated';
+// - 'stopped': close code 4014 — the broadcaster pressed Stop. Never an
+//   onEnded reason: the session reports it through onStopped and waits for a
+//   restart (docs/79 D7). Here because the screens render it as an ending.
+export type ViewerEndReason = 'normal' | 'moderated' | 'stopped';
 
 export interface ViewerSessionCallbacks {
   onDecodedFrame: (decoded: DecodedFrame) => void;
@@ -64,8 +70,14 @@ export interface ViewerSessionCallbacks {
   onStats: (stats: ViewerStats) => void;
   // Fired after every successful connect, initial or re-.
   onConnected: () => void;
-  // Fired when a reconnect attempt has been scheduled.
+  // Fired when a reconnect attempt has been scheduled. Not for the waiting
+  // redials after onStopped: those are not a reconnect the viewer sees.
   onReconnecting: (info: ReconnectInfo) => void;
+  // The broadcaster stopped (close code 4014, docs/79 D7): fired once per
+  // stop. The session is NOT over. It keeps redialling the same code and
+  // fires onConnected when a broadcast is back, or onEnded if a terminal
+  // code or the user ends the wait.
+  onStopped: () => void;
   // Fatal: the initial connect failed (rethrown from start() too) or the
   // reconnect budget is exhausted.
   onError: (err: Error) => void;
@@ -125,6 +137,10 @@ export class ViewerSession {
   // Set when the pipeline reported a non-recoverable error (e.g. an unsupported
   // codec). Reconnecting can't help, so the session surfaces it and stops.
   private lastFatal = false;
+  // Between a 4014 and the next successful dial (docs/79 D7).
+  private waitingForRestart = false;
+  // The waiting redials' jitter source; injectable so tests are exact.
+  private random: () => number;
 
   constructor(
     serverUrl: string,
@@ -132,12 +148,14 @@ export class ViewerSession {
     connectOpts: ConnectOptions,
     callbacks: ViewerSessionCallbacks,
     createPipeline: PipelineFactory = defaultFactory,
+    random: () => number = Math.random,
   ) {
     this.serverUrl = serverUrl;
     this.broadcastId = broadcastId;
     this.connectOpts = connectOpts;
     this.cb = callbacks;
     this.createPipeline = createPipeline;
+    this.random = random;
   }
 
   // Rejects on first-connect failure (fatal by policy); nothing is retried
@@ -249,7 +267,28 @@ export class ViewerSession {
       this.cb.onEnded('normal');
       return;
     }
+    if (isBroadcasterStopped(this.lastCloseCode)) {
+      log.info('Broadcaster stopped (code 4014). Waiting for a restart on this code.');
+      this.waitingForRestart = true;
+      this.attempt = 0;
+      this.cb.onStopped();
+      this.scheduleRestartDial();
+      return;
+    }
     this.scheduleReconnect();
+  }
+
+  // docs/79 D7: the ended card is up, and this redials quietly on a fixed
+  // cadence. No onReconnecting (the screen must not swap the card for a
+  // "Reconnecting…" pill) and no budget: the browser can't read the 404 a
+  // missing broadcast answers with, so every failure looks the same and all
+  // of them mean "not back yet".
+  private scheduleRestartDial(): void {
+    const delayMs = broadcasterStoppedRetryMs(this.random);
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      void this.tryReconnect();
+    }, delayMs);
   }
 
   private scheduleReconnect(): void {
@@ -304,6 +343,10 @@ export class ViewerSession {
         this.cb.onEnded(this.endReason());
         return;
       }
+      if (this.waitingForRestart) {
+        this.scheduleRestartDial();
+        return;
+      }
       this.scheduleReconnect();
       return;
     } finally {
@@ -311,6 +354,7 @@ export class ViewerSession {
     }
     if (this.stopped) return; // stop() raced the connect and owns teardown
     this.attempt = 0;
+    this.waitingForRestart = false;
     this.cb.onConnected();
   }
 }

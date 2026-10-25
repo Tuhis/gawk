@@ -41,6 +41,18 @@ final class WatchTests: XCTestCase {
         XCTAssertFalse(vp9.canRetry)
     }
 
+    /// R78 (docs/79 D8): a stopped broadcaster's card says the stream comes
+    /// back, and offers no Try again — the core already waits on the code.
+    func testTheStoppedCardSaysItComesBack() {
+        let card = WatchStatusText.stopped
+        XCTAssertEqual(card.title, "Broadcast ended")
+        XCTAssertEqual(
+            card.body,
+            "The broadcaster stopped. Keep this open and the stream comes back if they start again on this code.")
+        XCTAssertFalse(card.canRetry)
+        XCTAssertNotEqual(ViewerStatus.broadcastStopped, .live)
+    }
+
     /// D5a, OD12: the pill copies the join link, the one Live's Copy link
     /// copies, and the room's chip the room link.
     func testThePillsCopyTheLinks() {

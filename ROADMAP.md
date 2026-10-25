@@ -95,6 +95,7 @@ feature set exists).
 | R75 | [An upload warning that sees a full uplink](#r75--an-upload-warning-that-sees-a-full-uplink) | 💡 **proposed 2026-10-21** (follow-up to R73's engine lab run), not designed — the native broadcaster's "upload can't keep up" warning keys on send-side capacity signals since R73 and never on packet loss (radio outages misled it), so on an uplink the stream nearly fills with BBR, where BBR's own loss is the only symptom, it stays silent; compare the stream's bitrate with the connection's own bandwidth estimate instead |
 | R76 | [Broadcaster memory, measured](#r76--broadcaster-memory-measured) | 🔧 **designed and implemented 2026-10-24** (MM1–MM4, MM7–MM8: a telemetry audit, PoP traffic kept out of home's data); open: MM5's hardware pass and MM6's baseline and reduction — the native broadcasters report what their process holds (the task manager's footprint, the Rust heap, GPU memory and five component gauges) to telemetry and diagnostics, against a 100 MB budget while live; the per-session telemetry budget goes from 4 to 16 MiB (a native session's samples ran out after about 90 minutes), a minute `memory` event outlives it, and two playbook rules warn on a footprint over budget and on growth during a broadcast ([docs/77](docs/77-broadcaster-memory.md)) |
 | R77 | [PoP telemetry](#r77--pop-telemetry) | 🔧 **designed and implemented 2026-10-24** (PT1–PT6, automated rows green); open: a real party end to end — PoP sessions report like home's without the telemetry key leaving the fleet: home mints a PoP's tokens over its link, scoped to what the PoP serves and rate-limited, marked with the PoP's issuer inside the token's nonce; the PoP's relay-side view reaches the telemetry service through home's ops listener; every join keeps PoP and home apart ([docs/78](docs/78-pop-telemetry.md)) |
+| R78 | [Stop ends the broadcast](#r78--stop-ends-the-broadcast) | 🔧 **implemented 2026-10-24** (BE1–BE6 in one PR, owner decisions OD1–OD5 the same day), the owner's pass on the reference deployment open — a deliberate Stop (web Stop, desktop End, iOS End or stopping the recording) closes the publish session with the new close code **4014**, and the relay ends the broadcast at once instead of holding a frozen frame through the grace; viewers are told 4014 (in-band too), see "Broadcast ended", and keep redialling the code every 5 s so a restart on the same code resumes by itself; LAN-party broadcasts end at home too; desktop Pause, restarts, a closed tab and every failure keep the grace. Measured first: Chrome's close code reaches the relay in 180 of 180 trials, main thread and worker ([docs/79](docs/79-stop-ends-the-broadcast.md)) |
 
 ---
 
@@ -5423,6 +5424,27 @@ relay-side phase ships with it.
 
 **Status**: PT1–PT6 implemented 2026-10-24 with their automated rows green;
 a real party end to end is open.
+
+---
+
+## R78 — Stop ends the broadcast
+
+**Goal**: when the broadcaster stops on purpose, viewers stop seeing the
+stream at once, with no frozen frame left up, and get it back by themselves
+if the broadcaster starts again on the same code.
+
+**Why**: owner report 2026-10-24. Every stop closed the publish session
+plainly, so the relay held the broadcast through its 5-minute grace and
+viewers stared at the last frame until the GC.
+
+**Design**: [docs/79](docs/79-stop-ends-the-broadcast.md) — close code 4014
+in both directions, `Publisher.Stop` through the shared removal body, edge
+pass-through, the viewer's waiting redial, the bus reason `stopped`.
+
+**Acceptance**: docs/79 §1 and §6.
+
+**Status**: 🔧 implemented 2026-10-24; the owner's pass on the reference
+deployment open.
 
 ---
 

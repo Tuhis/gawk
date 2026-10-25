@@ -500,6 +500,12 @@ impl PublishDialer for WtPublishDialer {
     }
 }
 
+/// How long a coded session close ([`RelaySession::close_with_code`]) waits
+/// for the relay to have the capsule before closing the connection anyway
+/// (R78, docs/79 D9): a few round trips on any path a broadcast survives,
+/// and short enough that an End never feels stuck.
+pub const SESSION_CLOSE_WAIT: Duration = Duration::from_secs(1);
+
 async fn close_cause(conn: &wtransport::Connection) -> SessionClose {
     match conn.closed().await {
         ConnectionError::ApplicationClosed(close) => {
@@ -563,6 +569,22 @@ impl RelaySession for WtSession {
 
     fn close(&self) {
         self.conn.close(VarInt::from_u32(0), b"");
+    }
+
+    fn close_with_code(&self, code: u32) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            // The vendored close_session (GAWK-PATCH.md item 4) writes the
+            // capsule, waits for its acknowledgement and the relay's reset of
+            // the CONNECT stream, then closes the connection. A relay that
+            // never answers still sees the connection go, just without the
+            // code: the grace then holds the broadcast, as before R78.
+            let _ = tokio::time::timeout(
+                SESSION_CLOSE_WAIT,
+                self.conn.close_session(VarInt::from_u32(code), b""),
+            )
+            .await;
+            self.conn.close(VarInt::from_u32(0), b"");
+        })
     }
 
     fn path_counters(&self) -> Option<PathCounters> {

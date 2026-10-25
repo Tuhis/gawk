@@ -13,6 +13,27 @@ pub const ABRUPT_DROP_RETRY_DELAY_MS: u64 = 250;
 /// up on it (each refused session connected, so the ladder restarts).
 pub const POP_UPLINK_FULL_RETRY_MS: u64 = 20_000;
 
+/// R78 (docs/79 D7): the broadcaster stopped (4014). Not terminal: the
+/// viewer waits, dialling the same code every 5 s plus up to 1 s of jitter,
+/// forever and outside the reconnect budget, so a restart on the same code
+/// resumes by itself. A fixed cadence, not a ladder: the restart is a human
+/// action seconds to minutes away, and the jitter spreads a crowd's dials.
+pub const BROADCASTER_STOPPED_RETRY_MS: u64 = 5_000;
+pub const BROADCASTER_STOPPED_JITTER_MS: u64 = 1_000;
+
+/// The wait before the next dial of a stopped broadcast: 5 s plus a fresh
+/// 0–1 s of jitter.
+pub fn broadcaster_stopped_delay_ms() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u128(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos()),
+    );
+    BROADCASTER_STOPPED_RETRY_MS + h.finish() % (BROADCASTER_STOPPED_JITTER_MS + 1)
+}
+
 /// The delay before reconnect attempt `attempt` (1-based) after a session
 /// ended with `close_code` (`None`: an abrupt drop). 1, 2, 4, 8 s, then
 /// 15 s; the first attempt after a drain (4002) is immediate and after an
@@ -53,6 +74,18 @@ mod tests {
         ));
         assert_eq!(reconnect_delay_ms(1, full), 20_000);
         assert_eq!(reconnect_delay_ms(3, full), 20_000);
+    }
+
+    // R78 (docs/79 D7): 4014 waits 5 s plus up to 1 s, and is not terminal.
+    #[test]
+    fn a_stopped_broadcast_waits_5s_plus_jitter() {
+        assert!(!gawk_wire::terminal_for_viewer(
+            gawk_wire::CLOSE_CODE_BROADCASTER_STOPPED
+        ));
+        for _ in 0..50 {
+            let d = broadcaster_stopped_delay_ms();
+            assert!((5_000..=6_000).contains(&d), "{d}");
+        }
     }
 
     #[test]

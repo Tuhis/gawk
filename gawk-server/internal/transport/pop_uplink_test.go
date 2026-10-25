@@ -843,3 +843,85 @@ func (b *udpBlackhole) back(peer *net.UDPConn, to *net.UDPAddr) {
 		}
 	}
 }
+
+// R78 (docs/79): a party broadcaster's Stop ends the broadcast for everyone,
+// not only on the LAN. The party relay ends its hub with 4014, its uplink
+// leg carries that code home, and home ends the broadcast with it, so an
+// outside viewer (on a pod other than the leg's) is told 4014 too, well
+// inside the grace.
+func TestOutsideViewerIsToldThePartyBroadcasterStopped(t *testing.T) {
+	u := startUplinkFleet(t, 3, fleetOpts{})
+	u.f.Route(0)
+	u.pair(t)
+	u.f.Route(2)
+
+	pub, id := dialStoppableOn(t, u.f.ClientTLS, u.pop.Addr())
+	u.reserved(t, id)
+	st, err := pub.OpenUniStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = st.Write(keyframeMsg(t, 1))
+	_ = st.Close()
+
+	outside, err := subscribe(t, u.f.ClientTLS, u.f.Pods[1].Addr(), id)
+	if err != nil {
+		t.Fatalf("outside viewer refused: %v", err)
+	}
+	outside.nextKeyframe(t, 15*time.Second)
+	party, err := subscribe(t, u.f.ClientTLS, u.pop.Addr(), id)
+	if err != nil {
+		t.Fatalf("party viewer: %v", err)
+	}
+	party.nextKeyframe(t, 5*time.Second)
+
+	pub.CloseWithError(webtransport.SessionErrorCode(wire.CloseCodeBroadcasterStopped), "broadcaster stopped")
+	for _, v := range []struct {
+		who string
+		v   *viewer
+	}{{"party viewer", party}, {"outside viewer", outside}} {
+		if code := v.v.closeCode(t, 10*time.Second); code != wire.CloseCodeBroadcasterStopped {
+			t.Errorf("%s closed with %d, want 4014", v.who, code)
+		}
+		if got := v.v.closing.Load(); got != wire.CloseCodeBroadcasterStopped {
+			t.Errorf("%s: in-band SessionClosing = %d, want 4014", v.who, got)
+		}
+	}
+}
+
+// dialStoppableOn publishes on addr over a QUIC connection the test owns,
+// so a session close reaches the relay with its code, as Chrome's does
+// (Transport.Dial closes the connection with the session, docs/79 §1).
+func dialStoppableOn(t *testing.T, tlsCfg *tls.Config, addr string) (*webtransport.Session, string) {
+	t.Helper()
+	conf := tlsCfg.Clone()
+	conf.NextProtos = []string{"h3"}
+	qconn, err := quic.DialAddrEarly(testCtx(t), addr, conf,
+		&quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true})
+	if err != nil {
+		t.Fatalf("quic dial: %v", err)
+	}
+	t.Cleanup(func() { _ = qconn.CloseWithError(0, "") })
+	var d webtransport.Transport
+	cc, err := d.NewClientConn(qconn)
+	if err != nil {
+		t.Fatalf("NewClientConn: %v", err)
+	}
+	_, sess, err := cc.Dial(testCtx(t), "https://"+addr+"/publish", nil)
+	if err != nil {
+		t.Fatalf("publish dial: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(testCtx(t), 10*time.Second)
+	defer cancel()
+	for {
+		st, err := sess.AcceptUniStream(ctx)
+		if err != nil {
+			t.Fatalf("no announce: %v", err)
+		}
+		data, _ := io.ReadAll(st)
+		if _, typ, err := wire.PeekType(data); err == nil && typ == wire.TypeBroadcastAnnounce {
+			id, _ := wire.ParseBroadcastAnnounce(data)
+			return sess, id
+		}
+	}
+}

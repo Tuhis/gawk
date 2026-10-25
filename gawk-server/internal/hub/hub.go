@@ -1277,7 +1277,7 @@ func (r *Registry) claimPublisherLocked(b *broadcastHub) (*Publisher, error) {
 	// cumulative counters live on the hub and survive).
 	b.ingress.reset()
 
-	p := &Publisher{hub: b}
+	p := &Publisher{hub: b, generation: b.generation}
 	p.lastSeen.Store(time.Now().UnixNano())
 	b.publisher = p
 	return p, nil
@@ -2072,6 +2072,23 @@ func (r *Registry) EndBroadcast(id string) {
 	r.expireBroadcast(normID, func(*broadcastHub) bool { return true })
 }
 
+// EndBroadcastWithCode is EndBroadcast closing subscribers with code
+// instead of 4000: an edge passing on its origin's 4014 (docs/79 D6), so its
+// viewers wait for the code to come back rather than give up. 4006 has
+// TerminateBroadcast, which also deposes a live publisher; this keeps
+// EndBroadcast's guard.
+func (r *Registry) EndBroadcastWithCode(id string, code uint32) {
+	normID, err := broadcastid.Normalize(id)
+	if err != nil {
+		return
+	}
+	reason := "broadcast ended"
+	if code == uint32(wire.CloseCodeBroadcasterStopped) {
+		reason = "broadcaster stopped"
+	}
+	r.removeBroadcast(normID, func(*broadcastHub) bool { return true }, false, code, reason)
+}
+
 // ExpireEdgeIfViewerless deletes an EDGE hub that has no local viewers — the
 // linger-out path. An R74 PoP downlink leg (an internal subscriber, the only
 // kind an edge hub ever has) counts as a viewer here: it is demand. Left in grace, the hub would keep satisfying
@@ -2230,8 +2247,11 @@ func (r *Registry) removeBroadcast(id string, ok func(*broadcastHub) bool, force
 	r.mu.Unlock()
 
 	msg := "broadcast expired and garbage collected"
-	if force {
+	switch {
+	case force:
 		msg = "broadcast terminated"
+	case code == uint32(wire.CloseCodeBroadcasterStopped):
+		msg = "broadcast stopped by its publisher"
 	}
 	r.log.Info(msg, "broadcast_id", id,
 		"subscribers", len(subs), "publisher_closed", deposed != nil, "close_code", code)
@@ -2265,8 +2285,11 @@ func (r *Registry) removeBroadcast(id string, ok func(*broadcastHub) bool, force
 	// is the operator's, and only the operator's.
 	if !edge {
 		busReason := events.BroadcastEndedGC
-		if code == uint32(wire.CloseCodeTerminatedByOperator) {
+		switch code {
+		case uint32(wire.CloseCodeTerminatedByOperator):
 			busReason = events.BroadcastEndedKilled
+		case uint32(wire.CloseCodeBroadcasterStopped):
+			busReason = events.BroadcastEndedStopped
 		}
 		r.busEnded(id, busReason)
 	}
@@ -2277,6 +2300,10 @@ func (r *Registry) removeBroadcast(id string, ok func(*broadcastHub) bool, force
 type Publisher struct {
 	hub    *broadcastHub
 	closed bool
+	// generation is the hub generation this session claimed. A Stop ends the
+	// broadcast only while the hub is still on it, so a deposed or late
+	// session never ends its successor (docs/79 D3). Immutable.
+	generation uint64
 	// conn is the session close handle bound after the upgrade (BindConn);
 	// nil until then. Guarded by the registry lock, like closed.
 	conn SessionCloser
@@ -2706,6 +2733,21 @@ func (p *Publisher) Close() {
 	if !edge && r.opts.OnPublisherClosed != nil {
 		r.opts.OnPublisherClosed(id)
 	}
+}
+
+// Stop is Close for a publisher that stopped on purpose (R78, docs/79 D2):
+// it releases the slot and then ends the broadcast now, closing every
+// subscriber with 4014, instead of holding it through the grace. It reports
+// whether it removed the hub. Only while the hub is still this session's —
+// the same hub object at the same generation, with nobody publishing — so a
+// session deposed by a reclaim, or one whose stop is read after the code was
+// claimed again, ends nothing (D3).
+func (p *Publisher) Stop() bool {
+	p.Close()
+	b, gen := p.hub, p.generation
+	return b.registry.removeBroadcast(b.id, func(cur *broadcastHub) bool {
+		return cur == b && cur.generation == gen
+	}, false, uint32(wire.CloseCodeBroadcasterStopped), "broadcaster stopped")
 }
 
 // cachedAudioConfigSnapshot returns the latest AudioConfig datagram for the

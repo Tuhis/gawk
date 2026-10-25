@@ -306,6 +306,19 @@ impl Connection {
         self.quic_connection.close(varint_w2q(error_code), reason);
     }
 
+    /// GAWK PATCH (see GAWK-PATCH.md): ends the WebTransport SESSION with an
+    /// application close code the peer reads as the session's close error —
+    /// a CLOSE_WEBTRANSPORT_SESSION capsule on the CONNECT stream, as a
+    /// browser's `close({closeCode})` sends — then closes the connection.
+    /// [`Connection::close`] cannot carry such a code: its QUIC-level code
+    /// is not the session's. Resolves once the peer acknowledged the
+    /// capsule and the connection is closed; it waits for the peer, so
+    /// bound it, and follow a timeout with [`Connection::close`].
+    pub async fn close_session(&self, error_code: VarInt, reason: &[u8]) {
+        let code = u32::try_from(error_code.into_inner()).unwrap_or(u32::MAX);
+        self.driver.close_session(code, reason).await;
+    }
+
     /// Waits for the connection to be closed for any reason.
     pub async fn closed(&self) -> ConnectionError {
         let quic_error: ConnectionError = self.quic_connection.closed().await.into();

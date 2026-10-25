@@ -14,9 +14,16 @@ import {
   type ViewerEndReason,
   type ViewerSessionCallbacks,
 } from './viewer-session';
-import { POP_UPLINK_FULL_RETRY_MS, isTerminalPublisherClose, isTerminalViewerClose } from './reconnect';
+import {
+  BROADCASTER_STOPPED_RETRY_MS,
+  POP_UPLINK_FULL_RETRY_MS,
+  isBroadcasterStopped,
+  isTerminalPublisherClose,
+  isTerminalViewerClose,
+} from './reconnect';
 import {
   CLOSE_CODE_BROADCAST_ENDED,
+  CLOSE_CODE_BROADCASTER_STOPPED,
   CLOSE_CODE_POP_UPLINK_FULL,
   CLOSE_CODE_PUBLISHER_SUPERSEDED,
   CLOSE_CODE_SERVER_DRAINING,
@@ -96,8 +103,9 @@ interface Harness {
 }
 
 // startResults[i] applies to the i-th created pipeline; past the end of the
-// array, pipelines start successfully.
-function makeHarness(startResults: StartResult[] = []): Harness {
+// array, pipelines start successfully. `random` is the session's jitter
+// source (docs/79 D7), fixed here so the waits are exact.
+function makeHarness(startResults: StartResult[] = [], random: () => number = () => 0): Harness {
   const pipelines: FakePipeline[] = [];
   const events: string[] = [];
   const endReasons: ViewerEndReason[] = [];
@@ -112,12 +120,20 @@ function makeHarness(startResults: StartResult[] = []): Harness {
       events.push('ended');
       endReasons.push(reason);
     },
+    onStopped: () => events.push('stopped'),
   };
-  const session = new ViewerSession('https://relay.test:4433', 'ABC123', {}, cb, (_url, _id, _opts, cbs) => {
-    const p = new FakePipeline(cbs, startResults[pipelines.length] ?? 'ok');
-    pipelines.push(p);
-    return p;
-  });
+  const session = new ViewerSession(
+    'https://relay.test:4433',
+    'ABC123',
+    {},
+    cb,
+    (_url, _id, _opts, cbs) => {
+      const p = new FakePipeline(cbs, startResults[pipelines.length] ?? 'ok');
+      pipelines.push(p);
+      return p;
+    },
+    random,
+  );
   return { session, pipelines, events, endReasons, cb };
 }
 
@@ -127,6 +143,15 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe('isBroadcasterStopped', () => {
+  it('is 4014 and nothing else', () => {
+    expect(isBroadcasterStopped(CLOSE_CODE_BROADCASTER_STOPPED)).toBe(true);
+    for (const code of [4000, 4002, 4006, 4012, 0]) expect(isBroadcasterStopped(code)).toBe(false);
+    expect(isBroadcasterStopped(null)).toBe(false);
+    expect(isBroadcasterStopped(undefined)).toBe(false);
+  });
 });
 
 describe('reconnectDelayMs', () => {
@@ -408,6 +433,128 @@ describe('ViewerSession', () => {
   });
 });
 
+// docs/79 D7: a 4014 (the broadcaster pressed Stop) is "ended, waiting". The
+// session reports the end once, then redials the same code every 5 s plus up
+// to 1 s of jitter, forever and off the reconnect budget, until a broadcast
+// is back, a terminal code ends it or the user stops.
+describe('ViewerSession broadcaster stopped (R78)', () => {
+  const JITTER = 300; // random() = 0.3 → 300 ms of the 1000 ms jitter
+  const WAIT = BROADCASTER_STOPPED_RETRY_MS + JITTER;
+  const random = () => JITTER / 1000;
+
+  it('fires onStopped, then redials on the fixed cadence and resumes with onConnected', async () => {
+    const { session, pipelines, events } = makeHarness([], random);
+    await session.start();
+    pipelines[0].crash('broadcaster stopped', CLOSE_CODE_BROADCASTER_STOPPED);
+    expect(events).toEqual(['connected', 'stopped']);
+
+    await vi.advanceTimersByTimeAsync(WAIT - 1);
+    expect(pipelines).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(pipelines).toHaveLength(2);
+    // No reconnecting pill, no error: the UI shows the ended card throughout.
+    expect(events).toEqual(['connected', 'stopped', 'connected']);
+    await session.stop();
+  });
+
+  it('applies up to 1 s of jitter from the injected source', async () => {
+    const { session, pipelines } = makeHarness([], () => 0.999);
+    await session.start();
+    pipelines[0].crash('broadcaster stopped', CLOSE_CODE_BROADCASTER_STOPPED);
+    await vi.advanceTimersByTimeAsync(BROADCASTER_STOPPED_RETRY_MS + 998);
+    expect(pipelines).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(pipelines).toHaveLength(2);
+    await session.stop();
+  });
+
+  it('keeps waiting through dial failures without spending the reconnect budget', async () => {
+    const failures = Array.from({ length: RECONNECT_MAX_ATTEMPTS + 3 }, () => 'fail' as const);
+    const { session, pipelines, events } = makeHarness(['ok', ...failures], random);
+    await session.start();
+    pipelines[0].crash('broadcaster stopped', CLOSE_CODE_BROADCASTER_STOPPED);
+    for (let i = 0; i < failures.length; i++) {
+      await vi.advanceTimersByTimeAsync(WAIT - 1);
+      expect(pipelines).toHaveLength(i + 1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(pipelines).toHaveLength(i + 2);
+    }
+    // The next dial finds the restarted broadcast.
+    await vi.advanceTimersByTimeAsync(WAIT);
+    expect(pipelines).toHaveLength(failures.length + 2);
+    expect(events).toEqual(['connected', 'stopped', 'connected']);
+    await session.stop();
+  });
+
+  it('a drop after resuming is an ordinary drop again', async () => {
+    const { session, pipelines, events } = makeHarness([], random);
+    await session.start();
+    pipelines[0].crash('broadcaster stopped', CLOSE_CODE_BROADCASTER_STOPPED);
+    await vi.advanceTimersByTimeAsync(WAIT);
+    pipelines[1].crash('drop');
+    expect(events.at(-1)).toBe(`reconnecting:1:${ABRUPT_DROP_RETRY_DELAY_MS}`);
+    await session.stop();
+  });
+
+  it('a second stop after resuming reports onStopped again', async () => {
+    const { session, pipelines, events } = makeHarness([], random);
+    await session.start();
+    pipelines[0].crash('broadcaster stopped', CLOSE_CODE_BROADCASTER_STOPPED);
+    await vi.advanceTimersByTimeAsync(WAIT);
+    pipelines[1].crash('broadcaster stopped', CLOSE_CODE_BROADCASTER_STOPPED);
+    expect(events).toEqual(['connected', 'stopped', 'connected', 'stopped']);
+    await session.stop();
+  });
+
+  it('ends for good on 4000 during the wait', async () => {
+    const { session, pipelines, events, endReasons } = makeHarness(['ok', 'fail', 'fail-4000'], random);
+    await session.start();
+    pipelines[0].crash('broadcaster stopped', CLOSE_CODE_BROADCASTER_STOPPED);
+    await vi.advanceTimersByTimeAsync(WAIT * 2);
+    expect(events).toEqual(['connected', 'stopped', 'ended']);
+    expect(endReasons).toEqual(['normal']);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(pipelines).toHaveLength(3);
+    await session.stop();
+    expect(endReasons).toHaveLength(1);
+  });
+
+  it('ends as moderated on 4006 during the wait', async () => {
+    const { session, pipelines, endReasons } = makeHarness(['ok', 'fail-4006'], random);
+    await session.start();
+    pipelines[0].crash('broadcaster stopped', CLOSE_CODE_BROADCASTER_STOPPED);
+    await vi.advanceTimersByTimeAsync(WAIT);
+    expect(endReasons).toEqual(['moderated']);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(pipelines).toHaveLength(2);
+  });
+
+  it('a user stop during the wait cancels it and ends once', async () => {
+    const { session, pipelines, events, endReasons } = makeHarness([], random);
+    await session.start();
+    pipelines[0].crash('broadcaster stopped', CLOSE_CODE_BROADCASTER_STOPPED);
+    await session.stop();
+    expect(events).toEqual(['connected', 'stopped', 'ended']);
+    expect(endReasons).toEqual(['normal']);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(pipelines).toHaveLength(1);
+  });
+
+  it('a user stop during an in-flight wait dial ends once', async () => {
+    const { session, pipelines, endReasons } = makeHarness(['ok', 'hold'], random);
+    await session.start();
+    pipelines[0].crash('broadcaster stopped', CLOSE_CODE_BROADCASTER_STOPPED);
+    await vi.advanceTimersByTimeAsync(WAIT);
+    expect(pipelines).toHaveLength(2);
+    const stopped = session.stop();
+    pipelines[1].settleStart(new Error('no such broadcast'));
+    await stopped;
+    expect(endReasons).toEqual(['normal']);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(pipelines).toHaveLength(2);
+  });
+});
+
 // One named set per role, so the two viewer call sites and the browser
 // broadcaster cannot drift apart.
 describe('terminal close-code sets', () => {
@@ -417,7 +564,8 @@ describe('terminal close-code sets', () => {
     // 4001 eviction, 4002 drain, 4003 origin-moved, 4005 leg-orphaned are all
     // explicitly retryable; an abrupt drop (no code) is the reconnect case.
     // 4012 PopUplinkFull is temporary by design (docs/76 item 28).
-    for (const code of [4001, 4002, 4003, 4004, 4005, 4012, 429, 0]) {
+    // 4014 BroadcasterStopped waits for a restart (docs/79 D7).
+    for (const code of [4001, 4002, 4003, 4004, 4005, 4012, 4014, 429, 0]) {
       expect(isTerminalViewerClose(code)).toBe(false);
     }
     expect(isTerminalViewerClose(null)).toBe(false);
@@ -428,7 +576,7 @@ describe('terminal close-code sets', () => {
     expect(isTerminalPublisherClose(CLOSE_CODE_BROADCAST_ENDED)).toBe(true);
     expect(isTerminalPublisherClose(CLOSE_CODE_PUBLISHER_SUPERSEDED)).toBe(true);
     expect(isTerminalPublisherClose(CLOSE_CODE_TERMINATED_BY_OPERATOR)).toBe(true);
-    for (const code of [4001, 4002, 4003, 4005, 0]) {
+    for (const code of [4001, 4002, 4003, 4005, 4014, 0]) {
       expect(isTerminalPublisherClose(code)).toBe(false);
     }
     expect(isTerminalPublisherClose(null)).toBe(false);

@@ -202,6 +202,14 @@ func (s *Server) handlePopPublish(w http.ResponseWriter, r *http.Request) {
 	for {
 		dgram, err := sess.ReceiveDatagram(r.Context())
 		if err != nil {
+			// The party's broadcaster pressed Stop: the PoP's hub closed
+			// the leg with 4014, and home ends the broadcast with it too,
+			// for the outside viewers (docs/79 D2, D11).
+			if publisherStopped(sess) {
+				log.Info("pop uplink leg ended", "reason", "broadcaster stopped",
+					"broadcast_ended", pub.Stop())
+				return
+			}
 			if claim.handedBack.Load() {
 				log.Info("pop uplink leg closed: no demand")
 			} else {

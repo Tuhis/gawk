@@ -124,7 +124,15 @@ async fn dropping_the_session_ends_the_run_loop_instead_of_spinning() {
 #[derive(Default)]
 struct Leg {
     closed: AtomicBool,
+    /// Every close's application code, in order: 0 for a plain close.
+    close_codes: Mutex<Vec<u32>>,
     datagrams: Mutex<Vec<Vec<u8>>>,
+}
+
+impl Leg {
+    fn codes(&self) -> Vec<u32> {
+        self.close_codes.lock().unwrap().clone()
+    }
 }
 
 impl RelaySession for Leg {
@@ -146,6 +154,12 @@ impl RelaySession for Leg {
     }
     fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
+        self.close_codes.lock().unwrap().push(0);
+    }
+    fn close_with_code(&self, code: u32) -> BoxFuture<'_, ()> {
+        self.closed.store(true, Ordering::SeqCst);
+        self.close_codes.lock().unwrap().push(code);
+        Box::pin(async {})
     }
 }
 
@@ -312,6 +326,86 @@ async fn stopping_while_paused_ends_cleanly_and_dials_nothing() {
     session.stop().await;
     expect(&mut rx, EngineEvent::Ended { error: None }).await;
     assert!(reclaims.urls.lock().unwrap().is_empty());
+}
+
+// --- R78 (docs/79 D1, D9): End says the broadcaster stopped -----------------
+
+const STOPPED: u32 = gawk_wire::CLOSE_CODE_BROADCASTER_STOPPED;
+
+// End closes the publish leg with 4014, so the relay ends the broadcast now
+// instead of holding it through the grace; nothing else is sent after it.
+#[tokio::test(start_paused = true)]
+async fn end_closes_the_publish_leg_with_4014() {
+    let (session, mut rx, first, reclaims) = publishing(vec![]);
+    session.end().await;
+    expect(&mut rx, EngineEvent::Ended { error: None }).await;
+    assert_eq!(first.codes(), [STOPPED]);
+    assert!(reclaims.urls.lock().unwrap().is_empty());
+}
+
+// Stop (quit, a failure) and Pause keep the grace: every close is plain.
+#[tokio::test(start_paused = true)]
+async fn stop_and_pause_close_the_leg_plainly() {
+    let (session, mut rx, first, _reclaims) = publishing(vec![]);
+    session.stop().await;
+    expect(&mut rx, EngineEvent::Ended { error: None }).await;
+    assert!(!first.codes().is_empty());
+    assert!(first.codes().iter().all(|&c| c == 0), "{:?}", first.codes());
+
+    let (session, mut rx, first, _reclaims) = publishing(vec![]);
+    session.pause();
+    expect(&mut rx, EngineEvent::Paused).await;
+    assert_eq!(first.codes(), [0], "a pause keeps the grace");
+    session.stop().await;
+    assert!(first.codes().iter().all(|&c| c == 0), "{:?}", first.codes());
+}
+
+// A restart on the same code closes the old leg plainly, and End then closes
+// the leg it is on with 4014.
+#[tokio::test(start_paused = true)]
+async fn end_after_a_restart_closes_the_current_leg_with_4014() {
+    let second = Arc::new(Leg::default());
+    let (session, mut rx, first, _reclaims) = publishing(vec![second.clone()]);
+    session.republish();
+    expect(&mut rx, EngineEvent::Resumed).await;
+    assert_eq!(first.codes(), [0], "a restart keeps the broadcast");
+    session.end().await;
+    assert_eq!(second.codes(), [STOPPED]);
+    assert_eq!(first.codes(), [0]);
+}
+
+// End from Paused: the pause closed the leg plainly, so End reclaims the code
+// once and closes that leg with 4014 — the stop still reaches the relay.
+#[tokio::test(start_paused = true)]
+async fn end_while_paused_reclaims_once_to_close_with_4014() {
+    let goodbye = Arc::new(Leg::default());
+    let (session, mut rx, first, reclaims) = publishing(vec![goodbye.clone()]);
+    session.pause();
+    expect(&mut rx, EngineEvent::Paused).await;
+    session.end().await;
+    expect(&mut rx, EngineEvent::Ended { error: None }).await;
+    assert_eq!(first.codes(), [0]);
+    assert_eq!(goodbye.codes(), [STOPPED]);
+    let urls = reclaims.urls.lock().unwrap().clone();
+    assert_eq!(urls.len(), 1);
+    assert!(
+        urls[0].contains("/publish/ABC234?") && urls[0].contains(&format!("resume={TOKEN}")),
+        "the same code, with its token: {}",
+        urls[0]
+    );
+}
+
+// End from Paused against a relay that can't be reached ends all the same:
+// the grace then lets the broadcast go, as before R78.
+#[tokio::test(start_paused = true)]
+async fn end_while_paused_with_no_relay_still_ends() {
+    let (session, mut rx, first, reclaims) = publishing(vec![]);
+    session.pause();
+    expect(&mut rx, EngineEvent::Paused).await;
+    session.end().await;
+    expect(&mut rx, EngineEvent::Ended { error: None }).await;
+    assert_eq!(first.codes(), [0]);
+    assert_eq!(reclaims.urls.lock().unwrap().len(), 1);
 }
 
 /// A dialer whose every reclaim is refused with `status`.
