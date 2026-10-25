@@ -4,9 +4,9 @@
 > upstream `github.com/quic-go/quic-go` v0.62.0 (MIT, © the quic-go
 > authors & Google, Inc — `LICENSE` alongside this file) **modified by the
 > gawk authors**. The changed files are `http3/state_tracking_stream.go`,
-> `http3/conn.go`, `datagram_queue.go`, `connection.go`, `packet_packer.go`
-> and `internal/wire/datagram_frame.go`; each changed site carries a
-> `GAWK PATCH` marker.
+> `http3/conn.go`, `datagram_queue.go`, `connection.go`, `packet_packer.go`,
+> `internal/wire/datagram_frame.go` and `internal/wire/log.go`; each changed
+> site carries a `GAWK PATCH` marker.
 
 `gawk-server/go.mod` points at this directory with
 `replace github.com/quic-go/quic-go => ./third_party/quic-go`. The
@@ -118,7 +118,11 @@ buffer (`DatagramFrame.Buf`, `internal/wire/datagram_frame.go`), and the
 packer returns it to the pool as soon as the frame is written into a packet
 (`packet_packer.go`). Nothing reads a DATAGRAM frame's bytes after that:
 datagrams are never retransmitted, and the logging that sees the frame
-later reads only its length, which the frame keeps. A datagram the queue
+later reads only its length, which the frame keeps. That includes
+`wire.LogFrame` (`internal/wire/log.go`). Upstream printed a DATAGRAM
+frame there with `%#v`, bytes and all, so with `QUIC_GO_LOG_LEVEL=DEBUG`
+it read a buffer another connection could already be refilling. It now
+logs the length, as it does for STREAM and CRYPTO frames. A datagram the queue
 refuses (a closed connection) goes back at once. One that is dropped
 without being sent (too large for the packet) is left to the GC.
 `SendDatagram` itself still copies, because its caller keeps the slice.
@@ -145,7 +149,10 @@ that allocates 2592 bytes per chunk, two 1280-byte buffers and the frame;
 with the patch, 69–80. The viewer checks every chunk's bytes, so a buffer
 reused before its datagram left shows up as corruption. Under `-race`,
 `sync.Pool` drops a quarter of what is put back, so the bound is looser
-there.
+there. Its `TestDebugLogReadsNoPooledDatagram` runs the same fan-out in a
+child test binary with `QUIC_GO_LOG_LEVEL=DEBUG` (quic-go reads the level
+once, at start). In a `-race` build it fails on a race report if anything
+in the debug log reads a returned buffer, as `LogFrame` did.
 
 ## What is in the copy
 

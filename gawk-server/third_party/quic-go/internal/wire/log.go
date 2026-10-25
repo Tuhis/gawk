@@ -68,6 +68,12 @@ func LogFrame(logger utils.Logger, frame Frame, sent bool) {
 		logger.Debugf("\t%s &wire.RetireConnectionIDFrame{SequenceNumber: %d}", dir, f.SequenceNumber)
 	case *NewTokenFrame:
 		logger.Debugf("\t%s &wire.NewTokenFrame{Token: %#x}", dir, f.Token)
+	case *DatagramFrame:
+		// GAWK PATCH (datagram copy): upstream printed the frame with %#v,
+		// bytes and all. A sent frame's pooled buffer is back in the pool by
+		// the time it is logged, so only its length may be read. See
+		// third_party/quic-go/GAWK-PATCH.md.
+		logger.Debugf("\t%s &wire.DatagramFrame{DataLenPresent: %t, Data length: %d}", dir, f.DataLenPresent, len(f.Data))
 	default:
 		logger.Debugf("\t%s %#v", dir, frame)
 	}

@@ -11,8 +11,11 @@ package transport
 import (
 	"bytes"
 	"context"
+	"os"
+	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -78,7 +81,11 @@ func maxSendAllocPerChunk() int64 {
 	return wire.MaxDatagramSize / 4
 }
 
-func TestViewerDatagramSendAllocatesNoChunkCopy(t *testing.T) {
+// fanOutChunks publishes n full chunks to a relay with one datagram viewer
+// and returns how many reached it, failing on any that arrived corrupt.
+// beforeSend runs once the viewer is subscribed.
+func fanOutChunks(t *testing.T, n int, beforeSend func()) int64 {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	port, clientTLS, r, _, _ := startTestServerCfgLogSrv(t, ctx, config.Config{
@@ -112,13 +119,8 @@ func TestViewerDatagramSendAllocatesNoChunkCopy(t *testing.T) {
 		}
 	}()
 
-	// Sample every allocation from here on.
-	prevRate := runtime.MemProfileRate
-	runtime.MemProfileRate = 1
-	defer func() { runtime.MemProfileRate = prevRate }()
-	before := sendAllocBytes()
-
-	for i := range allocTestChunks {
+	beforeSend()
+	for i := range n {
 		d, err := wire.AppendVideoChunk(nil, wire.VideoChunkHeader{
 			FrameID:     uint32(i + 1),
 			ChunkCount:  1,
@@ -135,20 +137,91 @@ func TestViewerDatagramSendAllocatesNoChunkCopy(t *testing.T) {
 			time.Sleep(2 * time.Millisecond)
 		}
 	}
-	// The viewer's count is a lower bound on the relay's sends, so the
-	// average below can only come out high.
-	waitFor(t, 5*time.Second, func() bool { return chunks.Load() >= allocTestChunks*9/10 },
+	waitFor(t, 10*time.Second, func() bool { return chunks.Load() >= int64(n)*9/10 },
 		"the viewer to receive the chunks")
 	time.Sleep(100 * time.Millisecond)
 	got := chunks.Load()
 	if c := corrupt.Load(); c > 0 {
 		t.Fatalf("%d of %d chunks reached the viewer corrupt", c, got)
 	}
+	return got
+}
 
+func TestViewerDatagramSendAllocatesNoChunkCopy(t *testing.T) {
+	var before int64
+	prevRate := runtime.MemProfileRate
+	defer func() { runtime.MemProfileRate = prevRate }()
+	got := fanOutChunks(t, allocTestChunks, func() {
+		// Sample every allocation from here on.
+		runtime.MemProfileRate = 1
+		before = sendAllocBytes()
+	})
+
+	// The viewer's count is a lower bound on the relay's sends, so the
+	// average below can only come out high.
 	perChunk := (sendAllocBytes() - before) / got
 	t.Logf("%d chunks reached the viewer; sending allocated %d bytes per chunk", got, perChunk)
 	if perChunk > maxSendAllocPerChunk() {
 		t.Fatalf("sending a %d-byte chunk to a viewer allocated %d bytes, want at most %d",
 			wire.MaxDatagramSize, perChunk, maxSendAllocPerChunk())
 	}
+}
+
+// debugLogChildEnv marks the child process TestDebugLogReadsNoPooledDatagram
+// starts.
+const debugLogChildEnv = "GAWK_TEST_QUIC_DEBUG_LOG_CHILD"
+
+// quic-go's debug log prints every frame it sends, after the packer has
+// returned a datagram's pooled buffer; it must not read the bytes, which
+// another connection may already be writing. quic-go reads its log level
+// once, at start, so this runs the fan-out in a child test binary with
+// QUIC_GO_LOG_LEVEL=DEBUG, where -race reports any such read.
+func TestDebugLogReadsNoPooledDatagram(t *testing.T) {
+	if os.Getenv(debugLogChildEnv) != "" {
+		fanOutChunks(t, 200, func() {})
+		return
+	}
+	if !raceEnabled {
+		t.Skip("only a -race build can see the read")
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestDebugLogReadsNoPooledDatagram$", "-test.count=1")
+	cmd.Env = append(os.Environ(), debugLogChildEnv+"=1", "QUIC_GO_LOG_LEVEL=DEBUG")
+	var out lastLines
+	cmd.Stdout, cmd.Stderr = &out, &out
+	err := cmd.Run()
+	if bytes.Contains(out.race, []byte("WARNING: DATA RACE")) {
+		t.Fatalf("quic-go's debug log races with the datagram buffer pool:\n%s", out.race)
+	}
+	if err != nil {
+		t.Fatalf("child: %v\n%s", err, out.tail())
+	}
+}
+
+// lastLines keeps a child's first data race report and its last output,
+// not the megabytes of debug log in between.
+type lastLines struct {
+	mu   sync.Mutex
+	race []byte
+	buf  []byte
+}
+
+func (l *lastLines) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.race == nil {
+		if i := bytes.Index(p, []byte("WARNING: DATA RACE")); i >= 0 {
+			l.race = append([]byte(nil), p[i:min(len(p), i+16384)]...)
+		}
+	}
+	l.buf = append(l.buf, p...)
+	if len(l.buf) > 64<<10 {
+		l.buf = append(l.buf[:0], l.buf[len(l.buf)-32<<10:]...)
+	}
+	return len(p), nil
+}
+
+func (l *lastLines) tail() []byte {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf
 }
