@@ -3087,8 +3087,42 @@ func (c *Conn) recordStreamPriorityUpdated(id protocol.StreamID, urgency int8, i
 // In addition, a datagram may be dropped before being sent out if the available packet size suddenly decreases.
 // If the payload is too large to be sent at the current time, a [DatagramTooLargeError] is returned.
 func (c *Conn) SendDatagram(p []byte) error {
+	f, err := c.newDatagramFrame(len(p))
+	if err != nil {
+		return err
+	}
+	f.Data = make([]byte, len(p))
+	copy(f.Data, p)
+	return c.datagramQueue.Add(f)
+}
+
+// GAWK PATCH (datagram copy): SendDatagramPrefixed sends prefix followed by
+// p as one datagram, as SendDatagram(append(prefix, p...)) would, but builds
+// it once in a pooled buffer that goes back to the pool when the datagram
+// is in a packet. http3 sends every WebTransport datagram through it: the
+// prefix is the session's quarter stream ID. Upstream allocated and copied
+// each one twice. See third_party/quic-go/GAWK-PATCH.md.
+func (c *Conn) SendDatagramPrefixed(prefix, p []byte) error {
+	f, err := c.newDatagramFrame(len(prefix) + len(p))
+	if err != nil {
+		return err
+	}
+	bp := datagramBufPool.Get().(*[]byte)
+	*bp = append(append((*bp)[:0], prefix...), p...)
+	f.Data = *bp
+	f.Buf = bp
+	if err := c.datagramQueue.Add(f); err != nil {
+		putDatagramBuf(f)
+		return err
+	}
+	return nil
+}
+
+// GAWK PATCH (datagram copy): SendDatagram's checks, shared with
+// SendDatagramPrefixed; n is the datagram's length.
+func (c *Conn) newDatagramFrame(n int) (*wire.DatagramFrame, error) {
 	if !c.supportsDatagrams() {
-		return errors.New("datagram support disabled")
+		return nil, errors.New("datagram support disabled")
 	}
 
 	f := &wire.DatagramFrame{DataLenPresent: true}
@@ -3098,12 +3132,10 @@ func (c *Conn) SendDatagram(p []byte) error {
 		f.MaxDataLen(c.peerParams.MaxDatagramFrameSize, c.version),
 		protocol.ByteCount(c.maxPayloadSizeEstimate.Load()),
 	)
-	if protocol.ByteCount(len(p)) > maxDataLen {
-		return &DatagramTooLargeError{MaxDatagramPayloadSize: int64(maxDataLen)}
+	if protocol.ByteCount(n) > maxDataLen {
+		return nil, &DatagramTooLargeError{MaxDatagramPayloadSize: int64(maxDataLen)}
 	}
-	f.Data = make([]byte, len(p))
-	copy(f.Data, p)
-	return c.datagramQueue.Add(f)
+	return f, nil
 }
 
 // ReceiveDatagram gets a message received in a QUIC datagram, as specified in RFC 9221.
