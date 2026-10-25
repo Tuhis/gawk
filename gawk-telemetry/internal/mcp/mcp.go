@@ -116,7 +116,8 @@ func (s *Server) buildTools(opts Options) []Tool {
 			Name:  "list_broadcasts",
 			Title: "List broadcasts",
 			Description: "Recent broadcasts, worst-first, with session counts and the worst verdict " +
-				"seen. Start here when you do not know which broadcast to look at.",
+				"seen. Start here when you do not know which broadcast to look at. Finished sessions " +
+				"only: a broadcast whose sessions are all still open is not listed yet — use `live`.",
 			InputSchema: obj(map[string]any{
 				"since": str("How far back, as a Go duration (\"24h\") or RFC3339 timestamp. Default 24h."),
 				"limit": num("Maximum rows. Default 50."),
@@ -130,7 +131,8 @@ func (s *Server) buildTools(opts Options) []Tool {
 			Title: "List sessions",
 			Description: "Per-session summaries (one row per viewer or broadcaster), newest first. " +
 				"Each row carries its severity, stall count and relay coverage, plus a `distrust` " +
-				"note when the session's own data quality makes its verdict unreliable.",
+				"note when the session's own data quality makes its verdict unreliable. Finished " +
+				"sessions only: one still reporting appears once it ends — until then it is in `live`.",
 			InputSchema: obj(map[string]any{
 				"broadcast": str("Filter to one obfuscated broadcast key (12 hex chars)."),
 				"role":      str("\"viewer\" or \"broadcaster\"."),
