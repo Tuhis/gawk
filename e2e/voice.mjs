@@ -162,10 +162,26 @@ function mumblesim(name, args) {
 
 // A SuperUser action (kick, mute, create a channel, grant the ACL), run to
 // completion.
+//
+// murmur 1.6's image loses MUMBLE_SUPERUSER_PASSWORD after its first start,
+// and the script's re-set on the running server can lose its SQLite write
+// to the server (CI, PR #595), so a WrongUserPW here sets it again and
+// retries rather than failing the run on a harness race.
 async function admin(name, args) {
-  const e = mumblesim(name, ['-name', 'SuperUser', '-password', MURMUR_SU, '-duration', '3s', ...args]);
-  await pollFor(() => e.exited, 15_000, 100, `${name} to finish`);
-  if (e.exited.code !== 0) fail(`${name} exited ${e.exited.code} (see out/voice/${name}.log)`);
+  for (let attempt = 1; ; attempt++) {
+    const e = mumblesim(attempt === 1 ? name : `${name}-${attempt}`, ['-name', 'SuperUser', '-password', MURMUR_SU, '-duration', '3s', ...args]);
+    await pollFor(() => e.exited, 15_000, 100, `${name} to finish`);
+    if (e.exited.code === 0) return;
+    if (attempt >= 5 || !e.buf.includes('WrongUserPW')) fail(`${name} exited ${e.exited.code} (see out/voice/${name}.log)`);
+    log(`${name}: SuperUser refused; setting its password again (attempt ${attempt})`);
+    try {
+      execFileSync('docker', ['exec', '-u', '10000', 'gawk-e2e-murmur-main', '/usr/bin/mumble-server',
+        '--ini', '/data/mumble_server_config.ini', '--set-su-pw', MURMUR_SU]);
+    } catch {
+      // the next attempt reports it
+    }
+    await sleep(1000);
+  }
 }
 
 async function relayStatus() {

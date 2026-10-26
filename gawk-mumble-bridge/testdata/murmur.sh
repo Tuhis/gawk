@@ -90,11 +90,28 @@ case "$cmd" in
     # start, and that password does not survive it (SuperUser is then
     # refused with WrongUserPW; measured 2026-10-26). Setting it again on
     # the running server works on both versions.
+    #
+    # The write races the running server for its SQLite database, and lost
+    # it now and then in CI (e2e-voice on PR #595: SuperUser refused with
+    # WrongUserPW, the exec's failure swallowed). So: check the exit
+    # status, retry, and fail loudly rather than hand out a password that
+    # does not work.
     for n in main strict autoban; do
-      if [[ "$version" == 1.5 ]]; then
-        docker exec -u 10000 "$prefix-$n" /usr/bin/mumble-server -ini /data/mumble_server_config.ini -supw "$supw" >/dev/null 2>&1
-      else
-        docker exec -u 10000 "$prefix-$n" /usr/bin/mumble-server --ini /data/mumble_server_config.ini --set-su-pw "$supw" >/dev/null 2>&1
+      ok=false
+      for attempt in $(seq 1 20); do
+        if [[ "$version" == 1.5 ]]; then
+          out=$(docker exec -u 10000 "$prefix-$n" /usr/bin/mumble-server -ini /data/mumble_server_config.ini -supw "$supw" 2>&1) && ok=true
+        else
+          out=$(docker exec -u 10000 "$prefix-$n" /usr/bin/mumble-server --ini /data/mumble_server_config.ini --set-su-pw "$supw" 2>&1) && ok=true
+        fi
+        if $ok && ! grep -qi "locked\|error\|fail" <<<"$out"; then break; fi
+        ok=false
+        sleep 0.5
+      done
+      if ! $ok; then
+        echo "could not set the SuperUser password on $prefix-$n:" >&2
+        echo "$out" >&2
+        exit 1
       fi
     done
     echo "export GAWK_TEST_MURMUR=127.0.0.1:$base"
