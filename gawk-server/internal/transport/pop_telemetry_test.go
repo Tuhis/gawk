@@ -258,11 +258,33 @@ func TestHomeMintsOnlyWithinScopeAndRate(t *testing.T) {
 			time.Sleep(20 * time.Millisecond)
 		}
 	}
-	// The bucket held the burst plus what refilled while minting; the mints
-	// that got through cannot have been more than that (one mint of slack).
+	// Mints sent after the bucket emptied may still have their refusal in
+	// flight, so count the refusals that arrive rather than assuming only
+	// the last mint was refused: wait until they stop coming.
+	countRate := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		n := 0
+		for _, r := range refused {
+			if r.Reason == poplink.TelemetryRefusedRate {
+				n++
+			}
+		}
+		return n
+	}
 	allowed := 100 + time.Since(start).Seconds()*10
-	if got := float64((sent - 1) * 8); got > allowed+8 {
-		t.Fatalf("%d tokens minted before the refusal, the bucket allows %.0f", (sent-1)*8, allowed)
+	for last, quiet := countRate(), 0; quiet < 5; {
+		time.Sleep(20 * time.Millisecond)
+		if n := countRate(); n != last {
+			last, quiet = n, 0
+		} else {
+			quiet++
+		}
+	}
+	// What got through cannot exceed the burst plus what refilled while
+	// minting (one mint of slack for the refill granularity).
+	if got := float64((sent - countRate()) * 8); got > allowed+8 {
+		t.Fatalf("%.0f tokens minted, the bucket allows %.0f", got, allowed)
 	}
 }
 
