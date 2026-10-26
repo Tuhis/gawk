@@ -133,7 +133,7 @@ services:
 
   # The pager stand-in: one JSON line per delivery on stdout (dev/webhook-sink.py).
   webhook-sink:
-    image: python:3.13-alpine
+    image: python:3.15-alpine
     command: ["python", "-u", "/sink/webhook-sink.py"]
     volumes:
       - ./dev/webhook-sink.py:/sink/webhook-sink.py:ro
