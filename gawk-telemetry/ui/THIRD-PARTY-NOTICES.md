@@ -28,8 +28,8 @@ script for what counts as a dependency here and why.
 | `csstype` | 3.2.3 | `MIT` | Copyright (c) 2017-2018 Fredrik Nicol |
 | `echarts` | 6.1.0 | `Apache-2.0` | Copyright 2017-2026 The Apache Software Foundation |
 | `react` | 19.3.1 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
-| `react-dom` | 19.2.8 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
-| `scheduler` | 0.27.0 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
+| `react-dom` | 19.3.1 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
+| `scheduler` | 0.28.0 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
 | `tslib` | 2.3.0 | `0BSD` | Copyright (c) Microsoft Corporation |
 | `tslib` | 2.3.0 | `0BSD` | Copyright (c) Microsoft Corporation |
 | `zrender` | 6.1.0 | `BSD-3-Clause` | Copyright (c) 2017, Baidu Inc |

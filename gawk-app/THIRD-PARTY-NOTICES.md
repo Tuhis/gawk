@@ -23,8 +23,8 @@ script for what counts as a dependency here and why.
 | `@types/react` | 19.3.0 | `MIT` | Copyright (c) Microsoft Corporation |
 | `csstype` | 3.2.3 | `MIT` | Copyright (c) 2017-2018 Fredrik Nicol |
 | `react` | 19.3.1 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
-| `react-dom` | 19.2.8 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
-| `scheduler` | 0.27.0 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
+| `react-dom` | 19.3.1 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
+| `scheduler` | 0.28.0 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
 | `zustand` | 5.0.16 | `MIT` | Copyright (c) 2019 Paul Henschel |
 
 ## License texts
