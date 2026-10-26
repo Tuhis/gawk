@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.14.1](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.14.0...gawk-telemetry/v1.14.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **telemetry:** carry bool fields on the timeline as 0/1 ([#584](https://github.com/Tuhis/gawk/issues/584)) ([85e3b70](https://github.com/Tuhis/gawk/commit/85e3b70edf9c3cac8c094ea68fc1126dc649c322))
+* **telemetry:** learn the SQL views' columns instead of sniffing every file per query ([#599](https://github.com/Tuhis/gawk/issues/599)) ([e76130c](https://github.com/Tuhis/gawk/commit/e76130c9702ef19c58ef6b7d0e3b5082bafb0ee4))
+* **telemetry:** say the list tools cover finished sessions only ([#583](https://github.com/Tuhis/gawk/issues/583)) ([541ac24](https://github.com/Tuhis/gawk/commit/541ac24dbd3672a56020eaa99d5f3c2398b98fd5))
+
 ## [1.14.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.13.0...gawk-telemetry/v1.14.0) (2026-10-24)
 
 

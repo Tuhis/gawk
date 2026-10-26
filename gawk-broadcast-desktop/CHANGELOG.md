@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.13.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.12.0...gawk-broadcast-desktop/v2.13.0) (2026-10-26)
+
+
+### Features
+
+* **r79:** room voice through a Mumble bridge (MV0–MV7) ([#595](https://github.com/Tuhis/gawk/issues/595)) ([33a4a4f](https://github.com/Tuhis/gawk/commit/33a4a4f904f79937ebddb6e0a06f3df4d12f7ba8))
+* **relay:** stop ends the broadcast for viewers at once (R78) ([#568](https://github.com/Tuhis/gawk/issues/568)) ([2143db6](https://github.com/Tuhis/gawk/commit/2143db67e492e9e492301bf5002781dbed4311ea))
+
 ## [2.12.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.11.0...gawk-broadcast-desktop/v2.12.0) (2026-10-24)
 
 

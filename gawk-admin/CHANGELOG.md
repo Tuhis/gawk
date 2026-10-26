@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.11.0](https://github.com/Tuhis/gawk/compare/gawk-admin/v1.10.0...gawk-admin/v1.11.0) (2026-10-26)
+
+
+### Features
+
+* **r79:** room voice through a Mumble bridge (MV0–MV7) ([#595](https://github.com/Tuhis/gawk/issues/595)) ([33a4a4f](https://github.com/Tuhis/gawk/commit/33a4a4f904f79937ebddb6e0a06f3df4d12f7ba8))
+* **relay:** stop ends the broadcast for viewers at once (R78) ([#568](https://github.com/Tuhis/gawk/issues/568)) ([2143db6](https://github.com/Tuhis/gawk/commit/2143db67e492e9e492301bf5002781dbed4311ea))
+
+
+### Bug Fixes
+
+* **site:** move the party relay off the app downloads onto its own page ([#581](https://github.com/Tuhis/gawk/issues/581)) ([62cafd9](https://github.com/Tuhis/gawk/commit/62cafd9365b8056960d4ba3a7b08ed080a3eb248))
+
 ## [1.10.0](https://github.com/Tuhis/gawk/compare/gawk-admin/v1.9.0...gawk-admin/v1.10.0) (2026-10-23)
 
 
