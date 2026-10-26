@@ -1274,8 +1274,9 @@ jobs:
       - name: go test -cover
         run: |
           set -a; . "$RUNNER_TEMP/murmur.env"; set +a
-          # The fake murmur is test scaffolding, not shipped code.
-          pkgs=$(go list ./... | grep -v /mumbletest)
+          # The fake murmur is test scaffolding and gawk-voiceload a
+          # measurement tool (e2e/voice-load.sh); neither ships in the image.
+          pkgs=$(go list ./... | grep -v -e /mumbletest -e /cmd/gawk-voiceload)
           go test -covermode=set -coverpkg="$(echo $pkgs | tr ' ' ',')" -coverprofile=coverage.out ./...
       - if: always()
         run: testdata/murmur.sh down
