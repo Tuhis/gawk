@@ -17,9 +17,12 @@ Verify them if something behaves unexpectedly, because they can drift:
   `changes`, `app`, `server`, `server-coverage` and `common-ts-lock`, but this
   skill waits for **every** check, not only the required ones.
 - **`claude-review`** (`.github/workflows/claude-code-review.yml`) runs
-  automatically on `opened`/`synchronize`/`reopened`, which means **every
-  push** gets a fresh review. It posts inline comments for findings and a
-  `## Code review` summary comment ("No issues found…" when clean).
+  automatically on `opened`/`synchronize`/`reopened`. It posts inline
+  comments for findings, or a `## Code review` summary comment ("No issues
+  found…") when the review is clean. **Once that clean summary exists, later
+  runs stop without reviewing**: the code-review plugin treats the PR as
+  already reviewed, and the check still goes green. Commits pushed after
+  the clean summary are therefore unreviewed (see §4).
 - **`@claude`** (`.github/workflows/claude.yml`) answers a PR comment that
   mentions it. The comment must come from a writer or `tuhokuutio[bot]`. The
   reply is an issue comment from `claude[bot]` that starts with
@@ -114,8 +117,9 @@ claim to verify, not an order:
 - For findings in an issue comment, such as an `@claude` round's report,
   reply in one PR comment that covers each point with its commit SHA.
 
-Push the batch, then go back to waiting. Every push triggers a new
-`claude-review`, and its findings need the same treatment.
+Push the batch, then go back to waiting. Until the PR has a clean summary,
+each push gets a new `claude-review`, and its findings need the same
+treatment.
 
 ## 3. `@claude` review rounds (large PRs only)
 
@@ -157,8 +161,10 @@ Merge only when **all** of these hold for the **current head SHA**:
 
 - Every check has finished, each as `success`, `skipped` or `neutral`, with
   none pending. That includes `claude-review`.
-- The latest `claude-review` summary for this head reports no unhandled
-  issues.
+- `claude-review` has posted its clean `## Code review` summary. If commits
+  were pushed **after** that summary, they are unreviewed. Ask `@claude` to
+  review them, naming the commits as in §3, and handle what it finds. On a
+  large PR this is the next round. On a small PR it is a one-off review.
 - On a large PR, the `@claude` rounds are finished (a clean round, or 3
   rounds).
 - No review thread is unresolved, and no person's comment is unanswered.
