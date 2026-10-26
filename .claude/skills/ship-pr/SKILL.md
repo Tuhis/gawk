@@ -136,8 +136,7 @@ A round is requested in three cases. All share one cap of 3 rounds per PR:
   for its findings: request rounds until those commits are reviewed. A small
   PR whose automatic review was clean and that got no later commits needs
   no rounds.
-- **No automatic review at all:** `claude-review` finished, or was skipped,
-  without posting anything. Round 1 is a full review of the PR.
+- **No automatic review at all** (see *No Claude review comment* below).
 
 **Track which commit each review covered.** Call it the *marker*:
 
@@ -182,20 +181,22 @@ PR in round 1, instead of "since your last review".
 
 - **At most 3 rounds.** Count the `claude[bot]` replies whose header is
   "**Claude finished @<the account you post as>'s task …**" and that answer
-  a comment starting `@claude please review again (round`. Don't count
-  your own comments, because a retry would count twice, and don't count
-  any other `@claude` question, yours or a person's. A reply counts only if it actually
-  reviewed the requested range. One that says it couldn't (a failed
+  a comment starting `@claude please review again (round`. Don't count your
+  own comments, because a retry would count twice, and don't count any other
+  `@claude` question, yours or a person's. A reply counts only if it
+  actually reviewed the requested range. One that says it couldn't (a failed
   checkout, out of turns) is a failed run. It is neither a round nor clean.
   Counting on the PR survives a context reset.
 - Wait for the "**Claude finished …**" reply. If its job failed or it never
   posts within ~20 minutes of the run finishing, check the job with
   `gh run view`. A failed run doesn't use up a round, so retry it once by
-  posting the same round's comment again, with the current head SHA. If the retry fails too, stop and
-  hand back.
+  posting the same round's comment again, with the current head SHA. If
+  the retry fails too, stop and hand back.
 - Handle the round's findings as in §2, then request the next round.
 - **Stop early** when a round leaves nothing to push. That means it reports
   nothing actionable, or you declined each finding with a reply saying why.
+  Commits that land later (a rebase, a person's push, an `@claude` job's
+  commit) reopen the rounds under the second case above.
 - If round 3 still has findings, fix them as usual. Don't request a fourth
   round. Say in the final report that the round limit was reached.
 
@@ -209,11 +210,11 @@ Merge only when **all** of these hold for the **current head SHA**:
   and every finding of every review is handled. A finding is handled when
   it was declined with a reply, or fixed in a commit that a later review
   covered. A review whose findings were all declined, with nothing pushed,
-  satisfies this. Nothing re-runs, and nothing needs to.
-- The one exception is a reached 3-round cap. The commits after round 3
-  then merge unreviewed, and the final report names them. Fixed findings
-  raised in or after round 3 count as handled once each has a reply naming
-  its commit.
+  satisfies this. Nothing re-runs, and nothing needs to. **Exception:**
+  once the 3-round cap is reached, the commits after round 3 merge
+  unreviewed, and the final report names them. Fixed findings raised in
+  or after round 3 count as handled once each has a reply naming its
+  commit.
 - On a large PR, the `@claude` rounds are finished: a round that left
   nothing to push (§3), or 3 rounds with round 3's findings handled as in
   §2.
@@ -221,19 +222,26 @@ Merge only when **all** of these hold for the **current head SHA**:
   Every `@claude` report has a reply that covers each of its points.
 - The PR title is still a correct Conventional Commit for the final diff.
   Edit it with `gh pr edit --title` if the scope changed.
-- The PR is mergeable. If it conflicts, rebase on `origin/main`,
-  force-push with `--force-with-lease`, and go back to §2. The marker is no
-  longer an ancestor of `HEAD`, so compare the two versions with
-  `git range-diff <old merge-base>..<marker> origin/main..HEAD`. The old
-  merge-base is `git merge-base <marker> origin/main`, which still finds
-  the old fork point after `origin/main` moves. If the old
-  SHA is missing locally, run `git fetch origin <sha>` first. Commits stay
-  reviewed only up to the **first changed commit**, because a later commit
-  that replays identically still sits on top of the change. Move the marker
-  to the rebased copy of the last commit before the first changed one, or
-  to the new merge-base if the first commit changed. Everything after it is
-  unreviewed. If the round cap is already used up and the rebase changed
-  reviewed code, stop and hand back.
+- The PR is mergeable. If it conflicts, rebase on `origin/main`, force-push
+  with `--force-with-lease`, and go back to §2. The marker is no longer an
+  ancestor of `HEAD`, so compare the two versions:
+
+  ```sh
+  git fetch origin <marker>        # only if it is missing locally
+  base=$(git merge-base <marker> origin/main)   # the old fork point, even after origin/main moved
+  git range-diff "$base"..<marker> origin/main..HEAD
+  ```
+
+  A commit counts as changed only if its own `+`/`-` lines differ. A `!`
+  for moved context alone doesn't count. Commits stay reviewed only up to
+  the **first changed commit**, because a later commit that replays
+  identically still sits on top of the change. Move the marker to the
+  rebased copy of the last commit before the first changed one, or to the
+  new merge-base if the first commit changed. If nothing changed, it moves
+  to the rebased copy of the marker. If there was no marker yet,
+  everything stays unreviewed. Everything after the marker is unreviewed.
+  If the round cap is already used up and the rebase changed reviewed
+  code, stop and hand back.
 
 Then run:
 
