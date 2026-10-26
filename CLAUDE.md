@@ -192,6 +192,24 @@ Module roles and the facts `ls` can't tell you. Layout itself: read the tree.
   repository or an image** — both are AGPL-3.0, so pre/post-processing is
   reimplemented and the weights are fetched at deploy time (`docs/71` §8.1).
   CI and the dev stack run a generated test model instead.
+- `gawk-mumble-bridge` — room voice through Mumble (R79, `docs/80`); the
+  **sixth** top-level Go module and sixth deployable, **default off
+  everywhere**: a relay without `-voice-*` never dials one. Each gawk voice
+  participant is their own Mumble user (`Alice [web]`) and Opus passes
+  through untouched (no codec is linked, `CGO_ENABLED=0`). Its Mumble side is
+  a **first-party client**, not gumble: gumble is MPL-2.0, outside the Go
+  licence allowlist (`docs/80` §11.1 C1) — don't re-propose a fork without
+  that decision. The **relay's home pod is the authority** over who is in
+  voice: it mints the single-use tickets and holds the observer and session
+  links (D2); the bus never carries voice control (D3). Its shared types are
+  the public `gawk-server/voice` package (tickets, the channel key, the link
+  messages) — a semantic change there needs a commit touching
+  `gawk-mumble-bridge/` in the same PR. Two prohibitions travel with it:
+  **no voice audio is ever written to disk, logged, recorded or exposed**
+  (D24, a source-walk test enforces it), and its internal listener (links,
+  `/statusz`) is **never routed publicly**. Its murmur integration tests run
+  against real murmur (`testdata/murmur.sh`); the in-process fake missed
+  every surprise MV5 found (`docs/gotchas.md`).
 - `common-ts/` — shared **TypeScript only** (R53): repo-internal npm packages
   with no build step, consumed by the operator SPAs via `file:` (today
   `oidc-session`, the hand-rolled OIDC flow of `gawk-admin` and

@@ -1,0 +1,15 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+# maxUnavailable 1: a node drain moves one pod's voice users at a time (a
+# short gap, OD30), and never blocks the drain outright at one replica.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "gawk-mumble-bridge.fullname" . }}
+  labels:
+    {{- include "gawk-mumble-bridge.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "gawk-mumble-bridge.selectorLabels" . | nindent 6 }}
+{{- end }}

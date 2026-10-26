@@ -8,7 +8,12 @@
 
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { RoomSession, type RoomSessionGrant, type RoomTarget } from '../../transport/room-session';
-import { CLOSE_CODE_SERVER_DRAINING } from '../../transport/wire';
+import {
+  CLOSE_CODE_SERVER_DRAINING,
+  ROOM_COMMAND_VOICE_JOIN,
+  ROOM_EVENT_COMMAND_REJECTED,
+} from '../../transport/wire';
+import { voicePlaybackSupported } from './voice/voicePlayback';
 import { selectCertHashList, useTransportStore } from '../../state/transportStore';
 import { useRoomStore } from '../../state/roomStore';
 import { log } from '../../lib/logger';
@@ -29,6 +34,17 @@ export interface RoomCommands {
   detach: (broadcastId: string) => void;
   setNickname: (nickname: string) => void;
   endRoom: () => void;
+  // R79: asks for a voice ticket; false when no session can carry it now.
+  voiceJoin: () => boolean;
+}
+
+// R79: where the room session hands the voice client its answers. Read
+// through a ref, so a re-created object never re-dials.
+export interface RoomVoiceEvents {
+  onTicket: (url: string, ticket: Uint8Array) => void;
+  // A CommandRejected for VoiceJoin — the voice panel's to explain, not the
+  // room's generic rejection toast.
+  onRejected: (reason: number, message: string) => void;
 }
 
 export interface UseRoomSessionArgs {
@@ -40,9 +56,17 @@ export interface UseRoomSessionArgs {
   // that key again" case. Any change re-dials; the value itself
   // means nothing.
   dialNonce?: number;
+  voiceEvents?: RoomVoiceEvents | null;
 }
 
-export function useRoomSession({ target, nickname, clientKind, grant, dialNonce = 0 }: UseRoomSessionArgs): RoomCommands {
+export function useRoomSession({
+  target,
+  nickname,
+  clientKind,
+  grant,
+  dialNonce = 0,
+  voiceEvents = null,
+}: UseRoomSessionArgs): RoomCommands {
   // Same subscription discipline as useViewerConnection: a server change is
   // a deliberate re-dial, and the room's tiles re-dial with it.
   const serverUrl = useTransportStore((s) => s.serverUrl);
@@ -54,6 +78,8 @@ export function useRoomSession({ target, nickname, clientKind, grant, dialNonce 
   grantRef.current = grant;
   const clientKindRef = useRef(clientKind);
   clientKindRef.current = clientKind;
+  const voiceEventsRef = useRef(voiceEvents);
+  voiceEventsRef.current = voiceEvents;
 
   // A stable identity for the target so a re-created object with the same
   // content does not re-dial.
@@ -88,12 +114,22 @@ export function useRoomSession({ target, nickname, clientKind, grant, dialNonce 
           grant: grantRef.current,
           // R74 (docs/76 item 43.7): lr=1 while this tab would follow an offer.
           followOffers: willFollowOffers(),
+          // R79 (docs/80 §11.1 C2): ask for the voice roster where this
+          // browser could play voice at all.
+          wantVoice: voicePlaybackSupported(),
         },
         {
           onConnected: () => {},
           onLocalRelay: (ev) => noteLocalRelay(ev, 'room'),
           onState: (state) => useRoomStore.getState().replaceState(state),
-          onEvent: (ev) => useRoomStore.getState().applyEvent(ev),
+          onEvent: (ev) => {
+            if (ev.kind === ROOM_EVENT_COMMAND_REJECTED && ev.command === ROOM_COMMAND_VOICE_JOIN) {
+              voiceEventsRef.current?.onRejected(ev.reason, ev.message);
+              return;
+            }
+            useRoomStore.getState().applyEvent(ev);
+          },
+          onVoiceTicket: (url, ticket) => voiceEventsRef.current?.onTicket(url, ticket),
           onReconnecting: (info) => {
             log.info('room reconnecting:', info.reason);
             useRoomStore
@@ -141,7 +177,11 @@ export function useRoomSession({ target, nickname, clientKind, grant, dialNonce 
   const detach = useCallback((id: string) => sessionRef.current?.detach(id), []);
   const setNickname = useCallback((n: string) => sessionRef.current?.setNickname(n), []);
   const endRoom = useCallback(() => sessionRef.current?.endRoom(), []);
+  const voiceJoin = useCallback(() => sessionRef.current?.sendVoiceJoin() ?? false, []);
 
   // One stable object: the room screen's attach effect depends on it.
-  return useMemo(() => ({ attach, detach, setNickname, endRoom }), [attach, detach, setNickname, endRoom]);
+  return useMemo(
+    () => ({ attach, detach, setNickname, endRoom, voiceJoin }),
+    [attach, detach, setNickname, endRoom, voiceJoin],
+  );
 }

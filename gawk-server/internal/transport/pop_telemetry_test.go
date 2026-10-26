@@ -227,15 +227,13 @@ func TestHomeMintsOnlyWithinScopeAndRate(t *testing.T) {
 		return len(refused) == 1 && refused[0].Reason == poplink.TelemetryRefusedScope
 	})
 
-	// Past the burst (100) a mint is refused for rate.
+	// Past the burst (100) a mint is refused for rate. The bucket refills at
+	// 10/s while the mints go out, so a fixed 104 sent slowly enough (a
+	// loaded runner under coverage, PR #595) never empties it: keep minting
+	// until refused, bounded well past what the refill allows in the wait.
 	p := publishOnPoP(t, u)
 	u.reserved(t, p.id)
-	for range 13 { // 13 × 8 = 104
-		if err := u.pop.Client.Send(poplink.TelemetryMint{ID: p.id, Role: "viewer", N: 8}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	popsrv.WaitFor(t, "a rate refusal", func() bool {
+	rateRefused := func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		for _, r := range refused {
@@ -244,7 +242,50 @@ func TestHomeMintsOnlyWithinScopeAndRate(t *testing.T) {
 			}
 		}
 		return false
-	})
+	}
+	start := time.Now()
+	deadline := start.Add(10 * time.Second)
+	sent := 0
+	for !rateRefused() {
+		if time.Now().After(deadline) {
+			t.Fatalf("no rate refusal after %d mints of 8", sent)
+		}
+		if err := u.pop.Client.Send(poplink.TelemetryMint{ID: p.id, Role: "viewer", N: 8}); err != nil {
+			t.Fatal(err)
+		}
+		sent++
+		if sent >= 13 { // the burst is spent: give the refusal time to arrive
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	// Mints sent after the bucket emptied may still have their refusal in
+	// flight, so count the refusals that arrive rather than assuming only
+	// the last mint was refused: wait until they stop coming.
+	countRate := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		n := 0
+		for _, r := range refused {
+			if r.Reason == poplink.TelemetryRefusedRate {
+				n++
+			}
+		}
+		return n
+	}
+	allowed := 100 + time.Since(start).Seconds()*10
+	for last, quiet := countRate(), 0; quiet < 5; {
+		time.Sleep(20 * time.Millisecond)
+		if n := countRate(); n != last {
+			last, quiet = n, 0
+		} else {
+			quiet++
+		}
+	}
+	// What got through cannot exceed the burst plus what refilled while
+	// minting (one mint of slack for the refill granularity).
+	if got := float64((sent - countRate()) * 8); got > allowed+8 {
+		t.Fatalf("%.0f tokens minted, the bucket allows %.0f", got, allowed)
+	}
 }
 
 // docs/78 D6: a home that collects no telemetry tells its PoP nothing, and

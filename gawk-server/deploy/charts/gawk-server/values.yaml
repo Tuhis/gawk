@@ -168,6 +168,40 @@ rooms:
   # secretKeyRef, like config.publishSecret.
   createSecret: ""
   createSecretRef: {}
+  # R79 room voice through gawk-mumble-bridge (docs/80). OFF BY DEFAULT and
+  # off is byte-identical to a relay predating R79: no /internal/voice/
+  # route, no voice capability, no observer link, no voice metric. Needs
+  # rooms.enabled and an installed gawk-mumble-bridge; the relay refuses to
+  # start with only part of it configured.
+  voice:
+    enabled: false
+    # The bridge's INTERNAL QUIC listener (its ClusterIP Service, never
+    # public), host:port. The room's home pod dials it for observer links.
+    bridgeAddr: ""
+    # The bridge's PUBLIC https URL (its UDP LoadBalancer) a browser opens a
+    # voice session on; sent to clients in every voice ticket.
+    publicUrl: ""
+    # Gates both links between relay and bridge. MUST equal the bridge
+    # chart's psk. Literal or a secretKeyRef, like rooms.createSecret.
+    psk: ""
+    pskSecretRef: {}
+    # The voice ticket HMAC key, at least 16 bytes. MUST equal the bridge
+    # chart's ticketSecret. Literal or a secretKeyRef. Generate once:
+    #   kubectl -n gawk create secret generic gawk-voice \
+    #     --from-literal=psk=$(openssl rand -hex 32) \
+    #     --from-literal=ticketSecret=$(openssl rand -hex 32)
+    ticketSecret: ""
+    ticketSecretRef: {}
+    # The TLS name the observer dial verifies; empty = bridgeAddr's host.
+    serverName: ""
+    # Extra roots for the observer dial (a self-signed bridge certificate):
+    # {name, key} of a Secret holding a PEM bundle, mounted read-only.
+    # Empty = the system roots.
+    caSecretRef: {}
+    # Voice-live dynamic rooms (fleet-wide in cluster mode; a mint over it
+    # gets a room without voice) and voice sessions per room.
+    maxRooms: 10
+    maxUsersPerRoom: 25
   # Static rooms are Room CRs in this namespace (the CRD ships with the
   # chart when rooms.enabled is on, gawk-admin or kubectl writes them). A
   # file source (-rooms-file) exists for non-Kubernetes deployments and is

@@ -91,6 +91,19 @@ pub enum WireError {
     /// skips the record without losing its place; a relay answers
     /// ROOM_REJECT_UNSUPPORTED. Also returned by append for an unknown kind.
     UnknownRoomKind { seq: u32, kind: u8 },
+    /// A VoiceHello (0x1A, R79) with a wrong protocol, reserved flag bits, or
+    /// an empty, oversized or length-mismatched ticket.
+    BadVoiceHello,
+    /// A VoiceFrame (0x1B, R79) with reserved flag bits, a target above
+    /// MAX_VOICE_TARGET, an oversized payload, or an empty payload without
+    /// the end-of-transmission flag.
+    BadVoiceFrame,
+    /// A VoiceState (0x1C, R79) with reserved flag bits, a bad name, or an
+    /// inexact length.
+    BadVoiceState,
+    /// A VoiceControl (0x1D, R79) with reserved flag bits or an inexact
+    /// length.
+    BadVoiceControl,
 }
 
 impl fmt::Display for WireError {
@@ -162,6 +175,10 @@ impl fmt::Display for WireError {
                 f,
                 "wire: unknown room event/command kind: 0x{kind:02x} at seq {seq}"
             ),
+            Self::BadVoiceHello => write!(f, "wire: invalid voice hello"),
+            Self::BadVoiceFrame => write!(f, "wire: invalid voice frame"),
+            Self::BadVoiceState => write!(f, "wire: invalid voice state"),
+            Self::BadVoiceControl => write!(f, "wire: invalid voice control"),
         }
     }
 }

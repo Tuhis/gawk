@@ -161,7 +161,8 @@ type RoomSpec struct {
 	// MaxBroadcasts overrides -max-room-broadcasts for this room; 0 means
 	// the fleet default.
 	MaxBroadcasts int `json:"maxBroadcasts,omitempty"`
-	// Integrations is reserved (docs/44 D18, §4.11); empty in v1.
+	// Integrations holds the room's integration mappings (docs/44 §4.11):
+	// since R79 the Mumble voice channel (docs/80 D13).
 	Integrations Integrations `json:"integrations,omitempty"`
 	// Screening is ScreeningExempt to exempt the room's broadcasts from R40's
 	// content screening, or empty (docs/71 D11). Only a static room with an
@@ -220,17 +221,50 @@ type SecretKeyRef struct {
 	Key  string `json:"key"`
 }
 
-// Integrations is the reserved hook block (docs/44 §4.11). Nothing reads it
-// in v1; it exists so a later milestone adds a field instead of a version.
+// Integrations is the hook block docs/44 §4.11 reserved so a milestone adds
+// a field instead of a version. Mumble only (docs/80 OD4).
 type Integrations struct {
-	// Mumble is the voice-bridge mapping reserved by docs/44 §4.11.
+	// Mumble maps the room onto a Mumble channel (R79, docs/80 D13). Nil
+	// means the room has no voice. One Mumble server per deployment, set
+	// on the bridge (OD9), so the mapping names a channel, never a server.
 	Mumble *MumbleIntegration `json:"mumble,omitempty"`
 }
 
-// MumbleIntegration is the reserved shape of the Mumble mapping.
+// MumbleIntegration is a room's voice channel (docs/80 D11, D13). Reshaped
+// in R79 from the reserved {server, channelPrefix}, which nothing ever read.
 type MumbleIntegration struct {
-	Server        string `json:"server,omitempty"`
-	ChannelPrefix string `json:"channelPrefix,omitempty"`
+	// Channel is a static room's existing channel, as a "/"-separated path
+	// below the root ("Friends/Gaming"); empty is the root channel. Ignored
+	// with Temporary.
+	Channel string `json:"channel,omitempty"`
+	// Temporary asks for a temporary channel the bridge creates under the
+	// operator's parent channel and murmur removes when it empties: what a
+	// dynamic room created with voice gets.
+	Temporary bool `json:"temporary,omitempty"`
+}
+
+// MaxMumbleChannelLen bounds Integrations.Mumble.Channel.
+const MaxMumbleChannelLen = 256
+
+// ValidateMumble checks a voice mapping: a channel path of at most
+// MaxMumbleChannelLen bytes with no control characters, and no channel
+// together with Temporary.
+func ValidateMumble(m *MumbleIntegration) error {
+	if m == nil {
+		return nil
+	}
+	if m.Temporary && m.Channel != "" {
+		return errors.New("rooms: a temporary voice channel takes no channel path")
+	}
+	if len(m.Channel) > MaxMumbleChannelLen {
+		return fmt.Errorf("rooms: voice channel path %d bytes, max %d", len(m.Channel), MaxMumbleChannelLen)
+	}
+	for _, r := range m.Channel {
+		if r < 0x20 || r == 0x7f {
+			return errors.New("rooms: voice channel path has a control character")
+		}
+	}
+	return nil
 }
 
 // RoomStatus is written only by the home pod (docs/44 §4.3).
@@ -292,6 +326,9 @@ type FileRoom struct {
 	MaxBroadcasts int    `json:"maxBroadcasts,omitempty"`
 	// MaxParticipants overrides -max-room-participants for this room.
 	MaxParticipants int `json:"maxParticipants,omitempty"`
+	// Mumble maps the room onto a Mumble channel (R79, docs/80 D13), the
+	// CR's integrations.mumble.
+	Mumble *MumbleIntegration `json:"mumble,omitempty"`
 }
 
 // --- deepcopy ---------------------------------------------------------

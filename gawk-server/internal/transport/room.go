@@ -123,7 +123,9 @@ func (s *Server) roomRejectBanned(w http.ResponseWriter, r *http.Request, route 
 // handleRoomNew mints a dynamic room (docs/44 §4.4 step 1). Query params:
 // broadcast (the live broadcast to attach), resume (its resume token, hex),
 // label (tile label), create (the -room-create-secret), name (nickname
-// fallback). Every gate answers pre-upgrade: 403 wrong create secret or
+// fallback), voice (=1 asks for a voice-live room, R79 docs/80 C3; granted
+// only with voice configured and under -voice-max-rooms, otherwise the room
+// is minted without it). Every gate answers pre-upgrade: 403 wrong create secret or
 // resume token, 404 unknown broadcast, 409 broadcast already in a room it
 // did not mint, 429 -max-rooms, 503 store unavailable. A broadcast still in
 // the room it minted gets that room again (roomsrv.Registry.Mint).
@@ -152,6 +154,7 @@ func (s *Server) handleRoomNew(w http.ResponseWriter, r *http.Request) {
 		ResumeToken:  token,
 		Label:        q.Get("label"),
 		CreateSecret: q.Get("create"),
+		Voice:        q.Get("voice") == "1",
 	})
 	if err != nil {
 		status, outcome := roomMintStatus(err)

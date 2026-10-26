@@ -463,3 +463,121 @@ describe('the screening exemption', () => {
     ).toBeTruthy();
   });
 });
+
+describe('room voice (R79, docs/80 D13, D14)', () => {
+  it('shows each room’s mapping and offers the edit on static rooms only', async () => {
+    mount([
+      { ...STATIC, mumble: { channel: 'Friends/Gaming' } },
+      { ...OPEN_KUBECTL, mumble: {} },
+      { ...DYNAMIC, mumble: { temporary: true } },
+    ]);
+    await screen.findByText('TuhisRoom');
+    expect(screen.getByRole('columnheader', { name: 'Voice' })).toBeTruthy();
+    expect(within(rowFor('TuhisRoom')).getByText('Friends/Gaming')).toBeTruthy();
+    expect(within(rowFor('ourroom')).getByText('root channel')).toBeTruthy();
+    const dy = within(rowFor('R7K3MX'));
+    expect(dy.getByText('temporary channel')).toBeTruthy();
+    expect(dy.queryByRole('button', { name: 'Voice…' })).toBeNull();
+    expect(within(rowFor('TuhisRoom')).getByRole('button', { name: 'Voice…' })).toBeTruthy();
+  });
+
+  it('says "off" for a room without voice', async () => {
+    mount([STATIC]);
+    await screen.findByText('TuhisRoom');
+    expect(within(rowFor('TuhisRoom')).getByText('off')).toBeTruthy();
+  });
+
+  it('creates a room with a voice channel', async () => {
+    const session = mount([], (path, init) =>
+      path === 'api/v1/rooms' && init.method === 'POST' ? json({ room: OPEN_KUBECTL }, 201) : json({}),
+    );
+    await waitFor(() => expect(session.calls.length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: 'Create static room' }));
+    fireEvent.change(screen.getByLabelText(/^Code/), { target: { value: 'friends' } });
+    // The path field appears only with voice on.
+    expect(screen.queryByLabelText(/^Channel path/)).toBeNull();
+    fireEvent.click(screen.getByLabelText('Voice (Mumble channel)'));
+    fireEvent.change(screen.getByLabelText(/^Channel path/), { target: { value: ' Friends/Gaming ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(session.calls.some((c) => c.init.method === 'POST')).toBe(true));
+    expect(bodyOf(session.calls.find((c) => c.init.method === 'POST')!)).toEqual({
+      code: 'friends',
+      withAttachSecret: true,
+      mumble: { channel: 'Friends/Gaming' },
+    });
+  });
+
+  it('creates a room on the root channel with an empty path, and none without voice', async () => {
+    const session = mount([], (path, init) =>
+      path === 'api/v1/rooms' && init.method === 'POST' ? json({ room: OPEN_KUBECTL }, 201) : json({}),
+    );
+    await waitFor(() => expect(session.calls.length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: 'Create static room' }));
+    fireEvent.change(screen.getByLabelText(/^Code/), { target: { value: 'lobby' } });
+    fireEvent.click(screen.getByLabelText('Voice (Mumble channel)'));
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(session.calls.some((c) => c.init.method === 'POST')).toBe(true));
+    expect(bodyOf(session.calls.find((c) => c.init.method === 'POST')!)).toEqual({
+      code: 'lobby',
+      withAttachSecret: true,
+      mumble: {},
+    });
+  });
+
+  it('sets a static room’s channel from the row', async () => {
+    const session = mount([STATIC], (path, init) =>
+      path === 'api/v1/rooms/tuhisroom/voice' && init.method === 'PUT'
+        ? json({ ...STATIC, mumble: { channel: 'Raid' } })
+        : json({}),
+    );
+    await screen.findByText('TuhisRoom');
+    fireEvent.click(within(rowFor('TuhisRoom')).getByRole('button', { name: 'Voice…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Voice for TuhisRoom' });
+    fireEvent.click(within(dialog).getByLabelText('Voice (Mumble channel)'));
+    fireEvent.change(within(dialog).getByLabelText(/^Channel path/), { target: { value: 'Raid' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(session.calls.some((c) => c.init.method === 'PUT')).toBe(true));
+    const put = session.calls.find((c) => c.init.method === 'PUT')!;
+    expect(put.path).toBe('api/v1/rooms/tuhisroom/voice');
+    expect(bodyOf(put)).toEqual({ mumble: { channel: 'Raid' } });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
+  it('turns a room’s voice off, pre-filled from its mapping', async () => {
+    const session = mount([{ ...STATIC, mumble: { channel: 'Friends/Gaming' } }], (_path, init) =>
+      init.method === 'PUT' ? json(STATIC) : json({}),
+    );
+    await screen.findByText('TuhisRoom');
+    fireEvent.click(within(rowFor('TuhisRoom')).getByRole('button', { name: 'Voice…' }));
+    const dialog = await screen.findByRole('dialog');
+    const path = within(dialog).getByLabelText(/^Channel path/) as HTMLInputElement;
+    expect(path.value).toBe('Friends/Gaming');
+    fireEvent.click(within(dialog).getByLabelText('Voice (Mumble channel)'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(session.calls.some((c) => c.init.method === 'PUT')).toBe(true));
+    expect(bodyOf(session.calls.find((c) => c.init.method === 'PUT')!)).toEqual({ mumble: null });
+  });
+
+  it('keeps the dialog open with the server’s refusal, and cancels without a write', async () => {
+    const session = mount([STATIC], (_path, init) =>
+      init.method === 'PUT'
+        ? json({ error: { code: 'bad_request', message: 'mumble.channel has a control character' } }, 400)
+        : json({}),
+    );
+    await screen.findByText('TuhisRoom');
+    fireEvent.click(within(rowFor('TuhisRoom')).getByRole('button', { name: 'Voice…' }));
+    let dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByLabelText('Voice (Mumble channel)'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    expect(await within(dialog).findByText(/control character/)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(session.calls.filter((c) => c.init.method === 'PUT').length).toBe(1);
+
+    // Reopened, then cancelled: nothing is sent.
+    fireEvent.click(within(rowFor('TuhisRoom')).getByRole('button', { name: 'Voice…' }));
+    dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(session.calls.filter((c) => c.init.method === 'PUT').length).toBe(1);
+  });
+});

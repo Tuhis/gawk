@@ -157,6 +157,16 @@ afterEach(() => {
 });
 
 describe('BroadcasterScreen Room panel (RM5)', () => {
+  // R79 (docs/80 D14, §11.1 C3): the creator asks for voice on the mint.
+  it('the Voice toggle asks the new room for voice', async () => {
+    await goLive();
+    fireEvent.click(screen.getByRole('button', { name: 'Room' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /With voice chat/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create a new room' }));
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    expect(roomSessions[0].opts.target).toMatchObject({ kind: 'mint', voice: true });
+  });
+
   it('New room mints from the running broadcast and lands in the room view with the own tile', async () => {
     await goLive();
     fireEvent.click(screen.getByRole('button', { name: 'Room' }));

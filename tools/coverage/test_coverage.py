@@ -254,6 +254,7 @@ class TestFloorsFileItself(unittest.TestCase):
                 "gawk-admin-ui",
                 "gawk-app",
                 "gawk-broadcast-desktop",
+                "gawk-mumble-bridge",
                 "gawk-server",
                 "gawk-telemetry",
                 "gawk-telemetry-ui",

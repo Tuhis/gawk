@@ -32,6 +32,9 @@ var (
 		"AdminAPIToken",
 		"ScreeningToken",
 		"RoomCreateSecret",
+		// R79: both voice links' PSK and the ticket HMAC key.
+		"VoiceBridgePSK",
+		"VoiceTicketSecret",
 	}
 	publicFields = []string{
 		"Addr", "CertFile", "KeyFile", "DevCert", "DevCertHosts",
@@ -63,6 +66,10 @@ var (
 		// R74: whether this home accepts PoPs, the file it reads them from
 		// and its timings; none of them is a credential.
 		"Pops", "PopsFile", "PopUplinkLinger", "PopOfferDefer", "PopDemandTimeout",
+		// R79: where the bridge is, which name and roots the observer dial
+		// verifies, and the voice caps; none is a credential.
+		"VoiceBridgeAddr", "VoiceBridgePublicURL", "VoiceBridgeServerName", "VoiceBridgeCAFile",
+		"VoiceMaxRooms", "VoiceMaxUsersPerRoom",
 	}
 )
 
@@ -76,6 +83,8 @@ func TestSanitizedLeaksNoSecretValue(t *testing.T) {
 		sentinelPSK    = "SENTINEL-internal-psk-xyzzy"
 		sentinelToken  = "SENTINEL-admin-token-xyzzy"
 		sentinelScreen = "SENTINEL-screening-token-xyzzy"
+		sentinelVPSK   = "SENTINEL-voice-psk-xyzzy"
+		sentinelVKey   = "SENTINEL-voice-ticket-secret-xyzzy"
 	)
 	// Distinct 32-byte keys, so a swapped assignment shows up as a leak of
 	// the wrong one rather than passing by coincidence.
@@ -93,6 +102,8 @@ func TestSanitizedLeaksNoSecretValue(t *testing.T) {
 		ResumeTokenKey:    resumeKey,
 		TelemetryKey:      telemetryKey,
 		StatelessResetKey: resetKey,
+		VoiceBridgePSK:    sentinelVPSK,
+		VoiceTicketSecret: sentinelVKey,
 		// Non-secret fields too: the redaction must not be achieved by
 		// dropping half the struct.
 		Addr:             ":4433",
@@ -134,6 +145,8 @@ func TestSanitizedLeaksNoSecretValue(t *testing.T) {
 		"telemetryKey":      san.TelemetryKey,
 		"adminApiToken":     san.AdminAPIToken,
 		"screeningToken":    san.ScreeningToken,
+		"voiceBridgePsk":    san.VoiceBridgePSK,
+		"voiceTicketSecret": san.VoiceTicketSecret,
 	} {
 		if got != secretSet {
 			t.Errorf("%s = %q, want %q", name, got, secretSet)

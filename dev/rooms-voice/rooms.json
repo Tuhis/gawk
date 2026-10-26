@@ -1,0 +1,8 @@
+[
+  {
+    "code": "devroom",
+    "displayName": "Dev room",
+    "maxBroadcasts": 4,
+    "mumble": { "channel": "devroom" }
+  }
+]

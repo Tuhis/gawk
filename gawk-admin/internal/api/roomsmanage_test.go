@@ -198,3 +198,29 @@ func TestServedDocumentNamesTheConfiguredManagerRole(t *testing.T) {
 		t.Fatal("the served document names rooms-manager although this deployment grants it nowhere")
 	}
 }
+
+// R79 (docs/80 D14): the bot's create body gains the mumble object, held to
+// the operator's rules — an existing channel, never a temporary one.
+func TestRoomsManagerCreatesARoomWithVoice(t *testing.T) {
+	f := newFakeRooms()
+	h := newHarnessWithoutPostgres(t, withRooms(f, &memoryRecorder{}))
+	h.identity.Roles = []string{"rooms-manager"}
+
+	status, body := h.raw(http.MethodPost, "/api/v1/rooms", map[string]any{
+		"code": "Gaming-CS2", "mumble": map[string]any{"channel": "Gaming/CS2"},
+	})
+	if status != http.StatusCreated || !strings.Contains(body, `"mumble":{"channel":"Gaming/CS2"}`) {
+		t.Fatalf("create with voice as rooms-manager = %d; body: %s", status, body)
+	}
+	if m := f.rooms["gaming-cs2"].Room.Spec.Integrations.Mumble; m == nil || m.Channel != "Gaming/CS2" || m.Temporary {
+		t.Fatalf("the CR's mapping = %+v", m)
+	}
+	if code := h.errorCode(http.MethodPost, "/api/v1/rooms", map[string]any{
+		"code": "gaming-dota", "mumble": map[string]any{"temporary": true},
+	}, http.StatusBadRequest); code != api.CodeBadRequest {
+		t.Fatalf("a temporary channel for a static room: code %q", code)
+	}
+	if _, ok := f.rooms["gaming-dota"]; ok {
+		t.Fatal("a refused create wrote the room")
+	}
+}

@@ -99,6 +99,14 @@ type SanitizedConfig struct {
 	MaxRoomParticipants int    `json:"maxRoomParticipants"`
 	RoomsFile           string `json:"roomsFile"`
 
+	// Room voice (R79). The PSK and the ticket secret are secrets below.
+	VoiceBridgeAddr       string `json:"voiceBridgeAddr"`
+	VoiceBridgePublicURL  string `json:"voiceBridgePublicUrl"`
+	VoiceBridgeServerName string `json:"voiceBridgeServerName"`
+	VoiceBridgeCAFile     string `json:"voiceBridgeCaFile"`
+	VoiceMaxRooms         int    `json:"voiceMaxRooms"`
+	VoiceMaxUsersPerRoom  int    `json:"voiceMaxUsersPerRoom"`
+
 	// Event bus.
 	EventBusURL            string `json:"eventBusUrl"`
 	EventBusSubjectPrefix  string `json:"eventBusSubjectPrefix"`
@@ -133,6 +141,8 @@ type SanitizedConfig struct {
 	AdminAPIToken     string `json:"adminApiToken"`
 	ScreeningToken    string `json:"screeningToken"`
 	RoomCreateSecret  string `json:"roomCreateSecret"`
+	VoiceBridgePSK    string `json:"voiceBridgePsk"`
+	VoiceTicketSecret string `json:"voiceTicketSecret"`
 	EventBusCredsFile string `json:"eventBusCredsFile"`
 	// ResumeTokenKey names the mode as well as the presence.
 	ResumeTokenKey string `json:"resumeTokenKey"`
@@ -200,6 +210,13 @@ func (c Config) Sanitized() SanitizedConfig {
 		MaxRoomParticipants: c.MaxRoomParticipants,
 		RoomsFile:           c.RoomsFile,
 
+		VoiceBridgeAddr:       c.VoiceBridgeAddr,
+		VoiceBridgePublicURL:  c.VoiceBridgePublicURL,
+		VoiceBridgeServerName: c.VoiceBridgeServerName,
+		VoiceBridgeCAFile:     c.VoiceBridgeCAFile,
+		VoiceMaxRooms:         c.VoiceMaxRooms,
+		VoiceMaxUsersPerRoom:  c.VoiceMaxUsersPerRoom,
+
 		EventBusURL:            c.EventBusURL,
 		EventBusSubjectPrefix:  c.EventBusSubjectPrefix,
 		EventBusViewerInterval: dur(c.EventBusViewerInterval),
@@ -224,6 +241,8 @@ func (c Config) Sanitized() SanitizedConfig {
 		AdminAPIToken:     setness(c.AdminAPIToken != ""),
 		ScreeningToken:    setness(c.ScreeningToken != ""),
 		RoomCreateSecret:  setness(c.RoomCreateSecret != ""),
+		VoiceBridgePSK:    setness(c.VoiceBridgePSK != ""),
+		VoiceTicketSecret: setness(c.VoiceTicketSecret != ""),
 		EventBusCredsFile: setness(c.EventBusCredsFile != ""),
 		ResumeTokenKey:    resumeTokenKeyRedaction(c),
 	}

@@ -1,0 +1,9 @@
+{
+  "browser": "firefox",
+  "version": "153.0",
+  "playwright": "1.62.1",
+  "host": "linux x64",
+  "headless": true,
+  "date": "2026-10-26T07:12:53.850Z",
+  "seconds": 6
+}

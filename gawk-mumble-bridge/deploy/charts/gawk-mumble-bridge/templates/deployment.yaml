@@ -1,0 +1,202 @@
+{{- if not (regexMatch "^[0-9]+s$" .Values.drainTimeout) }}
+{{- fail "drainTimeout must be whole seconds, e.g. 10s" }}
+{{- end }}
+{{- $m := .Values.mumble }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gawk-mumble-bridge.fullname" . }}
+  labels:
+    {{- include "gawk-mumble-bridge.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      {{- include "gawk-mumble-bridge.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "gawk-mumble-bridge.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      # The SIGTERM drain (D19) sends 4002 to every browser while the pod is
+      # still Ready (docs/22: kube-proxy flushes UDP conntrack when an
+      # endpoint goes, so "unready, then linger" would cut sessions without
+      # their code) and exits within drainTimeout. No preStop: it would only
+      # delay the drain. The grace period covers the drain plus shutdown.
+      terminationGracePeriodSeconds: {{ add (int (trimSuffix "s" .Values.drainTimeout)) 5 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if ne .Values.podAntiAffinity "none" }}
+      affinity:
+        podAntiAffinity:
+          {{- if eq .Values.podAntiAffinity "hard" }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  {{- include "gawk-mumble-bridge.selectorLabels" . | nindent 18 }}
+          {{- else }}
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "gawk-mumble-bridge.selectorLabels" . | nindent 20 }}
+          {{- end }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: bridge
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          ports:
+            - name: voice
+              containerPort: 4443
+              protocol: UDP
+            - name: internal
+              containerPort: 4444
+              protocol: UDP
+            - name: ops
+              containerPort: 2113
+              protocol: TCP
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: GAWK_BRIDGE_LISTEN
+              value: ":4443"
+            - name: GAWK_BRIDGE_INTERNAL_LISTEN
+              value: ":4444"
+            - name: GAWK_BRIDGE_OPS_LISTEN
+              value: ":2113"
+            - name: GAWK_BRIDGE_CERT_FILE
+              value: /tls/tls.crt
+            - name: GAWK_BRIDGE_KEY_FILE
+              value: /tls/tls.key
+            - name: GAWK_BRIDGE_ALLOWED_ORIGINS
+              value: {{ join "," .Values.allowedOrigins | quote }}
+            {{- include "gawk-mumble-bridge.secretEnv" (dict "name" "GAWK_BRIDGE_PSK" "value" .Values.psk "ref" .Values.pskRef) | nindent 12 }}
+            {{- include "gawk-mumble-bridge.secretEnv" (dict "name" "GAWK_BRIDGE_TICKET_SECRET" "value" .Values.ticketSecret "ref" .Values.ticketSecretRef) | nindent 12 }}
+            - name: GAWK_BRIDGE_RELAY_URL
+              value: {{ .Values.relayUrl | quote }}
+            - name: GAWK_BRIDGE_RELAY_SERVER_NAME
+              value: {{ .Values.relayServerName | quote }}
+            {{- if .Values.relayCaRef.name }}
+            - name: GAWK_BRIDGE_RELAY_CA_FILE
+              value: /relay-ca/ca.pem
+            {{- end }}
+            - name: GAWK_BRIDGE_MUMBLE_ADDR
+              value: {{ $m.addr | quote }}
+            {{- include "gawk-mumble-bridge.secretEnv" (dict "name" "GAWK_BRIDGE_MUMBLE_PASSWORD" "value" $m.password "ref" $m.passwordRef) | nindent 12 }}
+            {{- include "gawk-mumble-bridge.secretEnv" (dict "name" "GAWK_BRIDGE_MUMBLE_ACCESS_TOKEN" "value" $m.accessToken "ref" $m.accessTokenRef) | nindent 12 }}
+            - name: GAWK_BRIDGE_MUMBLE_CERT_SHA256
+              value: {{ $m.certSha256 | quote }}
+            {{- if $m.caRef.name }}
+            - name: GAWK_BRIDGE_MUMBLE_CA_FILE
+              value: /mumble-ca/ca.pem
+            {{- end }}
+            - name: GAWK_BRIDGE_MUMBLE_INSECURE_SKIP_VERIFY
+              value: {{ $m.insecureSkipVerify | quote }}
+            - name: GAWK_BRIDGE_MUMBLE_NAME_TEMPLATE
+              value: {{ $m.nameTemplate | quote }}
+            - name: GAWK_BRIDGE_MUMBLE_OBSERVER_NAME
+              value: {{ $m.observerName | quote }}
+            - name: GAWK_BRIDGE_MUMBLE_TEMP_PARENT
+              value: {{ $m.tempParent | quote }}
+            - name: GAWK_BRIDGE_MUMBLE_TEMP_CHANNEL_TEMPLATE
+              value: {{ $m.tempChannelTemplate | quote }}
+            - name: GAWK_BRIDGE_MUMBLE_CLIENT_VERSION
+              value: {{ $m.clientVersion | quote }}
+            - name: GAWK_BRIDGE_MAX_VOICE_SESSIONS
+              value: {{ .Values.maxVoiceSessions | quote }}
+            - name: GAWK_BRIDGE_MAX_TEMP_CHANNELS
+              value: {{ .Values.maxTempChannels | quote }}
+            - name: GAWK_BRIDGE_DRAIN_TIMEOUT
+              value: {{ .Values.drainTimeout | quote }}
+            {{- include "gawk-mumble-bridge.secretEnv" (dict "name" "GAWK_BRIDGE_STATS_KEY" "value" .Values.statsKey "ref" .Values.statsKeyRef) | nindent 12 }}
+            - name: GAWK_BRIDGE_LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            - name: GAWK_BRIDGE_LOG_FORMAT
+              value: {{ .Values.logFormat | quote }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: ops
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: ops
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            {{- if .Values.relayCaRef.name }}
+            - name: relay-ca
+              mountPath: /relay-ca
+              readOnly: true
+            {{- end }}
+            {{- if $m.caRef.name }}
+            - name: mumble-ca
+              mountPath: /mumble-ca
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tls
+          secret:
+            secretName: {{ .Values.tls.secretName }}
+        {{- with .Values.relayCaRef }}
+        {{- if .name }}
+        - name: relay-ca
+          secret:
+            secretName: {{ .name }}
+            items:
+              - key: {{ .key }}
+                path: ca.pem
+        {{- end }}
+        {{- end }}
+        {{- with $m.caRef }}
+        {{- if .name }}
+        - name: mumble-ca
+          secret:
+            secretName: {{ .name }}
+            items:
+              - key: {{ .key }}
+                path: ca.pem
+        {{- end }}
+        {{- end }}

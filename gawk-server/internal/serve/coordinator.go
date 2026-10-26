@@ -81,7 +81,7 @@ func clusterOptions(cfg config.Config, hooks coordinatorHooks, client kubernetes
 // -cluster-mode and -rooms on: a single-pod relay with rooms never touches
 // the k8s API. The Room CRD and the `rooms`/`rooms/status`/`secrets` RBAC ride
 // the chart's rooms.enabled.
-func buildRoomStore(cfg config.Config, reg *roomsrv.Registry, obfuscate func(string) string, onLeaseLost func(string), log *slog.Logger) (*roomcluster.Store, string, error) {
+func buildRoomStore(cfg config.Config, reg *roomsrv.Registry, obfuscate func(string) string, onLeaseLost, onStaticVoiceRoom func(string), log *slog.Logger) (*roomcluster.Store, string, error) {
 	restCfg, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, "", fmt.Errorf("rooms in cluster-mode require in-cluster kubernetes config: %w", err)
@@ -111,6 +111,8 @@ func buildRoomStore(cfg config.Config, reg *roomsrv.Registry, obfuscate func(str
 		Obfuscate:     obfuscate,
 		Log:           log,
 		OnLeaseLost:   onLeaseLost,
+		// R79: only with voice configured — the keeper is the only reader.
+		OnStaticVoiceRoom: onStaticVoiceRoom,
 	})
 	if err != nil {
 		return nil, "", err

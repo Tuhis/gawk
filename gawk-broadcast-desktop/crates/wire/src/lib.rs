@@ -1,7 +1,7 @@
 //! The gawk wire format — fourth mirror (docs/38 D4).
 //!
 //! The source of truth is `gawk-server/wire/wire.go` (plus `parity.go`,
-//! `stripe.go`, `room.go`, `closing.go` and `localrelay.go`); the other
+//! `stripe.go`, `room.go`, `closing.go`, `localrelay.go` and `voice.go`); the other
 //! mirror is the TypeScript `wire.ts`.
 //! This crate is a hand-written
 //! reimplementation with the golden vectors deliberately RESTATED in its
@@ -29,6 +29,7 @@ mod messages;
 mod parity;
 mod room;
 mod stripe;
+mod voice;
 
 pub use chunking::{ChunkBudget, split_frame};
 pub use error::WireError;
@@ -45,6 +46,7 @@ pub use stripe::{
     MAX_STRIPE_LEGS, STRIPE_STATE_SIZE, StripeState, append_stripe_state, parse_stripe_state,
     stripe_ordinal,
 };
+pub use voice::*;
 
 /// The only wire protocol version currently defined; byte 0 of every message.
 pub const VERSION: u8 = 0x01;
@@ -88,6 +90,14 @@ pub const SESSION_CLOSING_SIZE: usize = 6;
 // a PoP on the client's network. Layouts and constants live in localrelay.rs.
 pub const TYPE_LOCAL_RELAY_INFO: u8 = 0x18;
 pub const TYPE_LOCAL_RELAY_OFFER: u8 = 0x19;
+// R79 room voice (docs/80 D20): a browser's voice session with the Mumble
+// bridge, never a relay session. VoiceHello, VoiceState and VoiceControl are
+// room-framed records, VoiceFrame a datagram. Layouts live in voice.rs; the
+// native clients do not implement voice (docs/80 OD11).
+pub const TYPE_VOICE_HELLO: u8 = 0x1A;
+pub const TYPE_VOICE_FRAME: u8 = 0x1B;
+pub const TYPE_VOICE_STATE: u8 = 0x1C;
+pub const TYPE_VOICE_CONTROL: u8 = 0x1D;
 
 // Size constants. A change to any of these is a protocol change, not a
 // tuning knob — the constants test pins every one.
@@ -162,6 +172,16 @@ pub const CLOSE_CODE_POP_NO_DEMAND: u32 = 4013;
 /// dialling the code, so a restart on the same code resumes by itself. The
 /// relay never sends it to a publisher.
 pub const CLOSE_CODE_BROADCASTER_STOPPED: u32 = 4014;
+/// Bridge voice sessions only (R79, docs/80 D17): the person was removed from
+/// voice (a kill or ban, the room ending or removing them, a Mumble kick or
+/// ban, or a newer voice session of the same participant). TERMINAL for
+/// voice; the room control session is untouched. Sent in-band first. Never
+/// reaches the native clients, which open no voice session.
+pub const CLOSE_CODE_VOICE_REMOVED: u32 = 4015;
+/// Bridge voice sessions only (R79, docs/80 D18): the bridge could not
+/// connect the person to Mumble. NOT terminal: the browser offers to try
+/// again. Sent in-band first. Never reaches the native clients.
+pub const CLOSE_CODE_VOICE_UNAVAILABLE: u32 = 4016;
 
 /// Whether a close code ends a *viewer* for good (R65, docs/67 D13): the
 /// broadcast was garbage-collected (4000) or the operator killed it (4006).

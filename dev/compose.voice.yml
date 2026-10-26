@@ -1,0 +1,129 @@
+# The R79 room-voice lane of the local development stack (docs/80, docs/41
+# §4.5). TEST ONLY, like the rest of the stack: a throwaway murmur with
+# autoban off and a SuperUser password everybody knows.
+#
+#     docker compose -f docker-compose.yml -f dev/compose.voice.yml up -d --build --wait
+#
+# then open http://localhost:8080/#/room/devroom, open the people panel and
+# Join voice. `devroom` is mapped to the murmur channel of the same name, and
+# a scripted native Mumble user, `native-echo`, sits in it and repeats
+# whatever it hears, so one browser tab is enough to hear yourself both ways.
+# Point a real Mumble client at localhost:64738 (accept its self-signed
+# certificate) to be the native side yourself. A dynamic room minted with
+# the Voice box ticked gets a temporary channel under `gawk rooms`.
+#
+# An OVERRIDE FILE rather than a profile, for the screening lane's reason: it
+# must change the relay (the -voice-* knobs and a rooms file with a mumble
+# mapping), not only add services.
+#
+# The bridge serves the relay's own certificate (./certs), so the browser's
+# pinned hash covers both, and each side trusts the other through that same
+# file. Its public port is 127.0.0.1:4443/udp, like the relay's 4433.
+
+services:
+  relay:
+    volumes:
+      - ./dev/rooms-voice:/dev-rooms-voice:ro
+    environment:
+      GAWK_ROOMS_FILE: /dev-rooms-voice/rooms.json
+      GAWK_VOICE_BRIDGE_ADDR: mumble-bridge:4444
+      GAWK_VOICE_BRIDGE_PUBLIC_URL: "${VOICE_URL:-https://127.0.0.1:4443/voice}"
+      GAWK_VOICE_BRIDGE_PSK: "${VOICE_PSK:-gawk-dev-voice-psk}"
+      GAWK_VOICE_TICKET_SECRET: "${VOICE_TICKET_SECRET:-gawk-dev-voice-ticket-secret}"
+      # The certificate's names are localhost/127.0.0.1, not the service name.
+      GAWK_VOICE_BRIDGE_SERVER_NAME: localhost
+      GAWK_VOICE_BRIDGE_CA_FILE: /certs/cert.pem
+
+  murmur:
+    # 1.5: the 1.6.870 image ignores MUMBLE_SUPERUSER_PASSWORD after its first
+    # start (gawk-mumble-bridge/testdata/murmur.sh works around it with
+    # docker exec; a compose lane should not need to).
+    image: mumblevoip/mumble-server:v1.5.939
+    ports:
+      # TCP only: the bridge tunnels voice over the control connection, and
+      # a desktop Mumble client falls back to the same when UDP is absent.
+      - "127.0.0.1:${MURMUR_PORT:-64738}:64738/tcp"
+    environment:
+      MUMBLE_SUPERUSER_PASSWORD: "${MURMUR_SUPERUSER_PASSWORD:-gawk-dev-superuser}"
+      # docs/80 §5: every bridged user is a connection from the bridge's one
+      # address, so murmur's autoban would ban it within a minute.
+      MUMBLE_CONFIG_AUTOBANATTEMPTS: "0"
+      MUMBLE_CONFIG_WELCOMETEXT: "gawk dev stack"
+    restart: unless-stopped
+
+  mumble-bridge:
+    build:
+      context: .
+      dockerfile: gawk-mumble-bridge/deploy/Dockerfile
+    user: "${HOST_UID:-0}:${HOST_GID:-0}"
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${VOICE_PORT:-4443}:4443/udp"
+      - "127.0.0.1:2113:2113"
+    volumes:
+      - ./certs:/certs:ro
+    environment:
+      GAWK_BRIDGE_CERT_FILE: /certs/cert.pem
+      GAWK_BRIDGE_KEY_FILE: /certs/key.pem
+      GAWK_BRIDGE_ALLOWED_ORIGINS: "${APP_ORIGIN:-http://localhost:8080}"
+      GAWK_BRIDGE_PSK: "${VOICE_PSK:-gawk-dev-voice-psk}"
+      GAWK_BRIDGE_TICKET_SECRET: "${VOICE_TICKET_SECRET:-gawk-dev-voice-ticket-secret}"
+      GAWK_BRIDGE_RELAY_URL: https://relay:4433
+      GAWK_BRIDGE_RELAY_SERVER_NAME: localhost
+      GAWK_BRIDGE_RELAY_CA_FILE: /certs/cert.pem
+      GAWK_BRIDGE_MUMBLE_ADDR: murmur:64738
+      # Dev only: murmur generated its own certificate at first start.
+      GAWK_BRIDGE_MUMBLE_INSECURE_SKIP_VERIFY: "true"
+      GAWK_BRIDGE_MUMBLE_ACCESS_TOKEN: gawk-dev-bridge
+      GAWK_BRIDGE_MUMBLE_TEMP_PARENT: gawk rooms
+      GAWK_BRIDGE_LOG_LEVEL: "${LOG_LEVEL:-info}"
+    depends_on:
+      relay:
+        condition: service_healthy
+      murmur-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # One-shot: creates `devroom` and the temporary-channel parent `gawk rooms`
+  # and grants the bridge's access token MakeTempChannel there (docs/80 §5,
+  # D10). Idempotent; retried while murmur is still generating its
+  # certificate.
+  murmur-init:
+    build: &mumblesim-build
+      context: .
+      dockerfile: gawk-mumble-bridge/deploy/Dockerfile
+      target: mumblesim
+    command:
+      - -addr=murmur:64738
+      - -insecure
+      - -name=SuperUser
+      - -password=${MURMUR_SUPERUSER_PASSWORD:-gawk-dev-superuser}
+      - -channel=gawk rooms
+      - -token=gawk-dev-bridge
+      - -grant-temp=gawk-dev-bridge
+      - -duration=2s
+    depends_on:
+      murmur:
+        condition: service_started
+    restart: on-failure:10
+
+  murmur-init-room:
+    build: *mumblesim-build
+    command:
+      - -addr=murmur:64738
+      - -insecure
+      - -name=SuperUser
+      - -password=${MURMUR_SUPERUSER_PASSWORD:-gawk-dev-superuser}
+      - -channel=devroom
+      - -duration=2s
+    depends_on:
+      murmur-init:
+        condition: service_completed_successfully
+    restart: on-failure:10
+
+  native-echo:
+    build: *mumblesim-build
+    command: ["-addr=murmur:64738", "-insecure", "-name=native-echo", "-channel=devroom", "-echo"]
+    depends_on:
+      murmur-init-room:
+        condition: service_completed_successfully
+    restart: unless-stopped
