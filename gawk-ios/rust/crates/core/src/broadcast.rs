@@ -2290,4 +2290,99 @@ mod live_tests {
         );
         h.stop().await;
     }
+
+    /// R79 (docs/80 OD11, §11.1 C2): the iOS app implements no voice and
+    /// never asks for it, but a voice room must not break its broadcaster.
+    /// A RoomState advertising ROOM_CAP_VOICE reaches Swift like any other,
+    /// and the out-of-sequence voice events, which carry the CURRENT seq
+    /// without advancing it, are skipped: no resync and no room change. The
+    /// relay sends them only to clients that ask; this guards against a
+    /// relay bug or a future change.
+    #[tokio::test(start_paused = true)]
+    async fn a_voice_room_is_joined_and_its_voice_events_skipped_without_a_resync() {
+        let (rooms, mut relay) = Rooms::with_one();
+        let mut h = Harness::start(
+            BroadcastOptions {
+                room_code: "lan-party".into(),
+                nickname: "Sam".into(),
+                ..options()
+            },
+            Leg::announcing(),
+            Arc::new(Reclaims::default()),
+            rooms.clone(),
+        );
+        h.live().await;
+        let hello = wire::parse_room_hello(&relay.next().await).unwrap();
+        assert_eq!(hello.want_caps, 0, "the iOS app never asks for voice");
+
+        relay.send_state(&wire::RoomState {
+            flags: wire::ROOM_STATE_FLAG_ATTACH_OK,
+            caps: wire::ROOM_CAP_VOICE,
+            seq: 1,
+            your_id: 7,
+            code: "lan-party",
+            participants: vec![sam()],
+            attachments: vec![ours()],
+            ..wire::RoomState::default()
+        });
+        let heard = h.until(|h| matches!(h, Heard::RoomState(..))).await;
+        let Some(Heard::RoomState(room, attached, _)) = heard.last() else {
+            unreachable!()
+        };
+        assert!(*attached);
+        assert_eq!(room.code, "lan-party");
+        assert_eq!(room.people.len(), 1);
+
+        relay.send_event(&wire::RoomEvent {
+            seq: 1,
+            kind: wire::ROOM_EVENT_VOICE_ROSTER_UPDATED,
+            voice_flags: wire::ROOM_VOICE_ROSTER_FLAG_AVAILABLE,
+            voice_roster: vec![wire::VoiceRosterEntry {
+                session: 3,
+                kind: wire::ROOM_VOICE_KIND_MUMBLE,
+                name: "bob",
+                ..wire::VoiceRosterEntry::default()
+            }],
+            ..wire::RoomEvent::default()
+        });
+        relay.send_event(&wire::RoomEvent {
+            seq: 1,
+            kind: wire::ROOM_EVENT_VOICE_TICKET,
+            voice_url: "https://v.example/voice",
+            voice_ticket: &[0xaa, 0xbb],
+            ..wire::RoomEvent::default()
+        });
+        // Seq 2 is the next delta: in sequence, and the only room change
+        // heard after the voice events is the one it makes.
+        relay.send_event(&wire::RoomEvent {
+            seq: 2,
+            kind: wire::ROOM_EVENT_PARTICIPANT_JOINED,
+            participant: wire::RoomParticipant {
+                id: 9,
+                nickname: "Mika",
+                ..wire::RoomParticipant::default()
+            },
+            ..wire::RoomEvent::default()
+        });
+        let heard = h.until(|h| matches!(h, Heard::RoomState(..))).await;
+        let states: Vec<_> = heard
+            .iter()
+            .filter_map(|h| match h {
+                Heard::RoomState(room, ..) => Some(room.people.len()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(states, [2], "the voice events changed nothing");
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        while let Ok(rec) = relay.from_client.try_recv() {
+            let c = wire::parse_room_command(&rec[wire::ROOM_RECORD_HEADER_SIZE..]).unwrap();
+            assert_ne!(
+                c.kind,
+                wire::ROOM_COMMAND_RESYNC,
+                "a voice event read as a gap"
+            );
+        }
+        h.stop().await;
+    }
 }
