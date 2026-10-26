@@ -2401,6 +2401,21 @@ entries still describe code `gawk-pubsim` runs (now
   because they go only to the participants that asked for them; a client
   must handle them before its duplicate check, as it does
   `CommandRejected`. ([docs/80](80-mumble-bridge.md) §11.1 C2)
+- **The bridge's Mumble access token is a credential, not a label.** Any
+  native client can send it and land in `#<token>`, with every grant the
+  bridge has, past a channel's `@all` deny included. The reference
+  deployment first used the bridge's own name, which the observer's client
+  version shows to everyone on the server, and rotated it to a random
+  value. ([docs/80](80-mumble-bridge.md) §12.5, self-hosting §15.1)
+- **A root ACL entry for the bridge does not reach a channel that denies
+  `@all` Enter**: the channel's own deny comes later in the evaluation and
+  wins, so the observer is refused (`not allowed to Enter`, reason
+  `permission_denied`) until the channel gets its own `#<token>` entry.
+  ([docs/80](80-mumble-bridge.md) §12.5)
+- **Rotating a `gawk-voice` key needs a pod rollout.** Both charts read the
+  Secret into env, and nothing hashes an external Secret into the pod
+  template, so the pods keep the old value until they restart.
+  (self-hosting §15.1)
 - **Chromium's `AudioEncoder.flush()` emits an extra padded Opus packet on
   every call**, so a voice client flushes only at the end of a talk spurt;
   **`AudioData` does not exist inside an AudioWorklet** in any engine, so a
