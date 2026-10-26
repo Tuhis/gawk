@@ -135,11 +135,22 @@ A round is requested in two cases. Both share one cap of 3 rounds per PR:
   PR whose automatic review was clean and that got no later commits needs
   no rounds.
 
-**Track which commit each review covered.** For the automatic review it is
-the `headSha` of the `claude-review` run that posted findings or the summary
-(`gh run list --workflow claude-code-review.yml --branch <branch> --json
-headSha,createdAt,databaseId`). For a round, it is the head SHA when you
-posted the request, so name it in the comment. The commits still unreviewed
+**Track which commit each review covered.**
+
+- **Automatic review with findings:** the `original_commit_id` of its
+  inline comments in `pulls/<N>/comments`.
+- **Automatic review with a clean summary:** the `headSha` of the
+  `claude-review` run whose `createdAt`…`updatedAt` window contains the
+  summary's `created_at` (`gh run list --workflow claude-code-review.yml
+  --branch <branch> --json headSha,createdAt,updatedAt`). Both times come
+  from GitHub, so this is safe.
+- **No Claude review comment on the PR at all:** nothing is reviewed. The
+  check can go green without posting anything. Round 1 is then a full
+  review of the PR.
+- **A round:** the head SHA when you posted the request, so name it in the
+  comment.
+
+ The commits still unreviewed
 are `git log --oneline <last reviewed sha>..HEAD`. Don't compare commit
 dates with comment times, because a commit can be made before a review and
 pushed after it.
@@ -161,7 +172,9 @@ PR in round 1, instead of "since your last review".
 
 - **At most 3 rounds.** A round counts once its job has **succeeded**: count
   the `claude[bot]` replies starting with "**Claude finished …**" that answer
-  your `@claude` comments. Don't count your own comments, because a retry
+  your `@claude` comments. The reply must actually review the requested
+  range. One that says it couldn't (a failed checkout, out of turns) is a
+  failed run. It is neither a round nor clean. Don't count your own comments, because a retry
   would count twice. Counting on the PR survives a context reset.
 - Wait for the "**Claude finished …**" reply. If its job failed or it never
   posts within ~20 minutes of the run finishing, check the job with
@@ -193,7 +206,13 @@ Merge only when **all** of these hold for the **current head SHA**:
 - The PR title is still a correct Conventional Commit for the final diff.
   Edit it with `gh pr edit --title` if the scope changed.
 - The PR is mergeable. If it conflicts, rebase on `origin/main`,
-  force-push with `--force-with-lease`, and go back to §2.
+  force-push with `--force-with-lease`, and go back to §2. The reviewed SHA
+  is no longer an ancestor of `HEAD`, so compare the two versions with
+  `git range-diff <old merge-base>..<last reviewed sha> origin/main..HEAD`.
+  Commits that come out identical stay reviewed, and the marker moves to the
+  rebased copy of the reviewed SHA. Changed commits, such as conflict
+  resolutions, are unreviewed. If the round cap is already used up and the
+  rebase changed reviewed code, stop and hand back.
 
 Then run:
 
@@ -205,9 +224,10 @@ gh pr merge <N> --squash --match-head-commit <the head SHA you checked> --subjec
 your checks, for example from a person or an `@claude` job. If it refuses,
 go back to §2 for the new head.
 
-The repo deletes the head branch on merge. Stop any PR watch, then report
-the result: the merged SHA, the number of fix commits, the number of review
-rounds, and anything left for the owner (a flake rerun, a declined finding).
+The repo deletes the head branch on merge. Stop any PR watch, then report the result:
+the merged SHA, the number of fix commits, the number of review rounds,
+whether the round cap was reached and which commits merged unreviewed, and
+anything left for the owner (a flake rerun, a declined finding).
 
 ## Stop and hand back instead of merging when
 
