@@ -58,6 +58,24 @@ func wireRoomClusterSeams(ro *roomsrv.Options, store func() *roomcluster.Store) 
 			st.AttachmentsChanged(code, list)
 		}
 	}
+	// R79 (docs/80 D7, D23): a room's voice epoch is its lease generation —
+	// none without the store, so VoiceJoin answers Unavailable and a
+	// registration is refused, never minted under a guess — and
+	// -voice-max-rooms counts fleet-wide from the CRs.
+	ro.VoiceEpoch = func(code string) (uint64, bool) {
+		st := store()
+		if st == nil {
+			return 0, false
+		}
+		gen, held := st.Holding(code)
+		return uint64(gen), held
+	}
+	ro.VoiceRoomsInUse = func() int {
+		if st := store(); st != nil {
+			return st.CountVoiceDynamic()
+		}
+		return 0
+	}
 }
 
 // installRooms puts the room registry on the transport and returns the rooms

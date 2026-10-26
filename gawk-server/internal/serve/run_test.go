@@ -390,7 +390,7 @@ func TestClusterBuildersRefuseOffCluster(t *testing.T) {
 	if err == nil || c != nil || pod != "" || !strings.Contains(err.Error(), "cluster-mode requires in-cluster") {
 		t.Errorf("buildCoordinator off-cluster = %v %q %v", c, pod, err)
 	}
-	st, pod, err := buildRoomStore(config.Config{Addr: ":4433"}, nil, nil, nil, log)
+	st, pod, err := buildRoomStore(config.Config{Addr: ":4433"}, nil, nil, nil, nil, log)
 	if err == nil || st != nil || pod != "" || !strings.Contains(err.Error(), "rooms in cluster-mode require in-cluster") {
 		t.Errorf("buildRoomStore off-cluster = %v %q %v", st, pod, err)
 	}

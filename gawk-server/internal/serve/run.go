@@ -232,6 +232,9 @@ func Run(ctx context.Context, cfg config.Config, getCert CertFunc, log *slog.Log
 		ro.OnEvent = busHook
 		ro.PodName = os.Getenv("POD_NAME")
 		ro.Log = log
+		if cfg.VoiceConfigured() {
+			ro.OnVoiceChanged = srv.VoiceChanged
+		}
 		if cfg.ClusterMode {
 			wireRoomClusterSeams(&ro, func() *roomcluster.Store { return roomStore })
 		}
@@ -259,7 +262,11 @@ func Run(ctx context.Context, cfg config.Config, getCert CertFunc, log *slog.Log
 	var buildRooms func() (transport.RoomCluster, string, func(), error)
 	if cfg.ClusterMode && cfg.Rooms {
 		buildRooms = func() (transport.RoomCluster, string, func(), error) {
-			st, podName, rerr := buildRoomStore(cfg, roomReg, r.ObfuscateID, srv.HandleRoomLeaseLost, log)
+			var onVoice func(string)
+			if cfg.VoiceConfigured() {
+				onVoice = srv.StaticVoiceRoomSeen
+			}
+			st, podName, rerr := buildRoomStore(cfg, roomReg, r.ObfuscateID, srv.HandleRoomLeaseLost, onVoice, log)
 			if rerr != nil {
 				return nil, "", nil, rerr
 			}
@@ -294,6 +301,17 @@ func Run(ctx context.Context, cfg config.Config, getCert CertFunc, log *slog.Log
 	roomStats := installRooms(srv, roomReg)
 	if roomStats != nil {
 		promReg.MustRegister(metrics.NewRoomCollector(roomStats))
+	}
+	// R79 (docs/80): the observer links and the voice series, only with
+	// voice configured — without a bridge the relay dials nothing and
+	// exports no voice metric.
+	if roomReg != nil && cfg.VoiceConfigured() {
+		vb, err := voiceBridgeOptions(cfg)
+		if err != nil {
+			return err
+		}
+		promReg.MustRegister(metrics.NewVoiceCollector(roomStats))
+		srv.StartVoice(runCtx, vb)
 	}
 	if roomReg != nil {
 		// The refresh poll turns "no lease" into an expiry in cluster mode

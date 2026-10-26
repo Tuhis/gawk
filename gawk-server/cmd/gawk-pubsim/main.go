@@ -121,6 +121,7 @@ func run() error {
 	roomNew := flag.Bool("room-new", false, "mint a room from this broadcast and print `ROOM <CODE> <creatorTokenHex>` on stdout")
 	room := flag.String("room", "", "attach this broadcast to an existing room (code or slug)")
 	roomAttach := flag.String("room-attach-secret", "", "a static room's attach secret, for -room")
+	roomVoice := flag.Bool("room-voice", false, "with -room-new: mint a voice room (R79, ?voice=1)")
 	roomCreate := flag.String("room-create-secret", "", "the relay's room-create secret, for -room-new (env GAWK_ROOM_CREATE_SECRET)")
 	label := flag.String("label", "", "deprecated and ignored: the nickname (-nick) names the tile now")
 	nick := flag.String("nick", "pubsim", "the simulated broadcaster's name in the room: roster entry and tile label")
@@ -180,6 +181,7 @@ func run() error {
 			RoomNew:          *roomNew,
 			RoomAttachSecret: *roomAttach,
 			RoomCreateSecret: *roomCreate,
+			RoomVoice:        *roomVoice,
 			Nickname:         *nick,
 		},
 		engine.Callbacks{

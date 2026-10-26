@@ -24,6 +24,7 @@ your laptop in about five minutes with a self-signed certificate.
 12. [The event bus (NATS)](#12-the-event-bus-nats--r50)
 13. [Automatic content screening](#13-automatic-content-screening-r40)
 14. [PoP relays](#14-pop-relays-r74)
+15. [Room voice through Mumble](#15-room-voice-through-mumble-r79)
 
 ---
 
@@ -35,6 +36,7 @@ your laptop in about five minutes with a self-signed certificate.
 | **`gawk-app`** (the web app) | Static SPA: landing/join, broadcaster, viewer | Ordinary HTTPS Ingress |
 | `gawk-telemetry` *(optional)* | Per-session diagnostics. **Off by default; skip it on a first install.** | Internal only, plus one same-origin ingest path |
 | `gawk-admin` *(optional)* | The moderation portal: fleet-wide kill, durable ID/IP bans, signed webhooks. **Off by default; skip it on a first install.** | ClusterIP by default; an OIDC-gated Ingress is a deliberate opt-in ([§9](#9-gawk-admin--the-moderation-portal-r39)) |
+| `gawk-mumble-bridge` *(optional)* | Room voice: lets room participants talk in a Mumble channel from the browser, one Mumble user each. **Off by default; needs your own Mumble server.** | Its own **UDP LoadBalancer** for browsers; the relay's links and its ops port are internal only ([§15](#15-room-voice-through-mumble-r79)) |
 | `gawk-sampler` *(optional)* | Automatic content screening: scores each live broadcast's keyframe for explicit content and raises content flags in `gawk-admin`. **Off by default; ships observing, not paging.** | Internal only; reads the relay's screening route and posts flags to `gawk-admin` ([§13](#13-automatic-content-screening-r40)) |
 
 The native broadcasters (`gawk-broadcast-linux`, `gawk-broadcast-windows` and
@@ -1895,3 +1897,122 @@ address and the console is unreachable; without the volume, every restart
 mints new keys and certificate hashes, and printed join links stop working.
 Pass `-lan-address` when detection picks the wrong interface. The relay's
 own flags are in [`gawk-server/docs/flags.md`](../gawk-server/docs/flags.md#gawk-relay).
+
+---
+
+## 15. Room voice through Mumble (R79)
+
+Room participants click **Join voice** in a room and talk with the people in
+a Mumble channel, from the browser, without Mumble software. People on
+desktop Mumble clients see them as `Alice [web]`; the room shows who is in
+the channel. It is three things working together: your own Mumble server
+(gawk ships none), the `gawk-mumble-bridge` chart, and the relay's
+`rooms.voice` values. Design: [docs/80](80-mumble-bridge.md).
+
+### 15.1 What it needs
+
+- **Rooms on** (`rooms.enabled`, [§10](#10-rooms-r42)).
+- **A Mumble server (murmur 1.5 or 1.6)** the bridge pods can reach on TCP,
+  set up for bridged users (docs/80 §5):
+  - `autobanAttempts=0`. Murmur bans an address after 10 connections in
+    2 minutes, and every bridged user connects from a bridge pod's address.
+  - `users` sized for native **plus** bridged users, plus one observer per
+    voice room. At the cap the bridge closes the newcomer with "the Mumble
+    server is full" and counts it.
+  - Leave `username` unset, or allow spaces and brackets in it. The rule in
+    murmur's sample ini does not, and bridged users then get `Alice_[web]`.
+  - An access token for the bridge (`mumble.accessToken`), and an ACL
+    granting the group `#<token>` **Enter** (and **Speak**) on every
+    channel a room maps to, plus **MakeTempChannel** on the parent channel
+    dynamic rooms' temporary channels go under (`mumble.tempParent`).
+  - A **Mumble ban of a bridged user bans the bridge pod's address**, and so
+    every gawk user on that pod. Kick bridged users; ban them in gawk.
+- **A public DNS name and certificate for the bridge** (the browser opens
+  a WebTransport session to it), and a second UDP LoadBalancer address.
+- **One shared secret pair** for the relay and the bridge:
+
+  ```sh
+  kubectl -n gawk create secret generic gawk-voice \
+    --from-literal=psk="$(openssl rand -hex 32)" \
+    --from-literal=ticketSecret="$(openssl rand -hex 32)"
+  ```
+
+### 15.2 Install, bridge first
+
+```yaml
+# gawk-mumble-bridge values
+relayUrl: https://relay.example.com:4433      # the relay's public URL
+allowedOrigins: [https://gawk.example.com]
+pskRef: {name: gawk-voice, key: psk}
+ticketSecretRef: {name: gawk-voice, key: ticketSecret}
+certificate:
+  enabled: true                                # cert-manager, as for the relay
+  dnsNames: [voice.example.com]
+mumble:
+  addr: mumble.example.com:64738
+  accessTokenRef: {name: gawk-voice, key: mumbleToken}
+  certSha256: "<murmur's certificate SHA-256>" # or caRef, for a CA-signed murmur
+  tempParent: "gawk rooms"
+```
+
+```sh
+helm upgrade --install gawk-mumble-bridge oci://ghcr.io/tuhis/charts/gawk-mumble-bridge \
+  -n gawk -f bridge-values.yaml
+```
+
+Point `voice.example.com` at the bridge's LoadBalancer address, then:
+
+```yaml
+# gawk-server values
+rooms:
+  enabled: true
+  voice:
+    enabled: true
+    bridgeAddr: gawk-mumble-bridge-internal.gawk.svc:4444
+    publicUrl: https://voice.example.com:4443/voice
+    pskSecretRef: {name: gawk-voice, key: psk}
+    ticketSecretRef: {name: gawk-voice, key: ticketSecret}
+    serverName: voice.example.com              # the bridge certificate's name
+```
+
+The relay refuses to start with only part of `rooms.voice` set. With it
+unset, nothing changes: no voice capability, no voice UI, no new route.
+
+### 15.3 Which rooms have voice
+
+- **A static room** gets voice from `spec.integrations.mumble` on its Room
+  CR, from the portal's Voice dialog, from `"mumble": {"channel": "…"}` in
+  `-rooms-file`, or from a bot through `rooms-manager`. The channel is a
+  `/`-separated path below the root; `{}` is the root channel. Such a room
+  is watched as soon as it exists, so its Mumble roster shows before anyone
+  opens it.
+- **A dynamic room** gets a temporary channel when its creator ticks
+  **Voice** (`/room/new?voice=1`), up to `rooms.voice.maxRooms`; murmur
+  removes the channel once the room has ended and everyone has left. Its
+  name is `gawk <key>` by default, never the room code
+  (`mumble.tempChannelTemplate`).
+
+### 15.4 Is it working?
+
+- The relay's `/statusz` room rows carry `voiceLive: true` and
+  `voiceObserver: "available"` once the bridge watches the channel.
+  `unavailable` with the bridge's `/statusz` failure counts names the reason
+  (murmur unreachable, full, autobanned, a channel it may not enter).
+- In Mumble, a user named `gawk` sits in each mapped channel: the room's
+  observer. It never speaks.
+- Metrics: `gawk_bridge_voice_sessions`, `gawk_bridge_observers`,
+  `gawk_bridge_mumble_failures_total{reason}` on the bridge;
+  `gawk_rooms_voice_live` and `gawk_room_voice_sessions` on the relay.
+
+### 15.5 What to expect
+
+- **Rollouts**: a draining bridge pod tells its browsers to rejoin and they
+  land on another pod within a second or two; Mumble users see a leave and a
+  rejoin.
+- **Capacity**: one bridge pod delivered every frame to 25 users in one
+  channel with three talking, on a shared 8-core machine; at 50 the loss was
+  murmur → bridge (docs/80 §12.4). Murmur sends one copy of every frame to
+  each bridged user; size its host for that.
+- **Privacy**: gawk never records voice, but murmur or any Mumble client in
+  the channel can, and native users' names and mute state are visible to
+  everyone in the room. The voice panel says so.

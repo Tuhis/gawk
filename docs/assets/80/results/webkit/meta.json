@@ -1,0 +1,9 @@
+{
+  "browser": "webkit",
+  "version": "26.5",
+  "playwright": "1.62.1",
+  "host": "linux x64",
+  "headless": true,
+  "date": "2026-10-26T07:16:17.036Z",
+  "seconds": 6
+}

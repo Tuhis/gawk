@@ -114,6 +114,9 @@ type StaticRoom struct {
 	// Owner, when set, is the room's ownerReference — a wall's Pop, so
 	// deleting the Pop garbage-collects its wall (PopOwnerReference).
 	Owner *metav1.OwnerReference
+	// Mumble is the room's voice channel, spec.integrations.mumble (R79,
+	// docs/80 D13, D14); nil means no voice. The API layer has validated it.
+	Mumble *rooms.MumbleIntegration
 }
 
 // RoomLister is the read surface the reconciler's room sweep needs.
@@ -247,6 +250,10 @@ func (c *RoomClient) CreateStatic(ctx context.Context, req StaticRoom) (string, 
 			Pop:             req.Pop,
 			MaxParticipants: req.MaxParticipants,
 		},
+	}
+	if req.Mumble != nil {
+		m := *req.Mumble
+		room.Spec.Integrations.Mumble = &m
 	}
 	if req.Owner != nil {
 		room.OwnerReferences = []metav1.OwnerReference{*req.Owner}
@@ -446,6 +453,53 @@ func (c *RoomClient) SetScreening(ctx context.Context, name, value string, check
 			return before, RoomObject{}, ErrRoomNotFound
 		}
 		return before, RoomObject{}, fmt.Errorf("kube: set screening on room %s: %w", name, err)
+	}
+	return before, decodeRoom(u), nil
+}
+
+// SetMumble replaces a room's voice mapping, spec.integrations.mumble (R79,
+// docs/80 D13), when check admits the room as read; nil removes it. It is
+// bound to the object read exactly as SetScreening is: the merge patch
+// carries the UID as a precondition, and no resourceVersion.
+//
+// Every key of the mapping is written, null for an absent one, because a
+// merge patch MERGES a nested object: a mapping without `temporary` would
+// otherwise keep a stale `temporary: true` beside its new channel.
+func (c *RoomClient) SetMumble(ctx context.Context, name string, m *rooms.MumbleIntegration, check func(RoomObject) error) (RoomObject, RoomObject, error) {
+	before, err := c.Get(ctx, name)
+	if err != nil {
+		return RoomObject{}, RoomObject{}, err
+	}
+	if check != nil {
+		if err := check(before); err != nil {
+			return before, RoomObject{}, err
+		}
+	}
+	var mumble any // nil: a merge patch's null removes the mapping
+	if m != nil {
+		fields := map[string]any{"channel": nil, "temporary": nil}
+		if m.Channel != "" {
+			fields["channel"] = m.Channel
+		}
+		if m.Temporary {
+			fields["temporary"] = true
+		}
+		mumble = fields
+	}
+	body := map[string]any{"spec": map[string]any{"integrations": map[string]any{"mumble": mumble}}}
+	if uid := before.Room.UID; uid != "" {
+		body["metadata"] = map[string]any{"uid": string(uid)}
+	}
+	patch, err := json.Marshal(body)
+	if err != nil {
+		return before, RoomObject{}, fmt.Errorf("kube: encode room voice patch: %w", err)
+	}
+	u, err := c.ri.Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
+			return before, RoomObject{}, ErrRoomNotFound
+		}
+		return before, RoomObject{}, fmt.Errorf("kube: set voice on room %s: %w", name, err)
 	}
 	return before, decodeRoom(u), nil
 }

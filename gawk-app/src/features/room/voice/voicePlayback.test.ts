@@ -1,0 +1,331 @@
+// Per-speaker playback (docs/80 D22): a decoder + sink per speaker, created
+// on the first frame, released after 10 s of silence, bounded; spurts
+// re-anchor the sink; speaking indicators (D16) from the same frames.
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AudioChunk } from '../../../transport/audio-buffer';
+import {
+  MAX_VOICE_SPEAKERS,
+  SPEAKER_IDLE_RELEASE_MS,
+  SPURT_GAP_MS,
+  VoicePlayback,
+  createOpusDecoder,
+  realPlaybackDeps,
+  voicePlaybackSupported,
+  type SpeakerDecoder,
+  type SpeakerSink,
+} from './voicePlayback';
+import { SPEAKING_HOLD_MS } from './speaking';
+
+interface FakeDecoder extends SpeakerDecoder {
+  decoded: { payload: Uint8Array; ts: number }[];
+  closed: boolean;
+  emit: (chunk: AudioChunk) => void;
+  fail: (e: Error) => void;
+}
+interface FakeSink extends SpeakerSink {
+  pushed: AudioChunk[];
+  flushes: number;
+  volume: number;
+  disposed: boolean;
+}
+
+let clock = 0;
+let decoders: FakeDecoder[];
+let sinks: FakeSink[];
+
+function makePlayback(volumeFor: (s: number) => number = () => 1, onSpeaking = vi.fn()) {
+  const p = new VoicePlayback(
+    {
+      createDecoder: (onChunk, onError) => {
+        const d: FakeDecoder = {
+          decoded: [],
+          closed: false,
+          decode(payload, ts) {
+            this.decoded.push({ payload, ts });
+          },
+          close() {
+            this.closed = true;
+          },
+          emit: onChunk,
+          fail: onError,
+        };
+        decoders.push(d);
+        return d;
+      },
+      createSink: () => {
+        const s: FakeSink = {
+          pushed: [],
+          flushes: 0,
+          volume: -1,
+          disposed: false,
+          push(c) {
+            this.pushed.push(c);
+          },
+          flush() {
+            this.flushes++;
+          },
+          setVolume(v) {
+            this.volume = v;
+          },
+          dispose() {
+            this.disposed = true;
+          },
+        };
+        sinks.push(s);
+        return s;
+      },
+      now: () => clock,
+    },
+    { onSpeaking },
+    volumeFor,
+  );
+  return { p, onSpeaking };
+}
+
+const frame = (speaker: number, seq: number, end = false) => ({ end, target: 0, speaker, seq });
+const opus = new Uint8Array([0xfc, 0xff]);
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  clock = 0;
+  decoders = [];
+  sinks = [];
+});
+afterEach(() => vi.useRealTimers());
+
+describe('VoicePlayback decoder lifecycle', () => {
+  it('creates one decoder + sink per speaker on the first frame, at its persisted volume', () => {
+    const { p } = makePlayback((s) => (s === 7 ? 0.3 : 1));
+    p.handleFrame(frame(7, 100), opus);
+    p.handleFrame(frame(7, 101), opus);
+    p.handleFrame(frame(9, 5), opus);
+    expect(decoders).toHaveLength(2);
+    expect(sinks.map((s) => s.volume)).toEqual([0.3, 1]);
+    // seq is in 10 ms units: the decoder's timestamps are µs.
+    expect(decoders[0].decoded.map((d) => d.ts)).toEqual([1_000_000, 1_010_000]);
+    // Decoded PCM goes to that speaker's sink.
+    const chunk: AudioChunk = { timestampUs: 0, channels: [new Float32Array(480)], sampleRate: 48000, frameCount: 480 };
+    decoders[0].emit(chunk);
+    expect(sinks[0].pushed).toEqual([chunk]);
+    expect(p.speakerCount).toBe(2);
+    p.dispose();
+  });
+
+  it('releases a speaker after 10 s of silence, and a returning one gets a fresh decoder', () => {
+    const { p } = makePlayback();
+    p.handleFrame(frame(7, 1), opus);
+    clock = SPEAKER_IDLE_RELEASE_MS - 1;
+    vi.advanceTimersByTime(SPEAKER_IDLE_RELEASE_MS - 1);
+    expect(decoders[0].closed).toBe(false);
+    clock = SPEAKER_IDLE_RELEASE_MS;
+    vi.advanceTimersByTime(1000);
+    expect(decoders[0].closed).toBe(true);
+    expect(sinks[0].disposed).toBe(true);
+    expect(p.speakerCount).toBe(0);
+    p.handleFrame(frame(7, 2000), opus);
+    expect(decoders).toHaveLength(2);
+    p.dispose();
+  });
+
+  it('is bounded: a speaker past the cap evicts the least recently heard', () => {
+    const { p } = makePlayback();
+    for (let i = 0; i < MAX_VOICE_SPEAKERS; i++) {
+      clock = i;
+      p.handleFrame(frame(100 + i, 0), opus);
+    }
+    clock = 50;
+    p.handleFrame(frame(100, 1), opus); // speaker 100 is fresh again
+    clock = 60;
+    p.handleFrame(frame(999, 0), opus);
+    expect(p.speakerCount).toBe(MAX_VOICE_SPEAKERS);
+    // 101 was the stalest.
+    expect(decoders[1].closed).toBe(true);
+    expect(decoders[0].closed).toBe(false);
+    p.dispose();
+  });
+
+  it('re-anchors the sink at each new spurt: after an end flag or a long pause', () => {
+    const { p } = makePlayback();
+    p.handleFrame(frame(7, 1), opus);
+    clock = 10;
+    p.handleFrame(frame(7, 2), opus);
+    expect(sinks[0].flushes).toBe(0);
+    // A bare terminator decodes nothing.
+    p.handleFrame(frame(7, 3, true), new Uint8Array(0));
+    expect(decoders[0].decoded).toHaveLength(2);
+    clock = 20;
+    p.handleFrame(frame(7, 50), opus);
+    expect(sinks[0].flushes).toBe(1);
+    clock = 20 + SPURT_GAP_MS + 1;
+    p.handleFrame(frame(7, 90), opus);
+    expect(sinks[0].flushes).toBe(2);
+    // A last frame that carries the end flag with audio still decodes.
+    p.handleFrame(frame(7, 91, true), opus);
+    expect(decoders[0].decoded).toHaveLength(5);
+    p.dispose();
+  });
+
+  it('a decoder error or a throwing decode releases that speaker only', () => {
+    const { p } = makePlayback();
+    p.handleFrame(frame(1, 0), opus);
+    p.handleFrame(frame(2, 0), opus);
+    decoders[0].fail(new Error('bad opus'));
+    expect(sinks[0].disposed).toBe(true);
+    expect(p.speakerCount).toBe(1);
+    decoders[1].decode = () => {
+      throw new Error('closed');
+    };
+    p.handleFrame(frame(2, 1), opus);
+    expect(p.speakerCount).toBe(0);
+    p.dispose();
+  });
+
+  it('per-person volume reaches the speaker\'s sink; dispose releases every speaker', () => {
+    const { p } = makePlayback();
+    p.handleFrame(frame(1, 0), opus);
+    p.handleFrame(frame(2, 0), opus);
+    p.setSpeakerVolume(2, 0.25);
+    p.setSpeakerVolume(77, 0.5); // unknown: nothing
+    expect(sinks[1].volume).toBe(0.25);
+    p.dispose();
+    p.dispose();
+    expect(decoders.every((d) => d.closed)).toBe(true);
+    expect(sinks.every((s) => s.disposed)).toBe(true);
+    p.handleFrame(frame(3, 0), opus);
+    expect(decoders).toHaveLength(2);
+  });
+
+  it('a speaker whose decoder cannot be built stays silent without breaking the rest', () => {
+    const p = new VoicePlayback(
+      {
+        createDecoder: () => {
+          throw new Error('no AudioDecoder');
+        },
+        createSink: () => null,
+        now: () => clock,
+      },
+      { onSpeaking: () => {} },
+      () => 1,
+    );
+    expect(() => p.handleFrame(frame(1, 0), opus)).not.toThrow();
+    expect(() => p.handleFrame(frame(1, 1), opus)).not.toThrow();
+    p.dispose();
+  });
+});
+
+describe('VoicePlayback speaking indicators', () => {
+  it('speaking from the first frame, held 250 ms after the last, cleared at once on the end flag', () => {
+    const { p, onSpeaking } = makePlayback();
+    p.handleFrame(frame(7, 0), opus);
+    expect(onSpeaking).toHaveBeenLastCalledWith([7]);
+    clock = 100;
+    p.handleFrame(frame(7, 10), opus);
+    clock = 100 + SPEAKING_HOLD_MS - 1;
+    vi.advanceTimersByTime(SPEAKING_HOLD_MS - 1);
+    expect(onSpeaking).toHaveBeenCalledTimes(1);
+    clock = 100 + SPEAKING_HOLD_MS;
+    vi.advanceTimersByTime(1);
+    expect(onSpeaking).toHaveBeenLastCalledWith([]);
+
+    clock = 1000;
+    p.handleFrame(frame(9, 0), opus);
+    expect(onSpeaking).toHaveBeenLastCalledWith([9]);
+    p.handleFrame(frame(9, 1, true), new Uint8Array(0));
+    expect(onSpeaking).toHaveBeenLastCalledWith([]);
+    p.dispose();
+  });
+});
+
+describe('voicePlaybackSupported', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('needs WebTransport, AudioDecoder and Web Audio', () => {
+    vi.stubGlobal('WebTransport', undefined);
+    expect(voicePlaybackSupported()).toBe(false);
+    vi.stubGlobal('WebTransport', class {});
+    vi.stubGlobal('AudioDecoder', class {});
+    vi.stubGlobal('AudioContext', class {});
+    vi.stubGlobal('AudioWorkletNode', class {});
+    expect(voicePlaybackSupported()).toBe(true);
+    vi.stubGlobal('AudioDecoder', undefined);
+    expect(voicePlaybackSupported()).toBe(false);
+  });
+
+  it('the real deps build no sink without an output', () => {
+    expect(realPlaybackDeps(() => null).createSink()).toBeNull();
+  });
+});
+
+describe('createOpusDecoder', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('configures Opus 48 kHz mono, stamps chunks by seq, and copies planar PCM out', () => {
+    const made: { config: unknown; decoded: { timestamp: number; data: Uint8Array }[]; closed: number; output: (d: unknown) => void; error: (e: unknown) => void; state: string }[] = [];
+    vi.stubGlobal(
+      'AudioDecoder',
+      class {
+        state = 'configured';
+        rec: (typeof made)[number];
+        constructor(init: { output: (d: unknown) => void; error: (e: unknown) => void }) {
+          this.rec = { config: null, decoded: [], closed: 0, output: init.output, error: init.error, state: 'configured' };
+          made.push(this.rec);
+        }
+        configure(c: unknown) {
+          this.rec.config = c;
+        }
+        decode(chunk: { timestamp: number; data: Uint8Array }) {
+          this.rec.decoded.push(chunk);
+        }
+        close() {
+          this.rec.closed++;
+          this.state = 'closed';
+        }
+      },
+    );
+    vi.stubGlobal(
+      'EncodedAudioChunk',
+      class {
+        timestamp: number;
+        data: Uint8Array;
+        constructor(init: { timestamp: number; data: Uint8Array }) {
+          this.timestamp = init.timestamp;
+          this.data = init.data;
+        }
+      },
+    );
+    const chunks: AudioChunk[] = [];
+    const errors: Error[] = [];
+    const d = createOpusDecoder((c) => chunks.push(c), (e) => errors.push(e));
+    expect(made[0].config).toEqual({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1 });
+    d.decode(new Uint8Array([1]), 20_000);
+    expect(made[0].decoded[0].timestamp).toBe(20_000);
+    let closed = 0;
+    made[0].output({
+      numberOfChannels: 1,
+      numberOfFrames: 4,
+      sampleRate: 48000,
+      timestamp: 20_000,
+      copyTo: (dst: Float32Array) => dst.fill(0.25),
+      close: () => closed++,
+    });
+    expect(chunks[0]).toMatchObject({ timestampUs: 20_000, sampleRate: 48000, frameCount: 4 });
+    expect(Array.from(chunks[0].channels[0])).toEqual([0.25, 0.25, 0.25, 0.25]);
+    made[0].output({
+      numberOfChannels: 1,
+      numberOfFrames: 4,
+      sampleRate: 48000,
+      timestamp: 0,
+      copyTo: () => {
+        throw new Error('bad format');
+      },
+      close: () => closed++,
+    });
+    expect(chunks).toHaveLength(1);
+    expect(closed).toBe(2);
+    made[0].error('boom');
+    expect(errors[0].message).toBe('boom');
+    d.close();
+    d.close();
+    expect(made[0].closed).toBe(1);
+  });
+});

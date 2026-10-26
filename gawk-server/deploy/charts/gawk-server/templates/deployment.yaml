@@ -255,6 +255,9 @@ spec:
               value: {{ .Values.telemetry.advertiseUrl | quote }}
             {{- end }}
             {{- end }}
+            {{- if and .Values.rooms.voice.enabled (not .Values.rooms.enabled) }}
+            {{- fail "rooms.voice.enabled needs rooms.enabled (voice is a room feature, docs/80)" }}
+            {{- end }}
             {{- if .Values.rooms.enabled }}
             # R42 (docs/44 §4.10): rooms on, with every limit plumbed — a
             # knob missing here is a knob the relay silently runs at its
@@ -279,6 +282,45 @@ spec:
               {{- else }}
               value: {{ .Values.rooms.createSecret | quote }}
               {{- end }}
+            {{- end }}
+            {{- if .Values.rooms.voice.enabled }}
+            # R79 (docs/80 §11.4): room voice through gawk-mumble-bridge, with
+            # every knob plumbed. The relay refuses to start on a partial set.
+            {{- $v := .Values.rooms.voice }}
+            - name: GAWK_VOICE_BRIDGE_ADDR
+              value: {{ required "rooms.voice.bridgeAddr is required with rooms.voice.enabled" $v.bridgeAddr | quote }}
+            - name: GAWK_VOICE_BRIDGE_PUBLIC_URL
+              value: {{ required "rooms.voice.publicUrl is required with rooms.voice.enabled" $v.publicUrl | quote }}
+            - name: GAWK_VOICE_BRIDGE_PSK
+              {{- if $v.pskSecretRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $v.pskSecretRef.name | quote }}
+                  key: {{ $v.pskSecretRef.key | quote }}
+              {{- else }}
+              value: {{ required "rooms.voice.psk or rooms.voice.pskSecretRef is required with rooms.voice.enabled" $v.psk | quote }}
+              {{- end }}
+            - name: GAWK_VOICE_TICKET_SECRET
+              {{- if $v.ticketSecretRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $v.ticketSecretRef.name | quote }}
+                  key: {{ $v.ticketSecretRef.key | quote }}
+              {{- else }}
+              value: {{ required "rooms.voice.ticketSecret or rooms.voice.ticketSecretRef is required with rooms.voice.enabled" $v.ticketSecret | quote }}
+              {{- end }}
+            {{- with $v.serverName }}
+            - name: GAWK_VOICE_BRIDGE_SERVER_NAME
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if $v.caSecretRef.name }}
+            - name: GAWK_VOICE_BRIDGE_CA_FILE
+              value: /etc/gawk/voice-ca/{{ $v.caSecretRef.key }}
+            {{- end }}
+            - name: GAWK_VOICE_MAX_ROOMS
+              value: {{ $v.maxRooms | quote }}
+            - name: GAWK_VOICE_MAX_USERS_PER_ROOM
+              value: {{ $v.maxUsersPerRoom | quote }}
             {{- end }}
             {{- end }}
             {{- if .Values.pops.enabled }}
@@ -471,6 +513,12 @@ spec:
               mountPath: /etc/gawk/nats-tls
               readOnly: true
             {{- end }}
+            {{- if and .Values.rooms.enabled .Values.rooms.voice.enabled .Values.rooms.voice.caSecretRef.name }}
+            # The roots the observer dial verifies the bridge with (R79).
+            - name: voice-ca
+              mountPath: /etc/gawk/voice-ca
+              readOnly: true
+            {{- end }}
           # The server is HTTP/3-only (UDP) — kubelet can't probe it with
           # httpGet/tcpSocket, so all probes exec the bundled gawk-echo
           # against localhost. No -cert-hash: verification is skipped,
@@ -514,4 +562,9 @@ spec:
         - name: nats-tls
           secret:
             secretName: {{ .Values.eventbus.tlsSecretRef.name }}
+        {{- end }}
+        {{- if and .Values.rooms.enabled .Values.rooms.voice.enabled .Values.rooms.voice.caSecretRef.name }}
+        - name: voice-ca
+          secret:
+            secretName: {{ .Values.rooms.voice.caSecretRef.name }}
         {{- end }}

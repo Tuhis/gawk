@@ -86,11 +86,13 @@ jobs:
       admin: ${{ steps.filter.outputs.admin }}
       admin_ui: ${{ steps.filter.outputs.admin_ui }}
       sampler: ${{ steps.filter.outputs.sampler }}
+      bridge: ${{ steps.filter.outputs.bridge }}
       tidy: ${{ steps.filter.outputs.tidy }}
       licenses: ${{ steps.filter.outputs.licenses }}
       notices: ${{ steps.filter.outputs.notices }}
       helm: ${{ steps.filter.outputs.helm }}
       e2e: ${{ steps.filter.outputs.e2e }}
+      e2e_voice: ${{ steps.filter.outputs.e2e_voice }}
       dev_stack: ${{ steps.filter.outputs.dev_stack }}
       dev_stack_images: ${{ steps.filter.outputs.dev_stack_images }}
       coverage_tool: ${{ steps.filter.outputs.coverage_tool }}
@@ -203,6 +205,9 @@ jobs:
           # relay's keyframe route and gawk-admin (D3) — so a relay change is a
           # sampler change, the reasoning already written at `telemetry`.
           sampler=$(decide      sampler      '^(gawk-sampler|gawk-server)/')
+          # R79 (docs/80 D1): gawk-mumble-bridge `replace`s gawk-server for
+          # its public wire and voice packages, the same shape as the sampler.
+          bridge=$(decide       bridge       '^(gawk-mumble-bridge|gawk-server)/')
           # `go mod tidy` resolves the import graph, so any .go file can untidy a
           # module — not just a manifest. The vendored quic-go's patch and
           # derive script too: the same job checks the copy (docs/75 D7).
@@ -218,6 +223,9 @@ jobs:
           # filtering honest: two PRs that each skip the other's tests still meet
           # here, on the merged tree.
           e2e=$(decide          e2e          '^(gawk-server|gawk-app|gawk-telemetry|e2e)/')
+          # R79 MV7: the voice e2e spans the relay, the bridge, the app and a
+          # real murmur, so it runs on any of their changes.
+          e2e_voice=$(decide    e2e_voice    '^(gawk-server|gawk-app|gawk-mumble-bridge|e2e)/')
           # R38 (docs/41): the compose stack is assembled from the relay's
           # certificate path, the frontend's runtime config, both images and
           # the dev/ scripts — so a change to any of them can break the one
@@ -1189,6 +1197,135 @@ jobs:
         if: always()
         run: docker rm -f ci-sampler ci-sampler-files >/dev/null 2>&1 || true
 
+  # R79 (docs/80 MV4, MV5): the Mumble voice bridge. Its Mumble-side tests
+  # run against REAL murmur (1.5 and 1.6, three servers each: the operator
+  # prerequisites, the sample-ini username rule, a low autoban threshold),
+  # because every surprise MV5 found — the ghost-not-reject name clash, the
+  # certificate a temporary channel needs, the compiled-in username rule —
+  # was invisible to the in-process fake. The fake still runs every unit test.
+  bridge:
+    needs: changes
+    if: needs.changes.outputs.bridge == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        murmur: ["1.5", "1.6"]
+    defaults:
+      run:
+        working-directory: gawk-mumble-bridge
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
+        with:
+          go-version-file: gawk-mumble-bridge/go.mod
+          cache-dependency-path: gawk-mumble-bridge/go.sum
+      - uses: ./.github/actions/go-shared-cache
+      # See the server job: the bridge's tests push QUIC over loopback too.
+      - name: Ensure UDP buffer limits for quic-go
+        run: |
+          need=7340032
+          if [ "$(sysctl -n net.core.rmem_max)" -lt "$need" ] || [ "$(sysctl -n net.core.wmem_max)" -lt "$need" ]; then
+            sudo sysctl -w net.core.rmem_max="$need" net.core.wmem_max="$need"
+          fi
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - name: murmur ${{ matrix.murmur }}
+        run: testdata/murmur.sh up "${{ matrix.murmur }}" > "$RUNNER_TEMP/murmur.env"
+      - name: the suite, against real murmur
+        run: |
+          set -a; . "$RUNNER_TEMP/murmur.env"; set +a
+          go test -race ./...
+        env:
+          CGO_ENABLED: "1"
+      - name: murmur logs
+        if: failure()
+        run: for c in $(docker ps -aq --filter name=gawk-test-murmur); do docker logs "$c" 2>&1 | tail -40; done
+      - if: always()
+        run: testdata/murmur.sh down
+
+  # Coverage for the bridge, race-free for the reason server-coverage gives,
+  # against murmur 1.5 so the integration paths count.
+  bridge-coverage:
+    needs: changes
+    if: needs.changes.outputs.bridge == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: gawk-mumble-bridge
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
+        with:
+          go-version-file: gawk-mumble-bridge/go.mod
+          cache-dependency-path: gawk-mumble-bridge/go.sum
+      - uses: ./.github/actions/go-shared-cache
+      - name: Ensure UDP buffer limits for quic-go
+        run: |
+          need=7340032
+          if [ "$(sysctl -n net.core.rmem_max)" -lt "$need" ] || [ "$(sysctl -n net.core.wmem_max)" -lt "$need" ]; then
+            sudo sysctl -w net.core.rmem_max="$need" net.core.wmem_max="$need"
+          fi
+      - run: testdata/murmur.sh up 1.5 > "$RUNNER_TEMP/murmur.env"
+      - name: go test -cover
+        run: |
+          set -a; . "$RUNNER_TEMP/murmur.env"; set +a
+          # The fake murmur is test scaffolding and gawk-voiceload a
+          # measurement tool (e2e/voice-load.sh); neither ships in the image.
+          # Per-package coverage, as server-coverage measures: -coverpkg
+          # would list every package once per test binary, and the
+          # normaliser sums blocks, so the duplicates sank it to 25%.
+          pkgs=$(go list ./... | grep -v -e /mumbletest -e /cmd/gawk-voiceload)
+          go test -covermode=set -coverprofile=coverage.out $pkgs
+      - if: always()
+        run: testdata/murmur.sh down
+      - uses: ./.github/actions/coverage
+        with:
+          format: go
+          report: gawk-mumble-bridge/coverage.out
+          component: gawk-mumble-bridge
+          label: voice bridge
+
+  # The bridge image, built and started as it ships: distroless, nonroot,
+  # -dev-cert, and /readyz answering on the ops port.
+  bridge-image:
+    needs: changes
+    if: needs.changes.outputs.bridge == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-buildx
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: gawk-mumble-bridge/deploy/Dockerfile
+          push: false
+          load: true
+          tags: gawk-mumble-bridge:ci
+      - name: it starts and reports ready
+        run: |
+          set -euo pipefail
+          docker run -d --name ci-bridge --network host gawk-mumble-bridge:ci \
+            -dev-cert -psk ci-psk-0123456789 -ticket-secret ci-ticket-secret-0123456789 \
+            -relay-url https://127.0.0.1:4433 -mumble-addr 127.0.0.1:64738 \
+            -mumble-insecure-skip-verify -allowed-origins http://localhost:8080
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:2113/readyz >/dev/null; then
+              curl -fsS http://127.0.0.1:2113/metrics | grep -q '^gawk_bridge_voice_sessions 0$'
+              echo "gawk-mumble-bridge:ci is ready"; exit 0
+            fi
+            sleep 1
+          done
+          docker logs ci-bridge 2>&1 | tail -30
+          echo "::error::the bridge never reported ready"; exit 1
+      - if: always()
+        run: docker rm -f ci-bridge >/dev/null 2>&1 || true
+
   tidy:
     needs: changes
     if: needs.changes.outputs.tidy == 'true'
@@ -1220,7 +1357,7 @@ jobs:
       - uses: ./.github/actions/go-shared-cache
       - name: go mod tidy leaves every module unchanged
         run: |
-          for mod in gawk-server gawk-telemetry gawk-admin gawk-sampler tools/icon tools/commonlock; do
+          for mod in gawk-server gawk-telemetry gawk-admin gawk-sampler gawk-mumble-bridge tools/icon tools/commonlock; do
             (cd "$mod" && go mod tidy)
           done
           if ! git diff --exit-code; then
@@ -2151,6 +2288,22 @@ jobs:
       # mismatched SHA, ffmpeg's decoders, readiness) needs the image, so it is
       # in the `sampler` job.
       - run: helm lint gawk-sampler/deploy/charts/gawk-sampler
+      # ---- R79 (docs/80 MV4) ----------------------------------------------
+      - run: helm lint gawk-mumble-bridge/deploy/charts/gawk-mumble-bridge
+      - name: bridge chart — public UDP LoadBalancer, internal-only links and ops
+        run: |
+          set -euo pipefail
+          chart=gawk-mumble-bridge/deploy/charts/gawk-mumble-bridge
+          out=$(helm template gawk-mumble-bridge "$chart")
+          grep -q 'type: LoadBalancer' <<<"$out"
+          grep -q 'type: ClusterIP' <<<"$out"
+          # The public Service carries the browser port only (D1, D24).
+          pub=$(awk '/^kind: Service/{s=1} s' <<<"$out" | grep -B2 -A30 'type: LoadBalancer')
+          if grep -qE 'port: (4444|2113)' <<<"$pub"; then
+            echo "::error::an internal port is on the public LoadBalancer"; exit 1
+          fi
+          appver=$(awk '/^appVersion:/{gsub(/"/,"",$2); print $2}' "$chart/Chart.yaml")
+          grep -q "ghcr.io/tuhis/gawk-mumble-bridge:${appver}" <<<"$out"
       - name: sampler chart — two sharded pods, the share count from replicas, PDB and spread (D22)
         run: |
           set -euo pipefail
@@ -2714,6 +2867,64 @@ jobs:
   # It is also the job that keeps the path filtering above honest: it is the
   # only one that spans modules, and it triggers on all four, so two PRs that
   # each skipped the other's unit tests still meet here — on the merged tree.
+  # R79 MV7 (docs/80 §9): room voice with every real component — the relay,
+  # two gawk-mumble-bridge pods behind a UDP LoadBalancer stand-in
+  # (e2e/udp-lb.mjs), murmur 1.6 in docker, three browsers on Chromium's fake
+  # microphone and a scripted native Mumble user. Six passes: the roster
+  # before anyone is in voice, audio both ways, a Mumble mute and kick, a
+  # bridge pod drain mid-call, a dynamic room's temporary channel, and a gawk
+  # IP ban. Its first run found the rejoin-during-a-drain bug (the observer
+  # leaves with the draining pod, so the immediate rejoin is told
+  # Unavailable), which no unit test had the topology to see.
+  e2e-voice:
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.e2e_voice == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
+        with:
+          go-version-file: gawk-server/go.mod
+          cache-dependency-path: |
+            gawk-server/go.sum
+            gawk-mumble-bridge/go.sum
+      - uses: ./.github/actions/go-shared-cache
+      - name: Ensure UDP buffer limits for quic-go
+        run: |
+          need=7340032
+          if [ "$(sysctl -n net.core.rmem_max)" -lt "$need" ] || [ "$(sysctl -n net.core.wmem_max)" -lt "$need" ]; then
+            sudo sysctl -w net.core.rmem_max="$need" net.core.wmem_max="$need"
+          fi
+      - name: Build the relay, the bridge and the simulators
+        run: |
+          mkdir -p e2e/bin
+          (cd gawk-server && go build -o ../e2e/bin/ ./cmd/gawk-server ./cmd/gawk-pubsim ./cmd/gawk-devcert)
+          (cd gawk-mumble-bridge && CGO_ENABLED=0 go build -o ../e2e/bin/ ./cmd/gawk-mumble-bridge ./cmd/gawk-mumblesim)
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            gawk-app/package-lock.json
+            e2e/package-lock.json
+      - run: npm ci
+        working-directory: gawk-app
+      - run: npm run build
+        working-directory: gawk-app
+      - run: npm ci
+        working-directory: e2e
+      - name: Run the voice E2E (R79)
+        run: node voice.mjs
+        working-directory: e2e
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: e2e-voice
+          path: e2e/out/voice
+          if-no-files-found: ignore
+
   e2e:
     needs: changes
     if: github.event_name == 'pull_request' && needs.changes.outputs.e2e == 'true'
@@ -4048,7 +4259,7 @@ jobs:
   # download tolerates finding nothing, and the writer treats an empty record
   # set as "nothing moved".
   coverage-badges:
-    needs: [server-coverage, app, telemetry, telemetry-ui, admin-coverage, admin-ui]
+    needs: [server-coverage, app, telemetry, telemetry-ui, admin-coverage, admin-ui, bridge-coverage]
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     permissions:

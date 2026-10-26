@@ -74,6 +74,23 @@ import (
 //	    RoomEnding:        uint8 reason (RoomEndReason*)
 //	    CommandRejected:   uint8 command kind, uint8 reason
 //	                       (RoomRejectReason*), uint8 msgLen + message
+//	    VoiceTicket (R79): uint16 urlLen + bridge URL (absolute https),
+//	                       uint16 ticketLen + ticket (opaque here)
+//	    VoiceRosterUpdated (R79): uint8 flags (RoomVoiceRosterFlag*),
+//	                       uint16 count, then that many VoiceRosterEntry
+//	                       records
+//
+//	  VoiceRosterEntry record:
+//	    uint32 session (Mumble session ID), uint8 kind (RoomVoiceKind*),
+//	    uint16 participantID (0 for a native Mumble user), uint8 flags
+//	    (RoomVoiceUserFlag*), uint8 nameLen + Mumble name
+//
+//	  The two voice events are OUT OF SEQUENCE, like CommandRejected: they
+//	  carry the room's CURRENT seq without advancing it, because the relay
+//	  sends them only to participants that asked for RoomCapVoice (a
+//	  VoiceTicket only to the one that asked for it). A participant that did
+//	  not ask never sees them, so they must not occupy a sequence number it
+//	  would read as a gap. Older clients skip both as unknown kinds.
 //
 //	0x16 RoomCommand (client → relay):
 //	  byte 2   uint8 kind          RoomCommand* kind
@@ -83,6 +100,7 @@ import (
 //	    Detach:      uint8 idLen + broadcast ID
 //	    SetNickname: uint8 nickLen + nickname
 //	    EndRoom, Resync: no payload
+//	    VoiceJoin (R79): no payload
 
 // Room control message types (docs/44 D15).
 const (
@@ -160,8 +178,11 @@ const (
 	roomClientKindMax        = RoomClientNative
 )
 
-// Room capability bits (RoomHello wantCaps, RoomState caps). Both reserved
-// for docs/44 §4.11's integrations; a v1 room advertises none.
+// Room capability bits (RoomHello wantCaps, RoomState caps), docs/44
+// §4.11's integration hooks. Chat is still reserved. Voice is R79 (docs/80):
+// a room advertises RoomCapVoice while it is voice-live on a relay with a
+// bridge configured, and a client that sets it in wantCaps receives the
+// voice events (VoiceRosterUpdated) and may send VoiceJoin.
 const (
 	RoomCapChat  = 0x01
 	RoomCapVoice = 0x02
@@ -202,8 +223,9 @@ const (
 	roomParticipantFlagMask      = RoomParticipantFlagSpeaking | RoomParticipantFlagStreaming
 )
 
-// RoomEvent kinds. 0x40–0x4F (chat) and 0x50–0x5F (voice) are reserved;
-// a parser returns ErrUnknownRoomKind for any kind it does not know.
+// RoomEvent kinds. 0x40–0x4F (chat) is reserved and 0x50–0x5F is voice
+// (R79 allocates 0x50 and 0x51); a parser returns ErrUnknownRoomKind for any
+// kind it does not know.
 const (
 	RoomEventParticipantJoined  = 0x01
 	RoomEventParticipantLeft    = 0x02
@@ -213,6 +235,15 @@ const (
 	RoomEventAttachmentUpdated  = 0x12
 	RoomEventRoomEnding         = 0x20
 	RoomEventCommandRejected    = 0x30
+	// RoomEventVoiceTicket answers one participant's VoiceJoin (docs/80
+	// D5): where the bridge is and the ticket that opens a voice session
+	// there. Out of sequence (see the layout comment).
+	RoomEventVoiceTicket = 0x50
+	// RoomEventVoiceRosterUpdated is the room's whole voice roster (docs/80
+	// D15): who is in the Mumble channel, native and bridged. A snapshot,
+	// replace never merge. Sent after every RoomState and on every change,
+	// to participants that asked for RoomCapVoice. Out of sequence.
+	RoomEventVoiceRosterUpdated = 0x51
 )
 
 // RoomCommand kinds. Same reserved sub-ranges as events.
@@ -222,6 +253,40 @@ const (
 	RoomCommandSetNickname = 0x03
 	RoomCommandEndRoom     = 0x04
 	RoomCommandResync      = 0x05
+	// RoomCommandVoiceJoin asks for a voice ticket (docs/80 D5). Answered
+	// by a VoiceTicket event, or a CommandRejected: Unsupported when the
+	// room has no voice, Limit at -voice-max-users-per-room, Unavailable
+	// while the room's Mumble channel is not reachable.
+	RoomCommandVoiceJoin = 0x50
+)
+
+// VoiceRosterUpdated flags.
+const (
+	// RoomVoiceRosterFlagAvailable is set while the bridge watches the
+	// room's Mumble channel (the observer is connected and in it). Clear
+	// means voice is unavailable right now; the roster is then empty.
+	RoomVoiceRosterFlagAvailable = 0x01
+	roomVoiceRosterFlagMask      = RoomVoiceRosterFlagAvailable
+)
+
+// Voice roster entry kinds.
+const (
+	// RoomVoiceKindMumble is a native Mumble user (not a participant).
+	RoomVoiceKindMumble = 0
+	// RoomVoiceKindGawk is a bridged gawk participant; ParticipantID says
+	// which, and the roster shows its gawk nickname.
+	RoomVoiceKindGawk = 1
+	roomVoiceKindMax  = RoomVoiceKindGawk
+)
+
+// Voice roster entry flags.
+const (
+	RoomVoiceUserSelfMute   = 0x01
+	RoomVoiceUserSelfDeaf   = 0x02
+	RoomVoiceUserMute       = 0x04 // server mute
+	RoomVoiceUserDeaf       = 0x08 // server deafen
+	RoomVoiceUserSuppressed = 0x10
+	roomVoiceUserFlagMask   = 0x1f
 )
 
 // RoomEndReason values (RoomEvent.RoomEnding).
@@ -351,6 +416,23 @@ type RoomEvent struct {
 	Command uint8
 	// Message is the human-readable rejection detail (CommandRejected).
 	Message string
+	// VoiceURL and VoiceTicket are a VoiceTicket event's bridge URL and
+	// ticket; the ticket aliases the input record on parse.
+	VoiceURL    string
+	VoiceTicket []byte
+	// VoiceFlags and VoiceRoster are a VoiceRosterUpdated event's
+	// RoomVoiceRosterFlag* bitmap and entries.
+	VoiceFlags  uint8
+	VoiceRoster []VoiceRosterEntry
+}
+
+// VoiceRosterEntry is one person in a room's Mumble channel.
+type VoiceRosterEntry struct {
+	Session       uint32
+	Kind          uint8
+	ParticipantID uint16
+	Flags         uint8
+	Name          string
 }
 
 // RoomCommand is the parsed contents of a RoomCommand record.
@@ -452,6 +534,25 @@ func (r *roomReader) u32(sentinel error) uint32 {
 // bytes8 reads a uint8-length-prefixed byte field, bounded by max.
 func (r *roomReader) bytes8(sentinel error, what string, max int) []byte {
 	n := int(r.u8(sentinel))
+	if r.err != nil {
+		return nil
+	}
+	if n > max {
+		r.fail(sentinel, "%s %d bytes, max %d", what, n, max)
+		return nil
+	}
+	if r.off+n > len(r.buf) {
+		r.fail(sentinel, "%s overruns record", what)
+		return nil
+	}
+	v := r.buf[r.off : r.off+n]
+	r.off += n
+	return v
+}
+
+// bytes16 reads a uint16-length-prefixed byte field, bounded by max.
+func (r *roomReader) bytes16(sentinel error, what string, max int) []byte {
+	n := int(r.u16(sentinel))
 	if r.err != nil {
 		return nil
 	}
@@ -780,11 +881,49 @@ func AppendRoomEvent(dst []byte, e RoomEvent) ([]byte, error) {
 	case RoomEventCommandRejected:
 		dst = append(dst, e.Command, e.Reason)
 		dst, err = appendStr8(dst, e.Message, MaxRoomRejectMessageLen, ErrBadRoomEvent, "message")
+	case RoomEventVoiceTicket:
+		if len(e.VoiceURL) == 0 || len(e.VoiceURL) > MaxVoiceURLLen {
+			return nil, fmt.Errorf("%w: voice url %d bytes, want 1-%d", ErrBadRoomEvent, len(e.VoiceURL), MaxVoiceURLLen)
+		}
+		if len(e.VoiceTicket) == 0 || len(e.VoiceTicket) > MaxVoiceTicketLen {
+			return nil, fmt.Errorf("%w: voice ticket %d bytes, want 1-%d", ErrBadRoomEvent, len(e.VoiceTicket), MaxVoiceTicketLen)
+		}
+		dst = binary.BigEndian.AppendUint16(dst, uint16(len(e.VoiceURL)))
+		dst = append(dst, e.VoiceURL...)
+		dst = binary.BigEndian.AppendUint16(dst, uint16(len(e.VoiceTicket)))
+		dst = append(dst, e.VoiceTicket...)
+	case RoomEventVoiceRosterUpdated:
+		if e.VoiceFlags&^roomVoiceRosterFlagMask != 0 {
+			return nil, fmt.Errorf("%w: reserved voice roster flag bits set (0x%02x)", ErrBadRoomEvent, e.VoiceFlags)
+		}
+		if len(e.VoiceRoster) > MaxVoiceRosterEntries {
+			return nil, fmt.Errorf("%w: %d voice roster entries, max %d", ErrBadRoomEvent, len(e.VoiceRoster), MaxVoiceRosterEntries)
+		}
+		dst = append(dst, e.VoiceFlags)
+		dst = binary.BigEndian.AppendUint16(dst, uint16(len(e.VoiceRoster)))
+		for _, v := range e.VoiceRoster {
+			if v.Kind > roomVoiceKindMax {
+				return nil, fmt.Errorf("%w: voice roster kind %d", ErrBadRoomEvent, v.Kind)
+			}
+			if v.Flags&^roomVoiceUserFlagMask != 0 {
+				return nil, fmt.Errorf("%w: reserved voice user flag bits set (0x%02x)", ErrBadRoomEvent, v.Flags)
+			}
+			dst = binary.BigEndian.AppendUint32(dst, v.Session)
+			dst = append(dst, v.Kind)
+			dst = binary.BigEndian.AppendUint16(dst, v.ParticipantID)
+			dst = append(dst, v.Flags)
+			if dst, err = appendStr8(dst, v.Name, MaxVoiceNameLen, ErrBadRoomEvent, "voice name"); err != nil {
+				return nil, err
+			}
+		}
 	default:
 		return nil, fmt.Errorf("%w: event 0x%02x", ErrUnknownRoomKind, e.Kind)
 	}
 	if err != nil {
 		return nil, err
+	}
+	if len(dst) > MaxRoomRecordSize {
+		return nil, fmt.Errorf("%w: %d bytes exceeds MaxRoomRecordSize", ErrBadRoomEvent, len(dst))
 	}
 	return dst, nil
 }
@@ -817,6 +956,43 @@ func ParseRoomEvent(msg []byte) (RoomEvent, error) {
 		e.Command = r.u8(ErrBadRoomEvent)
 		e.Reason = r.u8(ErrBadRoomEvent)
 		e.Message = r.str8(ErrBadRoomEvent, "message", MaxRoomRejectMessageLen)
+	case RoomEventVoiceTicket:
+		url := r.bytes16(ErrBadRoomEvent, "voice url", MaxVoiceURLLen)
+		if r.err == nil && len(url) == 0 {
+			r.fail(ErrBadRoomEvent, "empty voice url")
+		}
+		if r.err == nil && !utf8.Valid(url) {
+			r.fail(ErrBadRoomEvent, "voice url is not valid UTF-8")
+		}
+		e.VoiceURL = string(url)
+		e.VoiceTicket = r.bytes16(ErrBadRoomEvent, "voice ticket", MaxVoiceTicketLen)
+		if r.err == nil && len(e.VoiceTicket) == 0 {
+			r.fail(ErrBadRoomEvent, "empty voice ticket")
+		}
+	case RoomEventVoiceRosterUpdated:
+		e.VoiceFlags = r.u8(ErrBadRoomEvent)
+		if r.err == nil && e.VoiceFlags&^roomVoiceRosterFlagMask != 0 {
+			r.fail(ErrBadRoomEvent, "reserved voice roster flag bits set (0x%02x)", e.VoiceFlags)
+		}
+		n := int(r.u16(ErrBadRoomEvent))
+		if r.err == nil && n > MaxVoiceRosterEntries {
+			r.fail(ErrBadRoomEvent, "%d voice roster entries, max %d", n, MaxVoiceRosterEntries)
+		}
+		for i := 0; i < n && r.err == nil; i++ {
+			var v VoiceRosterEntry
+			v.Session = r.u32(ErrBadRoomEvent)
+			v.Kind = r.u8(ErrBadRoomEvent)
+			if r.err == nil && v.Kind > roomVoiceKindMax {
+				r.fail(ErrBadRoomEvent, "voice roster kind %d", v.Kind)
+			}
+			v.ParticipantID = r.u16(ErrBadRoomEvent)
+			v.Flags = r.u8(ErrBadRoomEvent)
+			if r.err == nil && v.Flags&^roomVoiceUserFlagMask != 0 {
+				r.fail(ErrBadRoomEvent, "reserved voice user flag bits set (0x%02x)", v.Flags)
+			}
+			v.Name = r.str8(ErrBadRoomEvent, "voice name", MaxVoiceNameLen)
+			e.VoiceRoster = append(e.VoiceRoster, v)
+		}
 	default:
 		return e, fmt.Errorf("%w: event 0x%02x", ErrUnknownRoomKind, e.Kind)
 	}
@@ -847,7 +1023,7 @@ func AppendRoomCommand(dst []byte, c RoomCommand) ([]byte, error) {
 		dst, err = appendBroadcastID(dst, c.BroadcastID, ErrBadRoomCommand)
 	case RoomCommandSetNickname:
 		dst, err = appendStr8(dst, c.Nickname, MaxRoomNicknameLen, ErrBadRoomCommand, "nickname")
-	case RoomCommandEndRoom, RoomCommandResync:
+	case RoomCommandEndRoom, RoomCommandResync, RoomCommandVoiceJoin:
 		// no payload
 	default:
 		return nil, fmt.Errorf("%w: command 0x%02x", ErrUnknownRoomKind, c.Kind)
@@ -881,7 +1057,7 @@ func ParseRoomCommand(msg []byte) (RoomCommand, error) {
 		c.BroadcastID = r.broadcastID(ErrBadRoomCommand)
 	case RoomCommandSetNickname:
 		c.Nickname = r.str8(ErrBadRoomCommand, "nickname", MaxRoomNicknameLen)
-	case RoomCommandEndRoom, RoomCommandResync:
+	case RoomCommandEndRoom, RoomCommandResync, RoomCommandVoiceJoin:
 	default:
 		return c, fmt.Errorf("%w: command 0x%02x", ErrUnknownRoomKind, c.Kind)
 	}

@@ -1,6 +1,7 @@
 # Release automation: release-please maintains ONE combined release PR
 # covering every component (gawk-server, gawk-app, gawk-broadcast-desktop,
-# gawk-telemetry, gawk-admin, gawk-ios, gawk-sampler), computing each one's
+# gawk-telemetry, gawk-admin, gawk-ios, gawk-sampler, gawk-mumble-bridge),
+# computing each one's
 # next SemVer from conventional commits; merging it tags per component (e.g.
 # gawk-server/v0.5.0 — tag-separator "/") and the publish jobs below push the
 # docker image and OCI Helm chart to GHCR with matching versions.
@@ -55,6 +56,8 @@ jobs:
       admin_version: ${{ steps.rp.outputs['gawk-admin--version'] }}
       sampler_release: ${{ steps.rp.outputs['gawk-sampler--release_created'] }}
       sampler_version: ${{ steps.rp.outputs['gawk-sampler--version'] }}
+      bridge_release: ${{ steps.rp.outputs['gawk-mumble-bridge--release_created'] }}
+      bridge_version: ${{ steps.rp.outputs['gawk-mumble-bridge--version'] }}
     steps:
       # The release PR is opened and updated as the release GitHub App, not
       # GITHUB_TOKEN: GitHub parks the pull_request runs of a GITHUB_TOKEN-
@@ -322,3 +325,43 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
           helm package gawk-sampler/deploy/charts/gawk-sampler --version "$VERSION" --app-version "$VERSION"
           helm push "gawk-sampler-$VERSION.tgz" oci://ghcr.io/tuhis/charts
+
+  # R79 (docs/80 D1): the Mumble voice bridge, the sixth deployable. Same shape
+  # as publish-sampler: image + OCI chart in lockstep, built from the REPO ROOT
+  # because the bridge compiles gawk-server/wire and gawk-server/voice through
+  # a local `replace` (never a mirror). Default off in the only sense a chart
+  # can be — nothing installs it — and a relay without -voice-* set never dials
+  # one, so releasing it changes nothing for a deployment that does not use it.
+  publish-mumble-bridge:
+    needs: release-please
+    if: needs.release-please.outputs.bridge_release == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.release-please.outputs.bridge_version }}
+    steps:
+      - uses: actions/checkout@v7
+      # Host networking and the in-cluster registry mirror — see the action.
+      - uses: ./.github/actions/setup-buildx
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: gawk-mumble-bridge/deploy/Dockerfile
+          push: true
+          build-args: |
+            VERSION=${{ env.VERSION }}
+          tags: |
+            ghcr.io/tuhis/gawk-mumble-bridge:${{ env.VERSION }}
+            ghcr.io/tuhis/gawk-mumble-bridge:latest
+      - name: Push Helm chart
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm package gawk-mumble-bridge/deploy/charts/gawk-mumble-bridge --version "$VERSION" --app-version "$VERSION"
+          helm push "gawk-mumble-bridge-$VERSION.tgz" oci://ghcr.io/tuhis/charts

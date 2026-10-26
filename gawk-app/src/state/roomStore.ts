@@ -17,11 +17,16 @@ import {
   ROOM_EVENT_PARTICIPANT_LEFT,
   ROOM_EVENT_PARTICIPANT_UPDATED,
   ROOM_EVENT_ROOM_ENDING,
+  ROOM_EVENT_VOICE_ROSTER_UPDATED,
+  ROOM_EVENT_VOICE_TICKET,
+  ROOM_CAP_VOICE,
+  ROOM_VOICE_ROSTER_FLAG_AVAILABLE,
   ROOM_STATE_FLAG_ATTACH_OK,
   ROOM_STATE_FLAG_CREATOR,
   ROOM_STATE_FLAG_DYNAMIC,
   type RoomEvent,
   type RoomState,
+  type VoiceRosterEntry,
 } from '../transport/wire';
 
 export type RoomStatus =
@@ -57,6 +62,13 @@ export interface RoomStoreState {
   errorMessage: string | null;
   lastRejection: RoomRejection | null;
   lastRemoval: RoomRemoval | null;
+  // R79 (docs/80 D15, §11.1 C2): who is in the room's Mumble channel, from
+  // the last VoiceRosterUpdated (a snapshot, replaced whole). Null until one
+  // arrives. Kept across a RoomState that still advertises voice (the relay
+  // sends a fresh roster right after it), dropped with one that does not.
+  voiceRoster: VoiceRosterEntry[] | null;
+  // The roster's Available flag: the bridge watches the channel right now.
+  voiceAvailable: boolean;
 
   setStatus: (status: RoomStatus, retryNote?: string | null) => void;
   replaceState: (state: RoomState) => void;
@@ -102,8 +114,16 @@ export function applyRoomEvent(state: RoomState, ev: RoomEvent): RoomState {
       };
     case ROOM_EVENT_ROOM_ENDING:
     case ROOM_EVENT_COMMAND_REJECTED:
+    case ROOM_EVENT_VOICE_TICKET:
+    case ROOM_EVENT_VOICE_ROSTER_UPDATED:
       return state;
   }
+}
+
+// R79: the room advertises voice (docs/80 D12). Without it there is no voice
+// UI at all.
+export function roomHasVoice(s: RoomState | null): boolean {
+  return s !== null && (s.caps & ROOM_CAP_VOICE) !== 0;
 }
 
 export function isDynamicRoom(s: RoomState | null): boolean {
@@ -127,6 +147,8 @@ const INITIAL = {
   errorMessage: null,
   lastRejection: null,
   lastRemoval: null,
+  voiceRoster: null as VoiceRosterEntry[] | null,
+  voiceAvailable: false,
 };
 
 export const useRoomStore = create<RoomStoreState>((set, get) => ({
@@ -135,7 +157,11 @@ export const useRoomStore = create<RoomStoreState>((set, get) => ({
   setStatus: (status, retryNote = null) => set({ status, retryNote }),
 
   replaceState: (snapshot) =>
-    set({ snapshot, status: 'joined', retryNote: null }),
+    set(
+      roomHasVoice(snapshot)
+        ? { snapshot, status: 'joined', retryNote: null }
+        : { snapshot, status: 'joined', retryNote: null, voiceRoster: null, voiceAvailable: false },
+    ),
 
   applyEvent: (ev) => {
     const s = get();
@@ -145,6 +171,13 @@ export const useRoomStore = create<RoomStoreState>((set, get) => ({
     }
     if (ev.kind === ROOM_EVENT_ROOM_ENDING) {
       set({ endReason: ev.reason });
+      return;
+    }
+    if (ev.kind === ROOM_EVENT_VOICE_ROSTER_UPDATED) {
+      set({
+        voiceRoster: ev.voiceRoster,
+        voiceAvailable: (ev.voiceFlags & ROOM_VOICE_ROSTER_FLAG_AVAILABLE) !== 0,
+      });
       return;
     }
     if (s.snapshot === null) return;

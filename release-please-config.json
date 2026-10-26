@@ -103,6 +103,17 @@
           "path": "deploy/charts/gawk-sampler/Chart.yaml"
         }
       ]
+    },
+    "gawk-mumble-bridge": {
+      "release-type": "go",
+      "component": "gawk-mumble-bridge",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "deploy/charts/gawk-mumble-bridge/Chart.yaml"
+        }
+      ]
     }
   }
 }

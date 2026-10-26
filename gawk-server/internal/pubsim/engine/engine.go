@@ -79,6 +79,8 @@ type Config struct {
 	// RoomCreateSecret is the fleet's -room-create-secret, presented on a
 	// mint when the relay requires one.
 	RoomCreateSecret string
+	// RoomVoice asks for a voice room on the mint (R79, ?voice=1).
+	RoomVoice bool
 	// Nickname is the one name the broadcaster carries in a room — the
 	// roster entry and the tile label alike (the web broadcaster page's
 	// rule; docs/44 §4.9). Empty uses DefaultNickname. SetNickname changes

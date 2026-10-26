@@ -34,6 +34,7 @@ import (
 
 	"github.com/Tuhis/gawk/gawk-admin/internal/store"
 	"github.com/Tuhis/gawk/gawk-server/moderation"
+	"github.com/Tuhis/gawk/gawk-server/rooms"
 	"github.com/Tuhis/gawk/gawk-server/screening"
 )
 
@@ -624,6 +625,10 @@ func wirings() map[string]opWiring {
 		"GET /api/v1/rooms/{name}": {success: map[string]func() any{
 			"200": func() any { return &roomJSON{} },
 		}},
+		"PUT /api/v1/rooms/{name}/voice": {
+			request: func() any { return &roomVoiceRequest{} },
+			success: map[string]func() any{"200": func() any { return &roomJSON{} }},
+		},
 		"POST /api/v1/rooms/{name}/end": {},
 		"DELETE /api/v1/rooms/{name}":   {},
 		"PATCH /api/v1/rooms/{name}": {
@@ -855,13 +860,16 @@ func schemaFixtures() map[string]any {
 	participant := roomParticipantJSON{ID: 1, Nickname: "tuhis", ClientKind: "native", Streaming: true, Speaking: false, Identity: "reserved"}
 	roomLinks := roomLinksJSON{Join: "https://gawk.example/#/room/team-standup"}
 	counts := roomCountsJSON{Participants: 1, Streaming: 1, Watching: 0, Attachments: 1}
+	// Fully populated for the shape check, not a valid mapping: a channel
+	// path never goes with temporary (rooms.ValidateMumble).
+	mumble := &rooms.MumbleIntegration{Channel: "Friends/Gaming", Temporary: true}
 	room := roomJSON{
 		Name: "team-standup", Kind: "static", Code: "team-standup", DisplayName: "Team standup",
 		MaxBroadcasts: 4, Live: true, Links: &roomLinks, Counts: counts,
 		Attachments: &[]roomAttachmentJSON{attachment}, Participants: &[]roomParticipantJSON{participant},
 		HomeHolder: "gawk-server-7c9f8b6d5-2xk4p",
 		Key:        "3c7d91fe20ab", CreatedAt: ts, EmptySince: ts, HasAttachSecret: true, Managed: true,
-		Screening: "exempt",
+		Screening: "exempt", Mumble: mumble,
 	}
 
 	// R40 (docs/71 §9.4).
@@ -937,7 +945,9 @@ func schemaFixtures() map[string]any {
 		"RoomAttachment":    attachment,
 		"AttachmentLinks":   attLinks,
 		"RoomParticipant":   participant,
-		"CreateRoomRequest": createRoomRequest{Code: "team-standup", DisplayName: "Team standup", MaxBroadcasts: 4, WithAttachSecret: true},
+		"CreateRoomRequest": createRoomRequest{Code: "team-standup", DisplayName: "Team standup", MaxBroadcasts: 4, WithAttachSecret: true, Mumble: mumble},
+		"RoomMumble":        *mumble,
+		"RoomVoiceRequest":  roomVoiceRequest{Mumble: mumble},
 		"RoomWithSecret":    roomWithSecretJSON{Room: room, AttachSecret: "s3cr3t"},
 
 		"RoomPatchRequest":          roomPatchRequest{Screening: &screeningExempt},

@@ -306,3 +306,27 @@ exactly as before, and pubsim's extra line only appears on a refused dial.
 One in-harness retry of the browser scenario (relaunch the browser, never the
 relay/publisher — docs/25 Decision 8), logged loudly as `RETRY:`. Recurring
 attempt-1 failures are findings for docs/25, not noise to rerun away.
+
+## Room voice (R79, docs/80 MV7)
+
+```sh
+mkdir -p e2e/bin
+(cd gawk-server && go build -o ../e2e/bin/ ./cmd/gawk-server ./cmd/gawk-pubsim ./cmd/gawk-devcert)
+(cd gawk-mumble-bridge && go build -o ../e2e/bin/ ./cmd/gawk-mumble-bridge ./cmd/gawk-mumblesim)
+node e2e/voice.mjs
+```
+
+Every component real: the relay, two `gawk-mumble-bridge` pods behind
+`udp-lb.mjs` (a UDP LoadBalancer stand-in with kube-proxy's per-flow pinning
+and terminating endpoints), murmur 1.6 in docker, three Chromium participants
+on the fake microphone and `gawk-mumblesim`, a native Mumble user that echoes
+what it hears. Six passes: the voice roster before anyone is in voice, audio
+both ways, a Mumble mute and kick, a bridge pod drain mid-call, a dynamic
+room's temporary channel, and a gawk IP ban. CI runs it as `e2e-voice`.
+
+`e2e/voice-load.sh [N …]` is the one-pod load measurement (not a gate):
+N real voice participants in one channel, three talking, with delivery, join
+latency and CPU per N appended to `docs/assets/80/load/results.jsonl`.
+
+`e2e/voice-panel.mjs` is MV6's: the voice panel against an in-page fake relay
+and bridge, with screenshots at phone and desktop widths.

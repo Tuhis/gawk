@@ -1,0 +1,73 @@
+{
+  "opts": {
+    "capture": "mstp",
+    "source": "synth",
+    "frameDurationUs": 10000,
+    "transport": "inpage",
+    "seconds": 6,
+    "echoUrl": "https://127.0.0.1:39648/echo",
+    "echoHash": "2119554432b7e16c50be0caafd0e01b8b25ddd8a936ff6b5331c56dd4aac4aa3"
+  },
+  "ua": "Mozilla/5.0 (X11; Linux x86_64; rv:153.0) Gecko/20100101 Firefox/153.0",
+  "errors": [
+    "no MediaStreamTrackProcessor on Window"
+  ],
+  "notes": [],
+  "env": {
+    "AudioEncoder": true,
+    "AudioDecoder": true,
+    "MediaStreamTrackProcessor": false,
+    "AudioWorkletNode": true,
+    "WebTransport": true
+  },
+  "support": {
+    "withFrameDuration": {
+      "supported": true,
+      "echoedOpus": {
+        "complexity": 9,
+        "format": "opus",
+        "frameDuration": 10000,
+        "packetlossperc": 0,
+        "usedtx": false,
+        "useinbandfec": false
+      }
+    },
+    "withFrameDurationVoip": {
+      "supported": true,
+      "echoedOpus": {
+        "complexity": 9,
+        "format": "opus",
+        "frameDuration": 10000,
+        "packetlossperc": 0,
+        "usedtx": false,
+        "useinbandfec": false
+      }
+    },
+    "withFrameDurationLowdelay": {
+      "supported": true,
+      "echoedOpus": {
+        "complexity": 9,
+        "format": "opus",
+        "frameDuration": 10000,
+        "packetlossperc": 0,
+        "usedtx": false,
+        "useinbandfec": false
+      }
+    },
+    "plain": {
+      "supported": true,
+      "echoedOpus": null
+    }
+  },
+  "meta": {
+    "browser": "firefox",
+    "version": "153.0",
+    "playwright": "1.62.1",
+    "host": "linux x64",
+    "headless": true,
+    "date": "2026-10-26T07:12:53.850Z",
+    "seconds": 6,
+    "label": "mstp-synth-10ms-inpage-default-rep1"
+  },
+  "console": []
+}

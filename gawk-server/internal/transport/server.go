@@ -32,6 +32,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/internal/ops"
 	"github.com/Tuhis/gawk/gawk-server/internal/roomsrv"
 	"github.com/Tuhis/gawk/gawk-server/moderation"
+	"github.com/Tuhis/gawk/gawk-server/voice"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
@@ -199,6 +200,12 @@ type Server struct {
 	popMod popModeration
 	// roomForwarder sends a linked PoP's room joins home (room_link.go).
 	roomForwarder atomic.Pointer[roomForwarderBox]
+	// voice is R79's observer-link manager (voice_observer.go); nil until
+	// StartVoice, which runs only with voice configured.
+	voice atomic.Pointer[voiceManagerBox]
+	// testHookVoiceManager adjusts the voice manager before it starts (a
+	// test's dialer and backoff). Atomic, as above.
+	testHookVoiceManager atomic.Pointer[func(*voiceManager)]
 }
 
 // rejectedDraining rejects a new CONNECT with 503 once the drain has begun,
@@ -366,6 +373,12 @@ func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) 
 		// Pod-to-pod room proxying; 404s outright unless -cluster-mode
 		// installed the room store.
 		mux.HandleFunc("CONNECT /internal/room/{code}", s.handleInternalRoom)
+		// R79 (docs/80 §11.3): the bridge's session links; registered only
+		// with voice configured, so a relay without a bridge has no such
+		// route at all.
+		if cfg.VoiceConfigured() {
+			mux.HandleFunc("CONNECT "+voice.SessionPath+"{code}", s.handleInternalVoice)
+		}
 	}
 	// R74 PoP relays (docs/76): the /pop/* routes exist only with -pops on.
 	if cfg.Pops {
