@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
 	"log/slog"
@@ -26,6 +28,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/internal/ops"
 	"github.com/Tuhis/gawk/gawk-server/internal/roomcluster"
 	"github.com/Tuhis/gawk/gawk-server/internal/roomsrv"
+	"github.com/Tuhis/gawk/gawk-server/internal/tlsutil"
 	"github.com/Tuhis/gawk/gawk-server/internal/transport"
 	"github.com/Tuhis/gawk/gawk-server/moderation"
 	"github.com/Tuhis/gawk/gawk-server/rooms"
@@ -87,6 +90,13 @@ func TestRoomOptionsCarryAllKnobs(t *testing.T) {
 		MaxRoomBroadcasts:   5,
 		MaxRoomParticipants: 11,
 		RoomCreateSecret:    "invite",
+		// R79 (docs/80 §11.4): the voice knobs the registry consumes.
+		VoiceBridgeAddr:      "bridge:4444",
+		VoiceBridgePublicURL: "https://voice.example/voice",
+		VoiceBridgePSK:       "link-psk",
+		VoiceTicketSecret:    "0123456789abcdef",
+		VoiceMaxRooms:        6,
+		VoiceMaxUsersPerRoom: 13,
 	}
 	want := roomsrv.Options{
 		EmptyGrace:      77 * time.Second,
@@ -94,9 +104,64 @@ func TestRoomOptionsCarryAllKnobs(t *testing.T) {
 		MaxBroadcasts:   5,
 		MaxParticipants: 11,
 		CreateSecret:    "invite",
+		Voice: roomsrv.VoiceOptions{
+			Enabled:         true,
+			PublicURL:       "https://voice.example/voice",
+			TicketSecret:    []byte("0123456789abcdef"),
+			MaxRooms:        6,
+			MaxUsersPerRoom: 13,
+		},
 	}
 	if got := roomOptions(cfg); !reflect.DeepEqual(got, want) {
 		t.Errorf("roomOptions(cfg) = %+v, want %+v", got, want)
+	}
+	// Without a bridge voice is off, whatever else is set.
+	cfg.VoiceBridgePSK = ""
+	if got := roomOptions(cfg); got.Voice.Enabled {
+		t.Errorf("voice enabled with a partial bridge config: %+v", got.Voice)
+	}
+}
+
+// R79: the observer dial's knobs reach the transport — address, TLS name
+// and the CA file, read into a pool; a missing or empty CA file refuses to
+// start. Voice's gawk_limit series exist only with voice configured.
+func TestVoiceBridgeOptionsCarryEveryKnob(t *testing.T) {
+	cfg := config.Config{VoiceBridgeAddr: "bridge:4444", VoiceBridgeServerName: "bridge.internal"}
+	o, err := voiceBridgeOptions(cfg)
+	if err != nil || o.Addr != "bridge:4444" || o.ServerName != "bridge.internal" || o.RootCAs != nil {
+		t.Fatalf("voiceBridgeOptions = %+v, %v", o, err)
+	}
+	cert, err := tlsutil.GenerateDevCert([]string{"bridge.internal"}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	caFile := filepath.Join(dir, "ca.pem")
+	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Leaf.Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.VoiceBridgeCAFile = caFile
+	if o, err = voiceBridgeOptions(cfg); err != nil || o.RootCAs == nil {
+		t.Fatalf("with a CA file = %+v, %v", o, err)
+	}
+	if _, err := cert.Leaf.Verify(x509.VerifyOptions{Roots: o.RootCAs, DNSName: "bridge.internal"}); err != nil {
+		t.Fatalf("the pool does not verify the bridge certificate: %v", err)
+	}
+	empty := filepath.Join(dir, "empty.pem")
+	_ = os.WriteFile(empty, []byte("not pem"), 0o600)
+	for _, f := range []string{empty, filepath.Join(dir, "missing.pem")} {
+		cfg.VoiceBridgeCAFile = f
+		if _, err := voiceBridgeOptions(cfg); err == nil {
+			t.Errorf("CA file %s accepted", f)
+		}
+	}
+	if _, ok := limits(config.Config{})["voice_max_rooms"]; ok {
+		t.Error("a voice limit series without voice")
+	}
+	on := config.Config{Rooms: true, VoiceBridgeAddr: "b:1", VoiceBridgePublicURL: "https://v", VoiceBridgePSK: "p",
+		VoiceTicketSecret: "0123456789abcdef", VoiceMaxRooms: 4, VoiceMaxUsersPerRoom: 5}
+	if l := limits(on); l["voice_max_rooms"] != 4 || l["voice_max_users_per_room"] != 5 {
+		t.Errorf("voice limits = %v", l)
 	}
 }
 

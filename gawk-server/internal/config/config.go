@@ -84,6 +84,32 @@ type Config struct {
 	// exactly like PublishSecret.
 	RoomCreateSecret string
 
+	// Room voice through gawk-mumble-bridge (R79, docs/80 §11.4). Voice is
+	// configured only when VoiceBridgeAddr, VoiceBridgePublicURL,
+	// VoiceBridgePSK and VoiceTicketSecret are ALL set (a partial set, or
+	// voice without Rooms, refuses to start); VoiceConfigured says so.
+	// Unconfigured, nothing about the relay changes (the off-path).
+	//
+	// VoiceBridgeAddr is the bridge's internal QUIC host:port the home pod
+	// dials for observer links; VoiceBridgePublicURL the https URL browsers
+	// open voice sessions on, sent in every VoiceTicket.
+	VoiceBridgeAddr      string
+	VoiceBridgePublicURL string
+	// VoiceBridgePSK gates both internal links (never logged).
+	VoiceBridgePSK string
+	// VoiceTicketSecret is the ticket HMAC key the bridge shares, at least
+	// voice.MinSecretLen bytes (never logged).
+	VoiceTicketSecret string
+	// VoiceBridgeServerName is the TLS name verified on the observer dial;
+	// defaults to VoiceBridgeAddr's host. VoiceBridgeCAFile adds roots for
+	// it (the dev stack's self-signed certificate); empty uses the system's.
+	VoiceBridgeServerName string
+	VoiceBridgeCAFile     string
+	// VoiceMaxRooms caps voice-live dynamic rooms (per pod; fleet-wide in
+	// cluster mode); VoiceMaxUsersPerRoom caps voice sessions per room.
+	VoiceMaxRooms        int
+	VoiceMaxUsersPerRoom int
+
 	// EventBusURL is the NATS server of the event bus (docs/51), e.g.
 	// tls://nats.gawk.svc:4222. Empty (the default) means no client, no
 	// goroutine and no event.
@@ -488,6 +514,22 @@ func parse(args []string, getenv func(string) string, p Profile, register func(f
 		"maximum control sessions in one room")
 	roomCreateSecret := fs.String("room-create-secret", env("GAWK_ROOM_CREATE_SECRET", ""),
 		"when set, required (as ?create=) to mint a dynamic room; static rooms are unaffected")
+	voiceBridgeAddr := fs.String("voice-bridge-addr", env("GAWK_VOICE_BRIDGE_ADDR", ""),
+		"R79 room voice: gawk-mumble-bridge's internal QUIC address (host:port) the home pod dials for observer links; voice needs this, -voice-bridge-public-url, -voice-bridge-psk and -voice-ticket-secret, and -rooms")
+	voiceBridgePublicURL := fs.String("voice-bridge-public-url", env("GAWK_VOICE_BRIDGE_PUBLIC_URL", ""),
+		"R79 room voice: the bridge's https URL browsers open a voice session on, sent in every VoiceTicket")
+	voiceBridgePSK := fs.String("voice-bridge-psk", env("GAWK_VOICE_BRIDGE_PSK", ""),
+		"R79 room voice: pre-shared key gating the observer link and the bridge's /internal/voice/ session links")
+	voiceTicketSecret := fs.String("voice-ticket-secret", env("GAWK_VOICE_TICKET_SECRET", ""),
+		"R79 room voice: HMAC key for voice tickets and temporary channel names, shared with the bridge; at least 16 bytes")
+	voiceBridgeServerName := fs.String("voice-bridge-server-name", env("GAWK_VOICE_BRIDGE_SERVER_NAME", ""),
+		"R79 room voice: TLS server name verified on the observer dial; empty = the host of -voice-bridge-addr")
+	voiceBridgeCAFile := fs.String("voice-bridge-ca-file", env("GAWK_VOICE_BRIDGE_CA_FILE", ""),
+		"R79 room voice: PEM roots for the observer dial (a self-signed bridge certificate); empty = the system roots")
+	voiceMaxRooms := fs.String("voice-max-rooms", env("GAWK_VOICE_MAX_ROOMS", "10"),
+		"R79 room voice: maximum voice-live dynamic rooms (per pod; fleet-wide in cluster mode); a mint over it gets a room without voice")
+	voiceMaxUsers := fs.String("voice-max-users-per-room", env("GAWK_VOICE_MAX_USERS_PER_ROOM", "25"),
+		"R79 room voice: maximum voice sessions in one room")
 	eventBusURL := fs.String("eventbus-url", env("GAWK_EVENTBUS_URL", ""),
 		"R50 NATS JetStream URL for lifecycle events (e.g. tls://nats:4222); empty disables the bus entirely")
 	eventBusCredsFile := fs.String("eventbus-creds-file", env("GAWK_EVENTBUS_CREDS_FILE", ""),
@@ -764,7 +806,22 @@ func parse(args []string, getenv func(string) string, p Profile, register func(f
 		return Config{}, fmt.Errorf("invalid max-room-participants %q: want a positive integer", *maxRoomParticipants)
 	}
 
+	voiceCfg, err := parseVoice(*roomsFlag, *voiceBridgeAddr, *voiceBridgePublicURL, *voiceBridgePSK, *voiceTicketSecret,
+		*voiceBridgeServerName, *voiceBridgeCAFile, *voiceMaxRooms, *voiceMaxUsers)
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
+		VoiceBridgeAddr:       voiceCfg.VoiceBridgeAddr,
+		VoiceBridgePublicURL:  voiceCfg.VoiceBridgePublicURL,
+		VoiceBridgePSK:        voiceCfg.VoiceBridgePSK,
+		VoiceTicketSecret:     voiceCfg.VoiceTicketSecret,
+		VoiceBridgeServerName: voiceCfg.VoiceBridgeServerName,
+		VoiceBridgeCAFile:     voiceCfg.VoiceBridgeCAFile,
+		VoiceMaxRooms:         voiceCfg.VoiceMaxRooms,
+		VoiceMaxUsersPerRoom:  voiceCfg.VoiceMaxUsersPerRoom,
+
 		Addr:           *addr,
 		CertFile:       *certFile,
 		KeyFile:        *keyFile,

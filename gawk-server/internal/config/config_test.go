@@ -40,10 +40,13 @@ func TestDefaults(t *testing.T) {
 		MaxRooms:              10,
 		MaxRoomBroadcasts:     4,
 		MaxRoomParticipants:   50,
-		DVRWindow:             3 * time.Second,
-		DVRMaxBytes:           24 << 20,
-		DVRMaxCatchup:         4,
-		DVRAudio:              true,
+		// R79 (docs/80 §11.4): voice is off (no bridge), its caps defaulted.
+		VoiceMaxRooms:        10,
+		VoiceMaxUsersPerRoom: 25,
+		DVRWindow:            3 * time.Second,
+		DVRMaxBytes:          24 << 20,
+		DVRMaxCatchup:        4,
+		DVRAudio:             true,
 		// R29 (docs/34 §5.2): quality-first default, chart-overridable.
 		ParityDefault: 2,
 		// R30 (docs/35 §6): on by default — zero relay cost until a viewer

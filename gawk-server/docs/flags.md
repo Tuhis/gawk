@@ -75,6 +75,14 @@ deployment must not be able to turn TLS verification off by setting one
 | `-max-room-participants` | `GAWK_MAX_ROOM_PARTICIPANTS` | `50` |
 | `-room-create-secret` | `GAWK_ROOM_CREATE_SECRET` | (empty = anyone with a live broadcast may mint a dynamic room) |
 | `-rooms-file` | `GAWK_ROOMS_FILE` | (empty; JSON array of static rooms for non-Kubernetes deployments) |
+| `-voice-bridge-addr` | `GAWK_VOICE_BRIDGE_ADDR` | (empty; the bridge's internal QUIC `host:port` for observer links) |
+| `-voice-bridge-public-url` | `GAWK_VOICE_BRIDGE_PUBLIC_URL` | (empty; the bridge's https URL sent to browsers in every voice ticket) |
+| `-voice-bridge-psk` | `GAWK_VOICE_BRIDGE_PSK` | (empty; gates the observer and session links) |
+| `-voice-ticket-secret` | `GAWK_VOICE_TICKET_SECRET` | (empty; ticket HMAC key shared with the bridge, ≥ 16 bytes) |
+| `-voice-bridge-server-name` | `GAWK_VOICE_BRIDGE_SERVER_NAME` | (empty = the host of `-voice-bridge-addr`) |
+| `-voice-bridge-ca-file` | `GAWK_VOICE_BRIDGE_CA_FILE` | (empty = system roots; PEM roots for the observer dial) |
+| `-voice-max-rooms` | `GAWK_VOICE_MAX_ROOMS` | `10` (voice-live dynamic rooms; per pod, fleet-wide in cluster mode) |
+| `-voice-max-users-per-room` | `GAWK_VOICE_MAX_USERS_PER_ROOM` | `25` |
 | `-pops` | `GAWK_POPS` | `false` (R74 PoP relays; needs `-cluster-mode` or `-pops-file`) |
 | `-pops-file` | `GAWK_POPS_FILE` | (empty; YAML or JSON list of PoPs for non-Kubernetes deployments; no chart value) |
 | `-pop-uplink-linger` | `GAWK_POP_UPLINK_LINGER` | `30s` |
@@ -98,6 +106,21 @@ chart) or from `-rooms-file` elsewhere: a JSON array of
 "maxBroadcasts": 4, "maxParticipants": 50}` objects, reloaded on change and on SIGHUP exactly like
 `-moderation-source=file`. Room codes are joinable secrets like broadcast
 IDs and are keyed by the same `-stats-key` HMAC everywhere they appear.
+
+**Room voice (R79, [docs/80](../../docs/80-mumble-bridge.md)) is on only
+when `-voice-bridge-addr`, `-voice-bridge-public-url`, `-voice-bridge-psk`
+and `-voice-ticket-secret` are all set**, and needs `-rooms`; a partial set
+refuses to start. Without them nothing changes: no `/internal/voice/` route,
+no `voice` room capability, no observer link, no `gawk_*voice*` series. With
+them, a static room with a `mumble` mapping (`spec.integrations.mumble` on
+its CR, or `"mumble": {"channel": "Friends/Gaming"}` in `-rooms-file`) is
+voice-live — homed and observed even before anyone joins, in cluster mode by
+whichever pod claims its lease — and `CONNECT /room/new?voice=1` mints a
+dynamic room with a temporary channel while `-voice-max-rooms` has room
+(over it, the room is minted without voice). The home pod dials the bridge's
+`/internal/observe` per voice-live room and serves the bridge's session
+links on `CONNECT /internal/voice/{code}` (PSK-gated, internal only; a
+non-home pod proxies them home).
 
 **`-keepalive-period` is what keeps idle viewers connected** while the
 broadcaster is away: QUIC PINGs reset both endpoints' idle timers. Raising
