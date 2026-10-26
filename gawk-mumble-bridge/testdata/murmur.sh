@@ -104,7 +104,10 @@ case "$cmd" in
         else
           out=$(docker exec -u 10000 "$prefix-$n" /usr/bin/mumble-server --ini /data/mumble_server_config.ini --set-su-pw "$supw" 2>&1) && ok=true
         fi
-        if $ok && ! grep -qi "locked\|error\|fail" <<<"$out"; then break; fi
+        # 1.5 confirms ("Superuser password set"); 1.6 prints nothing, so
+        # only its exit status says. Never grep for failure words: murmur's
+        # own start-up lines could carry them on a successful set.
+        if $ok && { [[ "$version" != 1.5 ]] || grep -q "Superuser password set" <<<"$out"; }; then break; fi
         ok=false
         sleep 0.5
       done
