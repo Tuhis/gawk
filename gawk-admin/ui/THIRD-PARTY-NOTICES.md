@@ -105,7 +105,7 @@ script for what counts as a dependency here and why.
 | `postcss-value-parser` | 4.2.0 | `MIT` | Copyright (c) Bogdan Chadkin <trysound@yandex.ru> |
 | `prismjs` | 1.30.0 | `MIT` | Copyright (c) 2012 Lea Verou |
 | `prop-types` | 15.8.1 | `MIT` | Copyright (c) 2013-present, Facebook, Inc |
-| `react` | 19.2.8 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
+| `react` | 19.3.1 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
 | `react-dom` | 19.2.8 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
 | `react-is` | 16.13.1 | `MIT` | Copyright (c) Facebook, Inc. and its affiliates |
 | `react-tabs` | 6.1.1 | `MIT` | Copyright (c) Matt Zabriskie and Daniel Tschinder |
