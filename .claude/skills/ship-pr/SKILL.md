@@ -123,8 +123,8 @@ claim to verify, not an order:
 - For findings in an issue comment, such as an `@claude` round's report,
   reply in one PR comment that covers each point with its commit SHA.
 
-Push the batch, then go back to waiting. The automatic review won't look at
-the fixes. §3 gets them reviewed.
+Push the batch, then go back to waiting. The automatic review usually won't look
+at the fixes. §3 gets them reviewed.
 
 ## 3. `@claude` review rounds
 
@@ -140,13 +140,16 @@ A round is requested in three cases. All share one cap of 3 rounds per PR:
 
 **Track which commit each review covered.** Call it the *marker*:
 
-- **Automatic review**, with findings or with a clean summary: the
-  `headSha` of the `claude-review` run whose `createdAt`…`updatedAt` window
-  contains the `created_at` of what it posted (`gh run list --workflow
+- **Automatic review**, with findings or with a clean summary: the `headSha`
+  of the `claude-review` run whose `createdAt`…`updatedAt` window contains
+  the `created_at` of what it posted (`gh run list --workflow
   claude-code-review.yml --branch <branch> --json
   headSha,createdAt,updatedAt`). If windows overlap, take the older SHA.
-  Don't use an inline comment's `original_commit_id`. It records the head
-  when the comment was posted, not the code the job checked out.
+  Both workflows post as `claude[bot]`, and only a `## Code review` summary
+  is certainly from `claude-review`. If an inline comment also falls inside
+  a `claude.yml` run's window, treat it as that round's and use the round's
+  named SHA. Don't use an inline comment's `original_commit_id`. It records
+  the head when the comment was posted, not the code the job checked out.
 - **No Claude review comment on the PR at all:** nothing is reviewed. The
   check can go green, or be skipped, without posting anything. Wait until
   `claude-review` has finished. If it posted nothing, round 1 is a full
@@ -193,6 +196,8 @@ PR in round 1, instead of "since your last review".
   posting the same round's comment again, with the current head SHA. If
   the retry fails too, stop and hand back.
 - Handle the round's findings as in §2, then request the next round.
+  Don't post any other `@claude` comment while a round is open. One job at
+  a time keeps every reply attributable.
 - **Stop early** when a round leaves nothing to push. That means it reports
   nothing actionable, or you declined each finding with a reply saying why.
   Commits that land later (a rebase, a person's push, an `@claude` job's
@@ -211,8 +216,10 @@ Merge only when **all** of these hold for the **current head SHA**:
   it was declined with a reply, or fixed in a commit that a later review
   covered. A review whose findings were all declined, with nothing pushed,
   satisfies this. Nothing re-runs, and nothing needs to. **Exception:**
-  once the 3-round cap is reached, the commits after round 3 merge
-  unreviewed, and the final report names them. Fixed findings raised in
+  once the 3-round cap is reached, commits after round 3's marker that fix
+  one of its findings, and are named in the reply to it, merge unreviewed.
+  The final report names them. Any other commit after the marker is a
+  hand-back. Fixed findings raised in
   or after round 3 count as handled once each has a reply naming its
   commit.
 - On a large PR, the `@claude` rounds are finished: a round that left
@@ -232,16 +239,17 @@ Merge only when **all** of these hold for the **current head SHA**:
   git range-diff "$base"..<marker> origin/main..HEAD
   ```
 
-  A commit counts as changed only if its own `+`/`-` lines differ. A `!`
-  for moved context alone doesn't count. Commits stay reviewed only up to
-  the **first changed commit**, because a later commit that replays
-  identically still sits on top of the change. Move the marker to the
-  rebased copy of the last commit before the first changed one, or to the
-  new merge-base if the first commit changed. If nothing changed, it moves
-  to the rebased copy of the marker. If there was no marker yet,
-  everything stays unreviewed. Everything after the marker is unreviewed.
-  If the round cap is already used up and the rebase changed reviewed
-  code, stop and hand back.
+  Any range-diff line other than `=` counts as changed, including a dropped
+  (`<`) or new (`>`) commit. A `!` whose only difference is moved context
+  lines, with the commit's own `+`/`-` lines identical, doesn't. Commits
+  stay reviewed only up to the **first changed commit**, because a later
+  commit that replays identically still sits on top of the change. Move the
+  marker to the rebased copy of the last commit before the first changed
+  one, or to the new merge-base if the first commit changed. If nothing
+  changed, it moves to the rebased copy of the marker. If there was no
+  marker yet, everything stays unreviewed. Everything after the marker is
+  unreviewed. If the round cap is already used up and the rebase changed
+  reviewed code, stop and hand back.
 
 Then run:
 
@@ -276,5 +284,7 @@ The steps above also stop and hand back in these cases:
 - An `@claude` round's retry fails too (§3).
 - The review-thread query reports `hasNextPage` (§2).
 - The round cap is used up and a rebase changed reviewed code (§4).
+- The round cap is used up and a commit after round 3's marker isn't a fix
+  named in a reply to one of its findings (§4).
 
 Say exactly what is blocking and leave the PR open.
