@@ -89,7 +89,7 @@ hashing would buy, and stable names mean a rebuild overwrites in place.
   has two implementations behind `//go:build duckdb`; everything else in
   the module is cgo-free and stays that way. The image is
   `CGO_ENABLED=1 -tags duckdb` onto `distroless/cc-debian13`, built by
-  `golang:1.26-trixie`, and CI builds both configurations — a build tag
+  `golang:1.27-trixie`, and CI builds both configurations — a build tag
   nobody exercises is a build tag that rots.
 - **The base image and the builder are pinned together, and both
   matter.** `cc` rather than `base` because DuckDB is C++ and the binary

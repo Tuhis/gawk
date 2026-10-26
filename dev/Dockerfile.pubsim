@@ -14,7 +14,7 @@
 # relay's image and chart are a deployed component, and pubsim is test
 # tooling that must not ride along in either.
 
-FROM golang:1.26-alpine AS build
+FROM golang:1.27-alpine AS build
 WORKDIR /src
 # Manifests before sources: the `go mod download` layer then depends on
 # go.mod/go.sum alone, and a persistent build cache (a developer's own
