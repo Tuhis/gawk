@@ -128,7 +128,7 @@ the fixes. §3 gets them reviewed.
 
 ## 3. `@claude` review rounds
 
-A round is requested in two cases. Both share one cap of 3 rounds per PR:
+A round is requested in three cases. All share one cap of 3 rounds per PR:
 
 - **Large PR (more than 2000 lines):** always request rounds, even when the
   automatic review was clean.
@@ -136,6 +136,8 @@ A round is requested in two cases. Both share one cap of 3 rounds per PR:
   for its findings: request rounds until those commits are reviewed. A small
   PR whose automatic review was clean and that got no later commits needs
   no rounds.
+- **No automatic review at all:** `claude-review` finished, or was skipped,
+  without posting anything. Round 1 is a full review of the PR.
 
 **Track which commit each review covered.** Call it the *marker*:
 
@@ -209,8 +211,9 @@ Merge only when **all** of these hold for the **current head SHA**:
   covered. A review whose findings were all declined, with nothing pushed,
   satisfies this. Nothing re-runs, and nothing needs to.
 - The one exception is a reached 3-round cap. The commits after round 3
-  then merge unreviewed, and the final report names them. Round 3's fixed
-  findings count as handled once each has a reply naming its commit.
+  then merge unreviewed, and the final report names them. Fixed findings
+  raised in or after round 3 count as handled once each has a reply naming
+  its commit.
 - On a large PR, the `@claude` rounds are finished: a round that left
   nothing to push (§3), or 3 rounds with round 3's findings handled as in
   §2.
