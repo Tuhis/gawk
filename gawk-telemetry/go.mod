@@ -15,7 +15,7 @@ require (
 
 require (
 	github.com/apache/arrow-go/v18 v18.4.1 // indirect
-	github.com/coreos/go-oidc/v3 v3.20.0 // indirect
+	github.com/coreos/go-oidc/v3 v3.21.0 // indirect
 	github.com/duckdb/duckdb-go-bindings v0.1.21 // indirect
 	github.com/duckdb/duckdb-go-bindings/darwin-amd64 v0.1.21 // indirect
 	github.com/duckdb/duckdb-go-bindings/darwin-arm64 v0.1.21 // indirect

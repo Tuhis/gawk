@@ -35,7 +35,7 @@ script for what counts as a dependency here and why.
 |---|---|---|---|
 | `github.com/beorn7/perks` | v1.0.1 | `MIT` | Copyright (C) 2013 Blake Mizerany |
 | `github.com/cespare/xxhash/v2` | v2.3.0 | `MIT` | Copyright (c) 2016 Caleb Spare |
-| `github.com/coreos/go-oidc/v3` | v3.20.0 | `Apache-2.0 OR UNKNOWN` | Copyright 2014 CoreOS, Inc |
+| `github.com/coreos/go-oidc/v3` | v3.21.0 | `Apache-2.0 OR UNKNOWN` | Copyright 2014 CoreOS, Inc |
 | `github.com/davecgh/go-spew` | v1.1.2-0.20180830191138-d8f796af33cc | `ISC` | Copyright (c) 2012-2016 Dave Collins <dave@davec.name> |
 | `github.com/emicklei/go-restful/v3` | v3.13.0 | `MIT` | Copyright (c) 2012,2013 Ernest Micklei |
 | `github.com/fxamacker/cbor/v2` | v2.9.0 | `MIT` | Copyright (c) 2019-present Faye Amacker |
