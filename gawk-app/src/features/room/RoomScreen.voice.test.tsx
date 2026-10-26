@@ -109,6 +109,19 @@ vi.mock('./voice/voiceSession', async (importActual) => ({
   ...(await importActual<typeof import('./voice/voiceSession')>()),
   VoiceSession: FakeVoiceSession,
 }));
+// Every VoicePlayback the room builds, with the volumeFor it was handed: what
+// a speaker's sink is set to when the speaker is (re)created.
+const playbackVolumeFors = vi.hoisted(() => [] as ((session: number) => number)[]);
+vi.mock('./voice/voicePlayback', async (importActual) => {
+  const actual = await importActual<typeof import('./voice/voicePlayback')>();
+  class RecordingPlayback extends actual.VoicePlayback {
+    constructor(...args: ConstructorParameters<typeof actual.VoicePlayback>) {
+      super(...args);
+      playbackVolumeFors.push(args[2]);
+    }
+  }
+  return { ...actual, VoicePlayback: RecordingPlayback };
+});
 vi.mock('./voice/voiceCapture', async (importActual) => ({
   ...(await importActual<typeof import('./voice/voiceCapture')>()),
   VoiceCapture: FakeCapture,
@@ -277,6 +290,37 @@ describe('room voice UI', () => {
     fireEvent.click(within(panel).getByRole('button', { name: 'Unmute bob' }));
     expect(gain.mock.calls.at(-1)).toEqual([3, 0.3]);
     gain.mockRestore();
+  });
+
+  // Re-review finding (PR #595): the mute lived only in the row's state and
+  // the live sink's gain, so a speaker created after the mute — the first
+  // frame, a return after the 10 s idle release, any rejoin — played at the
+  // saved volume. The volume a new speaker starts at must honour the mute.
+  it('a per-person mute holds for a speaker created after it, and after a rejoin', async () => {
+    const { room, panel, vs } = await inVoice(true);
+    fireEvent.change(within(panel).getByLabelText('Volume of bob'), { target: { value: '0.3' } });
+    fireEvent.click(within(panel).getByRole('button', { name: 'Mute bob for you' }));
+    // bob has not spoken: his speaker is built later, at this volume.
+    expect(playbackVolumeFors.at(-1)!(3)).toBe(0);
+    // A drain: the rejoin builds a new playback, where bob is still muted.
+    const built = playbackVolumeFors.length;
+    act(() => vs.cb.onClosed({ code: CLOSE_CODE_SERVER_DRAINING, reason: 'drain' }));
+    await waitFor(() => expect(room.voiceJoins).toBe(2));
+    await act(async () => room.cbs.onVoiceTicket!('https://bridge.test/voice', new Uint8Array([2])));
+    await waitFor(() => expect(playbackVolumeFors.length).toBeGreaterThan(built));
+    expect(playbackVolumeFors.at(-1)!(3)).toBe(0);
+    // bob reconnects to Mumble: a new session, so a new row, still muted.
+    act(() =>
+      room.cbs.onEvent({
+        ...ROSTER,
+        voiceRoster: [{ ...ROSTER.voiceRoster[0], session: 33 }, ROSTER.voiceRoster[1]],
+      }),
+    );
+    await waitFor(() => expect(within(panel).getByRole('button', { name: 'Unmute bob' })).toBeTruthy());
+    expect(playbackVolumeFors.at(-1)!(33)).toBe(0);
+    // Unmuting restores the saved volume for the next speaker built.
+    fireEvent.click(within(panel).getByRole('button', { name: 'Unmute bob' }));
+    expect(playbackVolumeFors.at(-1)!(33)).toBe(0.3);
   });
 
   it('mute and deafen tell Mumble; a server mute disables the mic with the reason', async () => {

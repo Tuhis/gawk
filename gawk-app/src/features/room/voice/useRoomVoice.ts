@@ -30,6 +30,8 @@ export interface VoiceActions {
   // `volume` is what persists per name (D22); `muted` is this session's
   // per-person mute, applied to the gain only and never saved.
   setSpeakerVolume: (session: number, mumbleName: string, volume: number, muted: boolean) => void;
+  // Whether this visit muted the person, for a roster row being (re)built.
+  isSpeakerMuted: (mumbleName: string) => boolean;
 }
 
 export function roomVoiceReadiness(): RoomVoiceReadiness {
@@ -58,6 +60,12 @@ export function useRoomVoice({
   commandsRef: RefObject<RoomCommands | null>;
 }): { actions: VoiceActions; events: RoomVoiceEvents } {
   const ctrlRef = useRef<VoiceController | null>(null);
+  // This visit's per-person mutes, by Mumble name. Never saved (D22 persists
+  // the volume, not the mute), and read by every speaker as it is built, so
+  // a mute holds for a speaker that first talks, returns after the idle
+  // release, or comes back after a rejoin — not only for the sink alive when
+  // the toggle was clicked.
+  const mutedRef = useRef(new Set<string>());
 
   useEffect(() => {
     const store = useVoiceStore.getState();
@@ -79,7 +87,8 @@ export function useRoomVoice({
         createPlayback: (cb) =>
           new VoicePlayback(realPlaybackDeps(() => mixerRef.current?.voiceOutput() ?? null), cb, (session) => {
             const name = speakerName(session);
-            return name === null ? 1 : loadSpeakerVolume(name);
+            if (name === null) return 1;
+            return mutedRef.current.has(name) ? 0 : loadSpeakerVolume(name);
           }),
         setVoiceMuted: (muted) => mixerRef.current?.setVoiceMuted(muted),
         now: () => performance.now(),
@@ -157,9 +166,12 @@ export function useRoomVoice({
         useVoiceStore.getState().set({ pttKey: code });
       },
       setSpeakerVolume: (session, name, volume, muted) => {
+        if (muted) mutedRef.current.add(name);
+        else mutedRef.current.delete(name);
         saveSpeakerVolume(name, volume);
         ctrlRef.current?.setSpeakerVolume(session, muted ? 0 : volume);
       },
+      isSpeakerMuted: (name) => mutedRef.current.has(name),
     }),
     [mixerRef],
   );

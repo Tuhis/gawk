@@ -138,7 +138,9 @@ function RosterRow({
   actions: VoiceActions;
 }) {
   const [volume, setVolume] = useState(() => loadSpeakerVolume(row.mumbleName));
-  const [muted, setMuted] = useState(false);
+  // From the visit's mute set, not false: a person who reconnects to Mumble
+  // gets a new session and so a new row, and must still show as muted.
+  const [muted, setMuted] = useState(() => actions.isSpeakerMuted(row.mumbleName));
   const apply = (v: number, m: boolean) => actions.setSpeakerVolume(row.session, row.mumbleName, v, m);
   return (
     <li className={roomStyles.row} data-testid="voice-row">
