@@ -1316,7 +1316,11 @@ jobs:
             -mumble-insecure-skip-verify -allowed-origins http://localhost:8080
           for _ in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:2113/readyz >/dev/null; then
-              curl -fsS http://127.0.0.1:2113/metrics | grep -q '^gawk_bridge_voice_sessions 0$'
+              # A here-string, not `curl | grep -q`: grep exits at its first
+              # match and pipefail reports curl's EPIPE (exit 23) as a
+              # failure (docs/gotchas.md).
+              bridge_metrics=$(curl -fsS http://127.0.0.1:2113/metrics)
+              grep -q '^gawk_bridge_voice_sessions 0$' <<<"$bridge_metrics"
               echo "gawk-mumble-bridge:ci is ready"; exit 0
             fi
             sleep 1
