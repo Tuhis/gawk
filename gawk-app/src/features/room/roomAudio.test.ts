@@ -80,3 +80,30 @@ describe('RoomAudioMixer', () => {
     expect(new RoomAudioMixer().output()).toBeNull();
   });
 });
+
+// R79 (docs/80 D22): voice shares the context but has its own bus, beside
+// the streams' master; deafen mutes it.
+describe('RoomAudioMixer voice bus', () => {
+  it('hands voice the same context through its own bus to the speakers', async () => {
+    const contexts = stubWebAudio();
+    const mixer = new RoomAudioMixer();
+    mixer.setVoiceMuted(true);
+    const v = mixer.voiceOutput()!;
+    const t = mixer.output()!;
+    expect(contexts).toHaveLength(1);
+    expect(v.context).toBe(t.context);
+    expect(v.destination).not.toBe(t.destination);
+    const bus = contexts[0].gains[1];
+    expect(bus.gain.value).toBe(0);
+    expect(bus.connect).toHaveBeenCalledWith(contexts[0].destination);
+    mixer.setVoiceMuted(false);
+    expect(bus.gain.value).toBe(1);
+    expect(mixer.voiceOutput()!.destination).toBe(v.destination);
+    await Promise.all([v.ensureWorklet(), t.ensureWorklet()]);
+    expect(contexts[0].audioWorklet.addModule).toHaveBeenCalledTimes(1);
+    expect(mixer.context()).toBe(v.context);
+    mixer.dispose();
+    expect(mixer.voiceOutput()).toBeNull();
+    expect(mixer.context()).toBeNull();
+  });
+});

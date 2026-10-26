@@ -1,0 +1,206 @@
+/* R79 room voice: the people panel's Voice section and the in-call dock.
+   Built from the room panel's own rows, sections and segmented control
+   (room.module.css); this file holds only what voice adds. */
+
+.notice {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  line-height: 1.45;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-sm);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.status {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.status[data-tone='warn'] {
+  color: var(--warning);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.controls {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.55rem;
+}
+
+.toggle[data-off='true'] {
+  color: var(--danger);
+}
+
+.toggle:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.pttKey {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.kbd {
+  font: inherit;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--text);
+  padding: 0.05rem 0.4rem;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--surface-2);
+}
+
+.linkBtn {
+  font: inherit;
+  color: var(--accent);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.linkBtn:hover {
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.holdBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  min-height: 2.5rem;
+  padding: 0.5rem 1rem;
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  /* A held press must not scroll, zoom or select. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.holdBtn[data-held='true'] {
+  color: #fff;
+  background: var(--ok);
+  border-color: var(--ok);
+}
+
+.rowState {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  min-width: 0;
+}
+
+.mumbleMark {
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 999px;
+  padding: 0 0.4rem;
+}
+
+.stateIcon {
+  display: inline-flex;
+  color: var(--faint);
+  font-size: 0.9rem;
+}
+
+.speakingText {
+  color: var(--ok);
+}
+
+.rowVolume {
+  flex: none;
+}
+
+.rowVolume input[type='range'] {
+  width: 4.5rem;
+}
+
+/* The in-call dock: bottom left over the stage, above the footer. It does not
+   fade with the chrome — it is the visible sign that the mic is live. */
+.dock {
+  position: absolute;
+  left: 1rem;
+  bottom: 4.75rem;
+  z-index: 22;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  max-width: calc(100% - 2rem);
+  padding: 0.25rem 0.35rem 0.25rem 0.75rem;
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+}
+
+.dockState {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  border: 1px solid var(--faint);
+}
+
+.dockState[data-talking='true'] {
+  background: var(--ok);
+  border-color: var(--ok);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent);
+}
+
+.dockLabel {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--muted);
+  margin-right: 0.15rem;
+}
+
+.dockHold {
+  min-height: 2.25rem;
+  padding: 0.35rem 0.85rem;
+}
+
+@media (max-width: 719px) {
+  .dock {
+    left: 0.75rem;
+    bottom: 4.25rem;
+  }
+
+  /* A thumb-sized target on a phone. */
+  .dockHold {
+    min-height: 2.75rem;
+    padding: 0.45rem 1.1rem;
+  }
+}

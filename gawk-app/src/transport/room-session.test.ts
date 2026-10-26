@@ -8,6 +8,11 @@ import { RoomConnectError, RoomSession, type RoomSessionCallbacks } from './room
 import {
   CLOSE_CODE_ROOM_ENDED,
   CLOSE_CODE_SERVER_DRAINING,
+  ROOM_CAP_VOICE,
+  ROOM_COMMAND_VOICE_JOIN,
+  ROOM_EVENT_VOICE_ROSTER_UPDATED,
+  ROOM_EVENT_VOICE_TICKET,
+  ROOM_VOICE_ROSTER_FLAG_AVAILABLE,
   ROOM_CLIENT_WEB_BROADCASTER,
   ROOM_CLIENT_WEB_VIEWER,
   ROOM_COMMAND_ATTACH,
@@ -706,5 +711,103 @@ describe('RoomSession endings', () => {
     expect(cb.onReconnecting).not.toHaveBeenCalled();
     expect(cb.onEnded).not.toHaveBeenCalled();
     expect(cb.onError).not.toHaveBeenCalled();
+  });
+});
+
+// R79 (docs/80 §11.1 C2, C3): voice on the room session.
+describe('RoomSession voice', () => {
+  async function connectedVoice(wantVoice: boolean) {
+    const made = makeCallbacks();
+    const tickets: [string, Uint8Array][] = [];
+    const s = new RoomSession(
+      {
+        serverUrl: 'https://relay.test:4433',
+        target: { kind: 'join', code: 'TuhisRoom' },
+        nickname: 'me',
+        clientKind: ROOM_CLIENT_WEB_VIEWER,
+        wantVoice,
+      },
+      { ...made.cb, onVoiceTicket: (u, t) => tickets.push([u, t]) },
+    );
+    await s.start();
+    await flush();
+    return { s, ...made, tickets, wt: fakes[0] };
+  }
+
+  it('asks for ROOM_CAP_VOICE only when this browser can do voice', async () => {
+    const a = await connectedVoice(true);
+    expect(parseRoomHello(a.wt.written[0]).wantCaps).toBe(ROOM_CAP_VOICE);
+    a.s.stop();
+    fakes.length = 0;
+    const b = await connectedVoice(false);
+    expect(parseRoomHello(b.wt.written[0]).wantCaps).toBe(0);
+    b.s.stop();
+  });
+
+  it('a mint with voice says voice=1 on /room/new', async () => {
+    const { cb } = makeCallbacks();
+    const s = new RoomSession(
+      {
+        serverUrl: 'https://relay.test:4433',
+        target: { kind: 'mint', broadcastId: 'AB2CD3', resumeTokenHex: 'a0'.repeat(16), label: 't', voice: true },
+        nickname: '',
+        clientKind: ROOM_CLIENT_WEB_BROADCASTER,
+      },
+      cb,
+    );
+    await s.start();
+    await flush();
+    expect(new URL(fakes[0].url).searchParams.get('voice')).toBe('1');
+    s.stop();
+  });
+
+  it('sendVoiceJoin writes VoiceJoin only once joined', async () => {
+    const { s, wt } = await connectedVoice(true);
+    expect(s.sendVoiceJoin()).toBe(false); // no RoomState yet
+    wt.push(encodeRoomState(baseState({ seq: 10, caps: ROOM_CAP_VOICE })));
+    await flush();
+    expect(s.sendVoiceJoin()).toBe(true);
+    await flush();
+    expect(commandsOf(wt).map((c) => c.kind)).toEqual([ROOM_COMMAND_VOICE_JOIN]);
+    s.stop();
+    expect(s.sendVoiceJoin()).toBe(false);
+  });
+
+  it('voice events are out of sequence: delivered, never advancing seq, never a gap', async () => {
+    const { s, wt, events, tickets } = await connectedVoice(true);
+    wt.push(encodeRoomState(baseState({ seq: 10, caps: ROOM_CAP_VOICE })));
+    // The roster right after RoomState carries the CURRENT seq.
+    wt.push(
+      encodeRoomEvent({
+        seq: 10,
+        kind: ROOM_EVENT_VOICE_ROSTER_UPDATED,
+        voiceFlags: ROOM_VOICE_ROSTER_FLAG_AVAILABLE,
+        voiceRoster: [{ session: 3, kind: 0, participantId: 0, flags: 0, name: 'bob' }],
+      }),
+    );
+    wt.push(encodeRoomEvent({ seq: 10, kind: ROOM_EVENT_VOICE_TICKET, voiceUrl: 'https://b/voice', voiceTicket: new Uint8Array([1, 2]) }));
+    // The next real delta is still seq 11, accepted.
+    wt.push(encodeRoomEvent(joined(11, 3)));
+    // A second roster at the same seq is not a duplicate to drop.
+    wt.push(encodeRoomEvent({ seq: 11, kind: ROOM_EVENT_VOICE_ROSTER_UPDATED, voiceFlags: 0, voiceRoster: [] }));
+    await flush();
+    expect(events.map((e) => e.kind)).toEqual([
+      ROOM_EVENT_VOICE_ROSTER_UPDATED,
+      ROOM_EVENT_PARTICIPANT_JOINED,
+      ROOM_EVENT_VOICE_ROSTER_UPDATED,
+    ]);
+    expect(tickets).toEqual([['https://b/voice', new Uint8Array([1, 2])]]);
+    expect(commandsOf(wt).some((c) => c.kind === ROOM_COMMAND_RESYNC)).toBe(false);
+    s.stop();
+  });
+
+  it('a voice event past a missed delta still notes the gap', async () => {
+    const { s, wt } = await connectedVoice(true);
+    wt.push(encodeRoomState(baseState({ seq: 10, caps: ROOM_CAP_VOICE })));
+    wt.push(encodeRoomEvent({ seq: 14, kind: ROOM_EVENT_VOICE_ROSTER_UPDATED, voiceFlags: 0, voiceRoster: [] }));
+    wt.push(encodeRoomEvent({ seq: 15, kind: ROOM_EVENT_VOICE_TICKET, voiceUrl: 'https://b/v', voiceTicket: new Uint8Array([1]) }));
+    await flush();
+    expect(commandsOf(wt).filter((c) => c.kind === ROOM_COMMAND_RESYNC)).toHaveLength(1);
+    s.stop();
   });
 });

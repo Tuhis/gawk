@@ -22,10 +22,41 @@ export class RoomAudioMixer {
   private volume = 1;
   private muted = false;
   private disposed = false;
+  private voiceBus: GainNode | null = null;
+  private voiceMuted = false;
 
   // The output every tile's sink is handed. Null where Web Audio is absent —
   // the tile then plays video-only exactly like a single viewer would.
   output(): AudioOutput | null {
+    const ctx = this.context();
+    if (!ctx) return null;
+    return { context: ctx, destination: this.master!, ensureWorklet: () => this.ensureWorklet(ctx) };
+  }
+
+  // R79 (docs/80 D22): the room voice's output — the same context (one per
+  // room, docs/44 §4.7), but its own bus straight to the speakers, beside the
+  // streams' master rather than under it: the footer's master volume is the
+  // streams', and deafen is the voice bus's mute. Each speaker's sink keeps
+  // its own gain (the per-person volume) in front of the bus.
+  voiceOutput(): AudioOutput | null {
+    const ctx = this.context();
+    if (!ctx) return null;
+    if (!this.voiceBus) {
+      this.voiceBus = ctx.createGain();
+      this.voiceBus.gain.value = this.voiceMuted ? 0 : 1;
+      this.voiceBus.connect(ctx.destination);
+    }
+    return { context: ctx, destination: this.voiceBus, ensureWorklet: () => this.ensureWorklet(ctx) };
+  }
+
+  setVoiceMuted(muted: boolean): void {
+    this.voiceMuted = muted;
+    if (this.voiceBus) this.voiceBus.gain.value = muted ? 0 : 1;
+  }
+
+  // The shared context, opened on first use (the voice capture worklet runs
+  // in it too). Null where Web Audio is absent or after dispose.
+  context(): AudioContext | null {
     if (this.disposed || !audioSinkSupported()) return null;
     if (!this.ctx) {
       this.ctx = new AudioContext({ latencyHint: 'interactive' });
@@ -33,20 +64,17 @@ export class RoomAudioMixer {
       this.master.gain.value = this.muted ? 0 : this.volume;
       this.master.connect(this.ctx.destination);
     }
-    const ctx = this.ctx;
-    return {
-      context: ctx,
-      destination: this.master!,
-      ensureWorklet: () => {
-        this.worklet ??= addWorkletModule(ctx).catch((e) => {
-          // Let the next tile retry rather than latching every sink dead on
-          // one transient failure.
-          this.worklet = null;
-          throw e;
-        });
-        return this.worklet;
-      },
-    };
+    return this.ctx;
+  }
+
+  private ensureWorklet(ctx: AudioContext): Promise<void> {
+    this.worklet ??= addWorkletModule(ctx).catch((e) => {
+      // Let the next tile retry rather than latching every sink dead on
+      // one transient failure.
+      this.worklet = null;
+      throw e;
+    });
+    return this.worklet;
   }
 
   setMasterVolume(volume: number): void {
@@ -88,6 +116,7 @@ export class RoomAudioMixer {
     const ctx = this.ctx;
     this.ctx = null;
     this.master = null;
+    this.voiceBus = null;
     void ctx?.close().catch(() => {});
   }
 }
