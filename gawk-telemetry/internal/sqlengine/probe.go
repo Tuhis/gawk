@@ -59,11 +59,12 @@ type ViewHealth struct {
 
 // Probe asks every view one question and reports which ones fail to answer.
 //
-// The questions are chosen to exercise binding — where view drift fails —
-// over the WHOLE tree, while scanning as little as possible: the partitioned
-// views are counted for today only, which hive pruning turns into one
-// directory, but binding still reads every file's schema (union_by_name), so a
-// drifted or unreadable partition anywhere still fails the probe.
+// The questions are chosen to exercise registration over the WHOLE tree while
+// scanning as little as possible: the partitioned views are counted for today
+// only, which hive pruning turns into one directory, but registering a view
+// stats every file and sniffs any its learned schema does not cover yet
+// (learn.go), so an unreadable new file anywhere still fails the probe — as
+// does a view still learning a cold store, until it has.
 func Probe(q Querier, root string, now time.Time) []ViewHealth {
 	names := make([]string, 0, 4)
 	for _, d := range viewDocs(nil) {

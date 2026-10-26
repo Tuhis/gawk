@@ -5,15 +5,16 @@ package sqlengine
 // The cgo build (§8 Q1's resolution). Compiled only with `-tags duckdb`, which
 // is what the deployed image uses; a fresh clone gets nodriver.go instead.
 //
-// The views registered here are the D11 recipe made permanent. `read_json_auto`
+// The views registered here are the D11 recipe made permanent. `read_json`
 // with `hive_partitioning=1` prunes by path rather than scanning, which is the
 // whole reason the store's layout is `date=…/broadcast=…` — so an operator's
 // `WHERE date = '2026-07-29'` costs one directory instead of the tree.
 //
-// `union_by_name=1` is not optional here: stats objects grow every milestone
-// (D15's "version skew is permanent"), so two partitions genuinely have
-// different columns, and positional union would either fail or silently
-// misalign them.
+// The columns are named, not sniffed: stats objects grow every milestone (D15's
+// "version skew is permanent"), so two partitions genuinely have different
+// columns, and the list is the union of every file's, learned a file at a time
+// (learn.go). Sniffing it instead — `union_by_name=1` — re-read every file in
+// the tree on every query, which is what took the sessions view down.
 
 import (
 	"context"
@@ -21,7 +22,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -49,17 +49,25 @@ type engine struct {
 
 	// only, when non-nil, is the set of views this engine registers; the rest
 	// stay unregistered and are reported unavailable. A query worker registers
-	// just the views its statement names (openScoped), because registering one
-	// sniffs every file in its tree.
+	// just the views its statement names (openScoped): registering one stats
+	// every file in its tree, and sniffs any it has not seen.
 	only map[string]bool
-}
 
-// viewDrift is DuckDB's binder error for a view whose SELECT * no longer binds
-// to the column list recorded at CREATE VIEW time. Matched on the message
-// because the driver types it only as a generic binder error; the drift test
-// pins the text, so a DuckDB upgrade that rewords it fails CI rather than
-// silently disabling the retry.
-const viewDrift = "Contents of view were altered"
+	// regErr is why each unavailable view is unavailable, when something
+	// failed rather than the tree being empty. Guarded by mu, like views.
+	regErr map[string]error
+
+	// learned is each view's schema as this engine last saw it (learn.go),
+	// and duckdb the library version that sniffed it. Touched only with the
+	// turn held.
+	learned map[string]*learned
+	duckdb  string
+
+	// until, if set, ends the learning budget no later than this — a
+	// worker's parent kills it at its own deadline, which the worker's
+	// per-statement clocks do not know about.
+	until time.Time
+}
 
 // testHookRowsOpen runs inside Query while its rows (and so the engine's one
 // connection) are held. Nil in production; the concurrency test uses it to
@@ -67,10 +75,11 @@ const viewDrift = "Contents of view were altered"
 var testHookRowsOpen func()
 
 // Open builds an in-memory DuckDB with views over the store's partitions.
-func Open(opts Options) (Engine, error) { return openScoped(opts, nil) }
+func Open(opts Options) (Engine, error) { return openScoped(opts, nil, time.Time{}) }
 
 // openScoped is Open registering only the named views; nil means all of them.
-func openScoped(opts Options, only map[string]bool) (Engine, error) {
+// until, if set, is when the caller stops waiting for this engine at all.
+func openScoped(opts Options, only map[string]bool, until time.Time) (Engine, error) {
 	if opts.Root == "" {
 		return nil, fmt.Errorf("sqlengine: Root is required")
 	}
@@ -89,9 +98,17 @@ func openScoped(opts Options, only map[string]bool) (Engine, error) {
 
 	e := &engine{
 		db: db, opts: opts,
-		turn:  make(chan struct{}, 1),
-		views: viewDocs(func(string) bool { return false }),
-		only:  only,
+		turn:    make(chan struct{}, 1),
+		views:   viewDocs(func(string) bool { return false }),
+		only:    only,
+		regErr:  map[string]error{},
+		learned: map[string]*learned{},
+		until:   until,
+	}
+	// The learned schemas are keyed by the library that sniffed them.
+	if err := db.QueryRow("SELECT library_version FROM pragma_version()").Scan(&e.duckdb); err != nil {
+		db.Close()
+		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout())
 	defer cancel()
@@ -100,7 +117,7 @@ func openScoped(opts Options, only map[string]bool) (Engine, error) {
 		return nil, err
 	}
 	defer e.release()
-	e.register(ctx, true)
+	e.register(ctx)
 	return e, nil
 }
 
@@ -154,36 +171,47 @@ func applyBudget(db *sql.DB, opts Options) error {
 	return nil
 }
 
-// register (re)creates the views; all=false touches only the unavailable ones.
+// register (re)creates the views, each over its learned column list.
 //
 // Registration is NOT a one-off at startup, and must not go back to being one.
 // DuckDB binds a view's column names and types when it is created, and these
 // views sit over globs that keep growing for the life of the pod: the first
 // partition that added a field (every milestone does, D15) or widened a type
-// made every query on that view — even count(*) — fail with "Contents of view
-// were altered" until the pod restarted. Likewise a tree that was empty at boot
-// (annotations before the first note, relay before the first scrape) stayed
-// unqueryable. Query heals both.
+// used to make every query on that view fail until the pod restarted, and a
+// tree that was empty at boot (annotations before the first note, relay before
+// the first scrape) stayed unqueryable. So Query registers every time; with
+// the columns learned, that is a stat per file and a sniff of only what is new.
 //
 // The caller holds the turn. e.mu is taken only to read and to publish the
 // catalogue, never across ExecContext.
-func (e *engine) register(ctx context.Context, all bool) {
+func (e *engine) register(ctx context.Context) {
 	ok := map[string]bool{}
 	for _, v := range e.Views() {
 		ok[v.Name] = v.Available
 	}
+	// errs starts as the last verdicts, so a registration cut short keeps
+	// the reasons of the views it did not reach.
+	e.mu.Lock()
+	errs := make(map[string]error, len(e.regErr))
+	for n, err := range e.regErr {
+		errs[n] = err
+	}
+	e.mu.Unlock()
 	defer func() {
 		e.mu.Lock()
 		e.views = viewDocs(func(n string) bool { return ok[n] })
+		e.regErr = errs
 		e.mu.Unlock()
 	}()
 	for name, src := range viewSources(e.opts.Root) {
-		if ok[name] && !all || e.only != nil && !e.only[name] {
+		if e.only != nil && !e.only[name] {
 			continue
 		}
+		delete(errs, name)
 		// A tree with no files cannot register, so there is nothing to try:
 		// without this, an empty relay/ cost a failing DDL on every query.
-		if matches, _ := filepath.Glob(src.glob); len(matches) == 0 {
+		matches, _ := filepath.Glob(src.glob)
+		if len(matches) == 0 {
 			if ok[name] {
 				_, _ = e.db.ExecContext(ctx, "DROP VIEW IF EXISTS "+name)
 			}
@@ -194,16 +222,21 @@ func (e *engine) register(ctx context.Context, all bool) {
 		if src.hive {
 			hive = 1
 		}
-		stmt := fmt.Sprintf(
-			`CREATE OR REPLACE VIEW %s AS SELECT * FROM read_json_auto('%s', hive_partitioning=%d, union_by_name=1, ignore_errors=true)`,
-			name, src.glob, hive)
-		// A view whose tree is empty simply fails to register, and that is not
-		// an error worth refusing to start over: a fleet with no relay
-		// configured has no relay/ partitions at all, and the console should
-		// still answer questions about sessions. The failure is REPORTED via
-		// ViewDoc.Available rather than swallowed. A failed re-registration
-		// drops the old view, so Available and the catalogue never disagree.
-		_, err := e.db.ExecContext(ctx, stmt)
+		// records='true' with the columns: without it, a one-column list
+		// leaves the record type to auto-detection, which sniffs again.
+		cols, err := e.columns(ctx, name, matches)
+		if err == nil {
+			_, err = e.db.ExecContext(ctx, fmt.Sprintf(
+				`CREATE OR REPLACE VIEW %s AS SELECT * FROM read_json(%s, columns=%s, format='newline_delimited', records='true', hive_partitioning=%d, ignore_errors=true)`,
+				name, sqlString(src.glob), cols, hive))
+		}
+		// A view that fails to register is not an error worth refusing to
+		// start over: the console should still answer questions about the
+		// others. The failure is REPORTED via ViewDoc.Available, and its
+		// reason through Query, rather than swallowed. A failed
+		// re-registration drops the old view, so Available and the catalogue
+		// never disagree — and a view still learning its columns is never
+		// left registered over a list that misses files.
 		switch {
 		case err == nil:
 			ok[name] = true
@@ -211,9 +244,13 @@ func (e *engine) register(ctx context.Context, all bool) {
 			// The clock ran out, not the view: say nothing about this or any
 			// remaining view, rather than marking healthy views down (and
 			// attempting a DROP on a dead context) because a query was slow.
+			if err := e.regErrOf(name); err != nil {
+				errs[name] = err
+			}
 			return
 		default:
 			ok[name] = false
+			errs[name] = err
 			_, _ = e.db.ExecContext(ctx, "DROP VIEW IF EXISTS "+name)
 		}
 	}
@@ -224,6 +261,13 @@ func Compiled() bool { return true }
 
 // Views is the catalogue, for parity with the stub build.
 func Views() []ViewDoc { return viewDocs(func(string) bool { return true }) }
+
+// regErrOf is why view name failed to register, or nil.
+func (e *engine) regErrOf(name string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.regErr[name]
+}
 
 func (e *engine) Views() []ViewDoc {
 	e.mu.Lock()
@@ -246,20 +290,20 @@ func (e *engine) Query(q string) (*Result, error) {
 		return nil, err
 	}
 	defer e.release()
-	// A view missing since boot costs a glob to retry, so it is retried every
-	// time. A full re-registration re-sniffs every partition, so that runs only
-	// when DuckDB reports drift — once, and then the query is retried against
-	// the rebound views. The catalogue is snapshotted after the last
+	// Every query re-registers, so a field or a tree that appeared since the
+	// last one is in the views it reads. The catalogue is snapshotted after
 	// registration and before the rows (the connection) are held.
-	e.register(ctx, false)
+	e.register(ctx)
 	views := e.Views()
 	rows, err := e.db.QueryContext(ctx, stmt)
-	if err != nil && strings.Contains(err.Error(), viewDrift) {
-		e.register(ctx, true)
-		views = e.Views()
-		rows, err = e.db.QueryContext(ctx, stmt)
-	}
 	if err != nil {
+		// A statement over a view that failed to register fails as "table
+		// does not exist"; the reason it is missing is the useful answer.
+		for _, v := range referencedViews(stmt) {
+			if rerr := e.regErrOf(v); rerr != nil {
+				return nil, rerr
+			}
+		}
 		return nil, err
 	}
 	defer rows.Close()

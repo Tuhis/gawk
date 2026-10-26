@@ -53,8 +53,9 @@ type workerRequest struct {
 	Options Options `json:"options"`
 	SQL     string  `json:"sql,omitempty"`
 	// Views is the set of views to register; nil registers all of them.
-	// Registering a view sniffs every file in its tree, and a worker pays that
-	// on every query, so it registers only what the statement names.
+	// Registering a view stats every file in its tree and sniffs any its
+	// learned schema does not cover, so a worker registers only what the
+	// statement names.
 	Views []string `json:"views"`
 }
 
@@ -121,7 +122,9 @@ func RunWorker(in io.Reader, out io.Writer) int {
 		}
 		return out
 	}
-	e, err := openScoped(req.Options, only)
+	// The parent kills this process at its own deadline, which is the
+	// request's whole budget from now; learning must stop short of it.
+	e, err := openScoped(req.Options, only, time.Now().Add(req.Options.timeout()))
 	if err != nil {
 		_ = enc.Encode(workerResponse{Err: err.Error()})
 		return 1
@@ -178,11 +181,12 @@ func OpenIsolated(opts Options) (Engine, error) {
 	// Two workers, so the open fails only on what is fatal. The first
 	// registers no view: it proves the binary re-executes and DuckDB opens,
 	// and if it cannot answer, no query will. The second learns the whole
-	// catalogue, which sniffs every file in the store and so grows with it;
-	// on 2026-10-22 it outlived the budget, and failing the open on that cost
-	// the console for the life of the pod. A catalogue left incomplete here is
-	// filled in by the queries that follow (merge), the probe's first among
-	// them, and a view that really cannot answer is the probe's to report.
+	// catalogue. Over a store whose columns are not learned yet (learn.go)
+	// that means sniffing it, which outlived the budget on 2026-10-22, and
+	// failing the open on that cost the console for the life of the pod. A
+	// catalogue left incomplete here is filled in by the queries that follow
+	// (merge), the probe's first among them, and a view that really cannot
+	// answer is the probe's to report.
 	if err := e.refresh([]string{}); err != nil {
 		return nil, err
 	}

@@ -85,6 +85,23 @@ Add to it when a new gotcha lands in `docs/`.
   dashboard hid its SQL tab. The open now fails only if a worker that
   registers no views cannot answer; the catalogue is best effort, and the
   meta says `sqlFailed` so the tab stays and states the error.
+- **`read_json_auto(…, union_by_name=1)` sniffs every file under its glob,
+  and a DuckDB view over it does so on every query, not once.** Without
+  `union_by_name` the JSON reader samples 32 files; with it, all of them —
+  and a view re-binds its table function each time it is read, so `SELECT
+  count(*) … WHERE date = today` paid for the whole 30-day tree twice
+  (CREATE VIEW, then the query). With a fresh worker per query nothing
+  carried over. On 2026-10-24 a rejoin storm doubled the `sessions` tree to
+  ~4,600 files and the view never answered again: 23 s to register plus
+  49 s to probe, on a 30 s budget. The views now name their columns
+  (`read_json(…, columns=…)`, which binds without opening a file), learned
+  per file and kept in `<data-dir>/.sql-schema/` keyed by size and mtime, so
+  a query sniffs only new or changed files. DuckDB's own type merge is not
+  reachable from outside (it merges an internal structure, not types), so
+  `sqlengine/coltype.go` mirrors it, pinned against the real sniffer in
+  `learn_test.go`. A one-column `columns=` list also needs `records='true'`,
+  or the record type is auto-detected — by sniffing.
+  ([docs/36](36-telemetry-ui-history.md) §TH10)
 - **A stored telemetry field never changes type and is never renamed.** The
   SQL views union partitions by name, so a field that is a number in old
   rows and a string in new ones turns the column into JSON for every query

@@ -617,6 +617,7 @@ to §8 Q1's resolution.
 | A view that has data and does not answer is visible without anyone opening the console: `gawk_telemetry_sql_view_up` on the metrics listener, alertable through the chart's opt-in PrometheusRule | test (`probe_test.go`, `opsmetrics_test.go`) + CI image smoke |
 | Every stored row path keeps its type forever (D4) | test (`internal/storedshape`, golden) |
 | Repeated queries do not grow the service's own memory: each runs in a short-lived worker process, which is killed at the query's deadline | test (`isolated_duckdb_test.go`) + CI image smoke |
+| A view answers inside the budget however large its tree grows: a query sniffs only files that are new or changed since the columns were learned, a cold store is learned across as many queries as it takes (each saying how far along it is), and the learned types are the ones DuckDB's own sniffer gives | test (`learn_test.go`, `coltype_test.go`) |
 
 The four rows before the last were added after the fact (2026-09-22). The original four
 all passed on a fresh store while the deployed console had been failing every
@@ -628,7 +629,7 @@ buffers alone exceeded the pod's share. A criterion checked only against a
 small store that never changes after `Open` catches neither, and nothing but an
 operator's visit would have noticed either, hence the probe.
 
-The last row was added 2026-09-30, and the probe is what exposed it. DuckDB's
+The second-to-last row was added 2026-09-30, and the probe is what exposed it. DuckDB's
 `memory_limit` governs its buffer manager only; the JSON reader's allocations
 (every file's schema sniffed on each bind under `union_by_name`, every scan's
 read buffers) sit outside it, and DuckDB's allocator keeps them for the life
@@ -641,6 +642,18 @@ about half of it. So the service no longer opens DuckDB itself:
 (`GAWK_TELEMETRY_SQL_WORKER=1`, request on stdin, JSON on stdout), workers run
 one at a time, each registers only the views its statement names, and the
 memory leaves with the process. The budget knobs now bound each worker.
+
+The last row was added 2026-10-26. Workers made a cost visible that had
+been there since the views were first registered: a view over `read_json_auto`
+with `union_by_name=1` sniffs every file under its glob each time it is bound,
+and a view is bound on every query that reads it — so the probe's one-day
+count paid for all thirty days, twice, in a process that kept nothing. On
+2026-10-24 a viewer rejoin storm (~3,000 joins in four hours, each a new
+session file) doubled the `sessions` tree to ~4,600 files and the view never
+answered again, probe or console; the catalogue-at-open timeout of
+2026-10-22 had been the same cost one view earlier. The views now read with an
+explicit column list learned a file at a time and kept on the data volume
+(`sqlengine/learn.go`), so a query sniffs only what changed since the last one.
 
 #### TH11 — Operator ergonomics
 
