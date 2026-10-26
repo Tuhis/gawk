@@ -169,10 +169,11 @@ function mumblesim(name, args) {
 // retries rather than failing the run on a harness race.
 async function admin(name, args) {
   for (let attempt = 1; ; attempt++) {
-    const e = mumblesim(attempt === 1 ? name : `${name}-${attempt}`, ['-name', 'SuperUser', '-password', MURMUR_SU, '-duration', '3s', ...args]);
-    await pollFor(() => e.exited, 15_000, 100, `${name} to finish`);
+    const run = attempt === 1 ? name : `${name}-${attempt}`;
+    const e = mumblesim(run, ['-name', 'SuperUser', '-password', MURMUR_SU, '-duration', '3s', ...args]);
+    await pollFor(() => e.exited, 15_000, 100, `${run} to finish`);
     if (e.exited.code === 0) return;
-    if (attempt >= 5 || !e.buf.includes('WrongUserPW')) fail(`${name} exited ${e.exited.code} (see out/voice/${name}.log)`);
+    if (attempt >= 5 || !e.buf.includes('WrongUserPW')) fail(`${run} exited ${e.exited.code} (see out/voice/${run}.log)`);
     log(`${name}: SuperUser refused; setting its password again (attempt ${attempt})`);
     try {
       execFileSync('docker', ['exec', '-u', '10000', 'gawk-e2e-murmur-main', '/usr/bin/mumble-server',
