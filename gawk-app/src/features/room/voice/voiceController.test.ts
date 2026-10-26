@@ -455,6 +455,27 @@ describe('VoiceController close codes', () => {
     c.dispose();
   });
 
+  // Found by the MV7 e2e: a draining bridge pod takes the room's observer
+  // with it, so the relay answers the immediate rejoin with Unavailable until
+  // the observer is redialled onto another pod. That is a moment in a rejoin,
+  // not the end of voice.
+  it('an Unavailable answer during a rejoin is another rejoin, not the unavailable state', async () => {
+    const c = make();
+    const s = await connected(c);
+    s.cb.onClosed({ code: CLOSE_CODE_SERVER_DRAINING, reason: '' });
+    await flush();
+    expect(joins).toBe(2);
+    c.onTicketRejected(ROOM_REJECT_UNAVAILABLE, 'the voice channel is not reachable');
+    expect(c.getState().phase).toBe('rejoining');
+    expect(captures[0].stopped).toBe(0);
+    await vi.advanceTimersByTimeAsync(REJOIN_DELAYS_MS[1]);
+    expect(joins).toBe(3);
+    c.onTicket('https://b2/voice', TICKET);
+    await flush();
+    expect(c.getState().phase).toBe('connected');
+    c.dispose();
+  });
+
   it('a ticket that never comes during a rejoin is another rejoin, not a failure', async () => {
     const c = make();
     const s = await connected(c);

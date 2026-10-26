@@ -287,6 +287,14 @@ export class VoiceController {
     this.awaitingTicket = false;
     this.clearTicketTimer();
     if (reason === ROOM_REJECT_UNAVAILABLE) {
+      if (this.state.phase === 'rejoining') {
+        // A draining bridge pod takes the room's observer with it, so the
+        // relay says Unavailable until it has redialled the observer onto
+        // another pod: a moment in the rejoin, not the end of voice. The
+        // rejoin budget still bounds it.
+        this.scheduleRejoin(null);
+        return;
+      }
       this.unavailable(message.trim() || null);
       return;
     }
