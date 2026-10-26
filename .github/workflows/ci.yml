@@ -1276,8 +1276,11 @@ jobs:
           set -a; . "$RUNNER_TEMP/murmur.env"; set +a
           # The fake murmur is test scaffolding and gawk-voiceload a
           # measurement tool (e2e/voice-load.sh); neither ships in the image.
+          # Per-package coverage, as server-coverage measures: -coverpkg
+          # would list every package once per test binary, and the
+          # normaliser sums blocks, so the duplicates sank it to 25%.
           pkgs=$(go list ./... | grep -v -e /mumbletest -e /cmd/gawk-voiceload)
-          go test -covermode=set -coverpkg="$(echo $pkgs | tr ' ' ',')" -coverprofile=coverage.out ./...
+          go test -covermode=set -coverprofile=coverage.out $pkgs
       - if: always()
         run: testdata/murmur.sh down
       - uses: ./.github/actions/coverage
