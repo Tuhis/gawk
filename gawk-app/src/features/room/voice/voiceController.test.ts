@@ -33,6 +33,9 @@ import type { VoiceCaptureCallbacks } from './voiceCapture';
 import type { VoicePlaybackCallbacks } from './voicePlayback';
 import { VAD_THRESHOLD_RMS } from './talkGate';
 
+// When set, every new FakeSession's start() waits on it (a dial in flight).
+let sessionHold: Promise<void> | null = null;
+
 class FakeSession {
   opts: VoiceSessionOptions;
   cb: VoiceSessionCallbacks;
@@ -43,17 +46,22 @@ class FakeSession {
   constructor(opts: VoiceSessionOptions, cb: VoiceSessionCallbacks, fail: Error | null) {
     this.opts = opts;
     this.cb = cb;
-    this.startResult = fail ? Promise.reject(fail) : Promise.resolve();
+    this.startResult = fail ? Promise.reject(fail) : (sessionHold ?? Promise.resolve());
     this.startResult.catch(() => {});
   }
+  // The real session has no control stream until start() resolves and
+  // drops a VoiceControl sent before that (voiceSession.ts writeRecord).
+  open = false;
   start() {
-    return this.startResult;
+    return this.startResult.then(() => {
+      this.open = true;
+    });
   }
   sendFrame(h: VoiceFrameHeader, p: Uint8Array) {
     this.frames.push({ h, p });
   }
   sendControl(f: number) {
-    this.controls.push(f);
+    if (this.open) this.controls.push(f);
   }
   close() {
     this.closed++;
@@ -174,6 +182,7 @@ beforeEach(() => {
   captures = [];
   playbacks = [];
   sessionFail = null;
+  sessionHold = null;
   captureFail = null;
   captureHold = null;
   busMuted = [];
@@ -359,6 +368,30 @@ describe('VoiceController failures release everything', () => {
     await flush();
     expect(captures[0].stopped).toBeGreaterThanOrEqual(1);
     expect(joins).toBe(0);
+    c.dispose();
+  });
+});
+
+// Review finding (PR #595): the hello's flags are read before the dial, and a
+// VoiceControl sent while the dial is in flight has no stream to go on, so a
+// mute or deafen clicked while connecting never reached Mumble.
+describe('VoiceController controls during the dial', () => {
+  it('a mute and deafen toggled while connecting reach the bridge once connected', async () => {
+    let open!: () => void;
+    sessionHold = new Promise<void>((r) => (open = r));
+    const c = make();
+    void c.join(false);
+    await flush();
+    c.onTicket('https://bridge.test/voice', TICKET);
+    await flush();
+    const s = sessions[0];
+    expect(s.opts.helloFlags).toBe(0);
+    c.setSelfMuted(true);
+    c.setSelfDeafened(true);
+    open();
+    await flush();
+    expect(c.getState().phase).toBe('connected');
+    expect(s.controls.at(-1)).toBe(VOICE_CONTROL_FLAG_SELF_MUTE | VOICE_CONTROL_FLAG_SELF_DEAF);
     c.dispose();
   });
 });

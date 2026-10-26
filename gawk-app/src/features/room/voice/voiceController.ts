@@ -387,6 +387,10 @@ export class VoiceController {
     });
     this.spurtStarting = true;
     this.update({ phase: 'connected' });
+    // The hello carried the flags as they were before the dial; a mute or
+    // deafen clicked while it was in flight had no stream to go on. Send the
+    // current state now (a repeat of the hello when nothing changed).
+    this.sendControl();
   }
 
   // ---- Voice session events ----------------------------------------------------
