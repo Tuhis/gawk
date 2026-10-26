@@ -16,7 +16,7 @@
 # 512-deep datagram queue, GSO batching) are for the relay's video bursts.
 # Voice is one ~50-byte datagram per speaker per 10 ms.
 
-FROM golang:1.26-trixie AS build
+FROM golang:1.27-trixie AS build
 WORKDIR /src
 # Manifests first: the `go mod download` layer depends on them alone.
 COPY gawk-server/go.mod gawk-server/go.sum ./gawk-server/
