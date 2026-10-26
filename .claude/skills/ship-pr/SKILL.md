@@ -76,8 +76,11 @@ gh pr checks <N>                                          # check states for the
 gh api --paginate repos/{owner}/{repo}/pulls/<N>/comments   # inline review comments
 gh api --paginate repos/{owner}/{repo}/issues/<N>/comments  # summary + @claude replies
 gh api graphql -f query='query{repository(owner:"Tuhis",name:"gawk"){pullRequest(number:<N>){
-  reviewThreads(first:100){nodes{id isResolved comments(first:20){nodes{author{login} body path line}}}}}}}'
+  reviewThreads(first:100){pageInfo{hasNextPage} nodes{id isResolved comments(first:20){nodes{author{login} body path line}}}}}}}'
 ```
+
+If `hasNextPage` is true, a thread may be missing from the list. Stop and
+report rather than merge on a partial list.
 
 ### CI failures
 
@@ -132,11 +135,20 @@ A round is requested in two cases. Both share one cap of 3 rounds per PR:
   PR whose automatic review was clean and that got no later commits needs
   no rounds.
 
+**Track which commit each review covered.** For the automatic review it is
+the `headSha` of the `claude-review` run that posted findings or the summary
+(`gh run list --workflow claude-code-review.yml --branch <branch> --json
+headSha,createdAt,databaseId`). For a round, it is the head SHA when you
+posted the request, so name it in the comment. The commits still unreviewed
+are `git log --oneline <last reviewed sha>..HEAD`. Don't compare commit
+dates with comment times, because a commit can be made before a review and
+pushed after it.
+
 Request a round once the previous review's findings are handled and CI is
 green on the current head. Post a PR comment:
 
 ```
-@claude please review again (round K of 3). Since your last review:
+@claude please review again (round K of 3), up to `<head sha>`. Since your last review (`<last reviewed sha>`):
 
 - `<sha>`: <what changed and why; say "your finding, test-first" where it applies>
 - …
@@ -167,13 +179,14 @@ Merge only when **all** of these hold for the **current head SHA**:
 
 - Every check has finished, each as `success`, `skipped` or `neutral`, with
   none pending. That includes `claude-review`.
-- Every commit has been reviewed. The automatic `claude-review` has run, and
-  any commits pushed after it were covered by an `@claude` round (§3) that
-  found nothing actionable. The 3-round cap reached is the only exception;
-  say so in the final report.
+- Every commit has been reviewed. `git log <last reviewed sha>..HEAD`
+  (§3) is empty, and the last review found nothing actionable. The only
+  exception is a reached 3-round cap: the commits after round 3 then merge
+  unreviewed, and the final report names them.
 - On a large PR, the `@claude` rounds are finished: a clean round, or 3
-  rounds.
+  rounds with round 3's findings handled as in §2.
 - No review thread is unresolved, and no person's comment is unanswered.
+  Every `@claude` report has a reply that covers each of its points.
 - The PR title is still a correct Conventional Commit for the final diff.
   Edit it with `gh pr edit --title` if the scope changed.
 - The PR is mergeable. If it conflicts, rebase on `origin/main`,
