@@ -17,13 +17,15 @@ Verify them if something behaves unexpectedly, because they can drift:
   `changes`, `app`, `server`, `server-coverage` and `common-ts-lock`, but this
   skill waits for **every** check, not only the required ones.
 - **`claude-review`** (`.github/workflows/claude-code-review.yml`) runs
-  automatically on `opened`/`synchronize`/`reopened`, but it **reviews a PR
-  once**. It posts inline comments for findings, or a `## Code review`
-  summary ("No issues found…") when the review is clean. Every later run
-  stops as soon as it sees that Claude has already commented on the PR,
-  and the check still goes green. Commits pushed after the first review,
-  including the fixes for its findings, are therefore **not reviewed
-  automatically** (see §3 and §4).
+  automatically on `opened`/`synchronize`/`reopened`, but **don't count
+  on it reviewing more than once**. It posts inline comments for findings,
+  or a `## Code review` summary ("No issues found…") when the review is
+  clean. A later run usually stops once it sees that Claude has already
+  commented on the PR, and the check still goes green. Now and then one
+  reviews anyway. Commits pushed after the first review, including the
+  fixes for its findings, are therefore **not reliably reviewed
+  automatically** (see §3 and §4). A later automatic review that does post
+  counts as a review of its run's head, found as in §3.
 - **`@claude`** (`.github/workflows/claude.yml`) answers a PR comment that
   mentions it. The comment must come from a writer or `tuhokuutio[bot]`. The
   reply is an issue comment from `claude[bot]` that starts with
@@ -171,15 +173,16 @@ On a large PR with a clean automatic review, ask for a full review of the
 PR in round 1, instead of "since your last review".
 
 - **At most 3 rounds.** A round counts once its job has **succeeded**: count
-  the `claude[bot]` replies starting with "**Claude finished …**" that answer
-  your `@claude` comments. The reply must actually review the requested
+  the `claude[bot]` replies whose header is "**Claude finished @<the account
+  you post as>'s task …**". A person's own `@claude` question doesn't count. The reply must actually review the requested
   range. One that says it couldn't (a failed checkout, out of turns) is a
   failed run. It is neither a round nor clean. Don't count your own comments, because a retry
   would count twice. Counting on the PR survives a context reset.
 - Wait for the "**Claude finished …**" reply. If its job failed or it never
   posts within ~20 minutes of the run finishing, check the job with
   `gh run view`. A failed run doesn't use up a round, so retry it once by
-  posting the same round's comment again.
+  posting the same round's comment again. If the retry fails too, stop and
+  hand back.
 - Handle the round's findings as in §2, then request the next round.
 - **Stop early** when a round leaves nothing to push. That means it reports
   nothing actionable, or you declined each finding with a reply saying why.
