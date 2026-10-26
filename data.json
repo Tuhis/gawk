@@ -34,9 +34,9 @@
     },
     "gawk-mumble-bridge": {
       "component": "gawk-mumble-bridge",
-      "covered": 1814,
+      "covered": 1816,
       "label": "voice bridge",
-      "pct": 86.3,
+      "pct": 86.4,
       "total": 2103,
       "unit": "statements"
     },
