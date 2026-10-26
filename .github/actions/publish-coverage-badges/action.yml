@@ -36,7 +36,7 @@ runs:
   steps:
     - uses: actions/setup-python@v7
       with:
-        python-version: "3.14"
+        python-version: "3.15"
     - name: Update the badges branch
       shell: bash
       env:
