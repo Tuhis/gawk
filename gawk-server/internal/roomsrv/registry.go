@@ -33,6 +33,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/internal/broadcastid"
 	"github.com/Tuhis/gawk/gawk-server/internal/eventbus"
 	"github.com/Tuhis/gawk/gawk-server/rooms"
+	"github.com/Tuhis/gawk/gawk-server/voice"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
@@ -177,6 +178,21 @@ type Options struct {
 	// could not be read — the join fails closed with ErrUnavailable. Nil
 	// means inline secrets only (file source, tests).
 	AttachSecret func(code string) (secret string, found bool, err error)
+
+	// Voice is R79's room voice (docs/80); the zero value is the off-path.
+	Voice VoiceOptions
+	// VoiceEpoch is the cluster seam for a room's epoch (D7): the room
+	// lease generation, ok false when this pod does not hold the lease. Nil
+	// means single-pod: one random epoch per process.
+	VoiceEpoch func(code string) (uint64, bool)
+	// VoiceRoomsInUse, when set, counts voice-live dynamic rooms fleet-wide
+	// (cluster mode, from the Room CRs) for -voice-max-rooms; nil counts
+	// this pod's.
+	VoiceRoomsInUse func() int
+	// OnVoiceChanged is told, outside the lock, whenever the set of
+	// voice-live rooms or a room's mapping changes: the observer links
+	// reconcile on it. Must not block.
+	OnVoiceChanged func()
 }
 
 // Registry is the single-pod room registry.
@@ -194,6 +210,14 @@ type Registry struct {
 	walls    map[string]string
 	tokens   Tokens
 	enabled  bool
+
+	// epoch is a single pod's voice epoch (D7), chosen at construction;
+	// unused when Options.VoiceEpoch is set.
+	epoch uint64
+	// voiceSeq numbers voice states (voiceRoom.id).
+	voiceSeq uint64
+	// voiceNonces are the accepted ticket nonces, until their expiry (D5).
+	voiceNonces map[[voice.NonceSize]byte]time.Time
 }
 
 // slotsLocked is the map rm's attachments are recorded in: walls for a
@@ -273,6 +297,16 @@ type room struct {
 	// the truth attached rather than each caller synthesising its own
 	// (docs/51 D9).
 	leaveReason string
+
+	// mumble is the room's validated voice mapping (docs/80 D13), kept even
+	// with voice unconfigured; voice is non-nil exactly while the room is
+	// voice-live (voice.go).
+	mumble *rooms.MumbleIntegration
+	voice  *voiceRoom
+	// voiceOnly marks a static room this pod homes only because it is
+	// voice-live (the cluster keeper's adoption, D12) and nobody has joined
+	// since: voice-live is not live, so AdminRooms leaves it out.
+	voiceOnly bool
 }
 
 type attachment struct {
@@ -316,14 +350,22 @@ func NewRegistry(opts Options) *Registry {
 	if opts.Obfuscate == nil {
 		opts.Obfuscate = func(s string) string { return s }
 	}
+	if opts.Voice.MaxRooms <= 0 {
+		opts.Voice.MaxRooms = DefaultVoiceMaxRooms
+	}
+	if opts.Voice.MaxUsersPerRoom <= 0 {
+		opts.Voice.MaxUsersPerRoom = DefaultVoiceMaxUsersPerRoom
+	}
 	return &Registry{
-		opts:     opts,
-		log:      opts.Log,
-		rooms:    make(map[string]*room),
-		attached: make(map[string]string),
-		walls:    make(map[string]string),
-		tokens:   opts.Tokens,
-		enabled:  true,
+		opts:        opts,
+		log:         opts.Log,
+		rooms:       make(map[string]*room),
+		attached:    make(map[string]string),
+		walls:       make(map[string]string),
+		tokens:      opts.Tokens,
+		enabled:     true,
+		epoch:       randomEpoch(),
+		voiceNonces: make(map[[voice.NonceSize]byte]time.Time),
 	}
 }
 
@@ -389,6 +431,14 @@ type StaticRoom struct {
 	// (status.attachments, docs/44 §4.3 "rebuilt by the home pod on
 	// adoption"); ignored on an update of a room this pod already holds.
 	Attachments []rooms.Attachment
+	// Mumble is the room's voice mapping (spec.integrations.mumble or the
+	// rooms file's mumble, docs/80 D13); nil means no voice. An invalid one
+	// is ignored with a warning.
+	Mumble *rooms.MumbleIntegration
+	// VoiceOnly says this pod is homing the room only because it is
+	// voice-live (the cluster keeper, D12); it is not live until a join.
+	// Ignored on an update of a room this pod already holds.
+	VoiceOnly bool
 }
 
 // UpsertStatic creates or updates a static room. Participants of an updated
@@ -404,8 +454,17 @@ func (r *Registry) UpsertStatic(def StaticRoom) error {
 		display = strings.TrimSpace(def.Code)
 	}
 	states := r.prefetchStates(def.Attachments)
-	var rekinded *room
-	defer func() { // after the unlock below: it takes r.mu
+	mumble := r.validMumble(norm, def.Mumble)
+	var (
+		rekinded     *room
+		voiceChanged bool
+		voiceCloses  []voiceClose
+	)
+	defer func() { // after the unlock below: these take r.mu or do I/O
+		runVoiceCloses(voiceCloses)
+		if voiceChanged {
+			r.notifyVoiceChanged()
+		}
 		if rekinded != nil {
 			r.notifyAttachments(rekinded)
 		}
@@ -428,6 +487,7 @@ func (r *Registry) UpsertStatic(def StaticRoom) error {
 			rekinded = rm
 		}
 		rm.pop = def.Pop
+		voiceChanged, voiceCloses = r.applyMumbleLocked(rm, mumble)
 		return nil
 	}
 	rm = &room{
@@ -436,6 +496,8 @@ func (r *Registry) UpsertStatic(def StaticRoom) error {
 		maxParticipants: def.MaxParticipants, pop: def.Pop,
 		createdAt: r.opts.Now(), nextPID: 1, participants: make(map[uint16]*Participant),
 	}
+	voiceChanged, _ = r.applyMumbleLocked(rm, mumble)
+	rm.voiceOnly = def.VoiceOnly && rm.voice != nil
 	r.rooms[norm] = rm
 	for i := range states {
 		if _, taken := r.slotsLocked(rm)[states[i].id]; taken {
@@ -475,7 +537,7 @@ func (r *Registry) prefetchStates(list []rooms.Attachment) []prefetched {
 func (r *Registry) ReplaceStatic(defs []rooms.FileRoom) {
 	keep := make(map[string]bool, len(defs))
 	for _, d := range defs {
-		def := StaticRoom{Code: d.Code, DisplayName: d.DisplayName, AttachSecret: d.AttachSecret, MaxBroadcasts: d.MaxBroadcasts, MaxParticipants: d.MaxParticipants}
+		def := StaticRoom{Code: d.Code, DisplayName: d.DisplayName, AttachSecret: d.AttachSecret, MaxBroadcasts: d.MaxBroadcasts, MaxParticipants: d.MaxParticipants, Mumble: d.Mumble}
 		if err := r.UpsertStatic(def); err != nil {
 			r.log.Warn("static room skipped", "code_len", len(d.Code), "err", err)
 			continue
@@ -595,6 +657,10 @@ type MintRequest struct {
 	Label       string
 	// CreateSecret is the presented -room-create-secret.
 	CreateSecret string
+	// Voice asks for a voice-live room (?voice=1, docs/80 C3): granted when
+	// voice is configured and -voice-max-rooms has room, else the room is
+	// minted without voice (MintResult.Voice says which).
+	Voice bool
 }
 
 // MintResult is what /room/new returns in its first RoomState.
@@ -605,6 +671,8 @@ type MintResult struct {
 	// Repeated: the room is one this broadcast minted earlier and is still
 	// attached to, answered again because the first answer never arrived.
 	Repeated bool
+	// Voice: the room is voice-live.
+	Voice bool
 }
 
 // Mint creates a dynamic room with the requesting broadcast attached
@@ -643,6 +711,15 @@ func (r *Registry) Mint(ctx context.Context, req MintRequest) (MintResult, error
 	if !utf8.ValidString(req.Label) || len(req.Label) > wire.MaxRoomLabelLen {
 		req.Label = ""
 	}
+	// Voice over -voice-max-rooms still mints, without voice: refusing the
+	// room would cost the creator their stream room for want of an extra,
+	// and the missing capability tells the client voice is not on. The
+	// fleet count is read before any lock (it walks the CR cache).
+	wantVoice := req.Voice && r.opts.Voice.Enabled
+	fleetVoice := -1
+	if wantVoice && r.opts.VoiceRoomsInUse != nil {
+		fleetVoice = r.opts.VoiceRoomsInUse()
+	}
 
 	for range 10 {
 		raw, err := broadcastid.Mint()
@@ -665,7 +742,7 @@ func (r *Registry) Mint(ctx context.Context, req MintRequest) (MintResult, error
 		// on its wall and is in the minted room too (docs/76 item 34).
 		if other, taken := r.attached[id]; taken {
 			if own := r.rooms[other]; own != nil && own.minter == id {
-				res := MintResult{Code: own.code, Display: own.display, CreatorToken: tokens.MintCreator(own.code), Repeated: true}
+				res := MintResult{Code: own.code, Display: own.display, CreatorToken: tokens.MintCreator(own.code), Repeated: true, Voice: own.voice != nil}
 				r.mu.Unlock()
 				r.log.Info("room mint repeated", "room_key", r.opts.Obfuscate(own.code), "broadcast_key", r.opts.Obfuscate(id))
 				return res, nil
@@ -685,11 +762,28 @@ func (r *Registry) Mint(ctx context.Context, req MintRequest) (MintResult, error
 			creatorFP: rooms.Fingerprint(token), createdAt: now, minter: id,
 			nextPID: 1, participants: make(map[uint16]*Participant),
 		}
+		var mumble *rooms.MumbleIntegration
+		if wantVoice {
+			inUse := fleetVoice
+			if inUse < 0 {
+				inUse = r.voiceDynamicCountLocked()
+			}
+			if inUse < r.opts.Voice.MaxRooms {
+				mumble = &rooms.MumbleIntegration{Temporary: true}
+			} else {
+				r.log.Info("room minted without voice: voice room limit reached", "limit", r.opts.Voice.MaxRooms)
+			}
+		}
 		if r.opts.Reserve != nil {
 			// Cluster mode: the CR create is the atomic reservation. Hold
 			// no lock across it; re-check for the local race afterwards.
 			r.mu.Unlock()
 			cr := &rooms.Room{Spec: rooms.RoomSpec{Kind: rooms.KindDynamic}}
+			if mumble != nil {
+				// The next home restores the voice from here (AdoptDynamic).
+				m := *mumble
+				cr.Spec.Integrations.Mumble = &m
+			}
 			cr.Name = norm
 			cr.Status = rooms.RoomStatus{CreatorTokenFingerprint: rm.creatorFP, CreatedAt: metaTime(now)}
 			if err := r.opts.Reserve(ctx, cr); err != nil {
@@ -719,14 +813,18 @@ func (r *Registry) Mint(ctx context.Context, req MintRequest) (MintResult, error
 			}
 		}
 		r.rooms[norm] = rm
+		voiceChanged, _ := r.applyMumbleLocked(rm, mumble)
 		r.attachLocked(rm, id, req.Label, state, 0)
 		r.startEmptyGraceLocked(rm)
 		rm.openedPublished = true
 		r.busRoomOpenedLocked(rm)
 		r.mu.Unlock()
-		r.log.Info("room minted", "room_key", r.opts.Obfuscate(norm), "broadcast_key", r.opts.Obfuscate(id))
+		r.log.Info("room minted", "room_key", r.opts.Obfuscate(norm), "broadcast_key", r.opts.Obfuscate(id), "voice", rm.voice != nil)
+		if voiceChanged {
+			r.notifyVoiceChanged()
+		}
 		r.notifyAttachments(rm)
-		return MintResult{Code: norm, Display: raw, CreatorToken: token}, nil
+		return MintResult{Code: norm, Display: raw, CreatorToken: token, Voice: voiceChanged}, nil
 	}
 	return MintResult{}, errCollision
 }
@@ -752,6 +850,9 @@ type Participant struct {
 	nick     string
 	identity string
 	grants   Grants
+	// wantVoice: the RoomHello asked for RoomCapVoice, so this participant
+	// gets the voice roster (docs/80 C2).
+	wantVoice bool
 	// firstState carries the creator token into the very first RoomState
 	// after a mint (docs/44 §4.4); nil otherwise.
 	firstState []byte
@@ -815,7 +916,8 @@ func (r *Registry) Join(code string, hello wire.RoomHello, grants Grants, creato
 		reg: r, room: rm, conn: conn,
 		id: pid, kind: hello.ClientKind,
 		grants: grants, firstState: creatorToken,
-		outbox: make(chan []byte, outboxDepth), closed: make(chan struct{}),
+		wantVoice: hello.WantCaps&wire.RoomCapVoice != 0,
+		outbox:    make(chan []byte, outboxDepth), closed: make(chan struct{}),
 	}
 	rm.nextPID = pid + 1
 	if rm.nextPID == 0 {
@@ -830,7 +932,9 @@ func (r *Registry) Join(code string, hello wire.RoomHello, grants Grants, creato
 	// the lock so no delta can slip between them.
 	r.broadcastLocked(rm, wire.RoomEvent{Kind: wire.RoomEventParticipantJoined, Participant: p.recordLocked()}, p.id)
 	p.enqueueLocked(r.stateRecordLocked(rm, p))
+	r.sendVoiceRosterToLocked(rm, p)
 	p.firstState = nil
+	rm.voiceOnly = false
 	r.mu.Unlock()
 	if wasEmpty && r.opts.OnRoomEmpty != nil {
 		r.opts.OnRoomEmpty(norm, false)
@@ -846,9 +950,16 @@ func (p *Participant) Leave() {
 	p.leaveOnce.Do(func() {
 		r := p.reg
 		rm := p.room
+		var voiceCloses []voiceClose
+		defer func() { runVoiceCloses(voiceCloses) }()
 		r.mu.Lock()
 		if cur, ok := rm.participants[p.id]; ok && cur == p {
 			delete(rm.participants, p.id)
+			// A voice session is bound to this participant ID; a reconnected
+			// room session is a new participant, so the voice goes now, with
+			// the non-terminal 4002 (docs/80 C4). A room ending has already
+			// closed it with its own code.
+			voiceCloses = r.closeParticipantVoiceLocked(rm, p.id, wire.CloseCodeServerDraining, voiceReasonLeft)
 			r.broadcastLocked(rm, wire.RoomEvent{Kind: wire.RoomEventParticipantLeft, Participant: wire.RoomParticipant{ID: p.id}}, 0)
 			// The bus event is published here rather than from the fan-out
 			// funnel: p is the only thing that still knows the nickname, the
@@ -967,8 +1078,11 @@ func (p *Participant) HandleCommand(cmd wire.RoomCommand) {
 		r.mu.Lock()
 		if !rm.ended {
 			p.enqueueLocked(r.stateRecordLocked(rm, p))
+			r.sendVoiceRosterToLocked(rm, p)
 		}
 		r.mu.Unlock()
+	case wire.RoomCommandVoiceJoin:
+		p.voiceJoin()
 	default:
 		p.reject(cmd.Kind, wire.RoomRejectUnsupported, "unsupported command")
 	}
@@ -1405,7 +1519,11 @@ func (r *Registry) stateRecordLocked(rm *room, p *Participant) []byte {
 	if p.grants.AttachOK {
 		flags |= wire.RoomStateFlagAttachOK
 	}
-	st := wire.RoomState{Flags: flags, Seq: rm.seq, YourID: p.id, Code: rm.display, DisplayName: rm.name, CreatorToken: p.firstState, Key: r.roomKey(rm.code)}
+	var caps uint8
+	if rm.voice != nil {
+		caps |= wire.RoomCapVoice
+	}
+	st := wire.RoomState{Flags: flags, Caps: caps, Seq: rm.seq, YourID: p.id, Code: rm.display, DisplayName: rm.name, CreatorToken: p.firstState, Key: r.roomKey(rm.code)}
 	for _, a := range rm.attachments {
 		st.Attachments = append(st.Attachments, a.record())
 	}
@@ -1513,7 +1631,20 @@ func (r *Registry) EndRoom(code string, reason uint8) {
 	for _, p := range rm.participants {
 		parts = append(parts, p)
 	}
+	// Voice goes with the room (docs/80 D17): terminally when it ended, and
+	// with the non-terminal 4002 when it is only moving to another home —
+	// the browser rejoins voice with a fresh ticket from the new one.
+	voiceCode, voiceReason := uint32(wire.CloseCodeVoiceRemoved), voiceReasonRoomEnded
+	if rm.releasing {
+		voiceCode, voiceReason = wire.CloseCodeServerDraining, voiceReasonRoomMoved
+	}
+	voiceCloses := r.closeVoiceSessionsLocked(rm, voiceCode, voiceReason)
+	hadVoice := rm.voice != nil
 	r.mu.Unlock()
+	runVoiceCloses(voiceCloses)
+	if hadVoice {
+		r.notifyVoiceChanged()
+	}
 	r.log.Info("room ended", "room_key", r.opts.Obfuscate(norm), "kind", rm.kind, "reason", reason)
 	for _, p := range parts {
 		// Let the writer flush the RoomEnding record, then close: the
@@ -1710,6 +1841,13 @@ func (r *Registry) AdoptDynamic(cr *rooms.Room) bool {
 		return false
 	}
 	states := r.prefetchStates(cr.Status.Attachments)
+	mumble := r.validMumble(norm, cr.Spec.Integrations.Mumble)
+	voiceChanged := false
+	defer func() {
+		if voiceChanged {
+			r.notifyVoiceChanged()
+		}
+	}()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, exists := r.rooms[norm]; exists {
@@ -1728,6 +1866,9 @@ func (r *Registry) AdoptDynamic(cr *rooms.Room) bool {
 	if cr.Status.CreatedAt != nil {
 		rm.createdAt = cr.Status.CreatedAt.Time
 	}
+	// A room minted with voice keeps it across a re-home: the CR carries
+	// the mapping and -voice-max-rooms was paid at mint.
+	voiceChanged, _ = r.applyMumbleLocked(rm, mumble)
 	r.rooms[norm] = rm
 	// The room arrived here from somewhere else. Say so BEFORE the streams
 	// that came with it: room.home_changed, then a room.attached per stream,
@@ -1773,6 +1914,11 @@ type RoomStats struct {
 	// by the transport for sessions it forwards elsewhere (RM3).
 	Role       string `json:"role"`
 	EmptySince string `json:"emptySince,omitempty"`
+	// Voice (R79, docs/80): set only on a voice-live room's home row, so a
+	// relay without voice serves exactly the pre-R79 rows.
+	VoiceLive     bool   `json:"voiceLive,omitempty"`
+	VoiceSessions int    `json:"voiceSessions,omitempty"`
+	VoiceObserver string `json:"voiceObserver,omitempty"`
 }
 
 // Stats snapshots every room this pod holds.
@@ -1782,6 +1928,9 @@ func (r *Registry) Stats() map[string]RoomStats {
 	out := make(map[string]RoomStats, len(r.rooms))
 	for code, rm := range r.rooms {
 		row := RoomStats{Kind: rm.kind, Participants: len(rm.participants), Attachments: len(rm.attachments), Role: "home"}
+		if rm.voice != nil {
+			row.VoiceLive, row.VoiceSessions, row.VoiceObserver = true, len(rm.voice.sessions), voiceObserverState(rm.voice)
+		}
 		if !rm.emptySince.IsZero() {
 			row.EmptySince = rm.emptySince.UTC().Format(time.RFC3339)
 		}
@@ -1803,7 +1952,8 @@ func (r *Registry) AdminRooms() []adminapi.Room {
 	defer r.mu.Unlock()
 	out := make([]adminapi.Room, 0, len(r.rooms))
 	for code, rm := range r.rooms {
-		if rm.ended {
+		// A room homed only for its voice is not live (docs/80 D12).
+		if rm.ended || rm.voiceOnly {
 			continue
 		}
 		row := adminapi.Room{
@@ -1841,6 +1991,8 @@ func (r *Registry) AdminRooms() []adminapi.Room {
 // Totals are the fleet-facing gauges (metrics).
 type Totals struct {
 	Static, Dynamic, Participants, Attachments int
+	// VoiceLive and VoiceSessions are R79's (docs/80); zero without voice.
+	VoiceLive, VoiceSessions int
 }
 
 // TotalStats sums across rooms.
@@ -1856,6 +2008,10 @@ func (r *Registry) TotalStats() Totals {
 		}
 		t.Participants += len(rm.participants)
 		t.Attachments += len(rm.attachments)
+		if rm.voice != nil {
+			t.VoiceLive++
+			t.VoiceSessions += len(rm.voice.sessions)
+		}
 	}
 	return t
 }

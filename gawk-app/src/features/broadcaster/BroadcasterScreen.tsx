@@ -232,6 +232,10 @@ export function BroadcasterScreen({
   // still the name in the field, the room view asks before using it.
   const [linkNick] = useState(linkNickname);
   const [roomLabel, setRoomLabel] = useState(() => roomReturn?.nickname ?? linkNick ?? loadNickname() ?? '');
+  // R79 (docs/80 D14, §11.1 C3): the new room asks for voice. Offered without
+  // knowing whether the relay has a bridge — the mint is the first moment it
+  // could say — and a relay without one ignores the request.
+  const [roomVoice, setRoomVoice] = useState(false);
 
   // R67 (docs/69): the desktop app as the other way to broadcast this. The
   // offer sits under Start on desktop OSes; a launch opens a modal over the
@@ -730,8 +734,17 @@ export function BroadcasterScreen({
   const mintRoom = useCallback(() => {
     const token = resumeTokenRef.current;
     if (!broadcastId || !token) return;
-    enterRoom({ kind: 'mint', broadcastId, resumeTokenHex: token, label: roomLabel.trim() }, null);
-  }, [broadcastId, roomLabel, enterRoom]);
+    enterRoom(
+      {
+        kind: 'mint',
+        broadcastId,
+        resumeTokenHex: token,
+        label: roomLabel.trim(),
+        ...(roomVoice ? { voice: true } : {}),
+      },
+      null,
+    );
+  }, [broadcastId, roomLabel, roomVoice, enterRoom]);
   // A room is minted from a running broadcast; asked for before the
   // stream is live, it waits the same way a join does.
   const newRoom = useCallback(() => {
@@ -917,6 +930,10 @@ export function BroadcasterScreen({
           <Button variant="secondary" onClick={newRoom}>
             <PeopleIcon /> Create a new room
           </Button>
+          <label className={styles.handoffCheck}>
+            <input type="checkbox" checked={roomVoice} onChange={(e) => setRoomVoice(e.target.checked)} />
+            With voice chat, if the server has it
+          </label>
           {!canMint && <p className={styles.settingsAudioNote}>Made when you go live.</p>}
         </section>
 

@@ -196,6 +196,19 @@ export const CLOSE_CODE_POP_NO_DEMAND = 4013;
 // keeps dialling the code, so a restart on the same code resumes by itself.
 // Mirrored from Go wire.CloseCodeBroadcasterStopped.
 export const CLOSE_CODE_BROADCASTER_STOPPED = 4014;
+// R79 (docs/80 D17): the bridge closes a browser's VOICE session with this
+// because the person was removed from voice — a gawk kill or ban, the room
+// ending or removing them, a Mumble kick or ban, or a newer voice session of
+// the same participant (newest wins, D5). TERMINAL for voice: the browser does
+// not rejoin voice by itself. It never touches the room control session. Sent
+// in-band first (SessionClosing). Mirrored from Go wire.CloseCodeVoiceRemoved.
+export const CLOSE_CODE_VOICE_REMOVED = 4015;
+// R79 (docs/80 D18): the bridge could not connect the person to Mumble —
+// murmur down, the bridge autobanned, murmur full, a channel the bridged user
+// may not enter, or a voice cap. NOT terminal: the browser says voice is
+// unavailable, with the close's reason, and offers to try again. Sent in-band
+// first. Mirrored from Go wire.CloseCodeVoiceUnavailable.
+export const CLOSE_CODE_VOICE_UNAVAILABLE = 4016;
 
 // SessionClosing: relay→client on its own server-opened uni
 // stream, a settle interval BEFORE the relay closes the session with this
@@ -206,7 +219,8 @@ export const CLOSE_CODE_BROADCASTER_STOPPED = 4014;
 // `closed` settles without a code, and keeps a code it did read. Sent for
 // the terminal codes (4000, 4004, 4006), R74's non-terminal 4012 and R78's
 // non-terminal 4014 on
-// publish/subscribe sessions;
+// publish/subscribe sessions, and by the R79 bridge for 4002, 4015 and 4016
+// on voice sessions;
 // room control sessions have RoomEnding instead. Layout: version, type 0x17,
 // uint32 BE code in [4000, 4999] — exactly 6 bytes. Mirrored from Go
 // wire.TypeSessionClosing.
@@ -1265,6 +1279,21 @@ function validateTelemetryEndpointUrl(url: string): void {
 //       RoomEnding:        uint8 reason (ROOM_END_REASON_*)
 //       CommandRejected:   uint8 command kind, uint8 reason
 //                          (ROOM_REJECT_*), uint8 msgLen + message
+//       VoiceTicket (R79): uint16 urlLen + bridge URL (absolute https),
+//                          uint16 ticketLen + ticket (opaque here)
+//       VoiceRosterUpdated (R79): uint8 flags (ROOM_VOICE_ROSTER_FLAG_*),
+//                          uint16 count, then that many VoiceRosterEntry records
+//
+//     VoiceRosterEntry record:
+//       uint32 session (Mumble session ID), uint8 kind (ROOM_VOICE_KIND_*),
+//       uint16 participantId (0 for a native Mumble user), uint8 flags
+//       (ROOM_VOICE_USER_*), uint8 nameLen + Mumble name
+//
+//     The two voice events are OUT OF SEQUENCE, like CommandRejected: they
+//     carry the room's CURRENT seq without advancing it, because the relay
+//     sends them only to participants that asked for ROOM_CAP_VOICE (a
+//     VoiceTicket only to the one that asked for it). Older clients skip both
+//     as unknown kinds.
 //
 //   0x16 RoomCommand (client → relay):
 //     byte 2   uint8 kind          ROOM_COMMAND_* kind
@@ -1274,6 +1303,7 @@ function validateTelemetryEndpointUrl(url: string): void {
 //       Detach:      uint8 idLen + broadcast ID
 //       SetNickname: uint8 nickLen + nickname
 //       EndRoom, Resync: no payload
+//       VoiceJoin (R79): no payload
 //
 // Parsers never copy: a returned creatorToken / resumeToken is a subarray
 // view of the input record.
@@ -1318,8 +1348,11 @@ export const ROOM_CLIENT_WEB_BROADCASTER = 1;
 export const ROOM_CLIENT_NATIVE = 2;
 const ROOM_CLIENT_KIND_MAX = ROOM_CLIENT_NATIVE;
 
-// Capability bits (RoomHello wantCaps, RoomState caps). Both reserved for
-// the chat/voice integrations; a v1 room advertises none.
+// Capability bits (RoomHello wantCaps, RoomState caps), docs/44 §4.11's
+// integration hooks. Chat is still reserved. Voice is R79 (docs/80): a room
+// advertises ROOM_CAP_VOICE while it is voice-live on a relay with a bridge
+// configured, and a client that sets it in wantCaps receives the voice events
+// (VoiceRosterUpdated) and may send VoiceJoin.
 export const ROOM_CAP_CHAT = 0x01;
 export const ROOM_CAP_VOICE = 0x02;
 const ROOM_CAP_MASK = ROOM_CAP_CHAT | ROOM_CAP_VOICE;
@@ -1348,8 +1381,9 @@ export const ROOM_PARTICIPANT_FLAG_SPEAKING = 0x01;
 export const ROOM_PARTICIPANT_FLAG_STREAMING = 0x02;
 const ROOM_PARTICIPANT_FLAG_MASK = ROOM_PARTICIPANT_FLAG_SPEAKING | ROOM_PARTICIPANT_FLAG_STREAMING;
 
-// RoomEvent kinds. 0x40–0x4F (chat) and 0x50–0x5F (voice) are reserved; the
-// parser throws RoomUnknownKindError for any kind it does not know.
+// RoomEvent kinds. 0x40–0x4F (chat) is reserved and 0x50–0x5F is voice (R79
+// allocates 0x50 and 0x51); the parser throws RoomUnknownKindError for any
+// kind it does not know.
 export const ROOM_EVENT_PARTICIPANT_JOINED = 0x01;
 export const ROOM_EVENT_PARTICIPANT_LEFT = 0x02;
 export const ROOM_EVENT_PARTICIPANT_UPDATED = 0x03;
@@ -1358,6 +1392,15 @@ export const ROOM_EVENT_ATTACHMENT_REMOVED = 0x11;
 export const ROOM_EVENT_ATTACHMENT_UPDATED = 0x12;
 export const ROOM_EVENT_ROOM_ENDING = 0x20;
 export const ROOM_EVENT_COMMAND_REJECTED = 0x30;
+// R79 (docs/80 D5): answers one participant's VoiceJoin — the bridge's URL
+// and the ticket that opens a voice session there. OUT OF SEQUENCE: carries
+// the room's current seq without advancing it, like CommandRejected.
+export const ROOM_EVENT_VOICE_TICKET = 0x50;
+// R79 (docs/80 D15, §11.1 C2): the room's whole voice roster — who is in the
+// Mumble channel, native and bridged. A snapshot, replace never merge. Sent
+// after every RoomState and on every change, only to participants that asked
+// for ROOM_CAP_VOICE. Out of sequence, like VoiceTicket.
+export const ROOM_EVENT_VOICE_ROSTER_UPDATED = 0x51;
 
 // RoomCommand kinds. Same reserved sub-ranges as events.
 export const ROOM_COMMAND_ATTACH = 0x01;
@@ -1365,6 +1408,30 @@ export const ROOM_COMMAND_DETACH = 0x02;
 export const ROOM_COMMAND_SET_NICKNAME = 0x03;
 export const ROOM_COMMAND_END_ROOM = 0x04;
 export const ROOM_COMMAND_RESYNC = 0x05;
+// R79 (docs/80 D5): asks for a voice ticket. Answered by a VoiceTicket event,
+// or a CommandRejected: Unsupported when the room has no voice, Limit at the
+// room's voice-user cap, Unavailable while its Mumble channel is unreachable.
+export const ROOM_COMMAND_VOICE_JOIN = 0x50;
+
+// VoiceRosterUpdated flags. Available is set while the bridge watches the
+// room's Mumble channel; clear means voice is unavailable right now (the
+// roster is then empty).
+export const ROOM_VOICE_ROSTER_FLAG_AVAILABLE = 0x01;
+const ROOM_VOICE_ROSTER_FLAG_MASK = ROOM_VOICE_ROSTER_FLAG_AVAILABLE;
+
+// Voice roster entry kinds: a native Mumble user (not a participant), or a
+// bridged gawk participant (participantId says which).
+export const ROOM_VOICE_KIND_MUMBLE = 0;
+export const ROOM_VOICE_KIND_GAWK = 1;
+const ROOM_VOICE_KIND_MAX = ROOM_VOICE_KIND_GAWK;
+
+// Voice roster entry flags.
+export const ROOM_VOICE_USER_SELF_MUTE = 0x01;
+export const ROOM_VOICE_USER_SELF_DEAF = 0x02;
+export const ROOM_VOICE_USER_MUTE = 0x04; // server mute
+export const ROOM_VOICE_USER_DEAF = 0x08; // server deafen
+export const ROOM_VOICE_USER_SUPPRESSED = 0x10;
+const ROOM_VOICE_USER_FLAG_MASK = 0x1f;
 
 // RoomEndReason values (RoomEvent RoomEnding).
 export const ROOM_END_REASON_EMPTY = 1;
@@ -1483,7 +1550,28 @@ export type RoomEvent =
       command: number; // the rejected command's ROOM_COMMAND_* kind
       reason: number; // ROOM_REJECT_*
       message: string; // human-readable detail
+    }
+  | {
+      seq: number;
+      kind: typeof ROOM_EVENT_VOICE_TICKET;
+      voiceUrl: string; // the bridge's absolute https URL
+      voiceTicket: Uint8Array; // opaque; a view of the input record on parse
+    }
+  | {
+      seq: number;
+      kind: typeof ROOM_EVENT_VOICE_ROSTER_UPDATED;
+      voiceFlags: number; // ROOM_VOICE_ROSTER_FLAG_* bitmap
+      voiceRoster: VoiceRosterEntry[];
     };
+
+// One person in a room's Mumble channel (VoiceRosterUpdated).
+export interface VoiceRosterEntry {
+  session: number; // uint32 Mumble session ID
+  kind: number; // ROOM_VOICE_KIND_*
+  participantId: number; // uint16; 0 for a native Mumble user
+  flags: number; // ROOM_VOICE_USER_* bitmap
+  name: string; // the Mumble name, "Alice [web]" for a bridged user
+}
 
 // A RoomCommand, discriminated by kind.
 export type RoomCommand =
@@ -1496,7 +1584,8 @@ export type RoomCommand =
   | { kind: typeof ROOM_COMMAND_DETACH; broadcastId: string }
   | { kind: typeof ROOM_COMMAND_SET_NICKNAME; nickname: string }
   | { kind: typeof ROOM_COMMAND_END_ROOM }
-  | { kind: typeof ROOM_COMMAND_RESYNC };
+  | { kind: typeof ROOM_COMMAND_RESYNC }
+  | { kind: typeof ROOM_COMMAND_VOICE_JOIN };
 
 // --- record framing ---------------------------------------------------------
 
@@ -1638,6 +1727,16 @@ class RoomReader {
     return v;
   }
 
+  // A uint16-length-prefixed byte field, bounded by max. A view, not a copy.
+  bytes16(field: string, max: number): Uint8Array {
+    const n = this.u16();
+    if (n > max) this.fail(`${field} ${n} bytes, max ${max}`);
+    if (this.off + n > this.buf.length) this.fail(`${field} overruns record`);
+    const v = this.buf.subarray(this.off, this.off + n);
+    this.off += n;
+    return v;
+  }
+
   // A uint8-length-prefixed UTF-8 string field, bounded by max.
   str8(field: string, max: number): string {
     const b = this.bytes8(field, max);
@@ -1682,6 +1781,19 @@ class RoomReader {
     const nickname = this.str8('nickname', MAX_ROOM_NICKNAME_LEN);
     const identity = this.str8('identity', MAX_ROOM_IDENTITY_LEN);
     return { id, kind, flags, nickname, identity };
+  }
+
+  voiceRosterEntry(): VoiceRosterEntry {
+    const session = this.u32();
+    const kind = this.u8();
+    if (kind > ROOM_VOICE_KIND_MAX) this.fail(`voice roster kind ${kind}`);
+    const participantId = this.u16();
+    const flags = this.u8();
+    if ((flags & ~ROOM_VOICE_USER_FLAG_MASK) !== 0) {
+      this.fail(`reserved voice user flag bits set (0x${flags.toString(16)})`);
+    }
+    const name = this.str8('voice name', MAX_VOICE_NAME_LEN);
+    return { session, kind, participantId, flags, name };
   }
 
   // n raw bytes. A view, not a copy.
@@ -1776,6 +1888,23 @@ class RoomWriter {
     this.u8(p.kind, p.flags);
     this.str8(p.nickname, MAX_ROOM_NICKNAME_LEN, 'nickname');
     this.str8(p.identity, MAX_ROOM_IDENTITY_LEN, 'identity');
+  }
+
+  voiceRosterEntry(v: VoiceRosterEntry): void {
+    if (v.kind > ROOM_VOICE_KIND_MAX) this.fail(`voice roster kind ${v.kind}`);
+    if ((v.flags & ~ROOM_VOICE_USER_FLAG_MASK) !== 0) {
+      this.fail(`reserved voice user flag bits set (0x${v.flags.toString(16)})`);
+    }
+    this.u32(v.session);
+    this.u8(v.kind);
+    this.u16(v.participantId);
+    this.u8(v.flags);
+    this.str8(v.name, MAX_VOICE_NAME_LEN, 'voice name');
+  }
+
+  // The bytes written so far.
+  get length(): number {
+    return this.bytes.length;
   }
 
   finish(): Uint8Array<ArrayBuffer> {
@@ -1921,9 +2050,39 @@ export function encodeRoomEvent(e: RoomEvent): Uint8Array<ArrayBuffer> {
       w.u8(e.command, e.reason);
       w.str8(e.message, MAX_ROOM_REJECT_MESSAGE_LEN, 'message');
       break;
+    case ROOM_EVENT_VOICE_TICKET: {
+      // Go measures the URL in bytes; so does the bound here.
+      if (/\p{Surrogate}/u.test(e.voiceUrl)) w.fail('voice url is not valid UTF-8');
+      const url = new TextEncoder().encode(e.voiceUrl);
+      if (url.length === 0 || url.length > MAX_VOICE_URL_LEN) {
+        w.fail(`voice url ${url.length} bytes, want 1-${MAX_VOICE_URL_LEN}`);
+      }
+      if (e.voiceTicket.length === 0 || e.voiceTicket.length > MAX_VOICE_TICKET_LEN) {
+        w.fail(`voice ticket ${e.voiceTicket.length} bytes, want 1-${MAX_VOICE_TICKET_LEN}`);
+      }
+      w.u16(url.length);
+      w.raw(url);
+      w.u16(e.voiceTicket.length);
+      w.raw(e.voiceTicket);
+      break;
+    }
+    case ROOM_EVENT_VOICE_ROSTER_UPDATED:
+      if ((e.voiceFlags & ~ROOM_VOICE_ROSTER_FLAG_MASK) !== 0) {
+        w.fail(`reserved voice roster flag bits set (0x${e.voiceFlags.toString(16)})`);
+      }
+      if (e.voiceRoster.length > MAX_VOICE_ROSTER_ENTRIES) {
+        w.fail(`${e.voiceRoster.length} voice roster entries, max ${MAX_VOICE_ROSTER_ENTRIES}`);
+      }
+      w.u8(e.voiceFlags);
+      w.u16(e.voiceRoster.length);
+      for (const v of e.voiceRoster) w.voiceRosterEntry(v);
+      break;
     default:
       throw new RoomUnknownKindError('event', kind, seq);
   }
+  // Go bounds every event by the record size (R79 made a roster able to
+  // approach it).
+  if (w.length > MAX_ROOM_RECORD_SIZE) w.fail(`${w.length} bytes exceeds MAX_ROOM_RECORD_SIZE`);
   return w.finish();
 }
 
@@ -1960,6 +2119,34 @@ export function parseRoomEvent(msg: Uint8Array): RoomEvent {
       e = { seq, kind, command, reason, message: r.str8('message', MAX_ROOM_REJECT_MESSAGE_LEN) };
       break;
     }
+    case ROOM_EVENT_VOICE_TICKET: {
+      const url = r.bytes16('voice url', MAX_VOICE_URL_LEN);
+      if (url.length === 0) throw new WireError('invalid room event: empty voice url');
+      let voiceUrl: string;
+      try {
+        voiceUrl = utf8Strict.decode(url);
+      } catch {
+        throw new WireError('invalid room event: voice url is not valid UTF-8');
+      }
+      const voiceTicket = r.bytes16('voice ticket', MAX_VOICE_TICKET_LEN);
+      if (voiceTicket.length === 0) throw new WireError('invalid room event: empty voice ticket');
+      e = { seq, kind, voiceUrl, voiceTicket };
+      break;
+    }
+    case ROOM_EVENT_VOICE_ROSTER_UPDATED: {
+      const voiceFlags = r.u8();
+      if ((voiceFlags & ~ROOM_VOICE_ROSTER_FLAG_MASK) !== 0) {
+        throw new WireError(`invalid room event: reserved voice roster flag bits set (0x${voiceFlags.toString(16)})`);
+      }
+      const n = r.u16();
+      if (n > MAX_VOICE_ROSTER_ENTRIES) {
+        throw new WireError(`invalid room event: ${n} voice roster entries, max ${MAX_VOICE_ROSTER_ENTRIES}`);
+      }
+      const voiceRoster: VoiceRosterEntry[] = [];
+      for (let i = 0; i < n; i++) voiceRoster.push(r.voiceRosterEntry());
+      e = { seq, kind, voiceFlags, voiceRoster };
+      break;
+    }
     default:
       throw new RoomUnknownKindError('event', kind, seq);
   }
@@ -1991,6 +2178,7 @@ export function encodeRoomCommand(c: RoomCommand): Uint8Array<ArrayBuffer> {
       break;
     case ROOM_COMMAND_END_ROOM:
     case ROOM_COMMAND_RESYNC:
+    case ROOM_COMMAND_VOICE_JOIN:
       break; // no payload
     default:
       throw new RoomUnknownKindError('command', kind);
@@ -2023,6 +2211,7 @@ export function parseRoomCommand(msg: Uint8Array): RoomCommand {
       break;
     case ROOM_COMMAND_END_ROOM:
     case ROOM_COMMAND_RESYNC:
+    case ROOM_COMMAND_VOICE_JOIN:
       c = { kind };
       break;
     default:
@@ -2298,4 +2487,232 @@ export function parseLocalRelayOffer(msg: Uint8Array): LocalRelayOfferMessage {
   }
   // No r.done(): bytes past the last candidate are the extension space.
   return { handle, name, validity, candidates };
+}
+
+// --- R79 room voice: VoiceHello (0x1A), VoiceFrame (0x1B), VoiceState (0x1C),
+// VoiceControl (0x1D) ----------------------------------------------------------
+// Mirrors gawk-server/wire/voice.go byte for byte; the layout comments there
+// are the spec. They travel on a browser's voice session with
+// gawk-mumble-bridge (CONNECT /voice), never on a relay session:
+//
+//   - VoiceHello, VoiceState and VoiceControl are RECORDS on the one
+//     bidirectional stream the browser opens (the room record framing,
+//     encodeRoomRecord / RoomRecordReader).
+//   - VoiceFrame is a DATAGRAM in both directions: one Opus packet each.
+//
+// The bridge closes a voice session with 4015 or 4016 and sends the code
+// in-band first (SessionClosing); 4002 keeps its relay meaning (drain: rejoin
+// at once with a fresh ticket). All four are strict: exact length, reserved
+// bits zero.
+//
+//   0x1A VoiceHello: uint8 protocol (VOICE_PROTOCOL_VERSION), uint8 flags
+//        (VOICE_HELLO_FLAG_*), uint16 ticketLen (1..MAX_VOICE_TICKET_LEN),
+//        ticket.
+//   0x1B VoiceFrame: uint8 flags (VOICE_FRAME_FLAG_END), uint8 target
+//        (0..MAX_VOICE_TARGET; a browser sends 0), uint32 speaker (the
+//        Mumble session ID; 0 from a browser), uint32 seq (10 ms units: a
+//        10 ms frame advances it by 1, a 20 ms frame by 2), then one Opus
+//        packet of 1..MAX_VOICE_PAYLOAD bytes — empty ONLY with the end flag.
+//   0x1C VoiceState: uint8 flags (VOICE_STATE_FLAG_*), uint32 session (the
+//        browser's own Mumble session, 0 until connected), uint8 nameLen +
+//        the browser's Mumble name.
+//   0x1D VoiceControl: uint8 flags (VOICE_CONTROL_FLAG_*).
+
+export const TYPE_VOICE_HELLO = 0x1a;
+export const TYPE_VOICE_FRAME = 0x1b;
+export const TYPE_VOICE_STATE = 0x1c;
+export const TYPE_VOICE_CONTROL = 0x1d;
+
+// The voice protocol version a VoiceHello carries, independent of WIRE_VERSION.
+export const VOICE_PROTOCOL_VERSION = 1;
+// The fixed VoiceFrame header, including the common 2-byte prefix.
+export const VOICE_FRAME_HEADER_SIZE = 12;
+// The largest Opus packet a VoiceFrame carries: the datagram limit.
+export const MAX_VOICE_PAYLOAD = MAX_DATAGRAM_SIZE - VOICE_FRAME_HEADER_SIZE;
+// The largest Mumble voice target (5 bits).
+export const MAX_VOICE_TARGET = 31;
+// Bounds the opaque ticket in a VoiceHello and a VoiceTicket event.
+export const MAX_VOICE_TICKET_LEN = 512;
+// Bounds a Mumble user name on the voice wire (VoiceState, the voice roster).
+export const MAX_VOICE_NAME_LEN = 64;
+// Bounds the bridge URL in a VoiceTicket event.
+export const MAX_VOICE_URL_LEN = 512;
+// Bounds one VoiceRosterUpdated event (keeps it under MAX_ROOM_RECORD_SIZE).
+export const MAX_VOICE_ROSTER_ENTRIES = 200;
+
+// VoiceHello flags.
+export const VOICE_HELLO_FLAG_SELF_MUTE = 0x01;
+export const VOICE_HELLO_FLAG_SELF_DEAF = 0x02;
+// This browser never sends voice (listen-only never called getUserMedia).
+export const VOICE_HELLO_FLAG_LISTEN_ONLY = 0x04;
+const VOICE_HELLO_FLAG_MASK = VOICE_HELLO_FLAG_SELF_MUTE | VOICE_HELLO_FLAG_SELF_DEAF | VOICE_HELLO_FLAG_LISTEN_ONLY;
+
+// VoiceFrame flags: the last frame of a talk spurt (Mumble's end of
+// transmission).
+export const VOICE_FRAME_FLAG_END = 0x01;
+const VOICE_FRAME_FLAG_MASK = VOICE_FRAME_FLAG_END;
+
+// VoiceState flags.
+export const VOICE_STATE_FLAG_SERVER_MUTE = 0x01;
+export const VOICE_STATE_FLAG_SERVER_DEAF = 0x02;
+// No Speak permission in the channel.
+export const VOICE_STATE_FLAG_SUPPRESSED = 0x04;
+export const VOICE_STATE_FLAG_SELF_MUTE = 0x08;
+export const VOICE_STATE_FLAG_SELF_DEAF = 0x10;
+// The bridged Mumble connection is up and in the room's channel.
+export const VOICE_STATE_FLAG_CONNECTED = 0x20;
+const VOICE_STATE_FLAG_MASK = 0x3f;
+
+// VoiceControl flags.
+export const VOICE_CONTROL_FLAG_SELF_MUTE = 0x01;
+export const VOICE_CONTROL_FLAG_SELF_DEAF = 0x02;
+const VOICE_CONTROL_FLAG_MASK = VOICE_CONTROL_FLAG_SELF_MUTE | VOICE_CONTROL_FLAG_SELF_DEAF;
+
+export interface VoiceHelloMessage {
+  protocol: number;
+  flags: number;
+  // A view of the input record on parse.
+  ticket: Uint8Array;
+}
+
+export interface VoiceFrameHeader {
+  end: boolean;
+  target: number;
+  speaker: number; // uint32
+  seq: number; // uint32
+}
+
+export interface VoiceStateMessage {
+  flags: number;
+  session: number; // uint32
+  name: string;
+}
+
+export function encodeVoiceHello(h: VoiceHelloMessage): Uint8Array<ArrayBuffer> {
+  const w = new RoomWriter('voice hello');
+  if (h.protocol !== VOICE_PROTOCOL_VERSION) w.fail(`protocol ${h.protocol}, want ${VOICE_PROTOCOL_VERSION}`);
+  if ((h.flags & ~VOICE_HELLO_FLAG_MASK) !== 0) w.fail(`reserved flag bits set (0x${h.flags.toString(16)})`);
+  if (h.ticket.length === 0 || h.ticket.length > MAX_VOICE_TICKET_LEN) {
+    w.fail(`ticket ${h.ticket.length} bytes, want 1-${MAX_VOICE_TICKET_LEN}`);
+  }
+  w.u8(WIRE_VERSION, TYPE_VOICE_HELLO, h.protocol, h.flags);
+  w.u16(h.ticket.length);
+  w.raw(h.ticket);
+  return w.finish();
+}
+
+export function parseVoiceHello(msg: Uint8Array): VoiceHelloMessage {
+  checkRoomPrefix(msg, TYPE_VOICE_HELLO, 6, 'voice hello');
+  const r = new RoomReader(msg, 'voice hello');
+  const protocol = r.u8();
+  if (protocol !== VOICE_PROTOCOL_VERSION) {
+    throw new WireError(`invalid voice hello: protocol ${protocol}, want ${VOICE_PROTOCOL_VERSION}`);
+  }
+  const flags = r.u8();
+  if ((flags & ~VOICE_HELLO_FLAG_MASK) !== 0) {
+    throw new WireError(`invalid voice hello: reserved flag bits set (0x${flags.toString(16)})`);
+  }
+  const n = r.u16();
+  if (n === 0 || n > MAX_VOICE_TICKET_LEN) {
+    throw new WireError(`invalid voice hello: ticket ${n} bytes, want 1-${MAX_VOICE_TICKET_LEN}`);
+  }
+  if (6 + n !== msg.length) {
+    throw new WireError(`invalid voice hello: ticket length ${n} in a ${msg.length}-byte record`);
+  }
+  return { protocol, flags, ticket: msg.subarray(6) };
+}
+
+// The payload may be empty only when header.end is set (a terminator).
+export function encodeVoiceFrame(h: VoiceFrameHeader, payload: Uint8Array): Uint8Array<ArrayBuffer> {
+  if (payload.length > MAX_VOICE_PAYLOAD || (payload.length === 0 && !h.end)) {
+    throw new WireError(
+      `invalid voice frame: payload ${payload.length} bytes (end ${h.end}), want 1-${MAX_VOICE_PAYLOAD}`,
+    );
+  }
+  if (!Number.isInteger(h.target) || h.target < 0 || h.target > MAX_VOICE_TARGET) {
+    throw new WireError(`invalid voice frame: target ${h.target}, max ${MAX_VOICE_TARGET}`);
+  }
+  const out = new Uint8Array(VOICE_FRAME_HEADER_SIZE + payload.length);
+  const view = new DataView(out.buffer);
+  out[0] = WIRE_VERSION;
+  out[1] = TYPE_VOICE_FRAME;
+  out[2] = h.end ? VOICE_FRAME_FLAG_END : 0;
+  out[3] = h.target;
+  view.setUint32(4, h.speaker >>> 0);
+  view.setUint32(8, h.seq >>> 0);
+  out.set(payload, VOICE_FRAME_HEADER_SIZE);
+  return out;
+}
+
+// The payload is a view of dgram.
+export function parseVoiceFrame(dgram: Uint8Array): { header: VoiceFrameHeader; payload: Uint8Array } {
+  checkRoomPrefix(dgram, TYPE_VOICE_FRAME, VOICE_FRAME_HEADER_SIZE, 'voice frame');
+  const flags = dgram[2];
+  if ((flags & ~VOICE_FRAME_FLAG_MASK) !== 0) {
+    throw new WireError(`invalid voice frame: reserved flag bits set (0x${flags.toString(16)})`);
+  }
+  const view = new DataView(dgram.buffer, dgram.byteOffset, dgram.byteLength);
+  const header: VoiceFrameHeader = {
+    end: (flags & VOICE_FRAME_FLAG_END) !== 0,
+    target: dgram[3],
+    speaker: view.getUint32(4),
+    seq: view.getUint32(8),
+  };
+  if (header.target > MAX_VOICE_TARGET) {
+    throw new WireError(`invalid voice frame: target ${header.target}, max ${MAX_VOICE_TARGET}`);
+  }
+  const payload = dgram.subarray(VOICE_FRAME_HEADER_SIZE);
+  if (payload.length === 0 && !header.end) {
+    throw new WireError('invalid voice frame: empty payload without end of transmission');
+  }
+  return { header, payload };
+}
+
+export function encodeVoiceState(s: VoiceStateMessage): Uint8Array<ArrayBuffer> {
+  const w = new RoomWriter('voice state');
+  if ((s.flags & ~VOICE_STATE_FLAG_MASK) !== 0) w.fail(`reserved flag bits set (0x${s.flags.toString(16)})`);
+  w.u8(WIRE_VERSION, TYPE_VOICE_STATE, s.flags);
+  w.u32(s.session);
+  w.str8(s.name, MAX_VOICE_NAME_LEN, 'name');
+  return w.finish();
+}
+
+export function parseVoiceState(msg: Uint8Array): VoiceStateMessage {
+  checkRoomPrefix(msg, TYPE_VOICE_STATE, 8, 'voice state');
+  const r = new RoomReader(msg, 'voice state');
+  const flags = r.u8();
+  if ((flags & ~VOICE_STATE_FLAG_MASK) !== 0) {
+    throw new WireError(`invalid voice state: reserved flag bits set (0x${flags.toString(16)})`);
+  }
+  const session = r.u32();
+  const name = r.str8('name', MAX_VOICE_NAME_LEN);
+  r.done();
+  return { flags, session, name };
+}
+
+export function encodeVoiceControl(flags: number): Uint8Array<ArrayBuffer> {
+  if ((flags & ~VOICE_CONTROL_FLAG_MASK) !== 0) {
+    throw new WireError(`invalid voice control: reserved flag bits set (0x${flags.toString(16)})`);
+  }
+  return new Uint8Array([WIRE_VERSION, TYPE_VOICE_CONTROL, flags]);
+}
+
+export function parseVoiceControl(msg: Uint8Array): number {
+  checkRoomPrefix(msg, TYPE_VOICE_CONTROL, 3, 'voice control');
+  if (msg.length !== 3) throw new WireError(`invalid voice control: ${msg.length} bytes, want 3`);
+  if ((msg[2] & ~VOICE_CONTROL_FLAG_MASK) !== 0) {
+    throw new WireError(`invalid voice control: reserved flag bits set (0x${msg[2].toString(16)})`);
+  }
+  return msg[2];
+}
+
+// Cuts a Mumble name to MAX_VOICE_NAME_LEN UTF-8 bytes on a character
+// boundary, replacing lone surrogates (invalid UTF-8) first. Mirrors Go
+// wire.TruncateVoiceName.
+export function truncateVoiceName(s: string): string {
+  const clean = s.replace(/\p{Surrogate}/gu, '�');
+  const enc = new TextEncoder();
+  const chars = Array.from(clean);
+  while (chars.length > 0 && enc.encode(chars.join('')).length > MAX_VOICE_NAME_LEN) chars.pop();
+  return chars.join('');
 }

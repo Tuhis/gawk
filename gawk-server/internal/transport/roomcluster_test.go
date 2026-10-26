@@ -82,6 +82,9 @@ type roomFleet struct {
 	// publisherStall is the hub's PublisherStallTimeout (0 = the state is
 	// off, as in every test but the silent-publisher one).
 	publisherStall time.Duration
+	// voiceBridge, when set, turns R79 voice on for every pod started
+	// after, against that fake bridge (voice_cluster_test.go).
+	voiceBridge *fakeBridge
 }
 
 func newRoomFleet(t *testing.T, objs ...runtime.Object) *roomFleet {
@@ -256,6 +259,11 @@ func (f *roomFleet) startRoomPod(t *testing.T, ctx context.Context, podName stri
 		// PoP manager installed every /pop/* route stays a 404.
 		Pops: true,
 	}
+	if b := f.voiceBridge; b != nil {
+		v := voiceConfig(b.addr)
+		cfg.VoiceBridgeAddr, cfg.VoiceBridgePublicURL, cfg.VoiceBridgePSK, cfg.VoiceTicketSecret = v.VoiceBridgeAddr, v.VoiceBridgePublicURL, v.VoiceBridgePSK, v.VoiceTicketSecret
+		cfg.VoiceMaxRooms, cfg.VoiceMaxUsersPerRoom = v.VoiceMaxRooms, v.VoiceMaxUsersPerRoom
+	}
 	// The hooks close over the late-bound coordinator and registry, as in
 	// main: cluster mode's lease stamp/delete first, then the room hook.
 	var (
@@ -298,7 +306,19 @@ func (f *roomFleet) startRoomPod(t *testing.T, ctx context.Context, podName stri
 	srv.edgeManager().dial = newEdgeDialer(cfg.InternalServerName, cfg.InternalPSK, f.pool, discardLog)
 
 	var store *roomcluster.Store
+	var voiceOpts roomsrv.VoiceOptions
+	var voiceEpoch func(string) (uint64, bool)
+	var onVoice func()
+	var onStaticVoice func(string)
+	if cfg.VoiceConfigured() {
+		voiceOpts = roomsrv.VoiceOptions{Enabled: true, PublicURL: cfg.VoiceBridgePublicURL, TicketSecret: []byte(cfg.VoiceTicketSecret),
+			MaxRooms: cfg.VoiceMaxRooms, MaxUsersPerRoom: cfg.VoiceMaxUsersPerRoom}
+		voiceEpoch = func(code string) (uint64, bool) { gen, held := store.Holding(code); return uint64(gen), held }
+		onVoice = srv.VoiceChanged
+		onStaticVoice = srv.StaticVoiceRoomSeen
+	}
 	reg = roomsrv.NewRegistry(roomsrv.Options{
+		Voice: voiceOpts, VoiceEpoch: voiceEpoch, OnVoiceChanged: onVoice,
 		Broadcasts: srv.RoomBroadcasts(), Obfuscate: r.ObfuscateID, Log: discardLog, EmptyGrace: time.Hour, PodName: podName,
 		RefreshInterval: 100 * time.Millisecond, UnknownIsExpired: true,
 		Reserve:              func(ctx context.Context, room *rooms.Room) error { return store.Reserve(ctx, room) },
@@ -309,8 +329,9 @@ func (f *roomFleet) startRoomPod(t *testing.T, ctx context.Context, podName stri
 	store, err = roomcluster.New(roomcluster.Options{
 		Client: f.client, Namespace: "gawk", PodName: podName, AdvertiseAddr: cfg.Addr,
 		Registry: reg, Obfuscate: r.ObfuscateID, Log: discardLog,
-		OnLeaseLost:   srv.HandleRoomLeaseLost,
-		RenewInterval: 50 * time.Millisecond, LeaseDuration: 2 * time.Second, SyncTimeout: 5 * time.Second,
+		OnLeaseLost:       srv.HandleRoomLeaseLost,
+		OnStaticVoiceRoom: onStaticVoice,
+		RenewInterval:     50 * time.Millisecond, LeaseDuration: 2 * time.Second, SyncTimeout: 5 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("roomcluster.New: %v", err)
@@ -330,6 +351,10 @@ func (f *roomFleet) startRoomPod(t *testing.T, ctx context.Context, podName stri
 	}
 	go store.Run(ctx)
 	waitFor(t, 15*time.Second, store.HasSynced, podName+" room informer sync")
+	if b := f.voiceBridge; b != nil {
+		fastVoiceManager(srv)
+		srv.StartVoice(ctx, VoiceBridgeOptions{Addr: b.addr, ServerName: "localhost", RootCAs: b.pool})
+	}
 	go reg.RunRefresh(ctx)
 	go r.RunViewerCountPump(ctx) // also the stall sweep, as in main
 

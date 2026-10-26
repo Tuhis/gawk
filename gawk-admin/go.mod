@@ -11,7 +11,7 @@ replace github.com/Tuhis/gawk/gawk-server => ../gawk-server
 require (
 	github.com/Tuhis/gawk/gawk-server v0.25.0
 	github.com/coreos/go-oidc/v3 v3.20.0
-	github.com/golang-migrate/migrate/v4 v4.19.1
+	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/nats-io/nats-server/v2 v2.15.1

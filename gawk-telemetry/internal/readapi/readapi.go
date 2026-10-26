@@ -149,7 +149,8 @@ type BroadcastSummary struct {
 	Live         bool           `json:"live"`
 }
 
-// ListBroadcasts summarizes broadcasts since a time, worst-first.
+// ListBroadcasts summarizes broadcasts since a time, worst-first. Built from
+// rollup rows, so a session still open is not counted until it finalizes.
 func (a *API) ListBroadcasts(since time.Time, limit int) ([]BroadcastSummary, error) {
 	rows, err := a.rollups(since)
 	if err != nil {
@@ -238,7 +239,8 @@ type ListSessionsQuery struct {
 	Limit        int
 }
 
-// ListSessions returns projected rollup rows.
+// ListSessions returns projected rollup rows: finished sessions only. A live
+// session has no row until it finalizes; LiveSnapshot is where it is.
 func (a *API) ListSessions(q ListSessionsQuery) ([]SessionSummary, error) {
 	rows, err := a.rollups(q.Since)
 	if err != nil {
@@ -427,6 +429,10 @@ func (a *API) GetSessionDetail(sessionID string, q SessionQuery) (*Timeline, err
 			}
 			if v, ok := schema.Number(s.Stats, f); ok {
 				pt[f] = v
+			} else if b, ok := schema.Bool(s.Stats, f); ok {
+				// Points are numeric; a bool rides as 0/1, which the
+				// explorer draws as a step line.
+				pt[f] = boolF(b)
 			}
 		}
 		tl.Points = append(tl.Points, pt)

@@ -1,0 +1,73 @@
+{
+  "opts": {
+    "capture": "worklet",
+    "source": "synth",
+    "frameDurationUs": 10000,
+    "transport": "wt",
+    "seconds": 6,
+    "echoUrl": "https://127.0.0.1:35942/echo",
+    "echoHash": "c913b644ef4b630859ba094bb895a1b3a1c7217aeaa4a31ca781e4e9057e7bae"
+  },
+  "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Safari/605.1.15",
+  "errors": [
+    "no WebTransport"
+  ],
+  "notes": [],
+  "env": {
+    "AudioEncoder": true,
+    "AudioDecoder": true,
+    "MediaStreamTrackProcessor": false,
+    "AudioWorkletNode": true,
+    "WebTransport": false
+  },
+  "support": {
+    "withFrameDuration": {
+      "supported": true,
+      "echoedOpus": {
+        "complexity": 9,
+        "format": "opus",
+        "frameDuration": 10000,
+        "packetlossperc": 0,
+        "usedtx": false,
+        "useinbandfec": false
+      }
+    },
+    "withFrameDurationVoip": {
+      "supported": true,
+      "echoedOpus": {
+        "complexity": 9,
+        "format": "opus",
+        "frameDuration": 10000,
+        "packetlossperc": 0,
+        "usedtx": false,
+        "useinbandfec": false
+      }
+    },
+    "withFrameDurationLowdelay": {
+      "supported": true,
+      "echoedOpus": {
+        "complexity": 9,
+        "format": "opus",
+        "frameDuration": 10000,
+        "packetlossperc": 0,
+        "usedtx": false,
+        "useinbandfec": false
+      }
+    },
+    "plain": {
+      "supported": true,
+      "echoedOpus": null
+    }
+  },
+  "meta": {
+    "browser": "webkit",
+    "version": "26.5",
+    "playwright": "1.62.1",
+    "host": "linux x64",
+    "headless": true,
+    "date": "2026-10-26T07:16:17.036Z",
+    "seconds": 6,
+    "label": "worklet-synth-10ms-wt-default-rep0"
+  },
+  "console": []
+}

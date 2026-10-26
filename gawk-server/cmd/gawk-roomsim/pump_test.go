@@ -242,3 +242,61 @@ func TestDialFailedReportsTheRelayStatus(t *testing.T) {
 		t.Fatalf("stderr = %q", errs.String())
 	}
 }
+
+// R79: the voice events print as their own lines (users never null, the
+// ticket in hex), the state line carries the caps byte, and -voice-join's
+// VoiceJoin goes out exactly once, after the first RoomState.
+func TestPumpPrintsVoiceLinesAndJoinsVoiceOnce(t *testing.T) {
+	var stream bytes.Buffer
+	stream.Write(stateRec(t, wire.RoomState{Seq: 3, Caps: wire.RoomCapVoice, YourID: 2, Code: "friends"}))
+	stream.Write(eventRec(t, wire.RoomEvent{Seq: 3, Kind: wire.RoomEventVoiceRosterUpdated}))
+	stream.Write(eventRec(t, wire.RoomEvent{Seq: 3, Kind: wire.RoomEventVoiceRosterUpdated, VoiceFlags: wire.RoomVoiceRosterFlagAvailable,
+		VoiceRoster: []wire.VoiceRosterEntry{{Session: 7, Kind: wire.RoomVoiceKindGawk, ParticipantID: 2, Flags: wire.RoomVoiceUserSelfMute, Name: "sim [web]"}}}))
+	stream.Write(eventRec(t, wire.RoomEvent{Seq: 3, Kind: wire.RoomEventVoiceTicket, VoiceURL: "https://voice.example/voice", VoiceTicket: []byte{0xab, 0xcd}}))
+	stream.Write(stateRec(t, wire.RoomState{Seq: 4, Code: "friends"}))
+
+	var out, sent bytes.Buffer
+	joins := 0
+	err := pumpWith(&stream, json.NewEncoder(&out), io.Discard, func() error {
+		joins++
+		return sendCommand(&sent, wire.RoomCommand{Kind: wire.RoomCommandVoiceJoin})
+	})
+	if err != io.EOF {
+		t.Fatalf("pump: %v", err)
+	}
+	if joins != 1 {
+		t.Fatalf("VoiceJoin sent %d times", joins)
+	}
+	if want := commandRec(t, wire.RoomCommand{Kind: wire.RoomCommandVoiceJoin}); !bytes.Equal(sent.Bytes(), want) {
+		t.Fatalf("sent %x, want %x", sent.Bytes(), want)
+	}
+	lines := decodeLines(t, out.String())
+	if len(lines) != 5 {
+		t.Fatalf("%d lines:\n%s", len(lines), out.String())
+	}
+	if lines[0]["caps"] != float64(wire.RoomCapVoice) || lines[4]["caps"] != 0.0 {
+		t.Errorf("caps = %v / %v", lines[0]["caps"], lines[4]["caps"])
+	}
+	if r := lines[1]; r["type"] != "voiceRoster" || r["available"] != false || len(r["users"].([]any)) != 0 || r["seq"] != 3.0 {
+		t.Errorf("empty roster = %v", r)
+	}
+	r := lines[2]
+	users := r["users"].([]any)
+	if r["available"] != true || len(users) != 1 {
+		t.Fatalf("roster = %v", r)
+	}
+	if u := users[0].(map[string]any); u["session"] != 7.0 || u["kind"] != float64(wire.RoomVoiceKindGawk) || u["participant"] != 2.0 ||
+		u["flags"] != float64(wire.RoomVoiceUserSelfMute) || u["name"] != "sim [web]" {
+		t.Errorf("user = %v", u)
+	}
+	if tk := lines[3]; tk["type"] != "voiceTicket" || tk["url"] != "https://voice.example/voice" || tk["ticket"] != "abcd" || tk["seq"] != 3.0 {
+		t.Errorf("ticket = %v", tk)
+	}
+	// A failing VoiceJoin write ends the pump with that error.
+	var again bytes.Buffer
+	again.Write(stateRec(t, wire.RoomState{Seq: 1, Code: "friends"}))
+	boom := errors.New("write failed")
+	if err := pumpWith(&again, json.NewEncoder(io.Discard), io.Discard, func() error { return boom }); err != boom {
+		t.Fatalf("pump = %v, want the write error", err)
+	}
+}

@@ -1,9 +1,10 @@
 # R79 — Room voice through a Mumble bridge
 
-**Status**: designed 2026-10-25, not started. Chunks **MV0–MV8** (§9).
-Owner decisions taken in the design interview on 2026-10-25 (§2). The
-decisions in §3 follow from them and are open to review. **MV0 is a
-measurement and gates the latency target** (§1, §9).
+**Status**: designed 2026-10-25; **MV0–MV7 implemented 2026-10-26** (§11 is
+the implementation contract, §12 the results). Open: MV0's owner-device rows
+(Safari on macOS and iOS, Chrome on Android, echo cancellation) and the
+owner's sign-off on the latency target, then the MV8 pass on the reference
+deployment. Owner decisions taken in the design interview on 2026-10-25 (§2).
 
 **Relationship to earlier work**: docs/44 §4.11 reserved the hooks for
 this: a `voice` room capability, `spec.integrations.mumble` on the `Room`
@@ -234,3 +235,217 @@ participant `identity` field stays empty).
   and so on, in different channels. If that reads badly in Mumble, the
   alternative is one observer per bridge pod watching every channel. That
   is cheaper, but temporary channels would then need a different keeper.
+
+---
+
+## 11. Implementation contract (2026-10-26)
+
+MV2–MV7 were built against this section. It fixes what §3 left to the
+chunks (layouts, routes, knobs) and records where the build departs from a
+§3 decision and why. Where the two disagree, this section is what the code
+does.
+
+### 11.1 Departures from §3
+
+| # | §3 said | Built | Why |
+|---|---|---|---|
+| C1 | D6, OD21: a thin fork of gumble in `tuhis/gumble` | **A first-party Mumble client** in `gawk-mumble-bridge/internal/mumble` (TLS control channel, the handful of protobuf messages the bridge needs encoded with `protowire`, the legacy UDPTunnel audio format). It keeps D6's three properties: raw Opus with sender session, sequence, target and end-of-transmission; a bounded, drop-oldest delivery queue that never blocks the read loop; a configurable reported client version. | gumble is MPL-2.0, which is not on the Go license allowlist (`tools/licenses/gen-notices.py`; adding it is a licensing decision, CONTRIBUTING.md), and the `tuhis/gumble` repository could not be created from this change. The client the bridge needs is small; a fork would have carried a decoder, a UDP stack and a plugin model the bridge does not use. |
+| C2 | D15: `RoomState` gains a voice-roster section | `RoomState` is **unchanged**. The roster is a `VoiceRosterUpdated` event (0x51) the home sends right after every `RoomState` and on every change, only to participants whose `RoomHello` asked for `RoomCapVoice`. It is out of sequence: it carries the room's current `seq` without advancing it, like `CommandRejected`. | `RoomState`'s parser is strict (exact length), and the released desktop and iOS clients join rooms: a trailing section would make every voice room unreadable to them. Sending the roster only to clients that asked keeps every existing vector and every existing client byte-identical. |
+| C3 | D14: the dynamic room's Voice toggle is sent in `RoomHello` | `CONNECT /room/new?voice=1`. | The room is minted before the upgrade, from the query, and `wantCaps` already means "send me voice events" for every voice-capable client; one bit cannot mean both. |
+| C4 | D17 named kills and bans only | A participant's voice session also ends when its **room control session** ends, with **4002** (non-terminal): the browser rejoins voice with a fresh ticket once its room session is back. | A voice session is bound to a participant ID, and a reconnected room session is a new participant. |
+
+### 11.2 Wire (MV2)
+
+Layouts and golden vectors: `gawk-server/wire/voice.go` (VoiceHello 0x1A,
+VoiceFrame 0x1B, VoiceState 0x1C, VoiceControl 0x1D, close codes 4015 and
+4016) and `gawk-server/wire/room.go` (`RoomCommandVoiceJoin` 0x50,
+`RoomEventVoiceTicket` 0x50, `RoomEventVoiceRosterUpdated` 0x51, the voice
+roster entry). Mirrored in `wire.ts` and `crates/wire` with the same vectors.
+
+The ticket, the temporary channel key and the two internal links are the
+public package `gawk-server/voice` (the `screening` precedent: the bridge
+compiles it in, nobody restates it). Link messages are JSON, framed as
+`uint32 length ‖ JSON` on one bidirectional stream.
+
+### 11.3 Topology and routes
+
+| Where | Listener | Route | Who dials |
+|---|---|---|---|
+| bridge, public (UDP LoadBalancer) | QUIC `:4443` | `CONNECT /voice` | the browser, with the ticket in its first record |
+| bridge, internal (ClusterIP, never public) | QUIC `:4444` | `CONNECT /internal/observe?psk=` | the room's home relay pod |
+| bridge, internal | TCP `:2113` | `GET /healthz`, `/readyz`, `/metrics`, `/statusz` | probes, Prometheus, operators |
+| relay | its QUIC listener | `CONNECT /internal/voice/{code}?psk=` | a bridge pod (via the relay's Service); in cluster mode a non-home pod proxies it to the home with the cluster PSK and the lease generation, as `/internal/room` |
+
+`/internal/voice/{code}` is registered only when rooms are on and voice is
+configured. Both links send Origin `gawk-server://native-internal-edge`.
+
+### 11.4 Knobs
+
+Relay (all through `roomOptions`, flags, `GAWK_*` envs and the chart; voice
+is configured only when the first four are all set, a partial set refuses
+to start, and voice needs `-rooms`):
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `-voice-bridge-addr` | — | the bridge's internal QUIC address the home dials for observer links (`host:port`) |
+| `-voice-bridge-public-url` | — | the https URL a browser opens a voice session on, sent in `VoiceTicket` |
+| `-voice-bridge-psk` | — | gates both links |
+| `-voice-ticket-secret` | — | HMAC key for tickets and the temporary channel key; ≥16 bytes; the bridge holds the same |
+| `-voice-bridge-server-name` | host of `-voice-bridge-addr` | TLS name verified on the observer dial |
+| `-voice-bridge-ca-file` | system roots | extra roots for the observer dial (the dev stack's self-signed certificate) |
+| `-voice-max-rooms` | 10 | voice-live dynamic rooms (per pod; fleet-wide in cluster mode, counted from CRs) |
+| `-voice-max-users-per-room` | 25 | voice sessions per room |
+
+Bridge (`gawk-mumble-bridge`, flags and `GAWK_*` envs and the chart):
+`-listen`, `-internal-listen`, `-ops-listen`, `-cert-file`, `-key-file`,
+`-dev-cert`, `-allowed-origins`, `-psk`, `-ticket-secret`, `-relay-url`,
+`-relay-server-name`, `-relay-ca-file`, `-mumble-addr`, `-mumble-password`,
+`-mumble-access-token`, `-mumble-ca-file`, `-mumble-cert-sha256`,
+`-mumble-insecure-skip-verify`, `-mumble-name-template` (`{nick} [web]`),
+`-mumble-observer-name` (`gawk`), `-mumble-temp-parent`,
+`-mumble-temp-channel-template` (`gawk {key}`), `-mumble-client-version`
+(`1.4.0`, so murmur speaks the legacy audio format on the TCP tunnel),
+`-max-voice-sessions` (200), `-max-temp-channels` (50), `-drain-timeout`
+(10s), `-stats-key`. The bridge's own README is the reference.
+
+### 11.5 Behaviour the chunks share
+
+- **Epoch** (D7): the room lease generation in cluster mode; a random
+  per-process value on a single pod. The home keeps every nonce it accepted
+  until its ticket expires and refuses a repeat.
+- **Register at the home**: ticket MAC and expiry, epoch, nonce, the
+  participant still in the room under that ID, the room still voice-live,
+  `-voice-max-users-per-room`, and the voice client's address against the
+  ban set. Then newest wins (4015 to the older session), then `Accepted`,
+  which carries the channel (path or `temporary`) so the bridge pod hosting
+  the user needs nothing from the observer's pod.
+- **Ends of a voice session**, as the browser sees them: 4015 for a room
+  ending, a gawk IP ban covering the voice client, a kill of a broadcast the
+  participant attached, voice turned off for the room, a newer session of
+  the same participant, or a Mumble kick or ban; 4016 for a refused or
+  expired ticket's retryable cases and every Mumble-side failure (murmur
+  unreachable, autoban, full, a channel it may not enter, the bridge cap);
+  4002 for a bridge drain and for the participant's room session ending
+  (C4). Every one is sent in-band first.
+- **Names** (D9): `{nick} [web]`, then ` 2`… up to 10 on `UsernameInUse`.
+  Measured against murmur 1.5.939 and 1.6.870: with no `username` setting
+  both accept spaces and brackets, so the pretty form works out of the box;
+  the rule murmur's sample ini shows does not. On `InvalidUsername` (that
+  rule, or 1.6 refusing a non-ASCII nickname) the bridge retries once with
+  every character outside the sample rule replaced by `_`, then suffixes
+  `_2`…. Murmur does not refuse a second login of the same name from the
+  same address: it disconnects the first as a ghost. Every bridged user of a
+  pod shares its address, so the bridge keeps a per-pod name registry and
+  checks the server's user list before it dials; a ghosted connection is
+  closed with 4016.
+  The **observers** share one name family (`gawk`, `gawk 2`, …) across every
+  voice room on the server, so their ladder is not D9's ten but 1000; a
+  ten-name ladder capped a server at ten voice rooms (found in review).
+- **Certificates**: murmur refuses to create a temporary channel for a
+  client without a certificate, so every bridged connection presents a
+  fresh self-signed one that is never stored. A Mumble ban of a bridged
+  user bans the bridge pod's address; `docs/self-hosting.md` says so.
+- **Audio format**: murmur 1.5 and 1.6 still send the legacy audio format
+  over the TCP tunnel to a client that reports 1.4.0 (measured, byte-
+  identical), and the protobuf format to one that reports ≥ 1.5.0. The
+  bridge refuses a configured version outside 1.2.4–1.4.x.
+- **Speaking indicators** (D16) never touch the relay.
+- **Privacy** (D24): no package of the bridge writes, logs or exposes voice
+  audio; a source-walk test enforces it, as `gawk-sampler`'s D8 test does.
+
+---
+
+## 12. Results (2026-10-26)
+
+### 12.1 MV0 — the browser pipeline, measured
+
+Raw data, the harness and the full write-up: [`assets/80/RESULTS.md`](assets/80/RESULTS.md).
+Headless Chromium 151, Firefox 153 and Playwright's WebKit 26.5 (not
+Safari), on a PulseAudio null sink.
+
+| | Chromium | Firefox | WebKit (not Safari) |
+|---|---|---|---|
+| 10 ms `frameDuration` accepted, real 10 ms packets | yes | yes | yes |
+| Encode / decode p50, 10 ms | 0.5 / 0.3 ms | 0.4 / 0.9 ms | 1 / 1 ms (1 ms timer) |
+| Capture node → playout-ready, 10 ms, p50 / p95 | 22.5 / 37.2 ms | 25.2 / 33.8 ms | 25.8 / 44.5 ms |
+| Same at 20 ms, p50 | 31.8 ms | 35.8 ms | 43.8 ms |
+| AudioWorklet capture → `AudioData` → `AudioEncoder` | works | works | works |
+
+- **Firefox ships speaking, not listen-only**: its `AudioEncoder` takes the
+  worklet's `AudioData` (§7's risk, retired).
+- **Frame size: 10 ms on every browser** (provisional for Safari until
+  MV8), ~9–11 ms less transit than 20 ms for under 1 ms of encode.
+- **The ≤100 ms target is neither confirmed nor ruled out.** The measured
+  browser part is 22–26 ms; with estimates for the microphone and echo
+  processing, the network, the jitter buffer and the output device the
+  total is ~70–155 ms. Plausible on a wired desktop on a LAN, unlikely on
+  phones or Bluetooth. The owner decides at sign-off.
+- Findings the implementation follows: `AudioEncoder.flush()` on Chromium
+  emits an extra padded packet per call, so the web client flushes only at
+  the end of a spurt; Firefox ignores the 40 kbit/s bitrate (~57 kbit/s);
+  `AudioData` does not exist inside an AudioWorklet anywhere, so the
+  capture node posts PCM to the main thread.
+- **Not measured**: Safari (macOS, iOS), Chrome on Android, real microphone
+  and output latency, echo cancellation with WebAudio playback. RESULTS.md
+  has the owner's manual procedure for the last.
+
+### 12.2 MV5 — what real murmur taught
+
+Recorded in §11.5 and `docs/gotchas.md`: murmur 1.5 and 1.6 still send the
+legacy audio format to a 1.4.0 client; a duplicate name from one address is
+a ghost, not a reject; temporary channels need a client certificate; the
+compiled-in username rule accepts `Alice [web]`.
+
+### 12.3 MV7 — end to end
+
+`e2e/voice.mjs` (CI job `e2e-voice`): the relay, two bridge pods behind a
+UDP LoadBalancer stand-in, murmur 1.6, three Chromium participants on the
+fake microphone and a scripted native Mumble user. All six passes green,
+three runs in a row:
+
+| Pass | Shows |
+|---|---|
+| Roster before voice | a room viewer who never joined voice sees the native Mumble user (OD28, D15) |
+| Both directions | the native user receives the gawk speaker's frames; both gawk users see the native user speaking from frames they received |
+| Mumble moderation | a server mute reaches the panel; a kick ends voice with 4015 |
+| Pod drain | 4002 while the pod still serves, rejoin onto the other pod through the LoadBalancer, the observer follows, audio resumes |
+| Temporary channel | a `?voice=1` room's channel exists under the parent, found by the fleet-stable name, and its native user is on the room's roster |
+| gawk ban | an IP ban covering the browsers ends voice with 4015 |
+
+Its first run found a bug no unit test had the topology for: the draining
+pod takes the room's observer with it, so the immediate rejoin was told
+`Unavailable` and the browser gave up. A rejoin now treats that as another
+rejoin (`001972ba`, test-first).
+
+### 12.4 MV7 — one pod under load
+
+`e2e/voice-load.sh`, raw results in
+[`assets/80/load/results.jsonl`](assets/80/load/results.jsonl): one relay,
+**one** bridge pod and murmur 1.6 on one 8-core Ivy Bridge Xeon, N real voice
+participants in one channel (room session, ticket, voice session and bridged
+Mumble user each), three talking at once for 30 s.
+
+| Users | Joined | Delivered / expected | Bridge CPU | Bridge RSS | murmur CPU |
+|---|---|---|---|---|---|
+| 10 | 10 | 100 % | 0.43 cores | 26 MB | 0.22 cores |
+| 25 | 25 | 100 % | 0.92 cores | 36 MB | 0.45 cores |
+| 50 | 50 | 80 % | 1.40 cores | 54 MB | 0.70 cores |
+| 100 | 99 | 30 % | 1.06 cores | 89 MB | 0.6 cores |
+
+- **Up to 25 people in one channel, nothing is lost** on this machine.
+- At 50 the shortfall is **between murmur and the bridge**: the bridge
+  forwarded to the participants what it received (351,658 vs 351,537 frames,
+  2 dropped by its queues). Murmur sends each frame to each of N bridged
+  TCP connections from one host (D8's "N copies"); the load generator,
+  the bridge, the relay and murmur shared the 8 cores, so the run does not
+  say how much of that is murmur's own ceiling. A real pod on its own node
+  should do better; MV8 measures the deployment.
+- At 100 murmur's default `users` cap (100, the observer is one) refused the
+  last participant: the bridge closed it with **4016 "the Mumble server is
+  full"**, the D18 path. Size `users` for native plus bridged users (§5).
+- Community scale (OD15, dozens per channel) fits at the low end. More
+  bridge pods spread the bridge's own CPU across nodes; they do not reduce
+  murmur's fan-out, which is one copy per bridged user whichever pod holds
+  it. A channel much bigger than this is murmur's limit before it is the
+  bridge's, and §7's "per-connection cost" risk stands until MV8 measures
+  murmur on its own host.

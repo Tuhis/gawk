@@ -25,6 +25,9 @@ func TestParseArgsBuildsTheJoinAndMintPaths(t *testing.T) {
 			wantPath: "/room/ab2cd3?attach=s3cret&creator=" + hex32 + "&name=roomsim"},
 		{name: "mint", args: []string{"-mint", "-broadcast", "AB2CD3", "-resume", hex32, "-label", "pc", "-create-secret", "inv"},
 			wantPath: "/room/new?broadcast=AB2CD3&create=inv&label=pc&name=roomsim&resume=" + hex32},
+		{name: "mint with voice", args: []string{"-mint", "-mint-voice", "-broadcast", "AB2CD3", "-resume", hex32},
+			wantPath: "/room/new?broadcast=AB2CD3&label=roomsim&name=roomsim&resume=" + hex32 + "&voice=1"},
+		{name: "mint-voice without mint", args: []string{"-code", "x", "-mint-voice"}, wantErr: "-mint-voice requires -mint"},
 		{name: "neither", args: nil, wantErr: "one of -code or -mint"},
 		{name: "both", args: []string{"-mint", "-code", "x"}, wantErr: "mutually exclusive"},
 		{name: "mint without proof", args: []string{"-mint", "-broadcast", "AB2CD3"}, wantErr: "-broadcast and -resume"},
@@ -76,5 +79,19 @@ func TestJSONLines(t *testing.T) {
 	ending := eventLine(wire.RoomEvent{Kind: wire.RoomEventRoomEnding, Reason: wire.RoomEndReasonOperator})
 	if ending.Participant != nil || ending.Attachment != nil || ending.Reason != wire.RoomEndReasonOperator {
 		t.Fatalf("ending = %+v", ending)
+	}
+}
+
+// -voice-join implies -voice; neither is on by default.
+func TestParseArgsVoiceFlags(t *testing.T) {
+	o, err := parseArgs([]string{"-code", "x"})
+	if err != nil || o.voice || o.voiceJoin {
+		t.Fatalf("defaults = %+v, %v", o, err)
+	}
+	if o, _ = parseArgs([]string{"-code", "x", "-voice"}); !o.voice || o.voiceJoin {
+		t.Fatalf("-voice = %+v", o)
+	}
+	if o, _ = parseArgs([]string{"-code", "x", "-voice-join"}); !o.voice || !o.voiceJoin {
+		t.Fatalf("-voice-join = %+v", o)
 	}
 }

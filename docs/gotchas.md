@@ -2344,6 +2344,52 @@ entries still describe code `gawk-pubsim` runs (now
   other container that needs a token from the dev IdP has to do the same.
   ([docs/41](41-local-dev-stack.md) §4.5)
 
+**Room voice through Mumble (R79)**
+
+- **Murmur does not refuse a second login of the same name from the same
+  address: it disconnects the first as a ghost** ("You connected to the
+  server from another device"). Every bridged user of a bridge pod shares
+  its address, so retrying on `UsernameInUse` alone (D9) would let two
+  `Alice [web]`s kick each other off in a loop. The bridge keeps a per-pod
+  name registry and checks the server's user list before it dials; two pods
+  behind one SNAT address can still ghost each other.
+  ([docs/80](80-mumble-bridge.md) §11.5)
+- **Murmur refuses to create a temporary channel for a client without a
+  certificate** (`PermissionDenied: MissingCertificate`), whatever the ACL
+  says. Every bridged connection presents a fresh self-signed certificate it
+  never stores. ([docs/80](80-mumble-bridge.md) §11.5)
+- **A client reporting version ≥ 1.5.0 gets murmur's protobuf audio format
+  over the TCP tunnel; ≤ 1.4.x gets the legacy one.** Measured on murmur
+  1.5.939 and 1.6.870. The bridge speaks only the legacy format, so it
+  refuses a configured `-mumble-client-version` outside 1.2.4–1.4.x.
+  ([docs/80](80-mumble-bridge.md) §11.5)
+- **Murmur's compiled-in username rule accepts `Alice [web]`; the rule its
+  sample ini shows as the default does not.** 1.6 also refuses non-ASCII
+  letters where 1.5 accepts them. An operator who copies the sample line
+  gets the bridge's `_` fallback names (`Alice_[web]`).
+  ([docs/80](80-mumble-bridge.md) §11.5)
+- **The `mumblevoip/mumble-server:v1.6.870` image honours
+  `MUMBLE_SUPERUSER_PASSWORD` only on its very first start**; after that the
+  SuperUser password is whatever the database holds. The bridge's test
+  script sets it again with `docker exec … --set-su-pw`; the compose voice
+  lane uses 1.5.939, where the variable works. (`gawk-mumble-bridge/testdata/murmur.sh`)
+- **A draining bridge pod takes the room's observer with it, so the
+  relay answers the 4002 rejoin with `VoiceJoin` Unavailable** for the
+  second or so until the home redials the observer onto another pod. A
+  client that treats that as "voice is down" stops rejoining after every
+  rollout; during a rejoin it is another rejoin. Only the two-pod e2e had
+  the topology to show it. ([docs/80](80-mumble-bridge.md) §12.3)
+- **The voice room events are out of sequence.** `VoiceTicket` and
+  `VoiceRosterUpdated` carry the room's current `seq` without advancing it,
+  because they go only to the participants that asked for them; a client
+  must handle them before its duplicate check, as it does
+  `CommandRejected`. ([docs/80](80-mumble-bridge.md) §11.1 C2)
+- **Chromium's `AudioEncoder.flush()` emits an extra padded Opus packet on
+  every call**, so a voice client flushes only at the end of a talk spurt;
+  **`AudioData` does not exist inside an AudioWorklet** in any engine, so a
+  worklet capture node posts PCM out; **Firefox ignores Opus `bitrate`**
+  (~57 kbit/s for a 40 kbit/s request). (`docs/assets/80/RESULTS.md`)
+
 **CI / deployment**
 
 - **`gawk-relay` ships the `gawk-app` that was current when `gawk-server`

@@ -1,7 +1,10 @@
 package serve
 
 import (
+	"crypto/x509"
+	"fmt"
 	"log/slog"
+	"os"
 
 	"github.com/Tuhis/gawk/gawk-server/internal/cluster"
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
@@ -10,6 +13,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/internal/ops"
 	"github.com/Tuhis/gawk/gawk-server/internal/popsrv"
 	"github.com/Tuhis/gawk/gawk-server/internal/roomsrv"
+	"github.com/Tuhis/gawk/gawk-server/internal/transport"
 )
 
 // registryOptions maps the parsed config onto hub.Options. Every knob must be
@@ -87,13 +91,50 @@ func popReservationsFor(cfg config.Config, coord *cluster.Coordinator) popsrv.Re
 // twin, under the same rule: every -room-* knob crosses here
 // (TestRoomOptionsCarryAllKnobs). Wiring-only fields are set by Run.
 func roomOptions(cfg config.Config) roomsrv.Options {
+	var secret []byte
+	if cfg.VoiceTicketSecret != "" {
+		secret = []byte(cfg.VoiceTicketSecret)
+	}
 	return roomsrv.Options{
 		EmptyGrace:      cfg.RoomEmptyGrace,
 		MaxRooms:        cfg.MaxRooms,
 		MaxBroadcasts:   cfg.MaxRoomBroadcasts,
 		MaxParticipants: cfg.MaxRoomParticipants,
 		CreateSecret:    cfg.RoomCreateSecret,
+		// R79 (docs/80 §11.4): the registry's half of the voice knobs. The
+		// observer dial's half (address, PSK, TLS name, roots) is the
+		// transport's, mapped by voiceBridgeOptions.
+		Voice: roomsrv.VoiceOptions{
+			Enabled:         cfg.VoiceConfigured(),
+			PublicURL:       cfg.VoiceBridgePublicURL,
+			TicketSecret:    secret,
+			MaxRooms:        cfg.VoiceMaxRooms,
+			MaxUsersPerRoom: cfg.VoiceMaxUsersPerRoom,
+		},
 	}
+}
+
+// voiceBridgeOptions maps the config onto the observer dial (docs/80 D4) —
+// the production call site of -voice-bridge-addr, -voice-bridge-server-name
+// and -voice-bridge-ca-file (TestVoiceBridgeOptionsCarryEveryKnob). The CA
+// file is read here, so an unreadable or empty one refuses to start rather
+// than failing every dial. -voice-bridge-psk is read by the transport from
+// the config, as -internal-psk is.
+func voiceBridgeOptions(cfg config.Config) (transport.VoiceBridgeOptions, error) {
+	o := transport.VoiceBridgeOptions{Addr: cfg.VoiceBridgeAddr, ServerName: cfg.VoiceBridgeServerName}
+	if cfg.VoiceBridgeCAFile == "" {
+		return o, nil
+	}
+	pem, err := os.ReadFile(cfg.VoiceBridgeCAFile)
+	if err != nil {
+		return o, fmt.Errorf("voice-bridge-ca-file: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return o, fmt.Errorf("voice-bridge-ca-file %s: no PEM certificates", cfg.VoiceBridgeCAFile)
+	}
+	o.RootCAs = pool
+	return o, nil
 }
 
 // screeningOptions maps the parsed config onto the R40 keyframe route
@@ -107,7 +148,7 @@ func screeningOptions(cfg config.Config, r *hub.Registry, log *slog.Logger) *ops
 // limits is the configured caps as gawk_limit series (docs/61). The names
 // follow the flags; 0 = unlimited, as there.
 func limits(cfg config.Config) metrics.Limits {
-	return metrics.Limits{
+	l := metrics.Limits{
 		"max_broadcasts":        float64(cfg.MaxBroadcasts),
 		"max_subscribers":       float64(cfg.MaxSubscribers),
 		"max_total_subscribers": float64(cfg.MaxTotalSubscribers),
@@ -119,4 +160,11 @@ func limits(cfg config.Config) metrics.Limits {
 		"conn_rate_limit":       cfg.ConnRateLimit,
 		"conn_burst_limit":      float64(cfg.ConnBurstLimit),
 	}
+	// R79's caps only where voice is on: a relay without a bridge exports
+	// no voice series at all.
+	if cfg.VoiceConfigured() {
+		l["voice_max_rooms"] = float64(cfg.VoiceMaxRooms)
+		l["voice_max_users_per_room"] = float64(cfg.VoiceMaxUsersPerRoom)
+	}
+	return l
 }

@@ -55,7 +55,7 @@ script for what counts as a dependency here and why.
 | `github.com/go-openapi/swag/stringutils` | v0.27.1 | `Apache-2.0` | — |
 | `github.com/go-openapi/swag/typeutils` | v0.27.1 | `Apache-2.0` | — |
 | `github.com/go-openapi/swag/yamlutils` | v0.27.1 | `Apache-2.0` | — |
-| `github.com/golang-migrate/migrate/v4` | v4.19.1 | `MIT` | Copyright (c) 2016 Matthias Kadenbach<br>Copyright (c) 2018 Dale Hui |
+| `github.com/golang-migrate/migrate/v4` | v4.20.1 | `MIT` | Copyright (c) 2016 Matthias Kadenbach<br>Copyright (c) 2018 Dale Hui |
 | `github.com/google/gnostic-models` | v0.7.0 | `Apache-2.0` | Copyright 2017-2025, Google LLC |
 | `github.com/google/uuid` | v1.6.0 | `BSD-3-Clause` | Copyright (c) 2009,2014 Google Inc. All rights reserved |
 | `github.com/jackc/pgerrcode` | v0.0.0-20220416144525-469b46aa5efa | `MIT` | Copyright (c) 2019 Jack Christensen |

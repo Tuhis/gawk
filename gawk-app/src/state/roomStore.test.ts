@@ -1,8 +1,12 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { applyRoomEvent, isDynamicRoom, isRoomCreator, mayAttach, useRoomStore } from './roomStore';
+import { applyRoomEvent, isDynamicRoom, isRoomCreator, mayAttach, roomHasVoice, useRoomStore } from './roomStore';
 import {
+  ROOM_CAP_VOICE,
   ROOM_CLIENT_WEB_VIEWER,
   ROOM_COMMAND_ATTACH,
+  ROOM_EVENT_VOICE_ROSTER_UPDATED,
+  ROOM_EVENT_VOICE_TICKET,
+  ROOM_VOICE_ROSTER_FLAG_AVAILABLE,
   ROOM_DETACH_REASON_CREATOR,
   ROOM_END_REASON_EMPTY,
   ROOM_EVENT_ATTACHMENT_ADDED,
@@ -159,5 +163,50 @@ describe('useRoomStore', () => {
     expect(useRoomStore.getState().snapshot).toBeNull();
     st.setError('full', 'The room is full');
     expect(useRoomStore.getState()).toMatchObject({ status: 'error', errorKind: 'full' });
+  });
+});
+
+// R79 (docs/80 D15, §11.1 C2): the voice roster is its own snapshot.
+describe('room store voice roster', () => {
+  beforeEach(() => useRoomStore.getState().reset());
+  const roster = (voiceFlags: number) => ({
+    seq: 5,
+    kind: ROOM_EVENT_VOICE_ROSTER_UPDATED,
+    voiceFlags,
+    voiceRoster: [{ session: 3, kind: 0, participantId: 0, flags: 0, name: 'bob' }],
+  });
+
+  it('replaces the roster whole and keeps the availability flag', () => {
+    const st = useRoomStore.getState();
+    st.replaceState(state({ caps: ROOM_CAP_VOICE }));
+    expect(roomHasVoice(useRoomStore.getState().snapshot)).toBe(true);
+    st.applyEvent(roster(ROOM_VOICE_ROSTER_FLAG_AVAILABLE) as Parameters<typeof st.applyEvent>[0]);
+    expect(useRoomStore.getState().voiceRoster?.map((e) => e.name)).toEqual(['bob']);
+    expect(useRoomStore.getState().voiceAvailable).toBe(true);
+    // The snapshot (and its seq) is untouched: the event is out of sequence.
+    expect(useRoomStore.getState().snapshot?.seq).toBe(5);
+    st.applyEvent({ ...roster(0), voiceRoster: [] } as Parameters<typeof st.applyEvent>[0]);
+    expect(useRoomStore.getState().voiceRoster).toEqual([]);
+    expect(useRoomStore.getState().voiceAvailable).toBe(false);
+  });
+
+  it('keeps the roster over a RoomState that still has voice, drops it with one that does not', () => {
+    const st = useRoomStore.getState();
+    st.replaceState(state({ caps: ROOM_CAP_VOICE }));
+    st.applyEvent(roster(ROOM_VOICE_ROSTER_FLAG_AVAILABLE) as Parameters<typeof st.applyEvent>[0]);
+    st.replaceState(state({ caps: ROOM_CAP_VOICE, seq: 9 }));
+    expect(useRoomStore.getState().voiceRoster).toHaveLength(1);
+    st.replaceState(state({ caps: 0 }));
+    expect(useRoomStore.getState().voiceRoster).toBeNull();
+    expect(roomHasVoice(useRoomStore.getState().snapshot)).toBe(false);
+    expect(roomHasVoice(null)).toBe(false);
+  });
+
+  it('applyRoomEvent leaves the snapshot alone for both voice events', () => {
+    const s = state();
+    expect(applyRoomEvent(s, roster(1) as Parameters<typeof applyRoomEvent>[1])).toBe(s);
+    expect(
+      applyRoomEvent(s, { seq: 5, kind: ROOM_EVENT_VOICE_TICKET, voiceUrl: 'https://b', voiceTicket: new Uint8Array([1]) }),
+    ).toBe(s);
   });
 });

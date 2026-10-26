@@ -112,16 +112,28 @@ spec:
                 integrations:
                   type: object
                   description: >-
-                    Reserved (docs/44 D18, §4.11): the voice bridge and chat
-                    mappings of later milestones. Empty in v1.
+                    docs/44 §4.11's integration hooks. Since R79 (docs/80
+                    D13) the room's Mumble voice channel.
                   properties:
                     mumble:
                       type: object
+                      description: >-
+                        R79: the room has voice through gawk-mumble-bridge.
+                        A static room names an existing channel; a dynamic
+                        room created with voice gets a temporary one. Inert
+                        on a relay with no bridge configured.
                       properties:
-                        server:
+                        channel:
                           type: string
-                        channelPrefix:
-                          type: string
+                          maxLength: 256
+                          description: >-
+                            An existing channel as a "/"-separated path below
+                            the root ("Friends/Gaming"); empty is the root.
+                        temporary:
+                          type: boolean
+                          description: >-
+                            A temporary channel under the bridge's parent
+                            channel, removed by murmur when it empties.
                 screening:
                   type: string
                   enum: [exempt]

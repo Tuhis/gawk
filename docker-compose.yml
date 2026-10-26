@@ -24,6 +24,11 @@
 #                                     working on it (R42/R48). See the admin
 #                                     service for what it does and does not
 #                                     reach.
+#   docker compose -f docker-compose.yml -f dev/compose.voice.yml up
+#                                     the R79 room-voice lane: murmur, the
+#                                     Mumble bridge and a native user that
+#                                     echoes, with `devroom` mapped to a
+#                                     channel. dev/compose.voice.yml says how.
 #   docker compose -f docker-compose.yml -f dev/compose.screening.yml up
 #                                     the R40 content-screening lane: two
 #                                     samplers on a test model that flags

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>R79 MV0 voice pipeline harness</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 1rem; max-width: 60rem; }
+  button { font: inherit; padding: .4rem .8rem; margin: .2rem; }
+  pre { background: #f4f4f4; padding: .5rem; overflow: auto; max-height: 30rem; }
+</style>
+</head>
+<body>
+<h1>R79 MV0 voice pipeline harness</h1>
+<p>Automated runs: <code>node docs/assets/80/harness/run.mjs</code>. On a real device
+this page also runs by hand (serve it over https or from localhost).</p>
+
+<h2>Pipeline (mic → encode → in-page loopback → decode → worklet)</h2>
+<button id="p10">gUM, 10 ms</button>
+<button id="p20">gUM, 20 ms</button>
+<button id="pw10">gUM via worklet capture, 10 ms</button>
+
+<h2>Echo cancellation (MV0 b) — needs speakers, not headphones</h2>
+<p>Plays 100 ms chirps every 500 ms through an AudioWorklet while recording the mic.
+Run both buttons; compare <code>echoOverFloorDb</code>.</p>
+<button id="aecOn">echoCancellation: true</button>
+<button id="aecOff">echoCancellation: false</button>
+
+<pre id="out">loading…</pre>
+<script type="module">
+  import './voice-pipeline.js';
+  const out = document.getElementById('out');
+  out.textContent = 'ready';
+  const show = (p) => p.then((r) => { out.textContent = JSON.stringify(r, null, 2); })
+    .catch((e) => { out.textContent = String(e); });
+  const strip = (r) => { delete r.track?.settings?.deviceId; delete r.track?.settings?.groupId; return r; };
+  document.getElementById('p10').onclick = () => show(window.mv0.run({ source: 'gum', capture: 'MediaStreamTrackProcessor' in window ? 'mstp' : 'worklet', frameDurationUs: 10000 }).then(strip));
+  document.getElementById('p20').onclick = () => show(window.mv0.run({ source: 'gum', capture: 'MediaStreamTrackProcessor' in window ? 'mstp' : 'worklet', frameDurationUs: 20000 }).then(strip));
+  document.getElementById('pw10').onclick = () => show(window.mv0.run({ source: 'gum', capture: 'worklet', frameDurationUs: 10000 }).then(strip));
+  document.getElementById('aecOn').onclick = () => show(window.mv0.aec({ echoCancellation: true }));
+  document.getElementById('aecOff').onclick = () => show(window.mv0.aec({ echoCancellation: false }));
+</script>
+</body>
+</html>

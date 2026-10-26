@@ -420,6 +420,9 @@ var routeTable = []routeEntry{
 		func(a *API) http.HandlerFunc { return a.handleCreateRoom }},
 	{Route{Method: "POST", Pattern: "/api/v1/rooms/{name}/rotate-secret", Roles: []string{RoleOperator}, Requires: RequiresRooms},
 		func(a *API) http.HandlerFunc { return a.handleRotateRoomSecret }},
+	// R79 (docs/80 D14): the operator's voice mapping for a static room.
+	{Route{Method: "PUT", Pattern: "/api/v1/rooms/{name}/voice", Roles: []string{RoleOperator}, Requires: RequiresRooms},
+		func(a *API) http.HandlerFunc { return a.handleSetRoomVoice }},
 	{Route{Method: "POST", Pattern: "/api/v1/rooms/{name}/end", Roles: []string{RoleOperator}, Requires: RequiresRooms},
 		func(a *API) http.HandlerFunc { return a.handleEndRoom }},
 	{Route{Method: "DELETE", Pattern: "/api/v1/rooms/{name}", Roles: []string{RoleOperator, RoleRoomsManager}, Requires: RequiresRooms},

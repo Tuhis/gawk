@@ -49,6 +49,13 @@ func (s *Server) HandleBanAdded(rec moderation.Record) {
 		for _, id := range s.publishersIn(prefix) {
 			s.terminate(id, "ban:ip")
 		}
+		// R79 (docs/80 D17): the ban covers voice clients too — wherever
+		// their voice sessions are homed, which is the one pod holding them.
+		if reg := s.roomRegistry(); reg != nil {
+			if n := reg.CloseVoiceIn(prefix.Contains); n > 0 {
+				s.log.Warn("voice sessions closed by an IP ban", "sessions", n)
+			}
+		}
 	}
 }
 
@@ -74,6 +81,13 @@ func (s *Server) publishersIn(prefix netip.Prefix) []string {
 // the fleet-wide Lease deletion). The later lease-deletion event finds no hub
 // and no-ops; both paths are idempotent, so the race has no wrong order.
 func (s *Server) terminate(broadcastID, why string) {
+	// R79 (docs/80 D17): a kill drops its broadcaster's voice. Before the
+	// "nothing lives here" return below: the room may be homed on this pod
+	// while the broadcast lives on another, and a broadcast-ID ban reaches
+	// every pod.
+	if reg := s.roomRegistry(); reg != nil {
+		reg.CloseVoiceOfBroadcast(broadcastID)
+	}
 	// An edge pod's "publisher" is its own upstream pull: stop it first, or
 	// the re-attach loop would rebuild the hub we are about to delete. Cheap
 	// and synchronous on a pod that has no edge for this ID.

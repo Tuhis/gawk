@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useState } from 'react';
 
 import { useApi } from '../auth/AuthContext.tsx';
 import { ApiError } from '../api/client.ts';
-import type { Room, RoomParticipant, RoomScreening, RoomWithSecret } from '../api/types.ts';
+import type { Room, RoomMumble, RoomParticipant, RoomScreening, RoomWithSecret } from '../api/types.ts';
 import { AuthRedirect } from '@gawk/oidc-session';
 import { Dialog } from '../components/Dialog.tsx';
 import { formatInstant } from '../lib/format.ts';
@@ -30,6 +30,10 @@ import ui from '../styles/ui.module.css';
  * from content screening (docs/71 D11): the secret is the trust boundary that
  * makes "my friends' room" a closed lane. Open and dynamic rooms are never
  * offered the toggle, and the server refuses them anyway.
+ *
+ * Since R79 (docs/80 D13, D14) a static room can have voice on an existing
+ * Mumble channel, set on create or later from the row. A dynamic room's
+ * voice is the temporary channel its creator asked for: shown, never edited.
  */
 export function RoomsView({
   initialFilter = '',
@@ -56,6 +60,7 @@ export function RoomsView({
   const [rotating, setRotating] = useState<Room | null>(null);
   const [ending, setEnding] = useState<Room | null>(null);
   const [exempting, setExempting] = useState<{ room: Room; to: RoomScreening } | null>(null);
+  const [voicing, setVoicing] = useState<Room | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -182,6 +187,7 @@ export function RoomsView({
                 <th>Home</th>
                 <th>Key</th>
                 <th>Gate</th>
+                <th>Voice</th>
                 {screening ? <th>Screening</th> : null}
                 <th>Created</th>
                 <th>Actions</th>
@@ -256,6 +262,9 @@ export function RoomsView({
                         <span className={ui.badge}>open</span>
                       )}
                     </td>
+                    <td>
+                      <VoiceCell mumble={r.mumble} />
+                    </td>
                     {screening ? (
                       <td>
                         <ScreeningCell
@@ -288,6 +297,19 @@ export function RoomsView({
                             {r.hasAttachSecret ? 'Rotate secret' : 'Add secret'}
                           </button>
                         ) : null}
+                        {r.kind === 'static' ? (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            title="Map this room onto a Mumble channel, or turn its voice off"
+                            onClick={() => {
+                              setActionError(null);
+                              setVoicing(r);
+                            }}
+                          >
+                            Voice…
+                          </button>
+                        ) : null}
                         <button
                           type="button"
                           className={ui.danger}
@@ -304,7 +326,7 @@ export function RoomsView({
                   </tr>
                   {expanded === r.name ? (
                     <tr className={ui.recessed}>
-                      <td colSpan={screening ? 11 : 10}>
+                      <td colSpan={screening ? 12 : 11}>
                         <RoomDetail name={r.name} />
                       </td>
                     </tr>
@@ -332,6 +354,17 @@ export function RoomsView({
           onCreated={(result) => {
             setCreating(false);
             setReveal(result);
+            reload();
+          }}
+        />
+      ) : null}
+
+      {voicing ? (
+        <VoiceDialog
+          room={voicing}
+          onCancel={() => setVoicing(null)}
+          onSaved={() => {
+            setVoicing(null);
             reload();
           }}
         />
@@ -476,6 +509,134 @@ function ScreeningCell({
         Exempt…
       </button>
     </div>
+  );
+}
+
+/**
+ * A room's voice mapping (docs/80 D13): off, the dynamic room's temporary
+ * channel, or a static room's channel path.
+ */
+function VoiceCell({ mumble }: { mumble?: RoomMumble }) {
+  if (!mumble) return <span className={ui.dim}>off</span>;
+  if (mumble.temporary) {
+    return (
+      <span className={ui.badge} title="A channel the voice bridge creates and Mumble removes when it empties">
+        temporary channel
+      </span>
+    );
+  }
+  if (!mumble.channel) return <span className={ui.badgeOk}>root channel</span>;
+  return <span className={`${ui.mono} ${ui.breakable}`}>{mumble.channel}</span>;
+}
+
+/**
+ * The form's voice mapping: `null` without voice, else the channel path
+ * (`{}` is the root channel). A static room never asks for a temporary one.
+ */
+function voiceMapping(enabled: boolean, channel: string): RoomMumble | null {
+  if (!enabled) return null;
+  const path = channel.trim();
+  return path ? { channel: path } : {};
+}
+
+/** The voice checkbox and channel path, shared by the create form and the dialog. */
+function VoiceFields({
+  id,
+  enabled,
+  channel,
+  onEnabled,
+  onChannel,
+}: {
+  id: string;
+  enabled: boolean;
+  channel: string;
+  onEnabled: (on: boolean) => void;
+  onChannel: (path: string) => void;
+}) {
+  return (
+    <>
+      <label className={ui.row}>
+        <input type="checkbox" checked={enabled} onChange={(e) => onEnabled(e.target.checked)} />
+        Voice (Mumble channel)
+      </label>
+      {enabled ? (
+        <div className={ui.field}>
+          <label htmlFor={id}>Channel path (“/”-separated, empty = root)</label>
+          <input
+            id={id}
+            className={ui.mono}
+            placeholder="Friends/Gaming"
+            maxLength={256}
+            value={channel}
+            onChange={(e) => onChannel(e.target.value)}
+          />
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * Sets or removes a static room's voice channel. The PUT replaces the whole
+ * mapping. A relay with no voice bridge ignores it, so saving is harmless
+ * before the bridge exists.
+ */
+function VoiceDialog({
+  room,
+  onCancel,
+  onSaved,
+}: {
+  room: Room;
+  onCancel: () => void;
+  onSaved: () => void;
+}) {
+  const api = useApi();
+  const [enabled, setEnabled] = useState(room.mumble !== undefined);
+  const [channel, setChannel] = useState(room.mumble?.channel ?? '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.setRoomVoice(room.name, voiceMapping(enabled, channel));
+      onSaved();
+    } catch (err) {
+      if (err instanceof AuthRedirect) return;
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog title={`Voice for ${room.code}`} busy={busy} onCancel={onCancel}>
+      <p className={ui.sub}>
+        People in the room talk with the users of an existing channel on the deployment’s Mumble
+        server, through the voice bridge (docs/80).
+      </p>
+      <VoiceFields
+        id="room-voice-channel-edit"
+        enabled={enabled}
+        channel={channel}
+        onEnabled={setEnabled}
+        onChannel={setChannel}
+      />
+      {error ? (
+        <p className={ui.error} role="alert">
+          {error}
+        </p>
+      ) : null}
+      <div className={ui.actions}>
+        <button type="button" className={ui.primary} disabled={busy} onClick={() => void save()}>
+          Save
+        </button>
+        <button type="button" disabled={busy} onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </Dialog>
   );
 }
 
@@ -635,6 +796,8 @@ function CreateRoomForm({
   const [displayName, setDisplayName] = useState('');
   const [maxBroadcasts, setMaxBroadcasts] = useState('');
   const [withSecret, setWithSecret] = useState(true);
+  const [voice, setVoice] = useState(false);
+  const [channel, setChannel] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -648,11 +811,13 @@ function CreateRoomForm({
     setError(null);
     try {
       const max = maxBroadcasts.trim() === '' ? 0 : Number(maxBroadcasts);
+      const mumble = voiceMapping(voice, channel);
       const result = await api.createRoom({
         code: trimmed,
         ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
         ...(max > 0 ? { maxBroadcasts: max } : {}),
         withAttachSecret: withSecret,
+        ...(mumble ? { mumble } : {}),
       });
       onCreated(result);
     } catch (err) {
@@ -699,6 +864,13 @@ function CreateRoomForm({
         <input type="checkbox" checked={withSecret} onChange={(e) => setWithSecret(e.target.checked)} />
         Require an attach secret to stream into this room
       </label>
+      <VoiceFields
+        id="room-voice-channel"
+        enabled={voice}
+        channel={channel}
+        onEnabled={setVoice}
+        onChannel={setChannel}
+      />
       {error ? (
         <p className={ui.error} role="alert">
           {error}

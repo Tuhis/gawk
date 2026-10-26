@@ -216,6 +216,18 @@ describe('content flags and screening', () => {
     expect(session.calls[0].init.method).toBe('PATCH');
     expect(JSON.parse(String(session.calls[0].init.body))).toEqual({ screening: 'exempt' });
   });
+
+  it('PUTs a room’s whole voice mapping, null to remove it (R79)', async () => {
+    const { api, session } = client(() => json({ name: 'tuhisroom' }));
+    await api.setRoomVoice('TuhisRoom', { channel: 'Friends/Gaming' });
+    await api.setRoomVoice('TuhisRoom', null);
+    expect(session.calls.map((c) => [c.init.method, c.path])).toEqual([
+      ['PUT', 'api/v1/rooms/TuhisRoom/voice'],
+      ['PUT', 'api/v1/rooms/TuhisRoom/voice'],
+    ]);
+    expect(JSON.parse(String(session.calls[0].init.body))).toEqual({ mumble: { channel: 'Friends/Gaming' } });
+    expect(JSON.parse(String(session.calls[1].init.body))).toEqual({ mumble: null });
+  });
 });
 
 describe('the refusal envelope', () => {

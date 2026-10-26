@@ -1,0 +1,25 @@
+{
+  "echoCancellation": true,
+  "trackSettings": {
+    "echoCancellation": true,
+    "sampleRate": 44100,
+    "volume": 1
+  },
+  "sampleRate": 44100,
+  "baseLatency": 0,
+  "outputLatency": 0,
+  "micRmsInBurstMedian": 0.07071067927168671,
+  "micRmsBetweenBurstsMedian": 0.07071067927168671,
+  "echoOverFloorDb": 0,
+  "meta": {
+    "browser": "webkit",
+    "version": "26.5",
+    "playwright": "1.62.1",
+    "host": "linux x64",
+    "headless": true,
+    "date": "2026-10-26T07:16:17.036Z",
+    "seconds": 6,
+    "label": "aec-smoke",
+    "note": "headless fake device: proves the code path runs; the number means nothing"
+  }
+}

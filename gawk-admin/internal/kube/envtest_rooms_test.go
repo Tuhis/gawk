@@ -59,6 +59,29 @@ func TestEnvtestRoomCRDAcceptsTheRoomClientsPayload(t *testing.T) {
 	if obj.Room.Spec.DisplayCode != "TuhisRoom" || obj.Room.Spec.AttachSecretRef == nil || obj.Room.Spec.MaxBroadcasts != 4 {
 		t.Fatalf("the schema pruned part of the spec: %+v", obj.Room.Spec)
 	}
+	// R79 (docs/80 D13): the voice mapping survives the schema on create
+	// and through SetMumble's merge patch — a channel, the root channel (an
+	// empty object the schema must not prune away) and removal.
+	if _, err := rc.CreateStatic(ctx, kube.StaticRoom{Code: "friends", Mumble: &rooms.MumbleIntegration{Channel: "Friends/Gaming"}}); err != nil {
+		t.Fatalf("create with a voice mapping rejected: %v", err)
+	}
+	if got, err := rc.Get(ctx, "friends"); err != nil || got.Room.Spec.Integrations.Mumble == nil || got.Room.Spec.Integrations.Mumble.Channel != "Friends/Gaming" {
+		t.Fatalf("the schema pruned the voice mapping: %+v, %v", got.Room.Spec.Integrations, err)
+	}
+	for _, m := range []*rooms.MumbleIntegration{{}, {Channel: "Raid"}, nil} {
+		_, after, err := rc.SetMumble(ctx, "friends", m, nil)
+		if err != nil {
+			t.Fatalf("SetMumble(%+v) rejected: %v", m, err)
+		}
+		got := after.Room.Spec.Integrations.Mumble
+		if (got == nil) != (m == nil) || (got != nil && *got != *m) {
+			t.Fatalf("SetMumble(%+v) stored %+v", m, got)
+		}
+	}
+	if _, err := rc.DeleteExisting(ctx, "friends", nil); err != nil {
+		t.Fatalf("DeleteExisting(friends): %v", err)
+	}
+
 	// A secret-less room, then an explicit delete of each — the Secret goes
 	// with the managed one.
 	if _, err := rc.CreateStatic(ctx, kube.StaticRoom{Code: "open"}); err != nil {

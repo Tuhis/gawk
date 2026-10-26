@@ -47,7 +47,7 @@ import {
 import { fmtWatching } from '../../lib/format';
 import type { RoomTarget } from '../../transport/room-session';
 import { bytesToHex } from '../../transport/connection';
-import { isDynamicRoom, isRoomCreator, mayAttach, useRoomStore } from '../../state/roomStore';
+import { isDynamicRoom, isRoomCreator, mayAttach, roomHasVoice, useRoomStore } from '../../state/roomStore';
 import { ServerIndicator } from '../servers/ServerIndicator';
 import { NicknamePrompt } from './NicknamePrompt';
 import { RoomPanel } from './RoomPanel';
@@ -81,7 +81,9 @@ import {
 import { readGrant, stashGrant, type RoomGrant } from './grantHandoff';
 import { AttachSecretPrompt } from './AttachSecretPrompt';
 import { stashRoomReturn } from './roomReturn';
-import { useRoomSession } from './useRoomSession';
+import { useRoomSession, type RoomCommands } from './useRoomSession';
+import { useRoomVoice } from './voice/useRoomVoice';
+import { VoiceDock } from './voice/VoicePanel';
 
 // The viewer's idle period (ViewerScreen CONTROL_IDLE_MS): the dock fades
 // after the same 3 s.
@@ -206,13 +208,32 @@ export function RoomView({
   const effectiveGrant: RoomGrant | null =
     attachSecret === null ? grant : { kind: 'attach', secret: attachSecret };
 
+  // The mixer: one AudioContext, one master gain, opened on
+  // the first tile shown (or the first voice join) and closed with the screen.
+  const mixerRef = useRef<RoomAudioMixer | null>(null);
+  mixerRef.current ??= new RoomAudioMixer();
+  useEffect(() => {
+    const mixer = mixerRef.current;
+    return () => {
+      mixer?.dispose();
+      mixerRef.current = null;
+    };
+  }, []);
+
+  // R79 room voice: the client lives with the room view, not the panel (the
+  // panel unmounts when closed; a call must not).
+  const commandsRef = useRef<RoomCommands | null>(null);
+  const voice = useRoomVoice({ mixerRef, commandsRef });
+
   const commands = useRoomSession({
     target: ready ? target : null,
     nickname: nickname ?? '',
     clientKind: own ? ROOM_CLIENT_WEB_BROADCASTER : ROOM_CLIENT_WEB_VIEWER,
     grant: effectiveGrant,
     dialNonce,
+    voiceEvents: voice.events,
   });
+  commandsRef.current = commands;
 
   // Attach (and re-attach) the broadcaster's own broadcast. Idempotent on the
   // relay: a mint's first snapshot already carries it, and a reconnected
@@ -297,17 +318,6 @@ export function RoomView({
     return { ...mainConfig, playout: cheapest.playout, interpolation: false };
   }, [mainConfig]);
 
-  // The mixer: one AudioContext, one master gain, opened on
-  // the first tile shown and closed with the screen.
-  const mixerRef = useRef<RoomAudioMixer | null>(null);
-  mixerRef.current ??= new RoomAudioMixer();
-  useEffect(() => {
-    const mixer = mixerRef.current;
-    return () => {
-      mixer?.dispose();
-      mixerRef.current = null;
-    };
-  }, []);
   // A control-session reconnect keeps the stage: media sessions are independent of it.
   const tilesShown = (joined || status === 'reconnecting') && effectiveMode !== 'hidden' && attachments.length > 0;
   // A broadcaster's "hide videos" is "preview only": their own screen full
@@ -841,6 +851,8 @@ export function RoomView({
         </button>
       )}
 
+      {roomHasVoice(snapshot) && (joined || status === 'reconnecting') && <VoiceDock actions={voice.actions} />}
+
       {toast && (
         <Toast className={toast.note ? styles.toastWithNote : undefined}>
           {toast.text}
@@ -1012,6 +1024,7 @@ export function RoomView({
             ownBroadcastId={own?.broadcastId ?? null}
             onStartStreaming={canStartStreaming ? startStreaming : null}
             desktopAction={canStartStreaming ? desktopAction : null}
+            voiceActions={voice.actions}
           />
         </div>
       )}
