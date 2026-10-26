@@ -105,15 +105,15 @@ script for what counts as a dependency here and why.
 | `postcss-value-parser` | 4.2.0 | `MIT` | Copyright (c) Bogdan Chadkin <trysound@yandex.ru> |
 | `prismjs` | 1.30.0 | `MIT` | Copyright (c) 2012 Lea Verou |
 | `prop-types` | 15.8.1 | `MIT` | Copyright (c) 2013-present, Facebook, Inc |
-| `react` | 19.2.8 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
-| `react-dom` | 19.2.8 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
+| `react` | 19.3.1 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
+| `react-dom` | 19.3.1 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
 | `react-is` | 16.13.1 | `MIT` | Copyright (c) Facebook, Inc. and its affiliates |
 | `react-tabs` | 6.1.1 | `MIT` | Copyright (c) Matt Zabriskie and Daniel Tschinder |
 | `redoc` | 2.5.4 | `MIT` | Copyright (c) 2015-present, Rebilly, Inc |
 | `reftools` | 1.1.9 | `BSD-3-Clause` | Copyright (c) 2017, Mike Ralphson |
 | `require-directory` | 2.1.1 | `MIT` | Copyright (c) 2011 Troy Goode <troygoode@gmail.com> |
 | `require-from-string` | 2.0.2 | `MIT` | Copyright (c) Vsevolod Strukchinsky <floatdrop@gmail.com> (github.com/floatdrop) |
-| `scheduler` | 0.27.0 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
+| `scheduler` | 0.28.0 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
 | `should` | 13.2.3 | `MIT` | — |
 | `should-equal` | 2.0.0 | `MIT` | Copyright (c) 2014 |
 | `should-format` | 3.0.3 | `MIT` | Copyright (c) 2014 |
