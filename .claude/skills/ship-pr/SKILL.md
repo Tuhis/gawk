@@ -168,8 +168,8 @@ PR in round 1, instead of "since your last review".
   `gh run view`. A failed run doesn't use up a round, so retry it once by
   posting the same round's comment again.
 - Handle the round's findings as in §2, then request the next round.
-- **Stop early** when a round reports nothing actionable. Nits you chose not
-  to fix, each with a reply saying why, count as nothing actionable.
+- **Stop early** when a round leaves nothing to push. That means it reports
+  nothing actionable, or you declined each finding with a reply saying why.
 - If round 3 still has findings, fix them as usual. Don't request a fourth
   round. Say in the final report that the round limit was reached.
 
@@ -180,7 +180,10 @@ Merge only when **all** of these hold for the **current head SHA**:
 - Every check has finished, each as `success`, `skipped` or `neutral`, with
   none pending. That includes `claude-review`.
 - Every commit has been reviewed. `git log <last reviewed sha>..HEAD`
-  (§3) is empty, and the last review found nothing actionable. The only
+  (§3) is empty, and every finding of every review is handled. A finding is
+  handled when it was declined with a reply, or fixed in a commit that a
+  later review covered. A review whose findings were all declined, with
+  nothing pushed, satisfies this. Nothing re-runs, and nothing needs to. The only
   exception is a reached 3-round cap: the commits after round 3 then merge
   unreviewed, and the final report names them.
 - On a large PR, the `@claude` rounds are finished: a clean round, or 3
