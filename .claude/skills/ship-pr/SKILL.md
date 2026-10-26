@@ -69,8 +69,8 @@ then fix it all in one batch, so one push follows one round of findings:
 
 ```sh
 gh pr checks <N>                                          # check states for the head SHA
-gh api repos/{owner}/{repo}/pulls/<N>/comments            # inline review comments
-gh api repos/{owner}/{repo}/issues/<N>/comments           # summary + @claude replies
+gh api --paginate repos/{owner}/{repo}/pulls/<N>/comments   # inline review comments
+gh api --paginate repos/{owner}/{repo}/issues/<N>/comments  # summary + @claude replies
 gh api graphql -f query='query{repository(owner:"Tuhis",name:"gawk"){pullRequest(number:<N>){
   reviewThreads(first:100){nodes{id isResolved comments(first:20){nodes{author{login} body path line}}}}}}}'
 ```
@@ -137,11 +137,14 @@ Focus on <the parts most likely to be wrong>.
 For round 1, ask for a full review of the PR instead of "since your last
 review".
 
-- **At most 3 rounds.** Count your own `@claude` comments on the PR, so the
-  count survives a context reset.
+- **At most 3 rounds.** A round counts once its job has **succeeded**: count
+  the `claude[bot]` replies starting with "**Claude finished …**" that answer
+  your `@claude` comments. Don't count your own comments, because a retry
+  would count twice. Counting on the PR survives a context reset.
 - Wait for the "**Claude finished …**" reply. If its job failed or it never
   posts within ~20 minutes of the run finishing, check the job with
-  `gh run view`. A failed run doesn't use up a round, so retry it once.
+  `gh run view`. A failed run doesn't use up a round, so retry it once by
+  posting the same round's comment again.
 - Handle the round's findings as in §2, then request the next round.
 - **Stop early** when a round reports nothing actionable. Nits you chose not
   to fix, each with a reply saying why, count as nothing actionable.
@@ -167,8 +170,12 @@ Merge only when **all** of these hold for the **current head SHA**:
 Then run:
 
 ```sh
-gh pr merge <N> --squash --subject "<the PR title> (#<N>)"
+gh pr merge <N> --squash --match-head-commit <the head SHA you checked> --subject "<the PR title> (#<N>)"
 ```
+
+`--match-head-commit` makes GitHub refuse the merge if a commit landed after
+your checks, for example from a person or an `@claude` job. If it refuses,
+go back to §2 for the new head.
 
 The repo deletes the head branch on merge. Stop any PR watch, then report
 the result: the merged SHA, the number of fix commits, the number of review
