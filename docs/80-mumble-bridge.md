@@ -1,9 +1,10 @@
 # R79 — Room voice through a Mumble bridge
 
-**Status**: designed 2026-10-25, not started. Chunks **MV0–MV8** (§9).
-Owner decisions taken in the design interview on 2026-10-25 (§2). The
-decisions in §3 follow from them and are open to review. **MV0 is a
-measurement and gates the latency target** (§1, §9).
+**Status**: designed 2026-10-25; **MV0–MV7 implemented 2026-10-26** (§11 is
+the implementation contract, §12 the results). Open: MV0's owner-device rows
+(Safari on macOS and iOS, Chrome on Android, echo cancellation) and the
+owner's sign-off on the latency target, then the MV8 pass on the reference
+deployment. Owner decisions taken in the design interview on 2026-10-25 (§2).
 
 **Relationship to earlier work**: docs/44 §4.11 reserved the hooks for
 this: a `voice` room capability, `spec.integrations.mumble` on the `Room`
@@ -348,3 +349,100 @@ Bridge (`gawk-mumble-bridge`, flags and `GAWK_*` envs and the chart):
 - **Speaking indicators** (D16) never touch the relay.
 - **Privacy** (D24): no package of the bridge writes, logs or exposes voice
   audio; a source-walk test enforces it, as `gawk-sampler`'s D8 test does.
+
+---
+
+## 12. Results (2026-10-26)
+
+### 12.1 MV0 — the browser pipeline, measured
+
+Raw data, the harness and the full write-up: [`assets/80/RESULTS.md`](assets/80/RESULTS.md).
+Headless Chromium 151, Firefox 153 and Playwright's WebKit 26.5 (not
+Safari), on a PulseAudio null sink.
+
+| | Chromium | Firefox | WebKit (not Safari) |
+|---|---|---|---|
+| 10 ms `frameDuration` accepted, real 10 ms packets | yes | yes | yes |
+| Encode / decode p50, 10 ms | 0.5 / 0.3 ms | 0.4 / 0.9 ms | 1 / 1 ms (1 ms timer) |
+| Capture node → playout-ready, 10 ms, p50 / p95 | 22.5 / 37.2 ms | 25.2 / 33.8 ms | 25.8 / 44.5 ms |
+| Same at 20 ms, p50 | 31.8 ms | 35.8 ms | 43.8 ms |
+| AudioWorklet capture → `AudioData` → `AudioEncoder` | works | works | works |
+
+- **Firefox ships speaking, not listen-only**: its `AudioEncoder` takes the
+  worklet's `AudioData` (§7's risk, retired).
+- **Frame size: 10 ms on every browser** (provisional for Safari until
+  MV8), ~9–11 ms less transit than 20 ms for under 1 ms of encode.
+- **The ≤100 ms target is neither confirmed nor ruled out.** The measured
+  browser part is 22–26 ms; with estimates for the microphone and echo
+  processing, the network, the jitter buffer and the output device the
+  total is ~70–155 ms. Plausible on a wired desktop on a LAN, unlikely on
+  phones or Bluetooth. The owner decides at sign-off.
+- Findings the implementation follows: `AudioEncoder.flush()` on Chromium
+  emits an extra padded packet per call, so the web client flushes only at
+  the end of a spurt; Firefox ignores the 40 kbit/s bitrate (~57 kbit/s);
+  `AudioData` does not exist inside an AudioWorklet anywhere, so the
+  capture node posts PCM to the main thread.
+- **Not measured**: Safari (macOS, iOS), Chrome on Android, real microphone
+  and output latency, echo cancellation with WebAudio playback. RESULTS.md
+  has the owner's manual procedure for the last.
+
+### 12.2 MV5 — what real murmur taught
+
+Recorded in §11.5 and `docs/gotchas.md`: murmur 1.5 and 1.6 still send the
+legacy audio format to a 1.4.0 client; a duplicate name from one address is
+a ghost, not a reject; temporary channels need a client certificate; the
+compiled-in username rule accepts `Alice [web]`.
+
+### 12.3 MV7 — end to end
+
+`e2e/voice.mjs` (CI job `e2e-voice`): the relay, two bridge pods behind a
+UDP LoadBalancer stand-in, murmur 1.6, three Chromium participants on the
+fake microphone and a scripted native Mumble user. All six passes green,
+three runs in a row:
+
+| Pass | Shows |
+|---|---|
+| Roster before voice | a room viewer who never joined voice sees the native Mumble user (OD28, D15) |
+| Both directions | the native user receives the gawk speaker's frames; both gawk users see the native user speaking from frames they received |
+| Mumble moderation | a server mute reaches the panel; a kick ends voice with 4015 |
+| Pod drain | 4002 while the pod still serves, rejoin onto the other pod through the LoadBalancer, the observer follows, audio resumes |
+| Temporary channel | a `?voice=1` room's channel exists under the parent, found by the fleet-stable name, and its native user is on the room's roster |
+| gawk ban | an IP ban covering the browsers ends voice with 4015 |
+
+Its first run found a bug no unit test had the topology for: the draining
+pod takes the room's observer with it, so the immediate rejoin was told
+`Unavailable` and the browser gave up. A rejoin now treats that as another
+rejoin (`001972ba`, test-first).
+
+### 12.4 MV7 — one pod under load
+
+`e2e/voice-load.sh`, raw results in
+[`assets/80/load/results.jsonl`](assets/80/load/results.jsonl): one relay,
+**one** bridge pod and murmur 1.6 on one 8-core Ivy Bridge Xeon, N real voice
+participants in one channel (room session, ticket, voice session and bridged
+Mumble user each), three talking at once for 30 s.
+
+| Users | Joined | Delivered / expected | Bridge CPU | Bridge RSS | murmur CPU |
+|---|---|---|---|---|---|
+| 10 | 10 | 100 % | 0.43 cores | 26 MB | 0.22 cores |
+| 25 | 25 | 100 % | 0.92 cores | 36 MB | 0.45 cores |
+| 50 | 50 | 80 % | 1.40 cores | 54 MB | 0.70 cores |
+| 100 | 99 | 30 % | 1.06 cores | 89 MB | 0.6 cores |
+
+- **Up to 25 people in one channel, nothing is lost** on this machine.
+- At 50 the shortfall is **between murmur and the bridge**: the bridge
+  forwarded to the participants what it received (351,658 vs 351,537 frames,
+  2 dropped by its queues). Murmur sends each frame to each of N bridged
+  TCP connections from one host (D8's "N copies"); the load generator,
+  the bridge, the relay and murmur shared the 8 cores, so the run does not
+  say how much of that is murmur's own ceiling. A real pod on its own node
+  should do better; MV8 measures the deployment.
+- At 100 murmur's default `users` cap (100, the observer is one) refused the
+  last participant: the bridge closed it with **4016 "the Mumble server is
+  full"**, the D18 path. Size `users` for native plus bridged users (§5).
+- Community scale (OD15, dozens per channel) fits at the low end. More
+  bridge pods spread the bridge's own CPU across nodes; they do not reduce
+  murmur's fan-out, which is one copy per bridged user whichever pod holds
+  it. A channel much bigger than this is murmur's limit before it is the
+  bridge's, and §7's "per-connection cost" risk stands until MV8 measures
+  murmur on its own host.

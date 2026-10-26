@@ -1,7 +1,7 @@
 # gawk-mumble-bridge (R79, docs/80) — room voice through a Mumble server.
 #
 # Default off: nothing installs it, and the relay advertises no voice until
-# its own voiceBridge values point at this release (-voice-bridge-addr,
+# its own rooms.voice values point at this release (-voice-bridge-addr,
 # -voice-bridge-public-url, -voice-bridge-psk, -voice-ticket-secret). The
 # required values below render empty so a `helm template` works; the pods
 # CrashLoopBackOff with the missing flag's name until they are set (the
@@ -9,7 +9,7 @@
 #
 # Required: tls (a certificate for the public name), relayUrl, mumble.addr,
 # psk and ticketSecret — the last two MUST equal the relay's
-# voiceBridge psk and ticketSecret.
+# rooms.voice psk and ticketSecret.
 #
 # Murmur prerequisites (docs/80 §5, the README has the detail): autoban off
 # (autobanAttempts=0) or above the bridge's connection rate, `users` sized
@@ -94,7 +94,7 @@ relayCaRef: {}
 #   key: ca.crt
 
 # Link PSK and ticket secret, the house literal/Ref dual form (Ref wins).
-# Both MUST equal the relay's voiceBridge values.
+# Both MUST equal the relay chart's rooms.voice values.
 #   kubectl -n gawk create secret generic gawk-voice \
 #     --from-literal=psk="$(openssl rand -hex 32)" \
 #     --from-literal=ticketSecret="$(openssl rand -hex 32)"
