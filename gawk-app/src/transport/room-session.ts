@@ -37,13 +37,17 @@ import {
 } from './reconnect';
 import {
   CLOSE_CODE_ROOM_ENDED,
+  ROOM_CAP_VOICE,
   ROOM_COMMAND_ATTACH,
   ROOM_COMMAND_DETACH,
   ROOM_COMMAND_END_ROOM,
   ROOM_COMMAND_RESYNC,
   ROOM_COMMAND_SET_NICKNAME,
+  ROOM_COMMAND_VOICE_JOIN,
   ROOM_EVENT_COMMAND_REJECTED,
   ROOM_EVENT_ROOM_ENDING,
+  ROOM_EVENT_VOICE_ROSTER_UPDATED,
+  ROOM_EVENT_VOICE_TICKET,
   ROOM_PROTOCOL_VERSION,
   RoomRecordReader,
   RoomUnknownKindError,
@@ -70,6 +74,9 @@ export type RoomTarget =
       resumeTokenHex: string;
       label: string;
       createSecret?: string;
+      // R79 (docs/80 D14, §11.1 C3): the creator asks for voice, `voice=1`
+      // on /room/new. A relay without a bridge ignores it.
+      voice?: boolean;
     };
 
 // The grant presented on join: a creator token (dynamic rooms) or an attach
@@ -92,6 +99,9 @@ export interface RoomSessionOptions {
   // proving the broadcast is its own with the resume token (the mint's
   // `broadcast` + `resume` pair) so the PoP can vouch for its Hide or Show.
   proof?: { broadcastId: string; resumeTokenHex: string };
+  // R79 (docs/80 §11.1 C2): this client can take part in room voice, so its
+  // RoomHello asks for ROOM_CAP_VOICE and the relay sends it the voice roster.
+  wantVoice?: boolean;
 }
 
 // How a session failed for good. Structural, never sniffed from messages.
@@ -120,8 +130,12 @@ export interface RoomSessionCallbacks {
   onConnected: () => void;
   // A full snapshot — replace, never merge.
   onState: (state: RoomState) => void;
-  // One delta, already sequence-checked.
+  // One delta, already sequence-checked — and the out-of-sequence ones
+  // (CommandRejected, the R79 VoiceRosterUpdated) as they come.
   onEvent: (ev: RoomEvent) => void;
+  // R79: the answer to sendVoiceJoin() (docs/80 D5). Out of sequence; never
+  // through onEvent.
+  onVoiceTicket?: (url: string, ticket: Uint8Array) => void;
   onReconnecting: (info: ReconnectInfo) => void;
   // 4007: the room ended. `reason` is the ROOM_END_REASON_* the preceding
   // RoomEnding event carried, or null when the close arrived without one.
@@ -260,6 +274,18 @@ export class RoomSession {
     this.send({ kind: ROOM_COMMAND_RESYNC });
   }
 
+  // R79: asks the home for a voice ticket (answered by onVoiceTicket, or a
+  // CommandRejected for ROOM_COMMAND_VOICE_JOIN). Not remembered across a
+  // reconnect: a reconnected room session is a new participant, and the voice
+  // client asks again once it is back (docs/80 §11.1 C4). False when there is
+  // no connected session to send it on.
+  sendVoiceJoin(): boolean {
+    const a = this.attempt;
+    if (!a || a.settled || !a.gotState) return false;
+    this.send({ kind: ROOM_COMMAND_VOICE_JOIN });
+    return true;
+  }
+
   // ---- Dialing -------------------------------------------------------------
 
   private url(): string {
@@ -272,6 +298,7 @@ export class RoomSession {
       params.set('resume', this.target.resumeTokenHex);
       params.set('label', this.target.label);
       if (this.target.createSecret) params.set('create', this.target.createSecret);
+      if (this.target.voice) params.set('voice', '1');
       return `${base}/room/new?${params.toString()}`;
     }
     if (this.grant?.kind === 'creator') params.set('creator', this.grant.tokenHex);
@@ -355,7 +382,7 @@ export class RoomSession {
       encodeRoomHello({
         protocol: ROOM_PROTOCOL_VERSION,
         clientKind: this.opts.clientKind,
-        wantCaps: 0,
+        wantCaps: this.opts.wantVoice ? ROOM_CAP_VOICE : 0,
         nickname: this.nickname,
       }),
     );
@@ -445,6 +472,20 @@ export class RoomSession {
         // Carries the CURRENT seq without advancing it.
         if (ev.seq > this.lastSeq + 1) this.noteGap(ev.seq);
         if (!this.resyncing) this.cb.onEvent(ev);
+        return;
+      }
+      // R79's two voice events are out of sequence the same way (they go only
+      // to voice-capable participants, so they cannot occupy a number). Both
+      // are whole answers, not deltas — a ticket, a full roster snapshot — so
+      // they are delivered even while a resync is pending.
+      if (ev.kind === ROOM_EVENT_VOICE_TICKET) {
+        if (ev.seq > this.lastSeq + 1) this.noteGap(ev.seq);
+        this.cb.onVoiceTicket?.(ev.voiceUrl, ev.voiceTicket.slice());
+        return;
+      }
+      if (ev.kind === ROOM_EVENT_VOICE_ROSTER_UPDATED) {
+        if (ev.seq > this.lastSeq + 1) this.noteGap(ev.seq);
+        this.cb.onEvent(ev);
         return;
       }
       if (ev.seq <= this.lastSeq) return; // a duplicate/stale delta

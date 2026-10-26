@@ -33,6 +33,7 @@ flowchart LR
 | `CONNECT /echo` | Connectivity diagnostic (see `gawk-echo` below) |
 | `GET /healthz` | Liveness |
 | `GET /statusz` | JSON stats: subscribers, frames/datagrams relayed, drops, cached keyframe, per-subscriber detail |
+| `CONNECT /internal/voice/{code}` | R79 room voice: gawk-mumble-bridge's session link to the room's home ([`../docs/80`](../docs/80-mumble-bridge.md) §11.3). Registered only with `-rooms` and the voice knobs set; PSK-gated, never exposed publicly |
 | `CONNECT /pop/link`, `/pop/addr`, `/pop/publish/{id}`, `/pop/subscribe/{id}` | PoP relays' link and legs ([`../docs/76`](../docs/76-pop-relays.md) §9). Registered only with `-pops`; credential-gated |
 
 A separate plain-TCP **ops endpoint** serves `GET /metrics` (Prometheus),

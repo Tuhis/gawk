@@ -918,9 +918,10 @@ fn room_reserved_kinds_are_distinguishable() {
         parse_room_event(&from_hex("0115000000014041")),
         Err(WireError::UnknownRoomKind { seq: 1, kind: 0x40 })
     );
+    // 0x50 is VoiceJoin since R79; 0x5e is still reserved.
     assert_eq!(
-        parse_room_command(&from_hex("01165000")),
-        Err(WireError::UnknownRoomKind { seq: 0, kind: 0x50 })
+        parse_room_command(&from_hex("01165e00")),
+        Err(WireError::UnknownRoomKind { seq: 0, kind: 0x5e })
     );
     assert_eq!(
         append_room_event(
@@ -1734,4 +1735,658 @@ fn r74_constants_are_pinned() {
     // 4012 is NOT terminal for a viewer: it retries every 20 s.
     assert!(!terminal_for_viewer(CLOSE_CODE_POP_UPLINK_FULL));
     assert!(!terminal_for_viewer(CLOSE_CODE_POP_NO_DEMAND));
+}
+
+// --- R79 room voice (docs/80 D20) --------------------------------------------
+// VoiceHello 0x1A, VoiceFrame 0x1B, VoiceState 0x1C, VoiceControl 0x1D and the
+// voice room kinds, byte-identical to gawk-server/wire/voice_test.go — the
+// same literal pieces, restated, never imported or computed.
+
+// VoiceHello: protocol 1, flags listen-only, ticket 01..05.
+const GOLDEN_VOICE_HELLO: &str = concat!("011a", "01", "04", "0005", "0102030405");
+// VoiceFrame: not the end, target 0, speaker 7, seq 0x12, payload fcfffe.
+const GOLDEN_VOICE_FRAME: &str = concat!("011b", "00", "00", "00000007", "00000012", "fcfffe");
+// VoiceFrame terminator: end of transmission, target 2 (direct whisper),
+// speaker 0x01020304, seq 0xffffffff, no payload.
+const GOLDEN_VOICE_FRAME_END: &str = concat!("011b", "01", "02", "01020304", "ffffffff");
+// VoiceState: connected|self-mute, session 42, name "tuhis [web]".
+const GOLDEN_VOICE_STATE: &str = concat!("011c", "28", "0000002a", "0b", "7475686973205b7765625d");
+// VoiceControl: self-mute|self-deaf.
+const GOLDEN_VOICE_CONTROL: &str = "011d03";
+// RoomCommand VoiceJoin: no payload.
+const GOLDEN_ROOM_COMMAND_VOICE_JOIN: &str = "011650";
+// RoomEvent VoiceTicket at seq 7: url "https://v.example/voice" (23 bytes),
+// ticket aabb.
+const GOLDEN_ROOM_EVENT_VOICE_TICKET: &str = concat!(
+    "0115",
+    "00000007",
+    "50",
+    "0017",
+    "68747470733a2f2f762e6578616d706c652f766f696365",
+    "0002",
+    "aabb"
+);
+// RoomEvent VoiceRosterUpdated at seq 7: available, two entries — session 3,
+// native Mumble, self-muted, "bob"; session 9, gawk participant 2, no flags,
+// "tuhis [web]".
+const GOLDEN_ROOM_EVENT_VOICE_ROSTER: &str = concat!(
+    "0115",
+    "00000007",
+    "51",
+    "01",
+    "0002",
+    "00000003",
+    "00",
+    "0000",
+    "01",
+    "03626f62",
+    "00000009",
+    "01",
+    "0002",
+    "00",
+    "0b7475686973205b7765625d"
+);
+// RoomEvent VoiceRosterUpdated at seq 7: unavailable, empty.
+const GOLDEN_ROOM_EVENT_VOICE_ROSTER_EMPTY: &str = concat!("0115", "00000007", "51", "00", "0000");
+
+fn golden_voice_roster() -> Vec<VoiceRosterEntry<'static>> {
+    vec![
+        VoiceRosterEntry {
+            session: 3,
+            kind: ROOM_VOICE_KIND_MUMBLE,
+            flags: ROOM_VOICE_USER_SELF_MUTE,
+            name: "bob",
+            ..VoiceRosterEntry::default()
+        },
+        VoiceRosterEntry {
+            session: 9,
+            kind: ROOM_VOICE_KIND_GAWK,
+            participant_id: 2,
+            name: "tuhis [web]",
+            ..VoiceRosterEntry::default()
+        },
+    ]
+}
+
+/// A copy of `b` with `b[i] = v` (Go's `patch`).
+fn patch(b: &[u8], i: usize, v: u8) -> Vec<u8> {
+    let mut out = b.to_vec();
+    out[i] = v;
+    out
+}
+
+fn with_trailing(b: &[u8]) -> Vec<u8> {
+    let mut out = b.to_vec();
+    out.push(0);
+    out
+}
+
+#[test]
+fn r79_voice_allocations_are_pinned() {
+    // The allocation map (docs/80 D20): after LocalRelayOffer, in order.
+    assert_eq!(TYPE_VOICE_HELLO, TYPE_LOCAL_RELAY_OFFER + 1);
+    assert_eq!(TYPE_VOICE_HELLO, 0x1A);
+    assert_eq!(TYPE_VOICE_FRAME, 0x1B);
+    assert_eq!(TYPE_VOICE_STATE, 0x1C);
+    assert_eq!(TYPE_VOICE_CONTROL, 0x1D);
+    assert_eq!(CLOSE_CODE_VOICE_REMOVED, 4015);
+    assert_eq!(CLOSE_CODE_VOICE_UNAVAILABLE, 4016);
+    assert_eq!(CLOSE_CODE_VOICE_REMOVED, CLOSE_CODE_BROADCASTER_STOPPED + 1);
+    assert_eq!(ROOM_COMMAND_VOICE_JOIN, 0x50);
+    assert_eq!(ROOM_EVENT_VOICE_TICKET, 0x50);
+    assert_eq!(ROOM_EVENT_VOICE_ROSTER_UPDATED, 0x51);
+    assert_eq!(ROOM_CAP_VOICE, 0x02);
+    assert_eq!(VOICE_PROTOCOL_VERSION, 1);
+    assert_eq!(VOICE_FRAME_HEADER_SIZE, 12);
+    assert_eq!(
+        MAX_VOICE_PAYLOAD,
+        MAX_DATAGRAM_SIZE - VOICE_FRAME_HEADER_SIZE
+    );
+    assert_eq!(MAX_VOICE_PAYLOAD, 1188);
+    assert_eq!(MAX_VOICE_TARGET, 31);
+    assert_eq!(MAX_VOICE_TICKET_LEN, 512);
+    assert_eq!(MAX_VOICE_NAME_LEN, 64);
+    assert_eq!(MAX_VOICE_URL_LEN, 512);
+    assert_eq!(MAX_VOICE_ROSTER_ENTRIES, 200);
+    assert_eq!(VOICE_HELLO_FLAG_SELF_MUTE, 0x01);
+    assert_eq!(VOICE_HELLO_FLAG_SELF_DEAF, 0x02);
+    assert_eq!(VOICE_HELLO_FLAG_LISTEN_ONLY, 0x04);
+    assert_eq!(VOICE_FRAME_FLAG_END, 0x01);
+    assert_eq!(VOICE_STATE_FLAG_SERVER_MUTE, 0x01);
+    assert_eq!(VOICE_STATE_FLAG_SERVER_DEAF, 0x02);
+    assert_eq!(VOICE_STATE_FLAG_SUPPRESSED, 0x04);
+    assert_eq!(VOICE_STATE_FLAG_SELF_MUTE, 0x08);
+    assert_eq!(VOICE_STATE_FLAG_SELF_DEAF, 0x10);
+    assert_eq!(VOICE_STATE_FLAG_CONNECTED, 0x20);
+    assert_eq!(VOICE_CONTROL_FLAG_SELF_MUTE, 0x01);
+    assert_eq!(VOICE_CONTROL_FLAG_SELF_DEAF, 0x02);
+    assert_eq!(ROOM_VOICE_ROSTER_FLAG_AVAILABLE, 0x01);
+    assert_eq!(ROOM_VOICE_KIND_MUMBLE, 0);
+    assert_eq!(ROOM_VOICE_KIND_GAWK, 1);
+    assert_eq!(ROOM_VOICE_USER_SELF_MUTE, 0x01);
+    assert_eq!(ROOM_VOICE_USER_SELF_DEAF, 0x02);
+    assert_eq!(ROOM_VOICE_USER_MUTE, 0x04);
+    assert_eq!(ROOM_VOICE_USER_DEAF, 0x08);
+    assert_eq!(ROOM_VOICE_USER_SUPPRESSED, 0x10);
+    // Voice closes never reach a viewer session; neither is viewer-terminal.
+    assert!(!terminal_for_viewer(CLOSE_CODE_VOICE_REMOVED));
+    assert!(!terminal_for_viewer(CLOSE_CODE_VOICE_UNAVAILABLE));
+    // The largest roster must fit one room record.
+    let name = "x".repeat(MAX_VOICE_NAME_LEN);
+    let big: Vec<VoiceRosterEntry<'_>> = (0..MAX_VOICE_ROSTER_ENTRIES)
+        .map(|i| VoiceRosterEntry {
+            session: i as u32,
+            name: &name,
+            ..VoiceRosterEntry::default()
+        })
+        .collect();
+    let mut got = Vec::new();
+    append_room_event(
+        &mut got,
+        &RoomEvent {
+            kind: ROOM_EVENT_VOICE_ROSTER_UPDATED,
+            voice_roster: big,
+            ..RoomEvent::default()
+        },
+    )
+    .expect("a full roster fits a record");
+    assert!(got.len() <= MAX_ROOM_RECORD_SIZE);
+}
+
+#[test]
+fn golden_voice_hello() {
+    let h = VoiceHello {
+        protocol: VOICE_PROTOCOL_VERSION,
+        flags: VOICE_HELLO_FLAG_LISTEN_ONLY,
+        ticket: &[1, 2, 3, 4, 5],
+    };
+    let mut got = Vec::new();
+    append_voice_hello(&mut got, &h).unwrap();
+    assert_eq!(to_hex(&got), GOLDEN_VOICE_HELLO);
+    let bytes = from_hex(GOLDEN_VOICE_HELLO);
+    assert_eq!(parse_voice_hello(&bytes).unwrap(), h);
+}
+
+#[test]
+fn voice_hello_strict() {
+    let good = from_hex(GOLDEN_VOICE_HELLO);
+    assert!(matches!(
+        parse_voice_hello(&good[..5]),
+        Err(WireError::ShortDatagram { len: 5, need: 6 })
+    ));
+    for (name, msg) in [
+        ("bad protocol", patch(&good, 2, 2)),
+        ("reserved flag", patch(&good, 3, 0x08)),
+        ("zero ticket", from_hex("011a01000000")),
+        ("trailing", with_trailing(&good)),
+        ("overrun", good[..good.len() - 1].to_vec()),
+    ] {
+        assert_eq!(
+            parse_voice_hello(&msg),
+            Err(WireError::BadVoiceHello),
+            "{name}"
+        );
+    }
+    let big = vec![0u8; MAX_VOICE_TICKET_LEN + 1];
+    for (name, h) in [
+        (
+            "oversize ticket",
+            VoiceHello {
+                protocol: 1,
+                ticket: &big,
+                ..VoiceHello::default()
+            },
+        ),
+        (
+            "empty ticket",
+            VoiceHello {
+                protocol: 1,
+                ..VoiceHello::default()
+            },
+        ),
+        (
+            "reserved flag",
+            VoiceHello {
+                protocol: 1,
+                flags: 0x80,
+                ticket: &[1],
+            },
+        ),
+        (
+            "bad protocol",
+            VoiceHello {
+                protocol: 9,
+                ticket: &[1],
+                ..VoiceHello::default()
+            },
+        ),
+    ] {
+        let mut dst = vec![0xaa];
+        assert_eq!(
+            append_voice_hello(&mut dst, &h),
+            Err(WireError::BadVoiceHello),
+            "{name}"
+        );
+        assert_eq!(dst, vec![0xaa], "{name}: dst untouched");
+    }
+}
+
+#[test]
+fn golden_voice_frame() {
+    for (hex, h, payload) in [
+        (
+            GOLDEN_VOICE_FRAME,
+            VoiceFrameHeader {
+                speaker: 7,
+                seq: 0x12,
+                ..VoiceFrameHeader::default()
+            },
+            &[0xfc, 0xff, 0xfe][..],
+        ),
+        (
+            GOLDEN_VOICE_FRAME_END,
+            VoiceFrameHeader {
+                end: true,
+                target: 2,
+                speaker: 0x0102_0304,
+                seq: 0xffff_ffff,
+            },
+            &[][..],
+        ),
+    ] {
+        let mut got = Vec::new();
+        append_voice_frame(&mut got, &h, payload).unwrap();
+        assert_eq!(to_hex(&got), hex);
+        let bytes = from_hex(hex);
+        let (ph, pp) = parse_voice_frame(&bytes).unwrap();
+        assert_eq!(ph, h);
+        assert_eq!(pp, payload);
+    }
+}
+
+#[test]
+fn voice_frame_strict() {
+    let good = from_hex(GOLDEN_VOICE_FRAME);
+    assert!(matches!(
+        parse_voice_frame(&good[..11]),
+        Err(WireError::ShortDatagram { len: 11, need: 12 })
+    ));
+    assert!(matches!(
+        parse_voice_frame(&patch(&good, 1, TYPE_AUDIO_FRAME)),
+        Err(WireError::BadType { .. })
+    ));
+    for (name, msg) in [
+        ("reserved flag", patch(&good, 2, 0x02)),
+        ("target", patch(&good, 3, 32)),
+        ("empty, not end", good[..VOICE_FRAME_HEADER_SIZE].to_vec()),
+    ] {
+        assert_eq!(
+            parse_voice_frame(&msg),
+            Err(WireError::BadVoiceFrame),
+            "{name}"
+        );
+    }
+    let zero = VoiceFrameHeader::default();
+    assert_eq!(
+        append_voice_frame(&mut Vec::new(), &zero, &[]),
+        Err(WireError::BadVoiceFrame),
+        "empty, not end"
+    );
+    assert_eq!(
+        append_voice_frame(&mut Vec::new(), &zero, &vec![0; MAX_VOICE_PAYLOAD + 1]),
+        Err(WireError::BadVoiceFrame),
+        "oversize"
+    );
+    assert_eq!(
+        append_voice_frame(
+            &mut Vec::new(),
+            &VoiceFrameHeader { target: 32, ..zero },
+            &[1]
+        ),
+        Err(WireError::BadVoiceFrame),
+        "target"
+    );
+    let mut full = Vec::new();
+    append_voice_frame(&mut full, &zero, &vec![0; MAX_VOICE_PAYLOAD]).unwrap();
+    assert_eq!(
+        full.len(),
+        MAX_DATAGRAM_SIZE,
+        "a full frame is one datagram"
+    );
+}
+
+#[test]
+fn golden_voice_state() {
+    let s = VoiceState {
+        flags: VOICE_STATE_FLAG_CONNECTED | VOICE_STATE_FLAG_SELF_MUTE,
+        session: 42,
+        name: "tuhis [web]",
+    };
+    let mut got = Vec::new();
+    append_voice_state(&mut got, &s).unwrap();
+    assert_eq!(to_hex(&got), GOLDEN_VOICE_STATE);
+    let want = from_hex(GOLDEN_VOICE_STATE);
+    assert_eq!(parse_voice_state(&want).unwrap(), s);
+    let mut bad_utf8 = from_hex("011c000000000201");
+    bad_utf8.push(0xff);
+    for (name, msg) in [
+        ("reserved flag", patch(&want, 2, 0x40)),
+        ("trailing", with_trailing(&want)),
+        ("truncated", want[..want.len() - 1].to_vec()),
+        ("bad utf8", bad_utf8),
+    ] {
+        assert_eq!(
+            parse_voice_state(&msg),
+            Err(WireError::BadVoiceState),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        append_voice_state(
+            &mut Vec::new(),
+            &VoiceState {
+                flags: 0x80,
+                ..VoiceState::default()
+            }
+        ),
+        Err(WireError::BadVoiceState),
+        "reserved flag"
+    );
+    let long = "x".repeat(MAX_VOICE_NAME_LEN + 1);
+    let mut dst = Vec::new();
+    assert_eq!(
+        append_voice_state(
+            &mut dst,
+            &VoiceState {
+                name: &long,
+                ..VoiceState::default()
+            }
+        ),
+        Err(WireError::BadVoiceState),
+        "long name"
+    );
+    assert!(dst.is_empty(), "a failed append leaves dst untouched");
+}
+
+#[test]
+fn golden_voice_control() {
+    let mut got = Vec::new();
+    append_voice_control(
+        &mut got,
+        VOICE_CONTROL_FLAG_SELF_MUTE | VOICE_CONTROL_FLAG_SELF_DEAF,
+    )
+    .unwrap();
+    assert_eq!(to_hex(&got), GOLDEN_VOICE_CONTROL);
+    assert_eq!(
+        parse_voice_control(&from_hex(GOLDEN_VOICE_CONTROL)).unwrap(),
+        3
+    );
+    for (name, hex) in [("reserved", "011d04"), ("trailing", "011d0100")] {
+        assert_eq!(
+            parse_voice_control(&from_hex(hex)),
+            Err(WireError::BadVoiceControl),
+            "{name}"
+        );
+    }
+    assert!(matches!(
+        parse_voice_control(&from_hex("011d")),
+        Err(WireError::ShortDatagram { len: 2, need: 3 })
+    ));
+    assert_eq!(
+        append_voice_control(&mut Vec::new(), 0x04),
+        Err(WireError::BadVoiceControl)
+    );
+}
+
+#[test]
+fn golden_room_command_voice_join() {
+    let want = RoomCommand {
+        kind: ROOM_COMMAND_VOICE_JOIN,
+        ..RoomCommand::default()
+    };
+    let mut got = Vec::new();
+    append_room_command(&mut got, &want).unwrap();
+    assert_eq!(to_hex(&got), GOLDEN_ROOM_COMMAND_VOICE_JOIN);
+    assert_eq!(
+        parse_room_command(&from_hex(GOLDEN_ROOM_COMMAND_VOICE_JOIN)).unwrap(),
+        want
+    );
+    assert_eq!(
+        parse_room_command(&from_hex("01165000")),
+        Err(WireError::BadRoomCommand),
+        "trailing byte"
+    );
+    // The rest of the voice range is still unknown, so a relay answers it
+    // Unsupported.
+    assert_eq!(
+        parse_room_command(&from_hex("011651")),
+        Err(WireError::UnknownRoomKind { seq: 0, kind: 0x51 })
+    );
+}
+
+#[test]
+fn golden_room_event_voice_ticket() {
+    let ev = RoomEvent {
+        seq: 7,
+        kind: ROOM_EVENT_VOICE_TICKET,
+        voice_url: "https://v.example/voice",
+        voice_ticket: &[0xaa, 0xbb],
+        ..RoomEvent::default()
+    };
+    let mut got = Vec::new();
+    append_room_event(&mut got, &ev).unwrap();
+    assert_eq!(to_hex(&got), GOLDEN_ROOM_EVENT_VOICE_TICKET);
+    let want = from_hex(GOLDEN_ROOM_EVENT_VOICE_TICKET);
+    assert_eq!(parse_room_event(&want).unwrap(), ev);
+    for (name, msg) in [
+        (
+            "empty url",
+            from_hex(concat!("011500000007500000", "0002aabb")),
+        ),
+        (
+            "empty ticket",
+            from_hex(concat!("01150000000750", "000168", "0000")),
+        ),
+        // Rust carries the URL as &str, so invalid UTF-8 is refused (as Go).
+        (
+            "bad utf8 url",
+            from_hex(concat!("01150000000750", "0001ff", "0002aabb")),
+        ),
+        ("overrun", want[..want.len() - 1].to_vec()),
+        ("trailing", with_trailing(&want)),
+    ] {
+        assert_eq!(
+            parse_room_event(&msg),
+            Err(WireError::BadRoomEvent),
+            "{name}"
+        );
+    }
+    let big = vec![1u8; MAX_VOICE_TICKET_LEN + 1];
+    let long_url = "h".repeat(MAX_VOICE_URL_LEN + 1);
+    for (name, e) in [
+        (
+            "append empty url",
+            RoomEvent {
+                kind: ROOM_EVENT_VOICE_TICKET,
+                voice_ticket: &[1],
+                ..RoomEvent::default()
+            },
+        ),
+        (
+            "append empty ticket",
+            RoomEvent {
+                kind: ROOM_EVENT_VOICE_TICKET,
+                voice_url: "https://x",
+                ..RoomEvent::default()
+            },
+        ),
+        (
+            "append oversize ticket",
+            RoomEvent {
+                kind: ROOM_EVENT_VOICE_TICKET,
+                voice_url: "https://x",
+                voice_ticket: &big,
+                ..RoomEvent::default()
+            },
+        ),
+        (
+            "append long url",
+            RoomEvent {
+                kind: ROOM_EVENT_VOICE_TICKET,
+                voice_url: &long_url,
+                voice_ticket: &[1],
+                ..RoomEvent::default()
+            },
+        ),
+    ] {
+        let mut dst = vec![0xaa];
+        assert_eq!(
+            append_room_event(&mut dst, &e),
+            Err(WireError::BadRoomEvent),
+            "{name}"
+        );
+        assert_eq!(dst, vec![0xaa], "{name}: dst untouched");
+    }
+}
+
+#[test]
+fn golden_room_event_voice_roster() {
+    for (hex, ev) in [
+        (
+            GOLDEN_ROOM_EVENT_VOICE_ROSTER,
+            RoomEvent {
+                seq: 7,
+                kind: ROOM_EVENT_VOICE_ROSTER_UPDATED,
+                voice_flags: ROOM_VOICE_ROSTER_FLAG_AVAILABLE,
+                voice_roster: golden_voice_roster(),
+                ..RoomEvent::default()
+            },
+        ),
+        (
+            GOLDEN_ROOM_EVENT_VOICE_ROSTER_EMPTY,
+            RoomEvent {
+                seq: 7,
+                kind: ROOM_EVENT_VOICE_ROSTER_UPDATED,
+                ..RoomEvent::default()
+            },
+        ),
+    ] {
+        let mut got = Vec::new();
+        append_room_event(&mut got, &ev).unwrap();
+        assert_eq!(to_hex(&got), hex);
+        let bytes = from_hex(hex);
+        assert_eq!(parse_room_event(&bytes).unwrap(), ev);
+    }
+    let good = from_hex(GOLDEN_ROOM_EVENT_VOICE_ROSTER);
+    for (name, msg) in [
+        ("reserved roster flag", patch(&good, 7, 0x02)),
+        ("bad kind", patch(&good, 14, 2)),
+        ("reserved user flag", patch(&good, 17, 0x20)),
+        ("overrun", good[..good.len() - 1].to_vec()),
+        ("trailing", with_trailing(&good)),
+        ("too many", from_hex("0115000000075101ffff")),
+    ] {
+        assert_eq!(
+            parse_room_event(&msg),
+            Err(WireError::BadRoomEvent),
+            "{name}"
+        );
+    }
+    let long = "x".repeat(MAX_VOICE_NAME_LEN + 1);
+    for (name, e) in [
+        (
+            "reserved roster flag",
+            RoomEvent {
+                kind: ROOM_EVENT_VOICE_ROSTER_UPDATED,
+                voice_flags: 0x02,
+                ..RoomEvent::default()
+            },
+        ),
+        (
+            "bad kind",
+            RoomEvent {
+                kind: ROOM_EVENT_VOICE_ROSTER_UPDATED,
+                voice_roster: vec![VoiceRosterEntry {
+                    kind: 2,
+                    ..VoiceRosterEntry::default()
+                }],
+                ..RoomEvent::default()
+            },
+        ),
+        (
+            "reserved user flag",
+            RoomEvent {
+                kind: ROOM_EVENT_VOICE_ROSTER_UPDATED,
+                voice_roster: vec![VoiceRosterEntry {
+                    flags: 0x20,
+                    ..VoiceRosterEntry::default()
+                }],
+                ..RoomEvent::default()
+            },
+        ),
+        (
+            "long name",
+            RoomEvent {
+                kind: ROOM_EVENT_VOICE_ROSTER_UPDATED,
+                voice_roster: vec![VoiceRosterEntry {
+                    name: &long,
+                    ..VoiceRosterEntry::default()
+                }],
+                ..RoomEvent::default()
+            },
+        ),
+        (
+            "too many",
+            RoomEvent {
+                kind: ROOM_EVENT_VOICE_ROSTER_UPDATED,
+                voice_roster: vec![VoiceRosterEntry::default(); MAX_VOICE_ROSTER_ENTRIES + 1],
+                ..RoomEvent::default()
+            },
+        ),
+    ] {
+        let mut dst = vec![0xaa];
+        assert_eq!(
+            append_room_event(&mut dst, &e),
+            Err(WireError::BadRoomEvent),
+            "append {name}"
+        );
+        assert_eq!(dst, vec![0xaa], "{name}: dst untouched");
+    }
+    // The rest of the voice range stays unknown and skippable.
+    assert_eq!(
+        parse_room_event(&from_hex(concat!("011500000009", "5f"))),
+        Err(WireError::UnknownRoomKind { seq: 9, kind: 0x5f })
+    );
+}
+
+// A RoomState advertising ROOM_CAP_VOICE parses (RoomState is unchanged by
+// R79, docs/80 §11.1 C2), and a RoomHello may ask for it.
+#[test]
+fn room_state_with_voice_cap_parses() {
+    let s = RoomState {
+        caps: ROOM_CAP_VOICE,
+        ..golden_room_state_static_value()
+    };
+    let mut got = Vec::new();
+    append_room_state(&mut got, &s).unwrap();
+    assert_eq!(parse_room_state(&got).unwrap(), s);
+    let h = RoomHello {
+        want_caps: ROOM_CAP_VOICE,
+        ..golden_room_hello_value()
+    };
+    let mut got = Vec::new();
+    append_room_hello(&mut got, &h).unwrap();
+    assert_eq!(parse_room_hello(&got).unwrap(), h);
+}
+
+#[test]
+fn truncate_voice_name_cuts_on_a_char_boundary() {
+    let long = "ä".repeat(40); // 80 bytes
+    let got = truncate_voice_name(&long);
+    assert_eq!(got.len(), 64);
+    assert_eq!(got, "ä".repeat(32));
+    assert_eq!(truncate_voice_name("bob"), "bob");
+    // A 3-byte char straddling byte 64 is dropped whole.
+    let odd = format!("{}€", "x".repeat(62));
+    assert_eq!(truncate_voice_name(&odd), "x".repeat(62));
 }

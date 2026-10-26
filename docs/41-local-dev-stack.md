@@ -495,6 +495,18 @@ stack in 90 days.
 | `telemetry` | `telemetry` | `build: {context: ., dockerfile: gawk-telemetry/deploy/Dockerfile}` (**repo root context**). `-session-idle 2m` (must exceed the client's 10 s flush; see `e2e/README.md`). Ingest published on `127.0.0.1` only; the read/dashboard listener is **not** published at all — reach it with `docker compose exec`. *(Since R53 the read listener is published on `127.0.0.1:8091`, OIDC-gated against `fakeidp-telemetry` — §4.8.)* Requires `GAWK_TELEMETRY_KEY` on both relay and service. |
 | `app-dev` | `app-dev` | `image: node:26-alpine`, working dir a bind mount of `./gawk-app`, command `npm run dev -- --host 0.0.0.0 --port 5173`, published on `${BIND_ADDR}:5173:5173`, with an anonymous volume over `/app/node_modules` so the container's install is not shadowed by the host's. When this profile is on, `app` does not start. |
 
+**R79's room-voice lane is an override file too** (added 2026-10-26,
+docs/80): `docker compose -f docker-compose.yml -f dev/compose.voice.yml up
+-d --build --wait`. It changes the relay (the `-voice-*` knobs, and
+`dev/rooms-voice/rooms.json`, which maps `devroom` to the murmur channel of
+the same name) and adds murmur 1.5 on `127.0.0.1:64738` (autoban off), the
+bridge on the relay's own `./certs` pair (public `127.0.0.1:4443/udp`, ops
+`127.0.0.1:2113`), one-shot `murmur-init` and `murmur-init-room` that create
+the channels and the bridge token's MakeTempChannel grant, and
+`native-echo`, a `gawk-mumblesim` that repeats whatever it hears in
+`devroom`, so one tab hears itself both ways. A desktop Mumble client on
+`localhost:64738` is the other way to be the native side.
+
 **R40's screening lane is an override file, not a profile** (added
 2026-10-13, docs/71 §9.7): `docker compose -f docker-compose.yml -f
 dev/compose.screening.yml up -d --build --wait`, or that pair in

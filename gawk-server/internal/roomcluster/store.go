@@ -101,6 +101,11 @@ type Options struct {
 	// someone else (force-taken after a stale renew). The transport closes
 	// the room's sessions non-terminally and drops the local copy.
 	OnLeaseLost func(code string)
+	// OnStaticVoiceRoom fires when the informer sees a static CR with a
+	// Mumble mapping that this pod does not hold (R79, docs/80 D12): the
+	// transport's keeper homes it "when its CR appears". Optional; must
+	// not block.
+	OnStaticVoiceRoom func(code string)
 
 	// Test seams. Zero values mean production defaults.
 	LeaseDuration   time.Duration
@@ -373,6 +378,46 @@ func (s *Store) Holding(code string) (int64, bool) {
 	return h.generation, true
 }
 
+// voiceMapped reports whether a CR carries a valid Mumble mapping.
+func voiceMapped(r *rooms.Room) bool {
+	m := r.Spec.Integrations.Mumble
+	return m != nil && rooms.ValidateMumble(m) == nil
+}
+
+// UnhomedVoiceRooms lists the static rooms with a Mumble mapping that no pod
+// homes right now (absent, released or stale lease) and this pod does not
+// hold: what the voice keeper adopts (R79, docs/80 D12). A party wall is
+// left alone — it is its PoP's.
+func (s *Store) UnhomedVoiceRooms() []string {
+	var out []string
+	for _, obj := range s.informer.GetStore().List() {
+		r, err := roomFrom(obj)
+		if err != nil || r.Spec.Kind == rooms.KindDynamic || r.Spec.Pop != "" || !voiceMapped(r) {
+			continue
+		}
+		if _, held := s.Holding(r.Name); held {
+			continue
+		}
+		if s.homeOf(r).Live {
+			continue
+		}
+		out = append(out, r.Name)
+	}
+	return out
+}
+
+// CountVoiceDynamic counts the voice-live dynamic rooms fleet-wide, from the
+// CR cache: -voice-max-rooms's fleet count (roomsrv.Options.VoiceRoomsInUse).
+func (s *Store) CountVoiceDynamic() int {
+	n := 0
+	for _, obj := range s.informer.GetStore().List() {
+		if r, err := roomFrom(obj); err == nil && r.Spec.Kind == rooms.KindDynamic && voiceMapped(r) {
+			n++
+		}
+	}
+	return n
+}
+
 func (s *Store) countDynamic() int {
 	n := 0
 	for _, obj := range s.informer.GetStore().List() {
@@ -605,6 +650,17 @@ func (s *Store) Claim(ctx context.Context, code string, force bool) (int64, erro
 // a static one from its spec (attach secret read from the referenced
 // Secret). A live foreign home is ErrHeldElsewhere; the caller proxies.
 func (s *Store) Adopt(ctx context.Context, code string) error {
+	return s.adopt(ctx, code, false)
+}
+
+// AdoptVoice is Adopt for the voice keeper (R79, docs/80 D12): the same
+// lease claim, for a static room whose only reason to be homed is its
+// voice, so the registry keeps it out of the live rooms until a join.
+func (s *Store) AdoptVoice(ctx context.Context, code string) error {
+	return s.adopt(ctx, code, true)
+}
+
+func (s *Store) adopt(ctx context.Context, code string, voiceOnly bool) error {
 	norm, err := rooms.NormalizeCode(code)
 	if err != nil {
 		return ErrNotFound
@@ -640,6 +696,7 @@ func (s *Store) Adopt(ctx context.Context, code string) error {
 		// "rebuilt by the home pod on adoption"), as AdoptDynamic's do; the
 		// registry ignores them on a plain refresh of a room it holds.
 		def.Attachments = append([]rooms.Attachment(nil), r.Status.Attachments...)
+		def.VoiceOnly = voiceOnly
 		if err := s.opts.Registry.UpsertStatic(def); err != nil {
 			s.stopRenew(norm)
 			return err
@@ -654,7 +711,8 @@ func (s *Store) Adopt(ctx context.Context, code string) error {
 // homed here, rather than homed with attach open.
 func (s *Store) staticDef(ctx context.Context, r *rooms.Room) (roomsrv.StaticRoom, error) {
 	def := roomsrv.StaticRoom{Code: r.Name, DisplayCode: r.Spec.DisplayCode, DisplayName: r.Spec.DisplayName,
-		MaxBroadcasts: r.Spec.MaxBroadcasts, MaxParticipants: r.Spec.MaxParticipants, Pop: r.Spec.Pop}
+		MaxBroadcasts: r.Spec.MaxBroadcasts, MaxParticipants: r.Spec.MaxParticipants, Pop: r.Spec.Pop,
+		Mumble: r.Spec.Integrations.Mumble}
 	if r.Spec.Kind == rooms.KindDynamic || r.Spec.AttachSecretRef == nil {
 		return def, nil
 	}
@@ -919,6 +977,9 @@ func (s *Store) observe(oldObj, obj any) {
 		h.cancel()
 		s.lost(r.Name)
 		return
+	}
+	if !held && s.opts.OnStaticVoiceRoom != nil && r.Spec.Kind != rooms.KindDynamic && r.Spec.Pop == "" && voiceMapped(r) && !s.homeOf(r).Live {
+		s.opts.OnStaticVoiceRoom(r.Name)
 	}
 	if held && specChanged && r.Spec.Kind == rooms.KindStatic {
 		go func() {

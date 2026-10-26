@@ -1,0 +1,83 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "gawk-mumble-bridge.fullname" . }}
+  labels:
+    {{- include "gawk-mumble-bridge.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "gawk-mumble-bridge.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Browsers, from anywhere: ticket-gated voice only.
+    - ports:
+        - protocol: UDP
+          port: 4443
+    # The relay's observer links: its pods only.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- toYaml $np.relay.podSelector | nindent 14 }}
+          {{- with $np.relay.namespaceSelector }}
+          namespaceSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
+      ports:
+        - protocol: UDP
+          port: 4444
+    # Probes come from the kubelet (not subject to the policy); scrapes from
+    # the monitoring namespace.
+    - from:
+        - namespaceSelector:
+            {{- if $np.monitoring.namespaceSelector }}
+            matchLabels:
+              {{- toYaml $np.monitoring.namespaceSelector | nindent 14 }}
+            {{- else }}
+            {}
+            {{- end }}
+      ports:
+        - protocol: TCP
+          port: 2113
+  egress:
+    # The session links to the relay.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- toYaml $np.relay.podSelector | nindent 14 }}
+          {{- with $np.relay.namespaceSelector }}
+          namespaceSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
+      ports:
+        - protocol: UDP
+          port: {{ $np.relay.port }}
+    # murmur.
+    - to:
+        - ipBlock:
+            cidr: {{ $np.murmur.cidr }}
+      ports:
+        - protocol: TCP
+          port: {{ $np.murmur.port }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- toYaml $np.dns.podSelector | nindent 14 }}
+          {{- with $np.dns.namespaceSelector }}
+          namespaceSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- with $np.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

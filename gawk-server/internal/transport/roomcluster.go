@@ -126,6 +126,14 @@ func (s *Server) roomClusterWiring() *roomClusterWiring { return s.roomCluster.L
 // pod holds or just adopted the room, or no CR exists and the local registry
 // decides.
 func (s *Server) roomHomedElsewhere(w http.ResponseWriter, r *http.Request, code string) bool {
+	return s.homedElsewhere(w, r, code, s.proxyRoom)
+}
+
+// homedElsewhere is the cluster gate both room-scoped routes share: a public
+// room join and a bridge's voice session link (voice_session.go) take the
+// same route to the room's home, differing only in how they are proxied.
+func (s *Server) homedElsewhere(w http.ResponseWriter, r *http.Request, code string,
+	proxy func(http.ResponseWriter, *http.Request, *roomClusterWiring, string, roomcluster.Home)) bool {
 	rc := s.roomClusterWiring()
 	if rc == nil {
 		return false
@@ -142,7 +150,7 @@ func (s *Server) roomHomedElsewhere(w http.ResponseWriter, r *http.Request, code
 		return false
 	}
 	if home.Live && home.Holder != rc.podName {
-		s.proxyRoom(w, r, rc, norm, home)
+		proxy(w, r, rc, norm, home)
 		return true
 	}
 	// Absent, released or stale lease: adopt.
@@ -153,7 +161,7 @@ func (s *Server) roomHomedElsewhere(w http.ResponseWriter, r *http.Request, code
 	case errors.Is(err, roomcluster.ErrHeldElsewhere):
 		// Lost the race to another pod: it is the home now.
 		if home, ok := rc.store.Resolve(norm); ok && home.Live && home.Holder != rc.podName {
-			s.proxyRoom(w, r, rc, norm, home)
+			proxy(w, r, rc, norm, home)
 			return true
 		}
 		s.metrics.Connection("room-adopt", metrics.OutcomeConflict)

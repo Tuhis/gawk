@@ -316,6 +316,10 @@ func TestRoomURLBuilders(t *testing.T) {
 	if _, err := RoomNewURL("https://relay.example", "K7M2QP", "", "", ""); err == nil {
 		t.Error("a mint without the resume token was accepted: the relay would 403 it")
 	}
+	v, _ := url.Parse(WithRoomVoice(u))
+	if v.Query().Get("voice") != "1" || v.Query().Get("broadcast") != "K7M2QP" {
+		t.Errorf("voice mint URL = %q", v)
+	}
 }
 
 // The attach latch. The relay sends the broadcast ID and the resume token on

@@ -163,6 +163,55 @@ import {
   parseLocalRelayOffer,
   type LocalRelayInfoMessage,
   type LocalRelayOfferMessage,
+  CLOSE_CODE_VOICE_REMOVED,
+  ROOM_CAP_VOICE,
+  CLOSE_CODE_VOICE_UNAVAILABLE,
+  MAX_VOICE_NAME_LEN,
+  MAX_VOICE_PAYLOAD,
+  MAX_VOICE_ROSTER_ENTRIES,
+  MAX_VOICE_TARGET,
+  MAX_VOICE_TICKET_LEN,
+  MAX_VOICE_URL_LEN,
+  ROOM_COMMAND_VOICE_JOIN,
+  ROOM_EVENT_VOICE_ROSTER_UPDATED,
+  ROOM_EVENT_VOICE_TICKET,
+  ROOM_VOICE_KIND_GAWK,
+  ROOM_VOICE_KIND_MUMBLE,
+  ROOM_VOICE_ROSTER_FLAG_AVAILABLE,
+  ROOM_VOICE_USER_DEAF,
+  ROOM_VOICE_USER_MUTE,
+  ROOM_VOICE_USER_SELF_DEAF,
+  ROOM_VOICE_USER_SELF_MUTE,
+  ROOM_VOICE_USER_SUPPRESSED,
+  TYPE_VOICE_CONTROL,
+  TYPE_VOICE_FRAME,
+  TYPE_VOICE_HELLO,
+  TYPE_VOICE_STATE,
+  VOICE_CONTROL_FLAG_SELF_DEAF,
+  VOICE_CONTROL_FLAG_SELF_MUTE,
+  VOICE_FRAME_FLAG_END,
+  VOICE_FRAME_HEADER_SIZE,
+  VOICE_HELLO_FLAG_LISTEN_ONLY,
+  VOICE_HELLO_FLAG_SELF_DEAF,
+  VOICE_HELLO_FLAG_SELF_MUTE,
+  VOICE_PROTOCOL_VERSION,
+  VOICE_STATE_FLAG_CONNECTED,
+  VOICE_STATE_FLAG_SELF_DEAF,
+  VOICE_STATE_FLAG_SELF_MUTE,
+  VOICE_STATE_FLAG_SERVER_DEAF,
+  VOICE_STATE_FLAG_SERVER_MUTE,
+  VOICE_STATE_FLAG_SUPPRESSED,
+  encodeVoiceControl,
+  encodeVoiceFrame,
+  encodeVoiceHello,
+  encodeVoiceState,
+  parseVoiceControl,
+  parseVoiceFrame,
+  parseVoiceHello,
+  parseVoiceState,
+  truncateVoiceName,
+  type VoiceFrameHeader,
+  type VoiceRosterEntry,
 } from './wire';
 
 // Golden vectors copied verbatim from gawk-server/wire/wire_test.go
@@ -1346,9 +1395,10 @@ describe('room control protocol (R42)', () => {
     expect((ev as RoomUnknownKindError).seq).toBe(1);
     expect((ev as RoomUnknownKindError).kind).toBe(0x40);
 
-    const cmd = catchError(() => parseRoomCommand(fromHex('01165000')));
+    // 0x50 is VoiceJoin since R79; 0x5e is still reserved.
+    const cmd = catchError(() => parseRoomCommand(fromHex('01165e00')));
     expect(cmd).toBeInstanceOf(RoomUnknownKindError);
-    expect((cmd as RoomUnknownKindError).kind).toBe(0x50);
+    expect((cmd as RoomUnknownKindError).kind).toBe(0x5e);
     expect((cmd as RoomUnknownKindError).seq).toBeUndefined();
 
     expect(() => encodeRoomEvent({ seq: 0, kind: 0x4f } as unknown as RoomEvent)).toThrow(RoomUnknownKindError);
@@ -1867,5 +1917,253 @@ describe('local relay offer (0x19)', () => {
       })),
     };
     expect(parseLocalRelayOffer(encodeLocalRelayOffer(o))).toEqual(o);
+  });
+});
+
+// --- R79 room voice (docs/80 D20) -------------------------------------------
+// Golden vectors restated BY HAND, byte-identical to
+// gawk-server/wire/voice_test.go (and crates/wire/tests/golden.rs). Never
+// generated from code: if they change, the wire format changed.
+const GOLDEN_VOICE_HELLO_HEX = '011a' + '01' + '04' + '0005' + '0102030405';
+const GOLDEN_VOICE_FRAME_HEX = '011b' + '00' + '00' + '00000007' + '00000012' + 'fcfffe';
+const GOLDEN_VOICE_FRAME_END_HEX = '011b' + '01' + '02' + '01020304' + 'ffffffff';
+const GOLDEN_VOICE_STATE_HEX = '011c' + '28' + '0000002a' + '0b' + '7475686973205b7765625d';
+const GOLDEN_VOICE_CONTROL_HEX = '011d03';
+const GOLDEN_ROOM_COMMAND_VOICE_JOIN_HEX = '011650';
+const GOLDEN_ROOM_EVENT_VOICE_TICKET_HEX =
+  '0115' + '00000007' + '50' + '0017' + '68747470733a2f2f762e6578616d706c652f766f696365' + '0002' + 'aabb';
+const GOLDEN_ROOM_EVENT_VOICE_ROSTER_HEX =
+  '0115' +
+  '00000007' +
+  '51' +
+  '01' +
+  '0002' +
+  '00000003' +
+  '00' +
+  '0000' +
+  '01' +
+  '03626f62' +
+  '00000009' +
+  '01' +
+  '0002' +
+  '00' +
+  '0b7475686973205b7765625d';
+const GOLDEN_ROOM_EVENT_VOICE_ROSTER_EMPTY_HEX = '0115' + '00000007' + '51' + '00' + '0000';
+
+const goldenVoiceRoster: VoiceRosterEntry[] = [
+  { session: 3, kind: ROOM_VOICE_KIND_MUMBLE, participantId: 0, flags: ROOM_VOICE_USER_SELF_MUTE, name: 'bob' },
+  { session: 9, kind: ROOM_VOICE_KIND_GAWK, participantId: 2, flags: 0, name: 'tuhis [web]' },
+];
+
+function patched(hex: string, i: number, v: number): Uint8Array {
+  const b = fromHex(hex);
+  b[i] = v;
+  return b;
+}
+
+describe('R79 voice wire', () => {
+  it('allocates the voice types, close codes and room kinds as Go does', () => {
+    expect(TYPE_VOICE_HELLO).toBe(TYPE_LOCAL_RELAY_OFFER + 1);
+    expect([TYPE_VOICE_HELLO, TYPE_VOICE_FRAME, TYPE_VOICE_STATE, TYPE_VOICE_CONTROL]).toEqual([0x1a, 0x1b, 0x1c, 0x1d]);
+    expect(CLOSE_CODE_VOICE_REMOVED).toBe(4015);
+    expect(CLOSE_CODE_VOICE_UNAVAILABLE).toBe(4016);
+    expect(CLOSE_CODE_VOICE_REMOVED).toBe(CLOSE_CODE_BROADCASTER_STOPPED + 1);
+    expect(ROOM_COMMAND_VOICE_JOIN).toBe(0x50);
+    expect(ROOM_EVENT_VOICE_TICKET).toBe(0x50);
+    expect(ROOM_EVENT_VOICE_ROSTER_UPDATED).toBe(0x51);
+    expect(ROOM_CAP_VOICE).toBe(0x02);
+    expect(VOICE_PROTOCOL_VERSION).toBe(1);
+    expect(VOICE_FRAME_HEADER_SIZE).toBe(12);
+    expect(MAX_VOICE_PAYLOAD).toBe(MAX_DATAGRAM_SIZE - VOICE_FRAME_HEADER_SIZE);
+    expect(MAX_VOICE_TARGET).toBe(31);
+    expect(MAX_VOICE_TICKET_LEN).toBe(512);
+    expect(MAX_VOICE_NAME_LEN).toBe(64);
+    expect(MAX_VOICE_URL_LEN).toBe(512);
+    expect(MAX_VOICE_ROSTER_ENTRIES).toBe(200);
+    expect([VOICE_HELLO_FLAG_SELF_MUTE, VOICE_HELLO_FLAG_SELF_DEAF, VOICE_HELLO_FLAG_LISTEN_ONLY]).toEqual([1, 2, 4]);
+    expect(VOICE_FRAME_FLAG_END).toBe(1);
+    expect([
+      VOICE_STATE_FLAG_SERVER_MUTE,
+      VOICE_STATE_FLAG_SERVER_DEAF,
+      VOICE_STATE_FLAG_SUPPRESSED,
+      VOICE_STATE_FLAG_SELF_MUTE,
+      VOICE_STATE_FLAG_SELF_DEAF,
+      VOICE_STATE_FLAG_CONNECTED,
+    ]).toEqual([1, 2, 4, 8, 0x10, 0x20]);
+    expect([VOICE_CONTROL_FLAG_SELF_MUTE, VOICE_CONTROL_FLAG_SELF_DEAF]).toEqual([1, 2]);
+    expect(ROOM_VOICE_ROSTER_FLAG_AVAILABLE).toBe(1);
+    expect([ROOM_VOICE_KIND_MUMBLE, ROOM_VOICE_KIND_GAWK]).toEqual([0, 1]);
+    expect([
+      ROOM_VOICE_USER_SELF_MUTE,
+      ROOM_VOICE_USER_SELF_DEAF,
+      ROOM_VOICE_USER_MUTE,
+      ROOM_VOICE_USER_DEAF,
+      ROOM_VOICE_USER_SUPPRESSED,
+    ]).toEqual([1, 2, 4, 8, 0x10]);
+    // The largest roster fits one room record.
+    const big: VoiceRosterEntry[] = Array.from({ length: MAX_VOICE_ROSTER_ENTRIES }, (_, i) => ({
+      session: i,
+      kind: ROOM_VOICE_KIND_MUMBLE,
+      participantId: 0,
+      flags: 0,
+      name: 'x'.repeat(MAX_VOICE_NAME_LEN),
+    }));
+    expect(() =>
+      encodeRoomEvent({ seq: 0, kind: ROOM_EVENT_VOICE_ROSTER_UPDATED, voiceFlags: 0, voiceRoster: big }),
+    ).not.toThrow();
+  });
+
+  it('encodes and parses the golden VoiceHello', () => {
+    const h = { protocol: VOICE_PROTOCOL_VERSION, flags: VOICE_HELLO_FLAG_LISTEN_ONLY, ticket: new Uint8Array([1, 2, 3, 4, 5]) };
+    expect(toHex(encodeVoiceHello(h))).toBe(GOLDEN_VOICE_HELLO_HEX);
+    expect(parseVoiceHello(fromHex(GOLDEN_VOICE_HELLO_HEX))).toEqual(h);
+  });
+
+  it('parses VoiceHello strictly', () => {
+    const good = fromHex(GOLDEN_VOICE_HELLO_HEX);
+    expect(() => parseVoiceHello(good.subarray(0, 5))).toThrow(WireError); // short
+    expect(() => parseVoiceHello(patched(GOLDEN_VOICE_HELLO_HEX, 2, 2))).toThrow(/protocol/);
+    expect(() => parseVoiceHello(patched(GOLDEN_VOICE_HELLO_HEX, 3, 0x08))).toThrow(/reserved/);
+    expect(() => parseVoiceHello(fromHex('011a01000000'))).toThrow(/ticket/); // zero ticket
+    expect(() => parseVoiceHello(fromHex(GOLDEN_VOICE_HELLO_HEX + '00'))).toThrow(WireError); // trailing
+    expect(() => parseVoiceHello(good.subarray(0, good.length - 1))).toThrow(WireError); // overrun
+    const t = (n: number) => new Uint8Array(n).fill(1);
+    expect(() => encodeVoiceHello({ protocol: 1, flags: 0, ticket: t(MAX_VOICE_TICKET_LEN + 1) })).toThrow(WireError);
+    expect(() => encodeVoiceHello({ protocol: 1, flags: 0, ticket: t(0) })).toThrow(WireError);
+    expect(() => encodeVoiceHello({ protocol: 1, flags: 0x80, ticket: t(1) })).toThrow(WireError);
+    expect(() => encodeVoiceHello({ protocol: 9, flags: 0, ticket: t(1) })).toThrow(WireError);
+  });
+
+  it.each([
+    ['frame', GOLDEN_VOICE_FRAME_HEX, { end: false, target: 0, speaker: 7, seq: 0x12 }, new Uint8Array([0xfc, 0xff, 0xfe])],
+    ['end', GOLDEN_VOICE_FRAME_END_HEX, { end: true, target: 2, speaker: 0x01020304, seq: 0xffffffff }, new Uint8Array(0)],
+  ] satisfies [string, string, VoiceFrameHeader, Uint8Array][])(
+    'encodes and parses the golden VoiceFrame (%s)',
+    (_name, hex, header, payload) => {
+      expect(toHex(encodeVoiceFrame(header, payload))).toBe(hex);
+      const back = parseVoiceFrame(fromHex(hex));
+      expect(back.header).toEqual(header);
+      expect(Array.from(back.payload)).toEqual(Array.from(payload));
+    },
+  );
+
+  it('parses VoiceFrame strictly', () => {
+    const good = fromHex(GOLDEN_VOICE_FRAME_HEX);
+    expect(() => parseVoiceFrame(good.subarray(0, 11))).toThrow(WireError); // short
+    expect(() => parseVoiceFrame(patched(GOLDEN_VOICE_FRAME_HEX, 1, TYPE_AUDIO_FRAME))).toThrow(WireError);
+    expect(() => parseVoiceFrame(patched(GOLDEN_VOICE_FRAME_HEX, 2, 0x02))).toThrow(/reserved/);
+    expect(() => parseVoiceFrame(patched(GOLDEN_VOICE_FRAME_HEX, 3, 32))).toThrow(/target/);
+    expect(() => parseVoiceFrame(good.subarray(0, VOICE_FRAME_HEADER_SIZE))).toThrow(/empty payload/);
+    const h = { end: false, target: 0, speaker: 0, seq: 0 };
+    expect(() => encodeVoiceFrame(h, new Uint8Array(0))).toThrow(WireError);
+    expect(() => encodeVoiceFrame(h, new Uint8Array(MAX_VOICE_PAYLOAD + 1))).toThrow(WireError);
+    expect(() => encodeVoiceFrame({ ...h, target: 32 }, new Uint8Array(1))).toThrow(WireError);
+    expect(encodeVoiceFrame(h, new Uint8Array(MAX_VOICE_PAYLOAD)).length).toBe(MAX_DATAGRAM_SIZE);
+  });
+
+  it('encodes and parses the golden VoiceState, strictly', () => {
+    const st = { flags: VOICE_STATE_FLAG_CONNECTED | VOICE_STATE_FLAG_SELF_MUTE, session: 42, name: 'tuhis [web]' };
+    expect(toHex(encodeVoiceState(st))).toBe(GOLDEN_VOICE_STATE_HEX);
+    expect(parseVoiceState(fromHex(GOLDEN_VOICE_STATE_HEX))).toEqual(st);
+    expect(() => parseVoiceState(patched(GOLDEN_VOICE_STATE_HEX, 2, 0x40))).toThrow(/reserved/);
+    expect(() => parseVoiceState(fromHex(GOLDEN_VOICE_STATE_HEX + '00'))).toThrow(/trailing/);
+    expect(() => parseVoiceState(fromHex(GOLDEN_VOICE_STATE_HEX.slice(0, -2)))).toThrow(/overruns/);
+    expect(() => parseVoiceState(fromHex('011c000000000201ff'))).toThrow(/UTF-8/);
+    expect(() => encodeVoiceState({ flags: 0x80, session: 0, name: '' })).toThrow(WireError);
+    expect(() => encodeVoiceState({ flags: 0, session: 0, name: 'x'.repeat(MAX_VOICE_NAME_LEN + 1) })).toThrow(WireError);
+  });
+
+  it('encodes and parses the golden VoiceControl, strictly', () => {
+    expect(toHex(encodeVoiceControl(VOICE_CONTROL_FLAG_SELF_MUTE | VOICE_CONTROL_FLAG_SELF_DEAF))).toBe(
+      GOLDEN_VOICE_CONTROL_HEX,
+    );
+    expect(parseVoiceControl(fromHex(GOLDEN_VOICE_CONTROL_HEX))).toBe(3);
+    expect(() => parseVoiceControl(fromHex('011d04'))).toThrow(/reserved/);
+    expect(() => parseVoiceControl(fromHex('011d0100'))).toThrow(WireError);
+    expect(() => parseVoiceControl(fromHex('011d'))).toThrow(WireError);
+    expect(() => encodeVoiceControl(0x04)).toThrow(WireError);
+  });
+
+  it('encodes and parses the golden VoiceJoin command', () => {
+    expect(toHex(encodeRoomCommand({ kind: ROOM_COMMAND_VOICE_JOIN }))).toBe(GOLDEN_ROOM_COMMAND_VOICE_JOIN_HEX);
+    expect(parseRoomCommand(fromHex(GOLDEN_ROOM_COMMAND_VOICE_JOIN_HEX))).toEqual({ kind: ROOM_COMMAND_VOICE_JOIN });
+    expect(() => parseRoomCommand(fromHex('01165000'))).toThrow(/trailing/);
+    // The rest of the voice range is still unknown.
+    expect(catchError(() => parseRoomCommand(fromHex('011651')))).toBeInstanceOf(RoomUnknownKindError);
+  });
+
+  it('encodes and parses the golden VoiceTicket event, strictly', () => {
+    const ev: RoomEvent = {
+      seq: 7,
+      kind: ROOM_EVENT_VOICE_TICKET,
+      voiceUrl: 'https://v.example/voice',
+      voiceTicket: new Uint8Array([0xaa, 0xbb]),
+    };
+    expect(toHex(encodeRoomEvent(ev))).toBe(GOLDEN_ROOM_EVENT_VOICE_TICKET_HEX);
+    expect(parseRoomEvent(fromHex(GOLDEN_ROOM_EVENT_VOICE_TICKET_HEX))).toEqual(ev);
+    expect(() => parseRoomEvent(fromHex('011500000007500000' + '0002aabb'))).toThrow(/empty voice url/);
+    expect(() => parseRoomEvent(fromHex('01150000000750' + '000168' + '0000'))).toThrow(/empty voice ticket/);
+    expect(() => parseRoomEvent(fromHex(GOLDEN_ROOM_EVENT_VOICE_TICKET_HEX.slice(0, -2)))).toThrow(/overruns/);
+    expect(() => parseRoomEvent(fromHex(GOLDEN_ROOM_EVENT_VOICE_TICKET_HEX + '00'))).toThrow(/trailing/);
+    expect(() =>
+      encodeRoomEvent({ seq: 0, kind: ROOM_EVENT_VOICE_TICKET, voiceUrl: '', voiceTicket: new Uint8Array([1]) }),
+    ).toThrow(WireError);
+    expect(() =>
+      encodeRoomEvent({ seq: 0, kind: ROOM_EVENT_VOICE_TICKET, voiceUrl: 'https://x', voiceTicket: new Uint8Array(0) }),
+    ).toThrow(WireError);
+  });
+
+  it.each([
+    [
+      'two',
+      GOLDEN_ROOM_EVENT_VOICE_ROSTER_HEX,
+      { seq: 7, kind: ROOM_EVENT_VOICE_ROSTER_UPDATED, voiceFlags: ROOM_VOICE_ROSTER_FLAG_AVAILABLE, voiceRoster: goldenVoiceRoster },
+    ],
+    ['empty', GOLDEN_ROOM_EVENT_VOICE_ROSTER_EMPTY_HEX, { seq: 7, kind: ROOM_EVENT_VOICE_ROSTER_UPDATED, voiceFlags: 0, voiceRoster: [] }],
+  ] satisfies [string, string, RoomEvent][])('encodes and parses the golden VoiceRosterUpdated (%s)', (_n, hex, ev) => {
+    expect(toHex(encodeRoomEvent(ev))).toBe(hex);
+    expect(parseRoomEvent(fromHex(hex))).toEqual(ev);
+  });
+
+  it('parses VoiceRosterUpdated strictly and refuses bad rosters on encode', () => {
+    const hex = GOLDEN_ROOM_EVENT_VOICE_ROSTER_HEX;
+    expect(() => parseRoomEvent(patched(hex, 7, 0x02))).toThrow(/reserved voice roster flag/);
+    expect(() => parseRoomEvent(patched(hex, 14, 2))).toThrow(/voice roster kind/);
+    expect(() => parseRoomEvent(patched(hex, 17, 0x20))).toThrow(/reserved voice user flag/);
+    expect(() => parseRoomEvent(fromHex(hex.slice(0, -2)))).toThrow(WireError);
+    expect(() => parseRoomEvent(fromHex(hex + '00'))).toThrow(/trailing/);
+    expect(() => parseRoomEvent(fromHex('0115000000075101ffff'))).toThrow(/voice roster entries/);
+    const entry = (over: Partial<VoiceRosterEntry>): VoiceRosterEntry => ({
+      session: 0,
+      kind: 0,
+      participantId: 0,
+      flags: 0,
+      name: '',
+      ...over,
+    });
+    const roster = (voiceRoster: VoiceRosterEntry[], voiceFlags = 0): RoomEvent => ({
+      seq: 0,
+      kind: ROOM_EVENT_VOICE_ROSTER_UPDATED,
+      voiceFlags,
+      voiceRoster,
+    });
+    expect(() => encodeRoomEvent(roster([], 0x02))).toThrow(WireError);
+    expect(() => encodeRoomEvent(roster([entry({ kind: 2 })]))).toThrow(WireError);
+    expect(() => encodeRoomEvent(roster([entry({ flags: 0x20 })]))).toThrow(WireError);
+    expect(() => encodeRoomEvent(roster([entry({ name: 'x'.repeat(MAX_VOICE_NAME_LEN + 1) })]))).toThrow(WireError);
+    expect(() =>
+      encodeRoomEvent(roster(Array.from({ length: MAX_VOICE_ROSTER_ENTRIES + 1 }, () => entry({})))),
+    ).toThrow(WireError);
+    // The rest of the voice range stays unknown and skippable.
+    const unknown = catchError(() => parseRoomEvent(fromHex('011500000009' + '5f')));
+    expect(unknown).toBeInstanceOf(RoomUnknownKindError);
+    expect((unknown as RoomUnknownKindError).seq).toBe(9);
+  });
+
+  it('truncates a voice name on a character boundary', () => {
+    const long = 'ä'.repeat(40); // 80 bytes
+    expect(truncateVoiceName(long)).toBe('ä'.repeat(32));
+    expect(truncateVoiceName('a\ud800b')).toBe('a�b');
+    expect(truncateVoiceName('bob')).toBe('bob');
   });
 });

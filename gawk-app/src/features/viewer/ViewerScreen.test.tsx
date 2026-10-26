@@ -1385,6 +1385,13 @@ describe('ViewerScreen and local relays (R74)', () => {
   // the collector goes on posting the PoP connection's stats under home's
   // token — a home row describing a relay home never saw.
   it('ends the home telemetry session when it follows an offer, and posts nothing from the PoP', async () => {
+    // Its own token, and only its own batches counted: the R28 tests above
+    // use the shared golden token, and a final of theirs whose real fetch
+    // failed in jsdom is retried 2 s and 4 s later on real timers, which on
+    // a loaded CI runner lands inside this test's fetch spy (PR #595, and
+    // run 40164349128 on main). A second final from THIS session still
+    // fails it.
+    const TOKEN = '00012345ffeeddccbbaa998877665544a1a2a3a4a5a6a7a8';
     const posted: string[] = [];
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
@@ -1409,7 +1416,7 @@ describe('ViewerScreen and local relays (R74)', () => {
         sessions[0].cbs.onTelemetryHello!({
           enabled: true,
           reportIntervalMs: 2000,
-          token: '00012345000102030405060708090a0ba1a2a3a4a5a6a7a8',
+          token: TOKEN,
           broadcastKey: '1a2b3c4d5e6f',
         }),
       );
@@ -1426,10 +1433,12 @@ describe('ViewerScreen and local relays (R74)', () => {
       unmount();
       await act(async () => {});
 
-      const finals = posted.filter((b) => b.includes('"final":true'));
+      const ours = posted.filter((b) => b.includes(TOKEN));
+      const finals = ours.filter((b) => b.includes('"final":true'));
       expect(finals).toHaveLength(1);
       expect(finals[0]).toContain('"receivedFps":11');
       expect(posted.join('\n')).not.toContain('"receivedFps":77');
+      expect(ours.length).toBeGreaterThan(0);
     } finally {
       fetchSpy.mockRestore();
       nowSpy.mockRestore();

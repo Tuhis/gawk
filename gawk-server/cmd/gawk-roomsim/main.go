@@ -12,6 +12,14 @@
 //	{"type":"event","seq":2,"kind":1,"participant":{...}}
 //	{"type":"close","code":4007,"reason":"..."}
 //
+// With -voice (R79, docs/80) the hello asks for RoomCapVoice and the voice
+// events, which are out of sequence and only reach a client that asked,
+// print as their own lines; -voice-join sends one VoiceJoin after the first
+// RoomState, and -mint-voice asks /room/new for a voice room:
+//
+//	{"type":"voiceRoster","seq":3,"available":true,"users":[{"session":7,"kind":0,"participant":0,"flags":0,"name":"..."}]}
+//	{"type":"voiceTicket","seq":3,"url":"https://...","ticket":"<hex>"}
+//
 // A pre-upgrade refusal (404 unknown room, 403 wrong token or a rejected
 // Origin, 429 full, 451 banned, 503 no home reachable) is reported on stderr as
 //
@@ -64,6 +72,10 @@ type options struct {
 	origin string
 	// path is the CONNECT path with its query, built from the flags.
 	path string
+	// voice asks for RoomCapVoice in the hello; voiceJoin sends one
+	// VoiceJoin after the first RoomState (R79).
+	voice     bool
+	voiceJoin bool
 }
 
 func parseArgs(args []string) (options, error) {
@@ -78,6 +90,9 @@ func parseArgs(args []string) (options, error) {
 	resume := fs.String("resume", "", "the broadcast's resume token, 32 hex chars (-mint)")
 	label := fs.String("label", "roomsim", "the minted attachment's tile label (-mint)")
 	create := fs.String("create-secret", "", "the relay's room-create secret, if it requires one (-mint)")
+	mintVoice := fs.Bool("mint-voice", false, "ask for a voice-live room (?voice=1) when minting (-mint)")
+	fs.BoolVar(&o.voice, "voice", false, "ask for the room's voice events (RoomCapVoice in the hello) and print them")
+	fs.BoolVar(&o.voiceJoin, "voice-join", false, "send one VoiceJoin after the first RoomState (implies -voice)")
 	fs.StringVar(&o.url, "url", "https://127.0.0.1:4433", "relay base URL")
 	fs.BoolVar(&o.insecure, "insecure", false, "skip TLS verification (dev certs)")
 	fs.StringVar(&o.nick, "nick", "roomsim", "nickname in the roster")
@@ -85,6 +100,12 @@ func parseArgs(args []string) (options, error) {
 	fs.DurationVar(&o.duration, "duration", 10*time.Second, "how long to hold the control session; 0 = until the relay closes it or SIGTERM")
 	if err := fs.Parse(args); err != nil {
 		return o, err
+	}
+	if o.voiceJoin {
+		o.voice = true
+	}
+	if *mintVoice && !*mint {
+		return o, errors.New("-mint-voice requires -mint")
 	}
 	switch {
 	case *mint && *code != "":
@@ -103,6 +124,9 @@ func parseArgs(args []string) (options, error) {
 		q.Set("name", o.nick)
 		if *create != "" {
 			q.Set("create", *create)
+		}
+		if *mintVoice {
+			q.Set("voice", "1")
 		}
 		o.path = "/room/new?" + q.Encode()
 	case *code == "":
@@ -147,6 +171,7 @@ type stateJSON struct {
 	Type         string            `json:"type"`
 	Seq          uint32            `json:"seq"`
 	Flags        uint8             `json:"flags"`
+	Caps         uint8             `json:"caps"`
 	YourID       uint16            `json:"yourID"`
 	Code         string            `json:"code"`
 	DisplayName  string            `json:"displayName,omitempty"`
@@ -182,7 +207,7 @@ func toParticipant(p wire.RoomParticipant) participantJSON {
 }
 
 func stateLine(st wire.RoomState) stateJSON {
-	out := stateJSON{Type: "state", Seq: st.Seq, Flags: st.Flags, YourID: st.YourID, Code: st.Code, DisplayName: st.DisplayName,
+	out := stateJSON{Type: "state", Seq: st.Seq, Flags: st.Flags, Caps: st.Caps, YourID: st.YourID, Code: st.Code, DisplayName: st.DisplayName,
 		Key: hex.EncodeToString(st.Key), Attachments: []attachmentJSON{}, Participants: []participantJSON{}}
 	if len(st.CreatorToken) > 0 {
 		out.CreatorToken = hex.EncodeToString(st.CreatorToken)
@@ -194,6 +219,44 @@ func stateLine(st wire.RoomState) stateJSON {
 		out.Participants = append(out.Participants, toParticipant(p))
 	}
 	return out
+}
+
+type voiceUserJSON struct {
+	Session     uint32 `json:"session"`
+	Kind        uint8  `json:"kind"`
+	Participant uint16 `json:"participant"`
+	Flags       uint8  `json:"flags"`
+	Name        string `json:"name"`
+}
+
+type voiceRosterJSON struct {
+	Type      string          `json:"type"`
+	Seq       uint32          `json:"seq"`
+	Available bool            `json:"available"`
+	Users     []voiceUserJSON `json:"users"`
+}
+
+type voiceTicketJSON struct {
+	Type   string `json:"type"`
+	Seq    uint32 `json:"seq"`
+	URL    string `json:"url"`
+	Ticket string `json:"ticket"`
+}
+
+// voiceLine renders a voice event (R79) as its own line, or nil for any
+// other kind.
+func voiceLine(e wire.RoomEvent) any {
+	switch e.Kind {
+	case wire.RoomEventVoiceRosterUpdated:
+		out := voiceRosterJSON{Type: "voiceRoster", Seq: e.Seq, Available: e.VoiceFlags&wire.RoomVoiceRosterFlagAvailable != 0, Users: []voiceUserJSON{}}
+		for _, v := range e.VoiceRoster {
+			out.Users = append(out.Users, voiceUserJSON{Session: v.Session, Kind: v.Kind, Participant: v.ParticipantID, Flags: v.Flags, Name: v.Name})
+		}
+		return out
+	case wire.RoomEventVoiceTicket:
+		return voiceTicketJSON{Type: "voiceTicket", Seq: e.Seq, URL: e.VoiceURL, Ticket: hex.EncodeToString(e.VoiceTicket)}
+	}
+	return nil
 }
 
 func eventLine(e wire.RoomEvent) eventJSON {
@@ -254,7 +317,11 @@ func run(o options) int {
 		fmt.Fprintf(os.Stderr, "gawk-roomsim: open control stream: %v\n", err)
 		return 1
 	}
-	hello, err := wire.AppendRoomHello(nil, wire.RoomHello{Protocol: wire.RoomProtocolVersion, ClientKind: wire.RoomClientNative, Nickname: o.nick})
+	var wantCaps uint8
+	if o.voice {
+		wantCaps = wire.RoomCapVoice
+	}
+	hello, err := wire.AppendRoomHello(nil, wire.RoomHello{Protocol: wire.RoomProtocolVersion, ClientKind: wire.RoomClientNative, WantCaps: wantCaps, Nickname: o.nick})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gawk-roomsim: encode hello: %v\n", err)
 		return 1
@@ -271,7 +338,11 @@ func run(o options) int {
 
 	enc := json.NewEncoder(os.Stdout)
 	readErr := make(chan error, 1)
-	go func() { readErr <- pump(stream, enc, os.Stderr) }()
+	var onFirstState func() error
+	if o.voiceJoin {
+		onFirstState = func() error { return sendCommand(stream, wire.RoomCommand{Kind: wire.RoomCommandVoiceJoin}) }
+	}
+	go func() { readErr <- pumpWith(stream, enc, os.Stderr, onFirstState) }()
 
 	select {
 	case <-ctx.Done():
@@ -299,6 +370,26 @@ func dialFailed(rsp *http.Response, err error, url string, errw io.Writer) int {
 // pump decodes records until the stream ends, printing each as JSON on enc;
 // records of a type the sim does not print are noted on errw and skipped.
 func pump(stream io.Reader, enc *json.Encoder, errw io.Writer) error {
+	return pumpWith(stream, enc, errw, nil)
+}
+
+// sendCommand frames and writes one RoomCommand.
+func sendCommand(w io.Writer, cmd wire.RoomCommand) error {
+	msg, err := wire.AppendRoomCommand(nil, cmd)
+	if err != nil {
+		return err
+	}
+	rec, err := wire.AppendRoomRecord(nil, msg)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(rec)
+	return err
+}
+
+// pumpWith is pump with onFirstState run once, right after the first
+// RoomState is printed (-voice-join).
+func pumpWith(stream io.Reader, enc *json.Encoder, errw io.Writer, onFirstState func() error) error {
 	var hdr [wire.RoomRecordHeaderSize]byte
 	for {
 		if _, err := io.ReadFull(stream, hdr[:]); err != nil {
@@ -324,6 +415,13 @@ func pump(stream io.Reader, enc *json.Encoder, errw io.Writer) error {
 			if err := enc.Encode(stateLine(st)); err != nil {
 				return err
 			}
+			if onFirstState != nil {
+				first := onFirstState
+				onFirstState = nil
+				if err := first(); err != nil {
+					return err
+				}
+			}
 		case wire.TypeRoomEvent:
 			e, err := wire.ParseRoomEvent(buf)
 			if errors.Is(err, wire.ErrUnknownRoomKind) {
@@ -334,6 +432,12 @@ func pump(stream io.Reader, enc *json.Encoder, errw io.Writer) error {
 			}
 			if err != nil {
 				return err
+			}
+			if v := voiceLine(e); v != nil {
+				if err := enc.Encode(v); err != nil {
+					return err
+				}
+				continue
 			}
 			if err := enc.Encode(eventLine(e)); err != nil {
 				return err

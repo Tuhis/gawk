@@ -1,0 +1,13 @@
+apiVersion: v2
+name: gawk-mumble-bridge
+description: Room voice for gawk through a Mumble server (R79) — browsers talk over WebTransport, each as its own Mumble user, and the room shows who is in the channel.
+type: application
+# Both fields are bumped by release-please; the image tag defaults to
+# appVersion, so chart version == image version always holds.
+#
+# 0.0.0 is the UNRELEASED seed, matching .release-please-manifest.json (the
+# gawk-admin and gawk-sampler precedent): no gawk-mumble-bridge tag, image or
+# chart exists yet, and release-please diffs from the tag its manifest
+# names. The first release PR rewrites both lines to the first real version.
+version: 0.0.0 # x-release-please-version
+appVersion: "0.0.0" # x-release-please-version

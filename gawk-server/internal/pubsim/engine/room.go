@@ -172,6 +172,20 @@ func RoomNewURL(relayURL, broadcastID, resumeTokenHex, label, createSecret strin
 	return u.String(), nil
 }
 
+// WithRoomVoice adds R79's voice=1 to a /room/new URL (docs/80 §11.1 C3):
+// the minted room gets a temporary Mumble channel when the relay has a
+// bridge, and the relay ignores it otherwise.
+func WithRoomVoice(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	q := u.Query()
+	q.Set("voice", "1")
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
 // RoomError is a room control session failure the shells can act on: the
 // dial the relay refused (Status set), or a protocol failure (Status 0).
 // Distinct from StartError because it is not session-fatal — the broadcast
@@ -517,6 +531,9 @@ func (rc *roomClient) dialURL() (rawURL, op string, err error) {
 	if rc.mode == roomModeNew {
 		id, tok := rc.s.credentials()
 		u, err := RoomNewURL(relayURL, id, tok, rc.s.tileLabel(), rc.createSecret)
+		if err == nil && rc.s.cfg.RoomVoice {
+			u = WithRoomVoice(u)
+		}
 		return u, "new", err
 	}
 	u, err := RoomURL(relayURL, rc.code, rc.attachSecret, rc.creatorToken)

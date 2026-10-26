@@ -1009,6 +1009,11 @@ paths:
         caller can later delete the rooms it created, and no others. A code
         that is already taken returns `409` with code `room_exists`,
         whoever created the room.
+
+        With `mumble` the room has voice on an existing Mumble channel
+        (R79). A static room cannot ask for a temporary channel:
+        `temporary: true` returns `400`. Without `mumble` the room has no
+        voice; `setRoomVoice` changes it later.
       x-gawk-roles: [operator, rooms-manager]
       x-gawk-requires: rooms
       requestBody:
@@ -1021,6 +1026,8 @@ paths:
               displayName: Team standup
               maxBroadcasts: 4
               withAttachSecret: true
+              mumble:
+                channel: Friends/Gaming
       responses:
         '201':
           description: The room was created.
@@ -1043,6 +1050,8 @@ paths:
                   createdAt: '2026-09-16T09:31:00Z'
                   hasAttachSecret: true
                   managed: true
+                  mumble:
+                    channel: Friends/Gaming
                 attachSecret: s3cr3t-attach-key-shown-once
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -1089,6 +1098,64 @@ paths:
                   hasAttachSecret: true
                   managed: true
                 attachSecret: s3cr3t-rotated-key-shown-once
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/Internal' }
+
+  /api/v1/rooms/{name}/voice:
+    put:
+      operationId: setRoomVoice
+      tags: [rooms]
+      summary: Set a static room's voice channel
+      description: |
+        Replaces a static room's voice mapping (R79): the existing Mumble
+        channel the room's voice uses. The body replaces the mapping, so an
+        absent or `null` `mumble` removes the room's voice. A relay with no
+        voice bridge configured ignores the mapping.
+
+        `temporary: true` returns `400`: a temporary channel is what a
+        dynamic room's creator asks for. A dynamic room returns `409` with
+        code `room_not_static`.
+
+        No event is recorded for the change.
+      x-gawk-roles: [operator]
+      x-gawk-requires: rooms
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: The room code, in any spelling.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RoomVoiceRequest' }
+            example:
+              mumble:
+                channel: Friends/Gaming
+      responses:
+        '200':
+          description: The room after the change.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: '`name`, `code` and `links.join` carry the raw room code.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Room' }
+              example:
+                name: team-standup
+                kind: static
+                code: team-standup
+                live: false
+                counts: { participants: 0, streaming: 0, watching: 0, attachments: 0 }
+                hasAttachSecret: true
+                managed: true
+                mumble:
+                  channel: Friends/Gaming
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
@@ -3073,6 +3140,8 @@ components:
             `exempt` while the room's broadcasts are exempt from content
             screening (R40); absent for a screened room. Honoured only on a
             static room with an attach secret.
+        mumble:
+          $ref: '#/components/schemas/RoomMumble'
 
     RoomLinks:
       type: object
@@ -3180,6 +3249,8 @@ components:
         withAttachSecret:
           type: boolean
           description: Mint an attach secret and return it once in the response.
+        mumble:
+          $ref: '#/components/schemas/RoomMumble'
 
     RoomWithSecret:
       type: object
@@ -3190,6 +3261,35 @@ components:
         attachSecret:
           type: string
           description: Returned once, in this response only. It cannot be read back; rotate if lost.
+
+    RoomMumble:
+      type: object
+      description: |
+        A room's voice channel on the deployment's Mumble server (R79),
+        absent for a room without voice. A static room names an existing
+        channel; a dynamic room created with voice has `temporary: true`, a
+        channel the voice bridge creates and Mumble removes when it empties.
+        In a request `temporary` must be absent or `false`.
+      properties:
+        channel:
+          type: string
+          maxLength: 256
+          description: |
+            The channel as a "/"-separated path below the root
+            (`Friends/Gaming`), with no control characters. Absent or empty
+            is the root channel. Not set together with `temporary`.
+        temporary:
+          type: boolean
+          description: A temporary channel. Only a dynamic room has one.
+
+    RoomVoiceRequest:
+      type: object
+      description: The room's whole voice mapping. Absent or `null` `mumble` removes it.
+      properties:
+        mumble:
+          oneOf:
+            - $ref: '#/components/schemas/RoomMumble'
+            - type: 'null'
 
     RoomPatchRequest:
       type: object

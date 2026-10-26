@@ -173,7 +173,7 @@ func TestDeepCopyDoesNotAlias(t *testing.T) {
 		Spec: RoomSpec{
 			Kind:            KindStatic,
 			AttachSecretRef: &SecretKeyRef{Name: "s", Key: "k"},
-			Integrations:    Integrations{Mumble: &MumbleIntegration{Server: "m"}},
+			Integrations:    Integrations{Mumble: &MumbleIntegration{Channel: "Friends/Gaming"}},
 		},
 		Status: RoomStatus{
 			CreatedAt:   now.DeepCopy(),
@@ -188,7 +188,7 @@ func TestDeepCopyDoesNotAlias(t *testing.T) {
 	}
 	cp.Labels["a"] = "mutated"
 	cp.Spec.AttachSecretRef.Name = "mutated"
-	cp.Spec.Integrations.Mumble.Server = "mutated"
+	cp.Spec.Integrations.Mumble.Channel = "mutated"
 	cp.Status.CreatedAt.Time = cp.Status.CreatedAt.Add(time.Hour)
 	cp.Status.Attachments[0].BroadcastID = "ZZZZZZ"
 	cp.Status.Attachments[0].AttachedAt.Time = cp.Status.Attachments[0].AttachedAt.Add(time.Hour)
@@ -202,7 +202,7 @@ func TestDeepCopyDoesNotAlias(t *testing.T) {
 	if orig.Spec.AttachSecretRef.Name != "s" {
 		t.Error("attachSecretRef aliased")
 	}
-	if orig.Spec.Integrations.Mumble.Server != "m" {
+	if orig.Spec.Integrations.Mumble.Channel != "Friends/Gaming" {
 		t.Error("integrations aliased")
 	}
 	if !orig.Status.CreatedAt.Time.Equal(now.Time) {
@@ -322,5 +322,24 @@ func TestPopAndMaxParticipantsRoundTrip(t *testing.T) {
 	}
 	if fr.MaxParticipants != 120 {
 		t.Errorf("FileRoom.MaxParticipants = %d", fr.MaxParticipants)
+	}
+}
+
+func TestValidateMumble(t *testing.T) {
+	for name, tc := range map[string]struct {
+		m  *MumbleIntegration
+		ok bool
+	}{
+		"none":              {nil, true},
+		"root":              {&MumbleIntegration{}, true},
+		"path":              {&MumbleIntegration{Channel: "Friends/Gaming"}, true},
+		"temporary":         {&MumbleIntegration{Temporary: true}, true},
+		"temporary w/ path": {&MumbleIntegration{Temporary: true, Channel: "x"}, false},
+		"control char":      {&MumbleIntegration{Channel: "a\nb"}, false},
+		"too long":          {&MumbleIntegration{Channel: strings.Repeat("x", MaxMumbleChannelLen+1)}, false},
+	} {
+		if err := ValidateMumble(tc.m); (err == nil) != tc.ok {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }

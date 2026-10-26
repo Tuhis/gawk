@@ -115,6 +115,21 @@ export interface Room {
    * screened, the default.
    */
   screening?: RoomScreening;
+  /**
+   * The Room CR's `spec.integrations.mumble` (R79, docs/80 D13): the room's
+   * voice channel. Absent means the room has no voice.
+   */
+  mumble?: RoomMumble;
+}
+
+/**
+ * A room's Mumble voice channel (docs/80 D13). A static room names an
+ * existing channel as a "/"-separated path below the root (empty or absent:
+ * the root); a dynamic room created with voice has `temporary: true`.
+ */
+export interface RoomMumble {
+  channel?: string;
+  temporary?: boolean;
 }
 
 /**
@@ -129,6 +144,8 @@ export interface CreateRoomRequest {
   displayName?: string;
   maxBroadcasts?: number;
   withAttachSecret?: boolean;
+  /** R79: voice on an existing channel; never `temporary` for a static room. */
+  mumble?: RoomMumble;
 }
 
 /**

@@ -12,8 +12,8 @@
 //! EXCEPT for the two forward-compatibility seams docs/44 §4.11 reserves on
 //! purpose: an unknown RoomEvent kind or RoomCommand kind parses to
 //! [`WireError::UnknownRoomKind`] with the header fields filled in so a reader
-//! can skip the record (chat 0x40–0x4F and voice 0x50–0x5F are the reserved
-//! sub-ranges), and the capability bitmaps are the advertise/request mechanism
+//! can skip the record (chat 0x40–0x4F is reserved; voice is 0x50–0x5F, of
+//! which R79 allocates 0x50 and 0x51), and the capability bitmaps are the advertise/request mechanism
 //! for those later features.
 //!
 //! Borrowing: nicknames, labels, codes, messages and tokens borrow the input
@@ -64,6 +64,23 @@
 //!     RoomEnding:        uint8 reason (ROOM_END_REASON_*)
 //!     CommandRejected:   uint8 command kind, uint8 reason
 //!                        (ROOM_REJECT_*), uint8 msgLen + message
+//!     VoiceTicket (R79): uint16 urlLen + bridge URL (absolute https),
+//!                        uint16 ticketLen + ticket (opaque here)
+//!     VoiceRosterUpdated (R79): uint8 flags (ROOM_VOICE_ROSTER_FLAG_*),
+//!                        uint16 count, then that many VoiceRosterEntry
+//!                        records
+//!
+//!   VoiceRosterEntry record:
+//!     uint32 session (Mumble session ID), uint8 kind (ROOM_VOICE_KIND_*),
+//!     uint16 participantID (0 for a native Mumble user), uint8 flags
+//!     (ROOM_VOICE_USER_*), uint8 nameLen + Mumble name
+//!
+//!   The two voice events are OUT OF SEQUENCE, like CommandRejected: they
+//!   carry the room's CURRENT seq without advancing it, because the relay
+//!   sends them only to participants that asked for ROOM_CAP_VOICE (a
+//!   VoiceTicket only to the one that asked for it). A participant that did
+//!   not ask never sees them, so they must not occupy a sequence number it
+//!   would read as a gap. Older clients skip both as unknown kinds.
 //!
 //! 0x16 RoomCommand (client → relay):
 //!   byte 2   uint8 kind          ROOM_COMMAND_* kind
@@ -73,11 +90,13 @@
 //!     Detach:      uint8 idLen + broadcast ID
 //!     SetNickname: uint8 nickLen + nickname
 //!     EndRoom, Resync: no payload
+//!     VoiceJoin (R79): no payload
 //! ```
 
 use crate::error::WireError;
 use crate::{
-    BROADCAST_ID_ALPHABET, TYPE_ROOM_COMMAND, TYPE_ROOM_EVENT, TYPE_ROOM_HELLO, TYPE_ROOM_STATE,
+    BROADCAST_ID_ALPHABET, MAX_VOICE_NAME_LEN, MAX_VOICE_ROSTER_ENTRIES, MAX_VOICE_TICKET_LEN,
+    MAX_VOICE_URL_LEN, TYPE_ROOM_COMMAND, TYPE_ROOM_EVENT, TYPE_ROOM_HELLO, TYPE_ROOM_STATE,
     VERSION,
 };
 
@@ -130,8 +149,12 @@ pub const ROOM_CLIENT_WEB_BROADCASTER: u8 = 1;
 pub const ROOM_CLIENT_NATIVE: u8 = 2;
 const ROOM_CLIENT_KIND_MAX: u8 = ROOM_CLIENT_NATIVE;
 
-// Room capability bits (RoomHello wantCaps, RoomState caps). Both reserved
-// for docs/44 §4.11's integrations; a v1 room advertises none.
+// Room capability bits (RoomHello wantCaps, RoomState caps), docs/44
+// §4.11's integration hooks. Chat is still reserved. Voice is R79 (docs/80):
+// a room advertises ROOM_CAP_VOICE while it is voice-live on a relay with a
+// bridge configured, and a client that sets it in wantCaps receives the
+// voice events (VoiceRosterUpdated) and may send VoiceJoin. The native
+// clients do not implement voice (docs/80 OD11) and never ask for it.
 pub const ROOM_CAP_CHAT: u8 = 0x01;
 pub const ROOM_CAP_VOICE: u8 = 0x02;
 const ROOM_CAP_MASK: u8 = ROOM_CAP_CHAT | ROOM_CAP_VOICE;
@@ -163,8 +186,9 @@ pub const ROOM_PARTICIPANT_FLAG_STREAMING: u8 = 0x02;
 const ROOM_PARTICIPANT_FLAG_MASK: u8 =
     ROOM_PARTICIPANT_FLAG_SPEAKING | ROOM_PARTICIPANT_FLAG_STREAMING;
 
-// RoomEvent kinds. 0x40–0x4F (chat) and 0x50–0x5F (voice) are reserved; the
-// parser returns UnknownRoomKind for any kind it does not know.
+// RoomEvent kinds. 0x40–0x4F (chat) is reserved and 0x50–0x5F is voice (R79
+// allocates 0x50 and 0x51); the parser returns UnknownRoomKind for any kind
+// it does not know.
 pub const ROOM_EVENT_PARTICIPANT_JOINED: u8 = 0x01;
 pub const ROOM_EVENT_PARTICIPANT_LEFT: u8 = 0x02;
 pub const ROOM_EVENT_PARTICIPANT_UPDATED: u8 = 0x03;
@@ -173,6 +197,15 @@ pub const ROOM_EVENT_ATTACHMENT_REMOVED: u8 = 0x11;
 pub const ROOM_EVENT_ATTACHMENT_UPDATED: u8 = 0x12;
 pub const ROOM_EVENT_ROOM_ENDING: u8 = 0x20;
 pub const ROOM_EVENT_COMMAND_REJECTED: u8 = 0x30;
+/// Answers one participant's VoiceJoin (R79, docs/80 D5): where the bridge is
+/// and the ticket that opens a voice session there. Out of sequence (see the
+/// module layout comment).
+pub const ROOM_EVENT_VOICE_TICKET: u8 = 0x50;
+/// The room's whole voice roster (R79, docs/80 D15): who is in the Mumble
+/// channel, native and bridged. A snapshot, replace never merge. Sent after
+/// every RoomState and on every change, to participants that asked for
+/// ROOM_CAP_VOICE. Out of sequence.
+pub const ROOM_EVENT_VOICE_ROSTER_UPDATED: u8 = 0x51;
 
 // RoomCommand kinds. Same reserved sub-ranges as events.
 pub const ROOM_COMMAND_ATTACH: u8 = 0x01;
@@ -180,6 +213,36 @@ pub const ROOM_COMMAND_DETACH: u8 = 0x02;
 pub const ROOM_COMMAND_SET_NICKNAME: u8 = 0x03;
 pub const ROOM_COMMAND_END_ROOM: u8 = 0x04;
 pub const ROOM_COMMAND_RESYNC: u8 = 0x05;
+/// Asks for a voice ticket (R79, docs/80 D5). Answered by a VoiceTicket
+/// event, or a CommandRejected: Unsupported when the room has no voice,
+/// Limit at -voice-max-users-per-room, Unavailable while the room's Mumble
+/// channel is not reachable.
+pub const ROOM_COMMAND_VOICE_JOIN: u8 = 0x50;
+
+// VoiceRosterUpdated flags (R79).
+/// Set while the bridge watches the room's Mumble channel (the observer is
+/// connected and in it). Clear means voice is unavailable right now; the
+/// roster is then empty.
+pub const ROOM_VOICE_ROSTER_FLAG_AVAILABLE: u8 = 0x01;
+const ROOM_VOICE_ROSTER_FLAG_MASK: u8 = ROOM_VOICE_ROSTER_FLAG_AVAILABLE;
+
+// Voice roster entry kinds (R79).
+/// A native Mumble user (not a participant).
+pub const ROOM_VOICE_KIND_MUMBLE: u8 = 0;
+/// A bridged gawk participant; `participant_id` says which, and the roster
+/// shows its gawk nickname.
+pub const ROOM_VOICE_KIND_GAWK: u8 = 1;
+const ROOM_VOICE_KIND_MAX: u8 = ROOM_VOICE_KIND_GAWK;
+
+// Voice roster entry flags (R79).
+pub const ROOM_VOICE_USER_SELF_MUTE: u8 = 0x01;
+pub const ROOM_VOICE_USER_SELF_DEAF: u8 = 0x02;
+/// Server mute.
+pub const ROOM_VOICE_USER_MUTE: u8 = 0x04;
+/// Server deafen.
+pub const ROOM_VOICE_USER_DEAF: u8 = 0x08;
+pub const ROOM_VOICE_USER_SUPPRESSED: u8 = 0x10;
+const ROOM_VOICE_USER_FLAG_MASK: u8 = 0x1f;
 
 // RoomEndReason values (RoomEvent.RoomEnding).
 pub const ROOM_END_REASON_EMPTY: u8 = 1;
@@ -295,6 +358,28 @@ pub struct RoomEvent<'a> {
     pub command: u8,
     /// The human-readable rejection detail (CommandRejected).
     pub message: &'a str,
+    /// A VoiceTicket event's bridge URL (R79).
+    pub voice_url: &'a str,
+    /// A VoiceTicket event's ticket (R79); borrows the input on parse.
+    pub voice_ticket: &'a [u8],
+    /// A VoiceRosterUpdated event's `ROOM_VOICE_ROSTER_FLAG_*` bitmap (R79).
+    pub voice_flags: u8,
+    /// A VoiceRosterUpdated event's entries (R79).
+    pub voice_roster: Vec<VoiceRosterEntry<'a>>,
+}
+
+/// One person in a room's Mumble channel (R79, VoiceRosterUpdated).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct VoiceRosterEntry<'a> {
+    /// The Mumble session ID.
+    pub session: u32,
+    /// One of the `ROOM_VOICE_KIND_*` constants.
+    pub kind: u8,
+    /// The bridged participant's ID; 0 for a native Mumble user.
+    pub participant_id: u16,
+    /// `ROOM_VOICE_USER_*` bitmap.
+    pub flags: u8,
+    pub name: &'a str,
 }
 
 /// The parsed contents of a RoomCommand record.
@@ -348,7 +433,7 @@ pub fn parse_room_record_length(hdr: &[u8]) -> Result<usize, WireError> {
 
 // --- shared field helpers ----------------------------------------------------
 
-fn check_prefix(msg: &[u8], msg_type: u8, min_len: usize) -> Result<(), WireError> {
+pub(crate) fn check_prefix(msg: &[u8], msg_type: u8, min_len: usize) -> Result<(), WireError> {
     if msg.len() < min_len {
         return Err(WireError::ShortDatagram {
             len: msg.len(),
@@ -388,14 +473,14 @@ pub fn normalize_broadcast_id(raw: &[u8]) -> Option<String> {
 
 /// A bounds-checked cursor over one record. Every read reports an overrun
 /// through the record's sentinel error rather than panicking.
-struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     buf: &'a [u8],
     off: usize,
     sentinel: WireError,
 }
 
 impl<'a> Reader<'a> {
-    fn new(buf: &'a [u8], sentinel: WireError) -> Self {
+    pub(crate) fn new(buf: &'a [u8], sentinel: WireError) -> Self {
         Reader {
             buf,
             off: 2,
@@ -403,7 +488,7 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn fail<T>(&self) -> Result<T, WireError> {
+    pub(crate) fn fail<T>(&self) -> Result<T, WireError> {
         Err(self.sentinel.clone())
     }
 
@@ -416,16 +501,16 @@ impl<'a> Reader<'a> {
         Ok(v)
     }
 
-    fn u8(&mut self) -> Result<u8, WireError> {
+    pub(crate) fn u8(&mut self) -> Result<u8, WireError> {
         Ok(self.take(1)?[0])
     }
 
-    fn u16(&mut self) -> Result<u16, WireError> {
+    pub(crate) fn u16(&mut self) -> Result<u16, WireError> {
         let b = self.take(2)?;
         Ok(u16::from_be_bytes([b[0], b[1]]))
     }
 
-    fn u32(&mut self) -> Result<u32, WireError> {
+    pub(crate) fn u32(&mut self) -> Result<u32, WireError> {
         let b = self.take(4)?;
         Ok(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
     }
@@ -439,8 +524,40 @@ impl<'a> Reader<'a> {
         self.take(n)
     }
 
+    /// Reads a uint16-length-prefixed byte field, bounded by `max` (R79's
+    /// VoiceTicket event: the bridge URL and the ticket).
+    fn bytes16(&mut self, max: usize) -> Result<&'a [u8], WireError> {
+        let n = self.u16()? as usize;
+        if n > max {
+            return self.fail();
+        }
+        self.take(n)
+    }
+
+    /// Reads one voice roster entry (R79, docs/80 D15).
+    fn voice_roster_entry(&mut self) -> Result<VoiceRosterEntry<'a>, WireError> {
+        let session = self.u32()?;
+        let kind = self.u8()?;
+        if kind > ROOM_VOICE_KIND_MAX {
+            return self.fail();
+        }
+        let participant_id = self.u16()?;
+        let flags = self.u8()?;
+        if flags & !ROOM_VOICE_USER_FLAG_MASK != 0 {
+            return self.fail();
+        }
+        let name = self.str8(MAX_VOICE_NAME_LEN)?;
+        Ok(VoiceRosterEntry {
+            session,
+            kind,
+            participant_id,
+            flags,
+            name,
+        })
+    }
+
     /// Reads a uint8-length-prefixed UTF-8 string field, bounded by `max`.
-    fn str8(&mut self, max: usize) -> Result<&'a str, WireError> {
+    pub(crate) fn str8(&mut self, max: usize) -> Result<&'a str, WireError> {
         let b = self.bytes8(max)?;
         match std::str::from_utf8(b) {
             Ok(s) => Ok(s),
@@ -495,7 +612,7 @@ impl<'a> Reader<'a> {
     }
 
     /// Asserts the record was consumed exactly (house strictness).
-    fn done(&self) -> Result<(), WireError> {
+    pub(crate) fn done(&self) -> Result<(), WireError> {
         if self.off != self.buf.len() {
             return self.fail();
         }
@@ -503,7 +620,7 @@ impl<'a> Reader<'a> {
     }
 }
 
-fn append_str8(
+pub(crate) fn append_str8(
     dst: &mut Vec<u8>,
     s: &str,
     max: usize,
@@ -745,12 +862,59 @@ pub fn append_room_event(dst: &mut Vec<u8>, e: &RoomEvent<'_>) -> Result<(), Wir
                 WireError::BadRoomEvent,
             )
         }
+        ROOM_EVENT_VOICE_TICKET => append_voice_ticket(dst, e),
+        ROOM_EVENT_VOICE_ROSTER_UPDATED => append_voice_roster(dst, e),
         kind => Err(WireError::UnknownRoomKind { seq: e.seq, kind }),
     };
+    // Every kind is bounded by one record (R79 added the check on the Go
+    // side with the roster, the first event that could reach it).
+    let res = res.and_then(|()| {
+        if dst.len() - start > MAX_ROOM_RECORD_SIZE {
+            Err(WireError::BadRoomEvent)
+        } else {
+            Ok(())
+        }
+    });
     if res.is_err() {
         dst.truncate(start);
     }
     res
+}
+
+fn append_voice_ticket(dst: &mut Vec<u8>, e: &RoomEvent<'_>) -> Result<(), WireError> {
+    if e.voice_url.is_empty()
+        || e.voice_url.len() > MAX_VOICE_URL_LEN
+        || e.voice_ticket.is_empty()
+        || e.voice_ticket.len() > MAX_VOICE_TICKET_LEN
+    {
+        return Err(WireError::BadRoomEvent);
+    }
+    dst.extend_from_slice(&(e.voice_url.len() as u16).to_be_bytes());
+    dst.extend_from_slice(e.voice_url.as_bytes());
+    dst.extend_from_slice(&(e.voice_ticket.len() as u16).to_be_bytes());
+    dst.extend_from_slice(e.voice_ticket);
+    Ok(())
+}
+
+fn append_voice_roster(dst: &mut Vec<u8>, e: &RoomEvent<'_>) -> Result<(), WireError> {
+    if e.voice_flags & !ROOM_VOICE_ROSTER_FLAG_MASK != 0
+        || e.voice_roster.len() > MAX_VOICE_ROSTER_ENTRIES
+    {
+        return Err(WireError::BadRoomEvent);
+    }
+    dst.push(e.voice_flags);
+    dst.extend_from_slice(&(e.voice_roster.len() as u16).to_be_bytes());
+    for v in &e.voice_roster {
+        if v.kind > ROOM_VOICE_KIND_MAX || v.flags & !ROOM_VOICE_USER_FLAG_MASK != 0 {
+            return Err(WireError::BadRoomEvent);
+        }
+        dst.extend_from_slice(&v.session.to_be_bytes());
+        dst.push(v.kind);
+        dst.extend_from_slice(&v.participant_id.to_be_bytes());
+        dst.push(v.flags);
+        append_str8(dst, v.name, MAX_VOICE_NAME_LEN, WireError::BadRoomEvent)?;
+    }
+    Ok(())
 }
 
 /// Parses a RoomEvent message. An unknown kind (including the reserved
@@ -788,6 +952,36 @@ pub fn parse_room_event(msg: &[u8]) -> Result<RoomEvent<'_>, WireError> {
             e.reason = r.u8()?;
             e.message = r.str8(MAX_ROOM_REJECT_MESSAGE_LEN)?;
         }
+        ROOM_EVENT_VOICE_TICKET => {
+            let url = r.bytes16(MAX_VOICE_URL_LEN)?;
+            if url.is_empty() {
+                return r.fail();
+            }
+            e.voice_url = match std::str::from_utf8(url) {
+                Ok(s) => s,
+                Err(_) => return r.fail(),
+            };
+            e.voice_ticket = r.bytes16(MAX_VOICE_TICKET_LEN)?;
+            if e.voice_ticket.is_empty() {
+                return r.fail();
+            }
+        }
+        ROOM_EVENT_VOICE_ROSTER_UPDATED => {
+            e.voice_flags = r.u8()?;
+            if e.voice_flags & !ROOM_VOICE_ROSTER_FLAG_MASK != 0 {
+                return r.fail();
+            }
+            let n = r.u16()? as usize;
+            if n > MAX_VOICE_ROSTER_ENTRIES {
+                return r.fail();
+            }
+            // Each entry is at least 9 bytes; never pre-size past what the
+            // record can hold from an untrusted count.
+            e.voice_roster = Vec::with_capacity(n.min(msg.len() / 9));
+            for _ in 0..n {
+                e.voice_roster.push(r.voice_roster_entry()?);
+            }
+        }
         kind => return Err(WireError::UnknownRoomKind { seq, kind }),
     }
     r.done()?;
@@ -822,7 +1016,7 @@ pub fn append_room_command(dst: &mut Vec<u8>, c: &RoomCommand<'_>) -> Result<(),
             MAX_ROOM_NICKNAME_LEN,
             WireError::BadRoomCommand,
         ),
-        ROOM_COMMAND_END_ROOM | ROOM_COMMAND_RESYNC => Ok(()),
+        ROOM_COMMAND_END_ROOM | ROOM_COMMAND_RESYNC | ROOM_COMMAND_VOICE_JOIN => Ok(()),
         kind => Err(WireError::UnknownRoomKind { seq: 0, kind }),
     };
     if res.is_err() {
@@ -858,7 +1052,7 @@ pub fn parse_room_command(msg: &[u8]) -> Result<RoomCommand<'_>, WireError> {
         ROOM_COMMAND_SET_NICKNAME => {
             c.nickname = r.str8(MAX_ROOM_NICKNAME_LEN)?;
         }
-        ROOM_COMMAND_END_ROOM | ROOM_COMMAND_RESYNC => {}
+        ROOM_COMMAND_END_ROOM | ROOM_COMMAND_RESYNC | ROOM_COMMAND_VOICE_JOIN => {}
         kind => return Err(WireError::UnknownRoomKind { seq: 0, kind }),
     }
     r.done()?;
