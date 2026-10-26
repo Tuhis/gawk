@@ -139,22 +139,23 @@ A round is requested in two cases. Both share one cap of 3 rounds per PR:
 
 **Track which commit each review covered.** Call it the *marker*:
 
-- **Automatic review with findings:** the `original_commit_id` of the
-  inline comments `claude[bot]` posted in `pulls/<N>/comments`. Ignore
-  people's comments. Runs can overlap, so if two posted, take the older
-  SHA.
-- **Automatic review with a clean summary:** the `headSha` of the
-  `claude-review` run whose `createdAt`…`updatedAt` window contains the
-  summary's `created_at` (`gh run list --workflow claude-code-review.yml
-  --branch <branch> --json headSha,createdAt,updatedAt`). Both times come
-  from GitHub, so this is safe.
+- **Automatic review**, with findings or with a clean summary: the
+  `headSha` of the `claude-review` run whose `createdAt`…`updatedAt` window
+  contains the `created_at` of what it posted (`gh run list --workflow
+  claude-code-review.yml --branch <branch> --json
+  headSha,createdAt,updatedAt`). If windows overlap, take the older SHA.
+  Don't use an inline comment's `original_commit_id`. It records the head
+  when the comment was posted, not the code the job checked out.
 - **No Claude review comment on the PR at all:** nothing is reviewed. The
   check can go green, or be skipped, without posting anything. Wait until
   `claude-review` has finished. If it posted nothing, round 1 is a full
   review of the PR.
-- **A round:** the head SHA when you posted the request, so name it in the
-  comment. If the `@claude` job itself pushes a commit, that commit comes
-  after the marker and is unreviewed.
+- **A round:** only the SHA named in the request, even if its inline
+  comments carry a later `original_commit_id`. If the `@claude` job itself
+  pushes a commit, that commit comes after the marker and is unreviewed.
+- **After a rebase:** §4 moves the marker. Record the move in a PR comment
+  ("reviewed marker → `<sha>` after rebase, per range-diff") so it
+  survives a context reset.
 
 The unreviewed commits are `git log --oneline <marker>..HEAD`. Don't compare
 commit dates with comment times, because a commit can be made before a
@@ -178,16 +179,17 @@ On a large PR with a clean automatic review, ask for a full review of the
 PR in round 1, instead of "since your last review".
 
 - **At most 3 rounds.** Count the `claude[bot]` replies whose header is
-  "**Claude finished @<the account you post as>'s task …**". Don't count
-  your own comments, because a retry would count twice, and don't count a
-  person's own `@claude` question. A reply counts only if it actually
+  "**Claude finished @<the account you post as>'s task …**" and that answer
+  a comment starting `@claude please review again (round`. Don't count
+  your own comments, because a retry would count twice, and don't count
+  any other `@claude` question, yours or a person's. A reply counts only if it actually
   reviewed the requested range. One that says it couldn't (a failed
   checkout, out of turns) is a failed run. It is neither a round nor clean.
   Counting on the PR survives a context reset.
 - Wait for the "**Claude finished …**" reply. If its job failed or it never
   posts within ~20 minutes of the run finishing, check the job with
   `gh run view`. A failed run doesn't use up a round, so retry it once by
-  posting the same round's comment again. If the retry fails too, stop and
+  posting the same round's comment again, with the current head SHA. If the retry fails too, stop and
   hand back.
 - Handle the round's findings as in §2, then request the next round.
 - **Stop early** when a round leaves nothing to push. That means it reports
@@ -209,8 +211,9 @@ Merge only when **all** of these hold for the **current head SHA**:
 - The one exception is a reached 3-round cap. The commits after round 3
   then merge unreviewed, and the final report names them. Round 3's fixed
   findings count as handled once each has a reply naming its commit.
-- On a large PR, the `@claude` rounds are finished: a clean round, or 3
-  rounds with round 3's findings handled as in §2.
+- On a large PR, the `@claude` rounds are finished: a round that left
+  nothing to push (§3), or 3 rounds with round 3's findings handled as in
+  §2.
 - No review thread is unresolved, and no person's comment is unanswered.
   Every `@claude` report has a reply that covers each of its points.
 - The PR title is still a correct Conventional Commit for the final diff.
@@ -218,7 +221,9 @@ Merge only when **all** of these hold for the **current head SHA**:
 - The PR is mergeable. If it conflicts, rebase on `origin/main`,
   force-push with `--force-with-lease`, and go back to §2. The marker is no
   longer an ancestor of `HEAD`, so compare the two versions with
-  `git range-diff <old merge-base>..<marker> origin/main..HEAD`. If the old
+  `git range-diff <old merge-base>..<marker> origin/main..HEAD`. The old
+  merge-base is `git merge-base <marker> origin/main`, which still finds
+  the old fork point after `origin/main` moves. If the old
   SHA is missing locally, run `git fetch origin <sha>` first. Commits stay
   reviewed only up to the **first changed commit**, because a later commit
   that replays identically still sits on top of the change. Move the marker
@@ -254,5 +259,11 @@ finding).
   repeats.
 - A reviewer's finding and `CLAUDE.md` or a design doc disagree, and you
   can't tell which one is right.
+
+The steps above also stop and hand back in these cases:
+
+- An `@claude` round's retry fails too (§3).
+- The review-thread query reports `hasNextPage` (§2).
+- The round cap is used up and a rebase changed reviewed code (§4).
 
 Say exactly what is blocking and leave the PR open.
