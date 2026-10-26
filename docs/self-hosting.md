@@ -708,7 +708,8 @@ Keycloak, concretely:
    access grants* off. Valid redirect URI: `https://admin.gawk.example.com/*`.
    Web origins: `https://admin.gawk.example.com`.
 3. On that client, create a **client role** named `operator`, and assign it to
-   the users who may act. (`flagger` is reserved for R40 and unused today.)
+   the users who may act. (`flagger`, R40's content-sampler role, goes to a
+   service identity rather than a person — [§13](#13-automatic-content-screening-r40).)
 4. Client scopes → make sure the client's own audience lands in `aud`. With
    Keycloak's defaults, setting `oidc.audience` to the client ID is right.
 5. **Access token lifespan: 5–15 minutes.** Realm settings → Tokens.
