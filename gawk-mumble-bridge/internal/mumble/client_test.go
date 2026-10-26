@@ -273,7 +273,10 @@ func TestAudioPassesThroughUndecoded(t *testing.T) {
 			t.Fatalf("packet %d: %+v", i, p)
 		}
 	}
-	if extra.Dropped() != 1 || extra.Len() != 2 {
+	// The read loop pushes to a.Audio() before extra, so the last packet can
+	// be popped above before it reaches extra (CI, PR #595): wait for it.
+	eventually(t, "the stalled listener to drop its oldest packet", func() bool { return extra.Dropped() == 1 })
+	if extra.Len() != 2 {
 		t.Fatalf("stalled listener: len %d dropped %d", extra.Len(), extra.Dropped())
 	}
 	if st := a.Stats(); st.AudioReceived != 3 {
