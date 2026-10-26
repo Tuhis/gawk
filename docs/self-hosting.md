@@ -1956,10 +1956,11 @@ the channel. It is three things working together: your own Mumble server
 
   Both charts read these into environment variables, so a changed value
   reaches the pods only on a rollout. After rotating one, roll the bridge
-  (and, for `psk` or `ticketSecret`, the relay too): `kubectl rollout
-  restart`, or a changed `podAnnotations` value where a GitOps tool owns
-  the release. Rotating `mumbleToken` means adding the new `#<token>`
-  entries before the rollout and removing the old ones after it.
+  (`kubectl rollout restart`, or a changed `podAnnotations` value where a
+  GitOps tool owns the release) and, for `psk` or `ticketSecret`, the relay
+  too (`kubectl rollout restart`; its chart has no `podAnnotations`).
+  Rotating `mumbleToken` means adding the new `#<token>` entries before the
+  rollout and removing the old ones after it.
 
 ### 15.2 Install, bridge first
 
