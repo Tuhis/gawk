@@ -2,26 +2,26 @@
   "components": {
     "gawk-admin": {
       "component": "gawk-admin",
-      "covered": 4853,
+      "covered": 4919,
       "label": "admin",
-      "pct": 80.6,
-      "total": 6023,
+      "pct": 80.7,
+      "total": 6097,
       "unit": "statements"
     },
     "gawk-admin-ui": {
       "component": "gawk-admin-ui",
-      "covered": 1611,
+      "covered": 1647,
       "label": "admin-ui",
-      "pct": 91.0,
-      "total": 1770,
+      "pct": 91.2,
+      "total": 1806,
       "unit": "lines"
     },
     "gawk-app": {
       "component": "gawk-app",
-      "covered": 9474,
+      "covered": 10535,
       "label": "app",
-      "pct": 84.6,
-      "total": 11192,
+      "pct": 85.7,
+      "total": 12295,
       "unit": "lines"
     },
     "gawk-broadcast-desktop": {
@@ -32,12 +32,20 @@
       "total": 27537,
       "unit": "lines"
     },
+    "gawk-mumble-bridge": {
+      "component": "gawk-mumble-bridge",
+      "covered": 1814,
+      "label": "voice bridge",
+      "pct": 86.3,
+      "total": 2103,
+      "unit": "statements"
+    },
     "gawk-server": {
       "component": "gawk-server",
-      "covered": 16379,
+      "covered": 17342,
       "label": "relay",
-      "pct": 85.4,
-      "total": 19171,
+      "pct": 85.5,
+      "total": 20274,
       "unit": "statements"
     },
     "gawk-telemetry": {
