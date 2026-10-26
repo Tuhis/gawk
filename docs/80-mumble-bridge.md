@@ -340,7 +340,7 @@ Bridge (`gawk-mumble-bridge`, flags and `GAWK_*` envs and the chart):
   pod shares its address, so the bridge keeps a per-pod name registry and
   checks the server's user list before it dials; a ghosted connection is
   closed with 4016.
-  The **observers** share one name family (`gawk`, `gawk 2`, …) across every
+  The **observers** share one name family (`gawkBridgeBot`, `gawkBridgeBot 2`, …) across every
   voice room on the server, so their ladder is not D9's ten but 1000; a
   ten-name ladder capped a server at ten voice rooms (found in review).
 - **Certificates**: murmur refuses to create a temporary channel for a
@@ -469,7 +469,8 @@ self-signed certificate pinned (`certSha256`).
 | Phones, a kick from each side, a rollout mid-call, latency against §12.1 | Not yet run. |
 
 Two observer names showed the D9 clash suffix working on a live server: the
-static room's observer is `gawk`, the dynamic room's `gawk 2`.
+static room's observer is `gawk`, the dynamic room's `gawk 2` (the names
+before OD33's rename to `gawkBridgeBot`).
 
 What the deployment taught, all operator-side (now in self-hosting §15.1
 and `docs/gotchas.md`):
