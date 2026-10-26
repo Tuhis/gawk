@@ -865,8 +865,9 @@ async fn handle_record(
                 Err(wire::WireError::UnknownRoomKind { seq, .. }) => (seq, None),
                 Err(_) => return Ok(None),
             };
-            // Gap detection (docs/44 §4.6): CommandRejected carries the
-            // current seq without advancing it, so it never reads as a gap.
+            // Gap detection (docs/44 §4.6): CommandRejected and R79's voice
+            // events (VoiceTicket, VoiceRosterUpdated) carry the current seq
+            // without advancing it, so they never read as a gap.
             if let Some(last) = local.last_seq
                 && seq > last.wrapping_add(1)
             {
@@ -942,6 +943,10 @@ fn handle_event(
             }
             return Ok(None);
         }
+        // R79 voice (docs/80 OD11): the native clients implement no voice
+        // and never set ROOM_CAP_VOICE, so the relay sends them neither
+        // event; should one arrive, it is skipped and changes nothing.
+        wire::ROOM_EVENT_VOICE_TICKET | wire::ROOM_EVENT_VOICE_ROSTER_UPDATED => return Ok(None),
         _ => return Ok(None),
     }
     let _ = ctx
@@ -1592,6 +1597,153 @@ mod tests {
         );
         h.stop.send(true).unwrap();
         let _ = h.task.await;
+    }
+
+    /// R79 (docs/80 OD11, §11.1 C2): this client implements no voice and
+    /// never asks for it, but a voice room must not break it. A RoomState
+    /// advertising ROOM_CAP_VOICE is an ordinary snapshot, and the
+    /// out-of-sequence voice events (VoiceRosterUpdated, VoiceTicket), which
+    /// carry the CURRENT seq without advancing it, are skipped: no resync, no
+    /// roster change. The relay sends them only to clients that ask, so this
+    /// guards against a relay bug or a future change.
+    #[tokio::test]
+    async fn a_voice_room_is_joined_and_its_voice_events_skipped_without_a_resync() {
+        let (conn, mut relay) = scripted();
+        let mut h = Harness::start(join_cfg(), vec![Ok(conn)]);
+        let hello = wire::parse_room_hello(&relay.next().await)
+            .unwrap()
+            .want_caps;
+        assert_eq!(hello, 0, "a native client never asks for voice");
+        relay.send_state(&wire::RoomState {
+            caps: wire::ROOM_CAP_VOICE,
+            ..snapshot(10, vec![])
+        });
+        match h.event().await {
+            EngineEvent::RoomState(s) => {
+                assert_eq!(s.code, "lan-party");
+                assert!(s.attach_ok);
+            }
+            other => panic!("{other:?}"),
+        }
+        relay.send_event(&wire::RoomEvent {
+            seq: 10,
+            kind: wire::ROOM_EVENT_VOICE_ROSTER_UPDATED,
+            voice_flags: wire::ROOM_VOICE_ROSTER_FLAG_AVAILABLE,
+            voice_roster: vec![wire::VoiceRosterEntry {
+                session: 3,
+                kind: wire::ROOM_VOICE_KIND_MUMBLE,
+                name: "bob",
+                ..wire::VoiceRosterEntry::default()
+            }],
+            ..wire::RoomEvent::default()
+        });
+        relay.send_event(&wire::RoomEvent {
+            seq: 10,
+            kind: wire::ROOM_EVENT_VOICE_TICKET,
+            voice_url: "https://v.example/voice",
+            voice_ticket: &[0xaa, 0xbb],
+            ..wire::RoomEvent::default()
+        });
+        // The next delta is 11: in sequence, so neither voice event moved
+        // the seq, and the first state we hear is this one (the voice events
+        // produced none).
+        relay.send_event(&wire::RoomEvent {
+            seq: 11,
+            kind: wire::ROOM_EVENT_PARTICIPANT_JOINED,
+            participant: wire::RoomParticipant {
+                id: 9,
+                nickname: "Mika",
+                ..wire::RoomParticipant::default()
+            },
+            ..wire::RoomEvent::default()
+        });
+        match h.event().await {
+            EngineEvent::RoomState(s) => assert_eq!(s.participants, 1),
+            other => panic!("{other:?}"),
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), relay.from_client.recv())
+                .await
+                .is_err(),
+            "no resync (and no command at all) for a voice event"
+        );
+        h.stop.send(true).unwrap();
+        let _ = h.task.await;
+    }
+
+    /// R79: the same for a viewer's room session, the path the iOS app's
+    /// RoomWatcher runs (gawk-ios/rust/crates/core/src/rooms.rs drives
+    /// `watch_room_with_requests`). A voice room is watched; its voice
+    /// events at the current seq change nothing and cause no resync.
+    #[tokio::test]
+    async fn a_watched_voice_room_skips_its_voice_events_without_a_resync() {
+        let (conn, mut relay) = scripted();
+        let dialer = Arc::new(FakeDialer {
+            conns: Mutex::new(VecDeque::from([Ok(conn)])),
+            urls: Mutex::new(Vec::new()),
+        });
+        let (events_tx, mut events) = mpsc::unbounded_channel();
+        let (stop, stop_rx) = watch::channel(false);
+        let (_requests, requests_rx) = mpsc::unbounded_channel();
+        let cfg = RoomConfig {
+            relay_url: "https://relay.example:4433".into(),
+            code: "lan-party".into(),
+            ..RoomConfig::default()
+        };
+        let task = tokio::spawn(watch_room_with_requests(
+            cfg,
+            dialer,
+            events_tx,
+            stop_rx,
+            requests_rx,
+        ));
+        let hello = relay.next().await;
+        let hello = wire::parse_room_hello(&hello).unwrap();
+        assert_eq!(hello.want_caps, 0, "a native viewer never asks for voice");
+        relay.send_state(&wire::RoomState {
+            caps: wire::ROOM_CAP_VOICE,
+            ..snapshot(4, vec![ours(true)])
+        });
+        let mut next =
+            async || match tokio::time::timeout(Duration::from_secs(5), events.recv()).await {
+                Ok(Some(EngineEvent::RoomState(s))) => s,
+                other => panic!("{other:?}"),
+            };
+        assert_eq!(next().await.attachments.len(), 1);
+        relay.send_event(&wire::RoomEvent {
+            seq: 4,
+            kind: wire::ROOM_EVENT_VOICE_ROSTER_UPDATED,
+            ..wire::RoomEvent::default()
+        });
+        relay.send_event(&wire::RoomEvent {
+            seq: 4,
+            kind: wire::ROOM_EVENT_VOICE_TICKET,
+            voice_url: "https://v.example/voice",
+            voice_ticket: &[1],
+            ..wire::RoomEvent::default()
+        });
+        relay.send_event(&wire::RoomEvent {
+            seq: 5,
+            kind: wire::ROOM_EVENT_PARTICIPANT_JOINED,
+            participant: wire::RoomParticipant {
+                id: 9,
+                nickname: "Mika",
+                ..wire::RoomParticipant::default()
+            },
+            ..wire::RoomEvent::default()
+        });
+        assert_eq!(next().await.participants, 1, "only the join changed it");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), relay.from_client.recv())
+                .await
+                .is_err(),
+            "no resync for a voice event"
+        );
+        stop.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("stops")
+            .unwrap();
     }
 
     #[tokio::test]
