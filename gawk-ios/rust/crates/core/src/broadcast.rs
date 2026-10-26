@@ -2312,7 +2312,8 @@ mod live_tests {
             rooms.clone(),
         );
         h.live().await;
-        let hello = wire::parse_room_hello(&relay.next().await).unwrap();
+        let hello_rec = relay.next().await;
+        let hello = wire::parse_room_hello(&hello_rec).unwrap();
         assert_eq!(hello.want_caps, 0, "the iOS app never asks for voice");
 
         relay.send_state(&wire::RoomState {
