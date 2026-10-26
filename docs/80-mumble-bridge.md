@@ -338,6 +338,9 @@ Bridge (`gawk-mumble-bridge`, flags and `GAWK_*` envs and the chart):
   pod shares its address, so the bridge keeps a per-pod name registry and
   checks the server's user list before it dials; a ghosted connection is
   closed with 4016.
+  The **observers** share one name family (`gawk`, `gawk 2`, …) across every
+  voice room on the server, so their ladder is not D9's ten but 1000; a
+  ten-name ladder capped a server at ten voice rooms (found in review).
 - **Certificates**: murmur refuses to create a temporary channel for a
   client without a certificate, so every bridged connection presents a
   fresh self-signed one that is never stored. A Mumble ban of a bridged

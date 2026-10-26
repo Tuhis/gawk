@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -557,4 +558,24 @@ func TestInvalidUsernameFallsBackToSanitized(t *testing.T) {
 		t.Fatalf("name %q", j.Name)
 	}
 	b.waitState(connected)
+}
+
+// Review finding (PR #595): every voice-live room has its own observer and
+// they all share -mumble-observer-name, so D9's ten-name ladder meant a
+// server could hold ten observers and the eleventh voice room never became
+// available. Observers get a ladder as long as the rooms a fleet can hold.
+func TestMoreThanTenVoiceRoomsAllGetAnObserver(t *testing.T) {
+	tb, _, _ := fakeStack(t)
+	const rooms = 14
+	links := make([]*observerLink, 0, rooms)
+	for i := 0; i < rooms; i++ {
+		ol, _, err := dialObserver(t, tb.internal, testPSK, voice.Message{Type: voice.TypeObserve, Code: fmt.Sprintf("room-%d", i)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		links = append(links, ol)
+	}
+	for _, ol := range links {
+		ol.waitRoster(t, func(m voice.Message) bool { return m.Available })
+	}
 }

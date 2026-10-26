@@ -317,7 +317,7 @@ func relayCode(code uint32) uint32 {
 // connect opens the user's Mumble connection and enters the room's channel.
 func (vs *voiceSession) connect(nick string, mute, deaf bool, code string, acc voice.Message) (*mumble.Client, string, uint32, error) {
 	s := vs.s
-	c, name, release, err := s.connectMumble(vs.ctx, MumbleName(s.opts.Mumble.NameTemplate, nick), mute, deaf, audioQueueLen)
+	c, name, release, err := s.connectMumble(vs.ctx, MumbleName(s.opts.Mumble.NameTemplate, nick), maxNameAttempts, mute, deaf, audioQueueLen)
 	if err != nil {
 		return nil, "", 0, err
 	}

@@ -15,8 +15,16 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
-// maxNameAttempts is D9's "up to 10 attempts" per name family.
+// maxNameAttempts is D9's "up to 10 attempts" per name family, for a
+// bridged user: one family per nickname.
 const maxNameAttempts = 10
+
+// maxObserverNameAttempts is the observers' ladder. Every voice-live room
+// has its own observer and all of them share -mumble-observer-name, so the
+// family is as wide as the voice rooms a server holds, not ten (PR #595
+// review). Names this pod already sees are skipped without a dial, so the
+// long ladder costs a dial only where murmur itself refuses a name.
+const maxObserverNameAttempts = 1000
 
 // mumbleFailure is a Mumble-side failure with its D18 reason.
 type mumbleFailure struct {
@@ -125,7 +133,8 @@ func SanitizeUsername(name string) string {
 }
 
 // nameCandidate is D9's sequence for one family: base, "base 2" … up to
-// maxNameAttempts (sep " " for the pretty form, "_" for the sanitized one).
+// the caller's attempt budget (sep " " for the pretty form, "_" for the
+// sanitized one).
 func nameCandidate(base, sep string, i int) string {
 	if i == 0 {
 		return base
@@ -159,7 +168,7 @@ func (s *Server) mumbleConfig(name string) mumble.Config {
 // any connection of this pod sees on the server, are skipped without a dial:
 // murmur does not refuse a second login with the same name from the same
 // address, it disconnects the first one as a ghost.
-func (s *Server) connectMumble(ctx context.Context, base string, mute, deaf bool, audioQueue int) (*mumble.Client, string, func(), error) {
+func (s *Server) connectMumble(ctx context.Context, base string, attempts int, mute, deaf bool, audioQueue int) (*mumble.Client, string, func(), error) {
 	families := []struct{ base, sep string }{{base, " "}, {SanitizeUsername(base), "_"}}
 	var lastErr error
 	for fi, fam := range families {
@@ -167,7 +176,7 @@ func (s *Server) connectMumble(ctx context.Context, base string, mute, deaf bool
 			break // the name was already valid: the rule is not the problem
 		}
 		invalid := false
-		for i := 0; i < maxNameAttempts && !invalid; i++ {
+		for i := 0; i < attempts && !invalid; i++ {
 			name := nameCandidate(fam.base, fam.sep, i)
 			release, ok := s.names.claim(name)
 			if !ok {

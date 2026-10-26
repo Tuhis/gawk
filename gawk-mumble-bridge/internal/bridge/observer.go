@@ -199,7 +199,7 @@ func (ob *observer) observe() error {
 	if ob.room.Temporary && !ob.acquireTemp() {
 		return fail(ReasonTempChannelCap, errors.New("-max-temp-channels reached"))
 	}
-	c, _, release, err := s.connectMumble(ob.ctx, s.opts.Mumble.ObserverName, true, true, 0)
+	c, _, release, err := s.connectMumble(ob.ctx, s.opts.Mumble.ObserverName, maxObserverNameAttempts, true, true, 0)
 	if err != nil {
 		return err
 	}
