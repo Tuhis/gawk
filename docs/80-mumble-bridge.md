@@ -1,10 +1,11 @@
 # R79 — Room voice through a Mumble bridge
 
 **Status**: designed 2026-10-25; **MV0–MV7 implemented 2026-10-26** (§11 is
-the implementation contract, §12 the results). Open: MV0's owner-device rows
+the implementation contract, §12 the results); **MV8's first pass on the
+reference deployment 2026-10-26** (§12.5). Open: MV0's owner-device rows
 (Safari on macOS and iOS, Chrome on Android, echo cancellation) and the
-owner's sign-off on the latency target, then the MV8 pass on the reference
-deployment. Owner decisions taken in the design interview on 2026-10-25 (§2).
+owner's sign-off on the latency target, then the rest of MV8 (phones, a
+kick from each side, a bridge rollout mid-call, latency). Owner decisions taken in the design interview on 2026-10-25 (§2).
 
 **Relationship to earlier work**: docs/44 §4.11 reserved the hooks for
 this: a `voice` room capability, `spec.integrations.mumble` on the `Room`
@@ -449,3 +450,42 @@ Mumble user each), three talking at once for 30 s.
   it. A channel much bigger than this is murmur's limit before it is the
   bridge's, and §7's "per-connection cost" risk stands until MV8 measures
   murmur on its own host.
+
+### 12.5 MV8 — the reference deployment, first pass (2026-10-26)
+
+`gawk-mumble-bridge` 1.0.0 (two pods) and `gawk-server` 0.38.0 (three pods,
+cluster mode) against the deployment's existing murmur 1.6.870, which also
+carries its regular users and bots. The bridge reaches the relay through
+its in-cluster Service and murmur through murmur's ClusterIP, with murmur's
+self-signed certificate pinned (`certSha256`).
+
+| MV8 row | Result |
+|---|---|
+| A static room mapped to an existing channel | ✅ The observer holds the channel from relay start (D12), before anyone opens the room. |
+| Desktop browser ↔ desktop Mumble, both ways | ✅ Owner, desktop browser and desktop Mumble client in the same channel, heard each other. A tab reload rejoined as the same `Name [web]`. |
+| A dynamic room with a temporary channel | ✅ A `?voice=1` room got `gawk <key>` under the operator's parent channel; the browser and the desktop client talked in it; when the room ended the observer left and murmur removed the channel. |
+| A bridge rollout | ✅ Not mid-call: a rollout to pick up a rotated access token; the new pods' observer was back in its channel within seconds. |
+| Phones, a kick from each side, a rollout mid-call, latency against §12.1 | Not yet run. |
+
+Two observer names showed the D9 clash suffix working on a live server: the
+static room's observer is `gawk`, the dynamic room's `gawk 2`.
+
+What the deployment taught, all operator-side (now in self-hosting §15.1
+and `docs/gotchas.md`):
+
+- **An invite-only channel needs its own `#<token>` entry.** The mapped
+  channel denies `@all` Enter; a grant on the root did not reach it, and
+  the observer was refused (`not allowed to Enter`) until the channel got
+  its own entry, after the deny.
+- **The access token is a credential.** The first token was the bridge's
+  own name. Any desktop client that sends it gets the bridge's grants, past
+  that deny included, and the observer's client version
+  (`gawk-mumble-bridge 1.0.0`) advertises the name. It was rotated to a
+  random value.
+- **A rotated key needs a rollout**: both charts read `gawk-voice` into
+  env. The rotation added the new ACL entries first, rolled the bridge
+  through a pod annotation, then removed the old entries.
+- **The documented Secret recipe lacked `mumbleToken`**, which the §15.2
+  values read; fixed. `autobanAttempts` runs at 200, not 0: well above a
+  pod's join rate, and it keeps murmur's per-address throttle on password
+  guessing.

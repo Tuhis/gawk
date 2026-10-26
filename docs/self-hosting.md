@@ -1915,8 +1915,11 @@ the channel. It is three things working together: your own Mumble server
 - **Rooms on** (`rooms.enabled`, [§10](#10-rooms-r42)).
 - **A Mumble server (murmur 1.5 or 1.6)** the bridge pods can reach on TCP,
   set up for bridged users (docs/80 §5):
-  - `autobanAttempts=0`. Murmur bans an address after 10 connections in
-    2 minutes, and every bridged user connects from a bridge pod's address.
+  - `autobanAttempts=0`, or a value well above a bridge pod's connection
+    rate (the reference deployment runs 200, the bridge's default
+    `maxVoiceSessions`, which keeps a per-address throttle on password
+    guessing). Murmur bans an address after 10 connections in 2 minutes,
+    and every bridged user connects from a bridge pod's address.
   - `users` sized for native **plus** bridged users, plus one observer per
     voice room. At the cap the bridge closes the newcomer with "the Mumble
     server is full" and counts it.
@@ -1926,23 +1929,47 @@ the channel. It is three things working together: your own Mumble server
     granting the group `#<token>` **Enter** (and **Speak**) on every
     channel a room maps to, plus **MakeTempChannel** on the parent channel
     dynamic rooms' temporary channels go under (`mumble.tempParent`).
+  - **Treat the access token as a password.** Any Mumble client can send
+    access tokens (Server → Access Tokens), and one that sends the bridge's
+    gets every grant `#<token>` holds, past a channel's `@all` deny
+    included. Generate it (`openssl rand -hex 16`); never use a name such as
+    the bridge's, which anyone on the server can read from the observer's
+    client version.
+  - **A channel with its own deny needs its own entry.** An entry on the
+    root reaches only channels that inherit it; a channel that denies
+    `@all` **Enter** (an invite-only channel) overrides the inherited grant,
+    so put the `#<token>` entry on that channel, after the deny.
   - A **Mumble ban of a bridged user bans the bridge pod's address**, and so
     every gawk user on that pod. Kick bridged users; ban them in gawk.
 - **A public DNS name and certificate for the bridge** (the browser opens
   a WebTransport session to it), and a second UDP LoadBalancer address.
-- **One shared secret pair** for the relay and the bridge:
+- **One shared Secret** for the relay and the bridge: the link PSK and
+  the ticket key, which both read, and the Mumble access token, which only
+  the bridge reads:
 
   ```sh
   kubectl -n gawk create secret generic gawk-voice \
     --from-literal=psk="$(openssl rand -hex 32)" \
-    --from-literal=ticketSecret="$(openssl rand -hex 32)"
+    --from-literal=ticketSecret="$(openssl rand -hex 32)" \
+    --from-literal=mumbleToken="$(openssl rand -hex 16)"
   ```
+
+  Both charts read these into environment variables, so a changed value
+  reaches the pods only on a rollout. After rotating one, roll the bridge
+  (`kubectl rollout restart`, or a changed `podAnnotations` value where a
+  GitOps tool owns the release) and, for `psk` or `ticketSecret`, the relay
+  too (`kubectl rollout restart`; its chart has no `podAnnotations`).
+  Rotating `mumbleToken` means adding the new `#<token>` entries before the
+  rollout and removing the old ones after it.
 
 ### 15.2 Install, bridge first
 
 ```yaml
 # gawk-mumble-bridge values
-relayUrl: https://relay.example.com:4433      # the relay's public URL
+relayUrl: https://relay.example.com:4433      # the relay's public URL, or its
+                                               # in-cluster Service with
+                                               # relayServerName set to the
+                                               # certificate's name
 allowedOrigins: [https://gawk.example.com]
 pskRef: {name: gawk-voice, key: psk}
 ticketSecretRef: {name: gawk-voice, key: ticketSecret}
