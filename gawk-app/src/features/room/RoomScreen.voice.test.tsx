@@ -7,6 +7,7 @@
 // keyboard and the hold button, and the close codes' visible forms. The room
 // session, the voice session and the capture are faked at their seams.
 
+import { VoiceController } from './voice/voiceController';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
@@ -261,6 +262,21 @@ describe('room voice UI', () => {
     const { panel } = await inVoice(true);
     fireEvent.change(within(panel).getByLabelText('Volume of bob'), { target: { value: '0.3' } });
     expect(localStorage.getItem('gawk:voice-volume:bob')).toBe('0.3');
+  });
+
+  // Review finding (PR #595): a per-person mute was saved as volume 0, so a
+  // reload kept the person silent with the toggle showing them unmuted and
+  // their real volume lost (D22: the VOLUME persists, not the mute).
+  it('a per-person mute silences them without overwriting their saved volume', async () => {
+    const gain = vi.spyOn(VoiceController.prototype, 'setSpeakerVolume');
+    const { panel } = await inVoice(true);
+    fireEvent.change(within(panel).getByLabelText('Volume of bob'), { target: { value: '0.3' } });
+    fireEvent.click(within(panel).getByRole('button', { name: 'Mute bob for you' }));
+    expect(gain.mock.calls.at(-1)).toEqual([3, 0]);
+    expect(localStorage.getItem('gawk:voice-volume:bob')).toBe('0.3');
+    fireEvent.click(within(panel).getByRole('button', { name: 'Unmute bob' }));
+    expect(gain.mock.calls.at(-1)).toEqual([3, 0.3]);
+    gain.mockRestore();
   });
 
   it('mute and deafen tell Mumble; a server mute disables the mic with the reason', async () => {

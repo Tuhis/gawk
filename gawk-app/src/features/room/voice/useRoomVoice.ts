@@ -27,7 +27,9 @@ export interface VoiceActions {
   setTalkMode: (mode: TalkMode) => void;
   setPttHeld: (held: boolean) => void;
   setPttKey: (code: string) => void;
-  setSpeakerVolume: (session: number, mumbleName: string, volume: number) => void;
+  // `volume` is what persists per name (D22); `muted` is this session's
+  // per-person mute, applied to the gain only and never saved.
+  setSpeakerVolume: (session: number, mumbleName: string, volume: number, muted: boolean) => void;
 }
 
 export function roomVoiceReadiness(): RoomVoiceReadiness {
@@ -154,9 +156,9 @@ export function useRoomVoice({
         savePttKey(code);
         useVoiceStore.getState().set({ pttKey: code });
       },
-      setSpeakerVolume: (session, name, volume) => {
+      setSpeakerVolume: (session, name, volume, muted) => {
         saveSpeakerVolume(name, volume);
-        ctrlRef.current?.setSpeakerVolume(session, volume);
+        ctrlRef.current?.setSpeakerVolume(session, muted ? 0 : volume);
       },
     }),
     [mixerRef],

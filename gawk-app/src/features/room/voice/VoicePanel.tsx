@@ -139,7 +139,7 @@ function RosterRow({
 }) {
   const [volume, setVolume] = useState(() => loadSpeakerVolume(row.mumbleName));
   const [muted, setMuted] = useState(false);
-  const apply = (v: number, m: boolean) => actions.setSpeakerVolume(row.session, row.mumbleName, m ? 0 : v);
+  const apply = (v: number, m: boolean) => actions.setSpeakerVolume(row.session, row.mumbleName, v, m);
   return (
     <li className={roomStyles.row} data-testid="voice-row">
       {/* OD14: speaking only for people in voice, worked out locally. */}
