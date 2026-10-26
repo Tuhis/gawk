@@ -43,7 +43,7 @@ COPY common-ts/oidc-session/ /src/common-ts/oidc-session/
 COPY gawk-admin/ui/ ./
 RUN npm run build
 
-FROM golang:1.26-trixie AS build
+FROM golang:1.27-trixie AS build
 WORKDIR /src
 # Manifests before sources: the `go mod download` layer then depends on the
 # go.mod/go.sum files alone, and a persistent build cache (a developer's own
