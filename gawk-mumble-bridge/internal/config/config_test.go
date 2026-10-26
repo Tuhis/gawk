@@ -29,7 +29,7 @@ func TestDefaults(t *testing.T) {
 	}
 	want := map[string]any{
 		"Listen": ":4443", "InternalListen": ":4444", "OpsListen": ":2113",
-		"MumbleNameTemplate": "{nick} [web]", "MumbleObserverName": "gawk",
+		"MumbleNameTemplate": "{nick} [web]", "MumbleObserverName": "gawkBridgeBot",
 		"MumbleTempTemplate": "gawk {key}", "MumbleTempParent": "",
 		"MaxVoiceSessions": 200, "MaxTempChannels": 50, "DrainTimeout": 10 * time.Second,
 		"RelayServerName": "relay.example", "LogFormat": "text",

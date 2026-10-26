@@ -135,7 +135,7 @@ mumble:
   # back to a sanitized form ("Alice_[web]").
   nameTemplate: "{nick} [web]"
   # OD33: the observer's name.
-  observerName: gawk
+  observerName: gawkBridgeBot
   # Path of the channel dynamic rooms' temporary channels go under; empty is
   # the root. Its ACL must grant #<accessToken> MakeTempChannel and Enter.
   tempParent: ""
