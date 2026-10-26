@@ -327,10 +327,24 @@ Bridge (`gawk-mumble-bridge`, flags and `GAWK_*` envs and the chart):
   4002 for a bridge drain and for the participant's room session ending
   (C4). Every one is sent in-band first.
 - **Names** (D9): `{nick} [web]`, then ` 2`… up to 10 on `UsernameInUse`.
-  Murmur's default `username` rule refuses spaces, so on
-  `InvalidUsername` the bridge retries once with every character outside
-  that rule replaced by `_`, then suffixes `_2`…. `docs/self-hosting.md`
-  lists relaxing the rule as a prerequisite for the pretty form.
+  Measured against murmur 1.5.939 and 1.6.870: with no `username` setting
+  both accept spaces and brackets, so the pretty form works out of the box;
+  the rule murmur's sample ini shows does not. On `InvalidUsername` (that
+  rule, or 1.6 refusing a non-ASCII nickname) the bridge retries once with
+  every character outside the sample rule replaced by `_`, then suffixes
+  `_2`…. Murmur does not refuse a second login of the same name from the
+  same address: it disconnects the first as a ghost. Every bridged user of a
+  pod shares its address, so the bridge keeps a per-pod name registry and
+  checks the server's user list before it dials; a ghosted connection is
+  closed with 4016.
+- **Certificates**: murmur refuses to create a temporary channel for a
+  client without a certificate, so every bridged connection presents a
+  fresh self-signed one that is never stored. A Mumble ban of a bridged
+  user bans the bridge pod's address; `docs/self-hosting.md` says so.
+- **Audio format**: murmur 1.5 and 1.6 still send the legacy audio format
+  over the TCP tunnel to a client that reports 1.4.0 (measured, byte-
+  identical), and the protobuf format to one that reports ≥ 1.5.0. The
+  bridge refuses a configured version outside 1.2.4–1.4.x.
 - **Speaking indicators** (D16) never touch the relay.
 - **Privacy** (D24): no package of the bridge writes, logs or exposes voice
   audio; a source-walk test enforces it, as `gawk-sampler`'s D8 test does.

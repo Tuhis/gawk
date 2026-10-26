@@ -660,6 +660,19 @@ COMPONENTS = {
         sources="`go list -deps ./...` in `gawk-sampler/` (CGO_ENABLED=1).",
         collect=lambda: collect_go("gawk-sampler", cgo=True),
     ),
+    # R79 (docs/80 D1, D6): the Mumble voice bridge. CGO_ENABLED=0 and no
+    # libopus: Opus passes through it untouched, so its image is the Go binary
+    # and nothing native.
+    "mumble-bridge": dict(
+        path="gawk-mumble-bridge",
+        blurb=(
+            "The Mumble voice bridge (`gawk-mumble-bridge`). It links no codec:\n"
+            "voice passes through it as Opus packets, so this list is the whole\n"
+            "of what its image carries besides the Go runtime."
+        ),
+        sources="`go list -deps ./...` in `gawk-mumble-bridge/`.",
+        collect=lambda: collect_go("gawk-mumble-bridge"),
+    ),
     "windows": dict(
         path="gawk-broadcast-desktop",
         blurb=(
@@ -868,6 +881,7 @@ def check() -> int:
         ("gawk-telemetry", "duckdb", False),
         ("gawk-admin", "", False),
         ("gawk-sampler", "", True),
+        ("gawk-mumble-bridge", "", False),
     ):
         for pkg in collect_go(module, tags, cgo):
             checked += 1

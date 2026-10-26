@@ -1,0 +1,193 @@
+# gawk-mumble-bridge (R79, docs/80) — room voice through a Mumble server.
+#
+# Default off: nothing installs it, and the relay advertises no voice until
+# its own voiceBridge values point at this release (-voice-bridge-addr,
+# -voice-bridge-public-url, -voice-bridge-psk, -voice-ticket-secret). The
+# required values below render empty so a `helm template` works; the pods
+# CrashLoopBackOff with the missing flag's name until they are set (the
+# gawk-admin and gawk-sampler convention).
+#
+# Required: tls (a certificate for the public name), relayUrl, mumble.addr,
+# psk and ticketSecret — the last two MUST equal the relay's
+# voiceBridge psk and ticketSecret.
+#
+# Murmur prerequisites (docs/80 §5, the README has the detail): autoban off
+# (autobanAttempts=0) or above the bridge's connection rate, `users` sized
+# for native plus bridged users, and an ACL on the temporary-channel parent
+# granting the access token's group (#<token>) MakeTempChannel and Enter.
+
+image:
+  repository: ghcr.io/tuhis/gawk-mumble-bridge
+  # Empty = the chart's appVersion (kept in lockstep with the image tag).
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# Bridge pods are interchangeable spokes (docs/80 OD22): any pod takes any
+# browser and any room's observer link. Two by default, so a rollout keeps
+# voice up.
+replicas: 2
+
+podDisruptionBudget:
+  enabled: true
+
+# soft (default) = preferred anti-affinity; hard = required; none.
+podAntiAffinity: soft
+
+# How long a drain may take (D19: 4002 to every browser while still Ready,
+# observer links closed so the relay redials elsewhere). The pod's
+# terminationGracePeriodSeconds is this plus 5 s.
+drainTimeout: 10s
+
+# The public certificate for both QUIC listeners. The relay's observer dial
+# verifies the INTERNAL listener against the same certificate, with the name
+# the relay's -voice-bridge-server-name gives.
+tls:
+  # An existing kubernetes.io/tls Secret (tls.crt, tls.key). With
+  # certificate.enabled it is the Secret cert-manager writes.
+  secretName: gawk-mumble-bridge-tls
+certificate:
+  # cert-manager Certificate for the bridge's public name; renewals are
+  # picked up without a restart.
+  enabled: false
+  issuerRef:
+    name: letsencrypt-production
+    kind: ClusterIssuer
+  dnsNames:
+    - voice.example.com # CHANGEME: the bridge's public DNS name
+
+# The public UDP LoadBalancer browsers dial (the relay hands its URL out as
+# -voice-bridge-public-url, e.g. https://voice.example.com:4443/voice).
+service:
+  type: LoadBalancer
+  port: 4443
+  loadBalancerIP: ""
+  # Local keeps the browser's address, which the relay checks against its
+  # IP bans (docs/80 §11.5). Cluster SNATs it to a node address.
+  externalTrafficPolicy: Local
+  annotations: {}
+  nodePort: null
+
+# The internal Service: the relay's observer links (QUIC 4444) and the ops
+# port (/healthz, /readyz, /metrics, /statusz). ClusterIP only; never route
+# it publicly (D1, D24).
+internalService:
+  port: 4444
+  opsPort: 2113
+
+# Origins allowed to open a voice session: the gawk-app origin(s), the
+# relay's allowedOrigins. Empty allows any — development only.
+allowedOrigins: []
+
+# The relay's https URL the session links dial (bridge → relay,
+# /internal/voice/{code}), usually its in-cluster Service:
+#   https://gawk-server.gawk.svc.cluster.local:4433
+relayUrl: ""
+# TLS name verified on that dial; empty = the host of relayUrl. With an
+# in-cluster URL set it to the relay certificate's name.
+relayServerName: ""
+# Extra roots for the relay dial (a self-signed relay). A Secret key holding
+# PEM; empty uses the system roots.
+relayCaRef: {}
+#   name: gawk-relay-ca
+#   key: ca.crt
+
+# Link PSK and ticket secret, the house literal/Ref dual form (Ref wins).
+# Both MUST equal the relay's voiceBridge values.
+#   kubectl -n gawk create secret generic gawk-voice \
+#     --from-literal=psk="$(openssl rand -hex 32)" \
+#     --from-literal=ticketSecret="$(openssl rand -hex 32)"
+psk: ""
+pskRef: {}
+#   name: gawk-voice
+#   key: psk
+ticketSecret: ""
+ticketSecretRef: {}
+#   name: gawk-voice
+#   key: ticketSecret
+
+# /statusz and log room hashes. Empty = random per pod (rooms then hash
+# differently on every pod; set it to correlate across pods).
+statsKey: ""
+statsKeyRef: {}
+
+mumble:
+  # murmur's host:port (required).
+  addr: ""
+  # Server password, if murmur has one.
+  password: ""
+  passwordRef: {}
+  # Access token every bridged connection sends (ACL group #<token>, D10).
+  accessToken: ""
+  accessTokenRef: {}
+  # How to trust murmur's certificate — at most one of the three. murmur
+  # generates a self-signed one on first start, so pinning its SHA-256 is
+  # the usual choice:
+  #   openssl s_client -connect murmur:64738 </dev/null 2>/dev/null \
+  #     | openssl x509 -outform der | sha256sum
+  certSha256: ""
+  # A Secret key holding a PEM CA bundle.
+  caRef: {}
+  insecureSkipVerify: false
+  # D9: a bridged user's name; {nick} is the gawk nickname. murmur's
+  # `username` rule must allow it (spaces, brackets), else the bridge falls
+  # back to a sanitized form ("Alice_[web]").
+  nameTemplate: "{nick} [web]"
+  # OD33: the observer's name.
+  observerName: gawk
+  # Path of the channel dynamic rooms' temporary channels go under; empty is
+  # the root. Its ACL must grant #<accessToken> MakeTempChannel and Enter.
+  tempParent: ""
+  # OD32: {key} is a keyed hash of the room code, {code} the code itself.
+  tempChannelTemplate: "gawk {key}"
+  # Below 1.5.0, so murmur sends the legacy voice format the bridge speaks.
+  clientVersion: "1.4.0"
+
+# D23 caps, per pod.
+maxVoiceSessions: 200
+maxTempChannels: 50
+
+logLevel: info
+logFormat: json
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+metrics:
+  serviceMonitor:
+    enabled: false
+    labels: {}
+    interval: 30s
+    scrapeTimeout: 10s
+
+# Egress/ingress policy. Ingress: the public port from anywhere, the
+# internal ports from the relay's pods and the monitoring namespace.
+# Egress: murmur, the relay, DNS.
+networkPolicy:
+  enabled: false
+  relay:
+    podSelector:
+      app.kubernetes.io/name: gawk-server
+    namespaceSelector: {}
+    port: 4433
+  murmur:
+    # An address block, since murmur usually runs outside the cluster.
+    cidr: 0.0.0.0/0
+    port: 64738
+  dns:
+    podSelector:
+      k8s-app: kube-dns
+    namespaceSelector:
+      kubernetes.io/metadata.name: kube-system
+  monitoring:
+    namespaceSelector: {}
+  extraEgress: []
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
