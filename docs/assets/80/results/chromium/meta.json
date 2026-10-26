@@ -1,0 +1,9 @@
+{
+  "browser": "chromium",
+  "version": "151.0.7922.34",
+  "playwright": "1.62.1",
+  "host": "linux x64",
+  "headless": true,
+  "date": "2026-10-26T07:09:36.862Z",
+  "seconds": 6
+}
