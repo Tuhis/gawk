@@ -137,32 +137,36 @@ A round is requested in two cases. Both share one cap of 3 rounds per PR:
   PR whose automatic review was clean and that got no later commits needs
   no rounds.
 
-**Track which commit each review covered.**
+**Track which commit each review covered.** Call it the *marker*:
 
-- **Automatic review with findings:** the `original_commit_id` of its
-  inline comments in `pulls/<N>/comments`. Runs can overlap, so if two
-  posted, take the older SHA.
+- **Automatic review with findings:** the `original_commit_id` of the
+  inline comments `claude[bot]` posted in `pulls/<N>/comments`. Ignore
+  people's comments. Runs can overlap, so if two posted, take the older
+  SHA.
 - **Automatic review with a clean summary:** the `headSha` of the
   `claude-review` run whose `createdAt`…`updatedAt` window contains the
   summary's `created_at` (`gh run list --workflow claude-code-review.yml
   --branch <branch> --json headSha,createdAt,updatedAt`). Both times come
   from GitHub, so this is safe.
 - **No Claude review comment on the PR at all:** nothing is reviewed. The
-  check can go green, or be skipped, without posting anything. Round 1 is then a full
+  check can go green, or be skipped, without posting anything. Wait until
+  `claude-review` has finished. If it posted nothing, round 1 is a full
   review of the PR.
 - **A round:** the head SHA when you posted the request, so name it in the
-  comment.
+  comment. If the `@claude` job itself pushes a commit, that commit comes
+  after the marker and is unreviewed.
 
- The commits still unreviewed
-are `git log --oneline <last reviewed sha>..HEAD`. Don't compare commit
-dates with comment times, because a commit can be made before a review and
-pushed after it.
+The unreviewed commits are `git log --oneline <marker>..HEAD`. Don't compare
+commit dates with comment times, because a commit can be made before a
+review and pushed after it.
 
-Request a round once the previous review's findings are handled and CI is
-green on the current head. Post a PR comment:
+Request a round once the previous review's findings are handled, CI is
+green on the current head, and `claude-review` has finished. Post a PR
+comment:
 
 ```
-@claude please review again (round K of 3), up to `<head sha>`. Since your last review (`<last reviewed sha>`):
+@claude please review again (round K of 3), up to `<head sha>`.
+Since your last review (`<marker>`):
 
 - `<sha>`: <what changed and why; say "your finding, test-first" where it applies>
 - …
@@ -173,12 +177,13 @@ Focus on <the parts most likely to be wrong>.
 On a large PR with a clean automatic review, ask for a full review of the
 PR in round 1, instead of "since your last review".
 
-- **At most 3 rounds.** A round counts once its job has **succeeded**: count
-  the `claude[bot]` replies whose header is "**Claude finished @<the account
-  you post as>'s task …**". A person's own `@claude` question doesn't count. The reply must actually review the requested
-  range. One that says it couldn't (a failed checkout, out of turns) is a
-  failed run. It is neither a round nor clean. Don't count your own comments, because a retry
-  would count twice. Counting on the PR survives a context reset.
+- **At most 3 rounds.** Count the `claude[bot]` replies whose header is
+  "**Claude finished @<the account you post as>'s task …**". Don't count
+  your own comments, because a retry would count twice, and don't count a
+  person's own `@claude` question. A reply counts only if it actually
+  reviewed the requested range. One that says it couldn't (a failed
+  checkout, out of turns) is a failed run. It is neither a round nor clean.
+  Counting on the PR survives a context reset.
 - Wait for the "**Claude finished …**" reply. If its job failed or it never
   posts within ~20 minutes of the run finishing, check the job with
   `gh run view`. A failed run doesn't use up a round, so retry it once by
@@ -196,14 +201,14 @@ Merge only when **all** of these hold for the **current head SHA**:
 
 - Every check has finished, each as `success`, `skipped` or `neutral`, with
   none pending. That includes `claude-review`.
-- Every commit has been reviewed. `git log <last reviewed sha>..HEAD`
-  (§3) is empty, and every finding of every review is handled. A finding is
-  handled when it was declined with a reply, or fixed in a commit that a
-  later review covered. A review whose findings were all declined, with
-  nothing pushed, satisfies this. Nothing re-runs, and nothing needs to. The only
-  exception is a reached 3-round cap: the commits after round 3 then merge
-  unreviewed, and the final report names them. Round 3's fixed findings
-  count as handled once each has a reply naming its commit.
+- Every commit has been reviewed: `git log <marker>..HEAD` (§3) is empty,
+  and every finding of every review is handled. A finding is handled when
+  it was declined with a reply, or fixed in a commit that a later review
+  covered. A review whose findings were all declined, with nothing pushed,
+  satisfies this. Nothing re-runs, and nothing needs to.
+- The one exception is a reached 3-round cap. The commits after round 3
+  then merge unreviewed, and the final report names them. Round 3's fixed
+  findings count as handled once each has a reply naming its commit.
 - On a large PR, the `@claude` rounds are finished: a clean round, or 3
   rounds with round 3's findings handled as in §2.
 - No review thread is unresolved, and no person's comment is unanswered.
@@ -211,14 +216,16 @@ Merge only when **all** of these hold for the **current head SHA**:
 - The PR title is still a correct Conventional Commit for the final diff.
   Edit it with `gh pr edit --title` if the scope changed.
 - The PR is mergeable. If it conflicts, rebase on `origin/main`,
-  force-push with `--force-with-lease`, and go back to §2. The reviewed SHA
-  is no longer an ancestor of `HEAD`, so compare the two versions with
-  `git range-diff <old merge-base>..<last reviewed sha> origin/main..HEAD`.
-  If the old SHA is missing locally, run `git fetch origin <sha>` first.
-  Commits that come out identical stay reviewed, and the marker moves to the
-  rebased copy of the reviewed SHA. Changed commits, such as conflict
-  resolutions, are unreviewed. If the round cap is already used up and the
-  rebase changed reviewed code, stop and hand back.
+  force-push with `--force-with-lease`, and go back to §2. The marker is no
+  longer an ancestor of `HEAD`, so compare the two versions with
+  `git range-diff <old merge-base>..<marker> origin/main..HEAD`. If the old
+  SHA is missing locally, run `git fetch origin <sha>` first. Commits stay
+  reviewed only up to the **first changed commit**, because a later commit
+  that replays identically still sits on top of the change. Move the marker
+  to the rebased copy of the last commit before the first changed one, or
+  to the new merge-base if the first commit changed. Everything after it is
+  unreviewed. If the round cap is already used up and the rebase changed
+  reviewed code, stop and hand back.
 
 Then run:
 
@@ -230,10 +237,11 @@ gh pr merge <N> --squash --match-head-commit <the head SHA you checked> --subjec
 your checks, for example from a person or an `@claude` job. If it refuses,
 go back to §2 for the new head.
 
-The repo deletes the head branch on merge. Stop any PR watch, then report the result:
-the merged SHA, the number of fix commits, the number of review rounds,
-whether the round cap was reached and which commits merged unreviewed, and
-anything left for the owner (a flake rerun, a declined finding).
+The repo deletes the head branch on merge. Stop any PR watch, then report
+the result: the merged SHA, the number of fix commits, the number of
+review rounds, whether the round cap was reached and which commits merged
+unreviewed, and anything left for the owner (a flake rerun, a declined
+finding).
 
 ## Stop and hand back instead of merging when
 
