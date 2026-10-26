@@ -184,10 +184,7 @@ func TestMurmurTemporaryChannelLifecycle(t *testing.T) {
 	}
 	ol.waitRoster(t, func(m voice.Message) bool { return m.Available })
 	name := tb.tempChannel(code, strings.ToUpper(code))
-	ch, ok := su.FindChild(parent, name)
-	if !ok {
-		t.Fatalf("no temporary channel %q under the parent", name)
-	}
+	ch := suChild(t, su, parent, name)
 	if c, _ := su.Channel(ch); !c.Temporary {
 		t.Fatal("channel is not temporary")
 	}
@@ -204,9 +201,7 @@ func TestMurmurTemporaryChannelLifecycle(t *testing.T) {
 			t.Fatal("the observer lists itself")
 		}
 	}
-	if u, ok := su.User(st.Session); !ok || u.Channel != ch {
-		t.Fatalf("bridged user not in the channel: %+v", u)
-	}
+	suInChannel(t, su, st.Session, ch)
 	// The room ends: observer link closed, the browser leaves, the native
 	// user leaves.
 	_ = ol.sess.CloseWithError(0, "")
@@ -238,10 +233,7 @@ func TestMurmurHomeMoveKeepsEveryoneInTheChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 	olA.waitRoster(t, func(m voice.Message) bool { return m.Available })
-	ch, ok := su.FindChild(parent, podA.tempChannel(code, ""))
-	if !ok {
-		t.Fatal("no channel")
-	}
+	ch := suChild(t, su, parent, podA.tempChannel(code, ""))
 	b := joinVoice(t, podA, code, uniq("u"), 0)
 	fr.nextLink(t)
 	st := b.waitState(connected)
@@ -256,13 +248,11 @@ func TestMurmurHomeMoveKeepsEveryoneInTheChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 	olB.waitRoster(t, func(m voice.Message) bool { return m.Available && len(m.Users) == 2 })
-	if got, ok := su.FindChild(parent, podB.tempChannel(code, "")); !ok || got != ch {
-		t.Fatalf("channel after the move %d %v, want %d", got, ok, ch)
+	if got := suChild(t, su, parent, podB.tempChannel(code, "")); got != ch {
+		t.Fatalf("channel after the move %d, want %d", got, ch)
 	}
 	for _, s := range []uint32{st.Session, native.Session()} {
-		if u, ok := su.User(s); !ok || u.Channel != ch {
-			t.Fatalf("user %d moved: %+v", s, u)
-		}
+		suInChannel(t, su, s, ch)
 	}
 	if native.Self().Channel != ch {
 		t.Fatal("native user left the channel")
@@ -418,4 +408,29 @@ func TestMurmurAudioBothWaysByteIdentical(t *testing.T) {
 			t.Fatalf("browser heard %d of %d frames", got, len(frames))
 		}
 	}
+}
+
+// suChild waits for the SuperUser connection to see a channel. The observer
+// reports Available once IT is in the channel, but the SuperUser is a
+// separate connection, and murmur's ChannelState for the new channel may
+// reach it a moment later (a CI flake, run 40292314503).
+func suChild(t *testing.T, su *mumble.Client, parent uint32, name string) uint32 {
+	t.Helper()
+	var ch uint32
+	eventually(t, "the SuperUser to see channel "+name, func() bool {
+		var ok bool
+		ch, ok = su.FindChild(parent, name)
+		return ok
+	})
+	return ch
+}
+
+// suInChannel waits for the SuperUser connection to see a user in a channel,
+// for the same reason.
+func suInChannel(t *testing.T, su *mumble.Client, session, ch uint32) {
+	t.Helper()
+	eventually(t, fmt.Sprintf("the SuperUser to see user %d in channel %d", session, ch), func() bool {
+		u, ok := su.User(session)
+		return ok && u.Channel == ch
+	})
 }
