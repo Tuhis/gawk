@@ -2,7 +2,7 @@
   "name": "gawk-app",
   "private": true,
   "license": "Apache-2.0",
-  "version": "0.56.0",
+  "version": "0.57.0",
   "type": "module",
   "scripts": {
     "dev": "vite",

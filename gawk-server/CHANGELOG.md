@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.38.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.37.0...gawk-server/v0.38.0) (2026-10-26)
+
+
+### Features
+
+* **r79:** room voice through a Mumble bridge (MV0–MV7) ([#595](https://github.com/Tuhis/gawk/issues/595)) ([33a4a4f](https://github.com/Tuhis/gawk/commit/33a4a4f904f79937ebddb6e0a06f3df4d12f7ba8))
+* **relay:** stop ends the broadcast for viewers at once (R78) ([#568](https://github.com/Tuhis/gawk/issues/568)) ([2143db6](https://github.com/Tuhis/gawk/commit/2143db67e492e9e492301bf5002781dbed4311ea))
+
+
+### Bug Fixes
+
+* **relay:** send each viewer datagram from one pooled buffer in the vendored quic-go ([#569](https://github.com/Tuhis/gawk/issues/569)) ([516249f](https://github.com/Tuhis/gawk/commit/516249f8b6a9dd4a8af045e3bb48c679ff622f24))
+
 ## [0.37.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.36.0...gawk-server/v0.37.0) (2026-10-24)
 
 
