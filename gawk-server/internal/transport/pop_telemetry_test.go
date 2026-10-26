@@ -227,15 +227,13 @@ func TestHomeMintsOnlyWithinScopeAndRate(t *testing.T) {
 		return len(refused) == 1 && refused[0].Reason == poplink.TelemetryRefusedScope
 	})
 
-	// Past the burst (100) a mint is refused for rate.
+	// Past the burst (100) a mint is refused for rate. The bucket refills at
+	// 10/s while the mints go out, so a fixed 104 sent slowly enough (a
+	// loaded runner under coverage, PR #595) never empties it: keep minting
+	// until refused, bounded well past what the refill allows in the wait.
 	p := publishOnPoP(t, u)
 	u.reserved(t, p.id)
-	for range 13 { // 13 × 8 = 104
-		if err := u.pop.Client.Send(poplink.TelemetryMint{ID: p.id, Role: "viewer", N: 8}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	popsrv.WaitFor(t, "a rate refusal", func() bool {
+	rateRefused := func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		for _, r := range refused {
@@ -244,7 +242,28 @@ func TestHomeMintsOnlyWithinScopeAndRate(t *testing.T) {
 			}
 		}
 		return false
-	})
+	}
+	start := time.Now()
+	deadline := start.Add(10 * time.Second)
+	sent := 0
+	for !rateRefused() {
+		if time.Now().After(deadline) {
+			t.Fatalf("no rate refusal after %d mints of 8", sent)
+		}
+		if err := u.pop.Client.Send(poplink.TelemetryMint{ID: p.id, Role: "viewer", N: 8}); err != nil {
+			t.Fatal(err)
+		}
+		sent++
+		if sent >= 13 { // the burst is spent: give the refusal time to arrive
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	// The bucket held the burst plus what refilled while minting; the mints
+	// that got through cannot have been more than that (one mint of slack).
+	allowed := 100 + time.Since(start).Seconds()*10
+	if got := float64((sent - 1) * 8); got > allowed+8 {
+		t.Fatalf("%d tokens minted before the refusal, the bucket allows %.0f", (sent-1)*8, allowed)
+	}
 }
 
 // docs/78 D6: a home that collects no telemetry tells its PoP nothing, and
