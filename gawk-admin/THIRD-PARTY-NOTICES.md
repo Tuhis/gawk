@@ -14,18 +14,18 @@ script for what counts as a dependency here and why.
 
 **Scope:** `go list -deps ./...` in `gawk-admin/`.
 
-## Summary — 60 packages
+## Summary — 68 packages
 
 | License (as declared) | Packages |
 |---|---:|
-| `Apache-2.0` | 18 |
+| `Apache-2.0` | 29 |
 | `BSD-3-Clause` | 14 |
-| `MIT` | 14 |
+| `MIT` | 12 |
 | `Apache-2.0 OR UNKNOWN` | 6 |
-| `Apache-2.0 OR MIT OR Apache-2.0` | 2 |
 | `Apache-2.0 OR MIT OR BSD-3-Clause` | 2 |
 | `Apache-2.0 OR BSD-3-Clause` | 1 |
 | `Apache-2.0 OR MIT` | 1 |
+| `Apache-2.0 OR MIT OR Apache-2.0` | 1 |
 | `BSD-2-Clause` | 1 |
 | `ISC` | 1 |
 
@@ -38,12 +38,23 @@ script for what counts as a dependency here and why.
 | `github.com/coreos/go-oidc/v3` | v3.20.0 | `Apache-2.0 OR UNKNOWN` | Copyright 2014 CoreOS, Inc |
 | `github.com/davecgh/go-spew` | v1.1.2-0.20180830191138-d8f796af33cc | `ISC` | Copyright (c) 2012-2016 Dave Collins <dave@davec.name> |
 | `github.com/emicklei/go-restful/v3` | v3.13.0 | `MIT` | Copyright (c) 2012,2013 Ernest Micklei |
-| `github.com/fxamacker/cbor/v2` | v2.9.0 | `MIT` | Copyright (c) 2019-present Faye Amacker |
+| `github.com/fxamacker/cbor/v2` | v2.9.1 | `MIT` | Copyright (c) 2019-present Faye Amacker |
 | `github.com/go-jose/go-jose/v4` | v4.1.4 | `Apache-2.0` | Copyright 2014 Square Inc |
 | `github.com/go-logr/logr` | v1.4.3 | `Apache-2.0` | — |
-| `github.com/go-openapi/jsonpointer` | v0.21.0 | `Apache-2.0` | — |
-| `github.com/go-openapi/jsonreference` | v0.20.2 | `Apache-2.0` | — |
-| `github.com/go-openapi/swag` | v0.23.0 | `Apache-2.0` | Copyright 2015 go-swagger maintainers |
+| `github.com/go-openapi/jsonpointer` | v1.0.0 | `Apache-2.0` | Copyright 2015-2025 go-swagger maintainers<br>Copyright 2013 sigu-399 ( https://github.com/sigu-399 ) |
+| `github.com/go-openapi/jsonreference` | v1.0.0 | `Apache-2.0` | Copyright 2015-2025 go-swagger maintainers<br>Copyright 2013 sigu-399 ( https://github.com/sigu-399 ) |
+| `github.com/go-openapi/swag` | v0.27.1 | `Apache-2.0` | — |
+| `github.com/go-openapi/swag/cmdutils` | v0.27.1 | `Apache-2.0` | — |
+| `github.com/go-openapi/swag/conv` | v0.27.1 | `Apache-2.0` | — |
+| `github.com/go-openapi/swag/fileutils` | v0.27.1 | `Apache-2.0` | — |
+| `github.com/go-openapi/swag/jsonutils` | v0.27.1 | `Apache-2.0` | — |
+| `github.com/go-openapi/swag/loading` | v0.27.1 | `Apache-2.0` | — |
+| `github.com/go-openapi/swag/mangling` | v0.27.1 | `Apache-2.0` | — |
+| `github.com/go-openapi/swag/netutils` | v0.27.1 | `Apache-2.0` | — |
+| `github.com/go-openapi/swag/pools` | v0.27.1 | `Apache-2.0` | — |
+| `github.com/go-openapi/swag/stringutils` | v0.27.1 | `Apache-2.0` | — |
+| `github.com/go-openapi/swag/typeutils` | v0.27.1 | `Apache-2.0` | — |
+| `github.com/go-openapi/swag/yamlutils` | v0.27.1 | `Apache-2.0` | — |
 | `github.com/golang-migrate/migrate/v4` | v4.19.1 | `MIT` | Copyright (c) 2016 Matthias Kadenbach<br>Copyright (c) 2018 Dale Hui |
 | `github.com/google/gnostic-models` | v0.7.0 | `Apache-2.0` | Copyright 2017-2025, Google LLC |
 | `github.com/google/uuid` | v1.6.0 | `BSD-3-Clause` | Copyright (c) 2009,2014 Google Inc. All rights reserved |
@@ -52,10 +63,8 @@ script for what counts as a dependency here and why.
 | `github.com/jackc/pgservicefile` | v0.0.0-20240606120523-5a60cdf6a761 | `MIT` | Copyright (c) 2020 Jack Christensen |
 | `github.com/jackc/pgx/v5` | v5.10.0 | `MIT` | Copyright (c) 2013-2021 Jack Christensen |
 | `github.com/jackc/puddle/v2` | v2.2.2 | `MIT` | Copyright (c) 2018 Jack Christensen |
-| `github.com/josharian/intern` | v1.0.0 | `MIT` | Copyright (c) 2019 Josh Bleecher Snyder |
 | `github.com/json-iterator/go` | v1.1.12 | `MIT` | Copyright (c) 2016 json-iterator |
 | `github.com/klauspost/compress` | v1.20.1 | `Apache-2.0 OR MIT OR BSD-3-Clause` | Copyright (c) 2012 The Go Authors. All rights reserved<br>Copyright (c) 2019 Klaus Post. All rights reserved<br>Copyright 2016-2017 The New York Times Company<br>Copyright (c) 2015 Klaus Post<br>Copyright (c) 2011 The Snappy-Go Authors. All rights reserved<br>Copyright 2016 The filepathx Authors |
-| `github.com/mailru/easyjson` | v0.7.7 | `MIT` | Copyright (c) 2016 Mail.Ru Group |
 | `github.com/modern-go/concurrent` | v0.0.0-20180306012644-bacd9c7ef1dd | `Apache-2.0` | — |
 | `github.com/modern-go/reflect2` | v1.0.3-0.20250322232337-35a7c28c31ee | `Apache-2.0` | — |
 | `github.com/munnerz/goautoneg` | v0.0.0-20191010083416-a7dc8b61c822 | `BSD-3-Clause` | Copyright (c) 2011, Open Knowledge Foundation Ltd |
@@ -67,7 +76,7 @@ script for what counts as a dependency here and why.
 | `github.com/prometheus/client_model` | v0.6.3 | `Apache-2.0 OR UNKNOWN` | Copyright 2012-2015 The Prometheus Authors |
 | `github.com/prometheus/common` | v0.70.1 | `Apache-2.0 OR UNKNOWN` | Copyright 2015 The Prometheus Authors |
 | `github.com/prometheus/procfs` | v0.21.1 | `Apache-2.0 OR UNKNOWN` | Copyright 2014-2015 The Prometheus Authors |
-| `github.com/spf13/pflag` | v1.0.9 | `BSD-3-Clause` | Copyright (c) 2012 Alex Ogier. All rights reserved<br>Copyright (c) 2012 The Go Authors. All rights reserved |
+| `github.com/spf13/pflag` | v1.0.10 | `BSD-3-Clause` | Copyright (c) 2012 Alex Ogier. All rights reserved<br>Copyright (c) 2012 The Go Authors. All rights reserved |
 | `github.com/x448/float16` | v0.8.4 | `MIT` | Copyright (c) 2019 Montgomery Edwards⁴⁴⁸ and Faye Amacker |
 | `go.yaml.in/yaml/v2` | v2.4.4 | `Apache-2.0 OR MIT` | Copyright (c) 2006 Kirill Simonov<br>Copyright 2011-2016 Canonical Ltd |
 | `go.yaml.in/yaml/v3` | v3.0.5 | `Apache-2.0 OR MIT OR Apache-2.0` | copyright staring in 2011 when the project was ported over:<br>Copyright (c) 2006-2010 Kirill Simonov<br>Copyright (c) 2006-2011 Kirill Simonov<br>Copyright (c) 2011-2019 Canonical Ltd<br>Copyright 2011-2016 Canonical Ltd |
@@ -82,16 +91,15 @@ script for what counts as a dependency here and why.
 | `google.golang.org/protobuf` | v1.36.12 | `BSD-3-Clause` | Copyright (c) 2018 The Go Authors. All rights reserved |
 | `gopkg.in/evanphx/json-patch.v4` | v4.13.0 | `BSD-3-Clause` | Copyright (c) 2014, Evan Phoenix |
 | `gopkg.in/inf.v0` | v0.9.1 | `BSD-3-Clause` | Copyright (c) 2012 Péter Surányi. Portions Copyright (c) 2009 The Go |
-| `gopkg.in/yaml.v3` | v3.0.1 | `Apache-2.0 OR MIT OR Apache-2.0` | copyright staring in 2011 when the project was ported over:<br>Copyright (c) 2006-2010 Kirill Simonov<br>Copyright (c) 2006-2011 Kirill Simonov<br>Copyright (c) 2011-2019 Canonical Ltd<br>Copyright 2011-2016 Canonical Ltd |
-| `k8s.io/api` | v0.36.4 | `Apache-2.0` | Copyright 2021 The Kubernetes Authors |
-| `k8s.io/apimachinery` | v0.36.4 | `Apache-2.0` | Copyright 2021 The Kubernetes Authors |
-| `k8s.io/client-go` | v0.36.4 | `Apache-2.0` | Copyright 2021 The Kubernetes Authors |
+| `k8s.io/api` | v0.37.1 | `Apache-2.0` | Copyright 2021 The Kubernetes Authors |
+| `k8s.io/apimachinery` | v0.37.1 | `Apache-2.0` | Copyright 2021 The Kubernetes Authors |
+| `k8s.io/client-go` | v0.37.1 | `Apache-2.0` | Copyright 2021 The Kubernetes Authors |
 | `k8s.io/klog/v2` | v2.140.0 | `Apache-2.0` | — |
-| `k8s.io/kube-openapi` | v0.0.0-20260317180543-43fb72c5454a | `Apache-2.0` | — |
-| `k8s.io/utils` | v0.0.0-20260210185600-b8788abfbbc2 | `Apache-2.0` | — |
+| `k8s.io/kube-openapi` | v0.0.0-20260721132016-d427ff9ee9ad | `Apache-2.0` | — |
+| `k8s.io/utils` | v0.0.0-20260626114624-be93311217bd | `Apache-2.0` | — |
 | `sigs.k8s.io/json` | v0.0.0-20250730193827-2d320260d730 | `Apache-2.0 OR BSD-3-Clause` | Copyright (c) 2009 The Go Authors. All rights reserved |
 | `sigs.k8s.io/randfill` | v1.0.0 | `Apache-2.0 OR UNKNOWN` | Copyright 2014 The gofuzz Authors<br>Copyright 2025 The Kubernetes Authors |
-| `sigs.k8s.io/structured-merge-diff/v6` | v6.3.3 | `Apache-2.0` | — |
+| `sigs.k8s.io/structured-merge-diff/v6` | v6.4.2 | `Apache-2.0` | — |
 | `sigs.k8s.io/yaml` | v1.6.0 | `Apache-2.0 OR MIT OR BSD-3-Clause` | Copyright (c) 2014 Sam Ghods<br>Copyright (c) 2012 The Go Authors. All rights reserved<br>copyright staring in 2011 when the project was ported over:<br>Copyright (c) 2006-2010 Kirill Simonov<br>Copyright (c) 2006-2011 Kirill Simonov<br>Copyright (c) 2011-2019 Canonical Ltd |
 
 ## License texts
@@ -101,9 +109,9 @@ their copyright line are shown once, with every holder listed in the table
 above — that line is the part the license requires be retained, and the
 boilerplate around it is identical by construction.
 
-### 1. Apache-2.0 — 19 packages
+### 1. Apache-2.0 — 30 packages
 
-Applies to: `github.com/go-jose/go-jose/v4`, `github.com/go-openapi/jsonpointer`, `github.com/go-openapi/jsonreference`, `github.com/go-openapi/swag`, `github.com/google/gnostic-models`, `github.com/modern-go/concurrent`, `github.com/modern-go/reflect2`, `github.com/nats-io/nats.go`, `github.com/nats-io/nkeys`, `github.com/nats-io/nuid`, `github.com/prometheus/client_golang`, `github.com/prometheus/client_model` — and 7 more
+Applies to: `github.com/go-jose/go-jose/v4`, `github.com/go-openapi/jsonpointer`, `github.com/go-openapi/jsonreference`, `github.com/go-openapi/swag`, `github.com/go-openapi/swag/cmdutils`, `github.com/go-openapi/swag/conv`, `github.com/go-openapi/swag/fileutils`, `github.com/go-openapi/swag/jsonutils`, `github.com/go-openapi/swag/loading`, `github.com/go-openapi/swag/mangling`, `github.com/go-openapi/swag/netutils`, `github.com/go-openapi/swag/pools` — and 18 more
 
 ```
 Apache License
@@ -517,9 +525,9 @@ Apache License
    limitations under the License.
 ```
 
-### 3. Apache-2.0 — 3 packages
+### 3. Apache-2.0 — 2 packages
 
-Applies to: `go.yaml.in/yaml/v2`, `go.yaml.in/yaml/v3`, `gopkg.in/yaml.v3`
+Applies to: `go.yaml.in/yaml/v2`, `go.yaml.in/yaml/v3`
 
 ```
 Copyright 2011-2016 Canonical Ltd.
@@ -538,6 +546,98 @@ limitations under the License.
 ```
 
 ### 4. Apache-2.0 — 1 package
+
+Applies to: `github.com/go-openapi/jsonpointer`
+
+```
+Copyright 2015-2025 go-swagger maintainers
+
+// SPDX-FileCopyrightText: Copyright 2015-2025 go-swagger maintainers
+// SPDX-License-Identifier: Apache-2.0
+
+This software library, github.com/go-openapi/jsonpointer, includes software developed
+by the go-swagger and go-openapi maintainers ("go-swagger maintainers").
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this software except in compliance with the License.
+
+You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0.
+
+This software is copied from, derived from, and inspired by other original software products.
+It ships with copies of other software which license terms are recalled below.
+
+The original software was authored on 25-02-2013 by sigu-399 (https://github.com/sigu-399, sigu.399@gmail.com).
+
+github.com/sigu-399/jsonpointer
+===========================
+
+// SPDX-FileCopyrightText: Copyright 2013 sigu-399 ( https://github.com/sigu-399 )
+// SPDX-License-Identifier: Apache-2.0
+
+Copyright 2013 sigu-399 ( https://github.com/sigu-399 )
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```
+
+### 5. Apache-2.0 — 1 package
+
+Applies to: `github.com/go-openapi/jsonreference`
+
+```
+Copyright 2015-2025 go-swagger maintainers
+
+// SPDX-FileCopyrightText: Copyright 2015-2025 go-swagger maintainers
+// SPDX-License-Identifier: Apache-2.0
+
+This software library, github.com/go-openapi/jsonreference, includes software developed
+by the go-swagger and go-openapi maintainers ("go-swagger maintainers").
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this software except in compliance with the License.
+
+You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0.
+
+This software is copied from, derived from, and inspired by other original software products.
+It ships with copies of other software which license terms are recalled below.
+
+The original software was authored on 25-02-2013 by sigu-399 (https://github.com/sigu-399, sigu.399@gmail.com).
+
+github.com/sigh-399/jsonreference
+===========================
+
+// SPDX-FileCopyrightText: Copyright 2013 sigu-399 ( https://github.com/sigu-399 )
+// SPDX-License-Identifier: Apache-2.0
+
+Copyright 2013 sigu-399 ( https://github.com/sigu-399 )
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```
+
+### 6. Apache-2.0 — 1 package
 
 Applies to: `k8s.io/klog/v2`
 
@@ -735,7 +835,7 @@ third-party archives.
    limitations under the License.
 ```
 
-### 5. Apache-2.0 OR BSD-3-Clause — 1 package
+### 7. Apache-2.0 OR BSD-3-Clause — 1 package
 
 Applies to: `sigs.k8s.io/json`
 
@@ -980,9 +1080,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### 6. Apache-2.0 OR MIT — 2 packages
+### 8. Apache-2.0 OR MIT — 1 package
 
-Applies to: `go.yaml.in/yaml/v3`, `gopkg.in/yaml.v3`
+Applies to: `go.yaml.in/yaml/v3`
 
 ```
 This project is covered by two different licenses: MIT and Apache.
@@ -1036,7 +1136,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 7. Apache-2.0 OR MIT OR BSD-3-Clause — 1 package
+### 9. Apache-2.0 OR MIT OR BSD-3-Clause — 1 package
 
 Applies to: `github.com/klauspost/compress`
 
@@ -1347,7 +1447,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 8. Apache-2.0 OR MIT OR BSD-3-Clause — 1 package
+### 10. Apache-2.0 OR MIT OR BSD-3-Clause — 1 package
 
 Applies to: `sigs.k8s.io/yaml`
 
@@ -1660,7 +1760,7 @@ Apache license:
    limitations under the License.
 ```
 
-### 9. BSD-2-Clause — 1 package
+### 11. BSD-2-Clause — 1 package
 
 Applies to: `github.com/pmezard/go-difflib`
 
@@ -1694,7 +1794,7 @@ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### 10. BSD-3-Clause — 8 packages
+### 12. BSD-3-Clause — 8 packages
 
 Applies to: `golang.org/x/crypto`, `golang.org/x/net`, `golang.org/x/oauth2`, `golang.org/x/sync`, `golang.org/x/sys`, `golang.org/x/term`, `golang.org/x/text`, `golang.org/x/time`
 
@@ -1728,7 +1828,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### 11. BSD-3-Clause — 3 packages
+### 13. BSD-3-Clause — 3 packages
 
 Applies to: `github.com/google/uuid`, `github.com/spf13/pflag`, `google.golang.org/protobuf`
 
@@ -1762,7 +1862,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### 12. BSD-3-Clause — 1 package
+### 14. BSD-3-Clause — 1 package
 
 Applies to: `github.com/munnerz/goautoneg`
 
@@ -1800,7 +1900,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### 13. BSD-3-Clause — 1 package
+### 15. BSD-3-Clause — 1 package
 
 Applies to: `gopkg.in/evanphx/json-patch.v4`
 
@@ -1832,7 +1932,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### 14. BSD-3-Clause — 1 package
+### 16. BSD-3-Clause — 1 package
 
 Applies to: `gopkg.in/inf.v0`
 
@@ -1867,7 +1967,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### 15. ISC — 1 package
+### 17. ISC — 1 package
 
 Applies to: `github.com/davecgh/go-spew`
 
@@ -1889,9 +1989,9 @@ ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### 16. MIT — 10 packages
+### 18. MIT — 9 packages
 
-Applies to: `github.com/cespare/xxhash/v2`, `github.com/emicklei/go-restful/v3`, `github.com/fxamacker/cbor/v2`, `github.com/jackc/pgpassfile`, `github.com/jackc/pgservicefile`, `github.com/jackc/pgx/v5`, `github.com/jackc/puddle/v2`, `github.com/josharian/intern`, `github.com/json-iterator/go`, `github.com/x448/float16`
+Applies to: `github.com/cespare/xxhash/v2`, `github.com/emicklei/go-restful/v3`, `github.com/fxamacker/cbor/v2`, `github.com/jackc/pgpassfile`, `github.com/jackc/pgservicefile`, `github.com/jackc/pgx/v5`, `github.com/jackc/puddle/v2`, `github.com/json-iterator/go`, `github.com/x448/float16`
 
 ```
 Copyright (c) 2016 Caleb Spare
@@ -1918,21 +2018,34 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 17. MIT — 2 packages
+### 19. MIT — 1 package
 
-Applies to: `github.com/beorn7/perks`, `github.com/mailru/easyjson`
+Applies to: `github.com/beorn7/perks`
 
 ```
-Copyright (c) 2016 Mail.Ru Group
+Copyright (C) 2013 Blake Mizerany
 
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
 
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 18. MIT — 1 package
+### 20. MIT — 1 package
 
 Applies to: `github.com/golang-migrate/migrate/v4`
 
@@ -1967,7 +2080,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 19. MIT — 1 package
+### 21. MIT — 1 package
 
 Applies to: `github.com/jackc/pgerrcode`
 
@@ -2020,7 +2133,7 @@ BASIS, AND THE UNIVERSITY OF CALIFORNIA HAS NO OBLIGATIONS TO PROVIDE MAINTENANC
 MODIFICATIONS.
 ```
 
-### 20. MIT — 1 package
+### 22. MIT — 1 package
 
 Applies to: `go.yaml.in/yaml/v2`
 
@@ -2058,7 +2171,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 21. UNKNOWN — 1 package
+### 23. UNKNOWN — 1 package
 
 Applies to: `github.com/coreos/go-oidc/v3`
 
@@ -2070,7 +2183,7 @@ This product includes software developed at CoreOS, Inc.
 (http://www.coreos.com/).
 ```
 
-### 22. UNKNOWN — 1 package
+### 24. UNKNOWN — 1 package
 
 Applies to: `github.com/prometheus/client_golang`
 
@@ -2095,7 +2208,7 @@ Copyright 2010 The Go Authors
 See source code for license details.
 ```
 
-### 23. UNKNOWN — 1 package
+### 25. UNKNOWN — 1 package
 
 Applies to: `github.com/prometheus/client_model`
 
@@ -2107,7 +2220,7 @@ This product includes software developed at
 SoundCloud Ltd. (http://soundcloud.com/).
 ```
 
-### 24. UNKNOWN — 1 package
+### 26. UNKNOWN — 1 package
 
 Applies to: `github.com/prometheus/common`
 
@@ -2119,7 +2232,7 @@ This product includes software developed at
 SoundCloud Ltd. (http://soundcloud.com/).
 ```
 
-### 25. UNKNOWN — 1 package
+### 27. UNKNOWN — 1 package
 
 Applies to: `github.com/prometheus/procfs`
 
@@ -2133,7 +2246,7 @@ This product includes software developed at
 SoundCloud Ltd. (http://soundcloud.com/).
 ```
 
-### 26. UNKNOWN — 1 package
+### 28. UNKNOWN — 1 package
 
 Applies to: `sigs.k8s.io/randfill`
 
