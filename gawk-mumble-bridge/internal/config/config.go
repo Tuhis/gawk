@@ -34,7 +34,7 @@ const (
 	DefaultInternalListen      = ":4444"
 	DefaultOpsListen           = ":2113"
 	DefaultNameTemplate        = "{nick} [web]"
-	DefaultObserverName        = "gawk"
+	DefaultObserverName        = "gawkBridgeBot"
 	DefaultClientVersion       = "1.4.0"
 	DefaultMaxVoiceSessions    = 200
 	DefaultMaxTempChannels     = 50

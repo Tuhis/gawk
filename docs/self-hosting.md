@@ -2026,7 +2026,7 @@ unset, nothing changes: no voice capability, no voice UI, no new route.
   `voiceObserver: "available"` once the bridge watches the channel.
   `unavailable` with the bridge's `/statusz` failure counts names the reason
   (murmur unreachable, full, autobanned, a channel it may not enter).
-- In Mumble, a user named `gawk` sits in each mapped channel: the room's
+- In Mumble, a user named `gawkBridgeBot` sits in each mapped channel: the room's
   observer. It never speaks.
 - Metrics: `gawk_bridge_voice_sessions`, `gawk_bridge_observers`,
   `gawk_bridge_mumble_failures_total{reason}` on the bridge;

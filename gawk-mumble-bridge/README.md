@@ -28,7 +28,7 @@ bridge pod ── one TLS connection per gawk user, plus one observer per room �
 - **Internal listener** (`-internal-listen`, QUIC, ClusterIP only):
   `CONNECT /internal/observe?psk=`. The room's home relay pod opens one
   observer link per voice-live room. The bridge pod that accepts it runs the
-  room's observer, a Mumble user named `gawk` that sits in the channel —
+  room's observer, a Mumble user named `gawkBridgeBot` that sits in the channel —
   creating a dynamic room's temporary channel and keeping it alive — and
   reports the channel's users back.
 - **Ops listener** (`-ops-listen`, TCP, never public): `/healthz`, `/readyz`,
@@ -72,7 +72,7 @@ Secret refs) for the secrets.
 | `-mumble-cert-sha256` | — | pin murmur's certificate (SHA-256 of the DER, hex) |
 | `-mumble-insecure-skip-verify` | `false` | accept any murmur certificate (lab only) |
 | `-mumble-name-template` | `{nick} [web]` | a bridged user's Mumble name |
-| `-mumble-observer-name` | `gawk` | the observer's Mumble name |
+| `-mumble-observer-name` | `gawkBridgeBot` | the observer's Mumble name |
 | `-mumble-temp-parent` | root | channel path temporary channels go under |
 | `-mumble-temp-channel-template` | `gawk {key}` | a dynamic room's channel; `{key}` keyed hash, `{code}` the code |
 | `-mumble-client-version` | `1.4.0` | reported Mumble version; must be ≥ 1.2.4 and < 1.5.0 |

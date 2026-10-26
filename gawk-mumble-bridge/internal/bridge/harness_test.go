@@ -222,7 +222,7 @@ func baseOptions(t testing.TB, relayAddr, murmurAddr string) Options {
 			TLS:                 mumble.TLSOptions{InsecureSkipVerify: true},
 			ClientVersion:       mumble.DefaultVersion,
 			NameTemplate:        "{nick} [web]",
-			ObserverName:        "gawk",
+			ObserverName:        "gawkBridgeBot",
 			TempParent:          "Gawk",
 			TempChannelTemplate: voice.DefaultTempChannelTemplate,
 		},

@@ -197,7 +197,7 @@ func TestMurmurTemporaryChannelLifecycle(t *testing.T) {
 	}
 	r := ol.waitRoster(t, func(m voice.Message) bool { return len(m.Users) == 2 })
 	for _, u := range r.Users {
-		if u.Name == "gawk" {
+		if u.Name == "gawkBridgeBot" {
 			t.Fatal("the observer lists itself")
 		}
 	}

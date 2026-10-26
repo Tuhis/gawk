@@ -437,7 +437,7 @@ func TestObserverPSKAndRoster(t *testing.T) {
 	if !ok {
 		t.Fatal("observer did not create the temporary channel")
 	}
-	if u, _ := m.UserByName("gawk"); u.Channel != ch || !u.SelfMute || !u.SelfDeaf {
+	if u, _ := m.UserByName("gawkBridgeBot"); u.Channel != ch || !u.SelfMute || !u.SelfDeaf {
 		t.Fatalf("observer %+v", u)
 	}
 	b := joinVoice(t, tb, "room-a", "alice", 0)
@@ -464,7 +464,7 @@ func TestObserverPSKAndRoster(t *testing.T) {
 	// The link closing removes the observer, and with everyone gone murmur
 	// removes the temporary channel.
 	_ = ol.sess.CloseWithError(0, "")
-	eventually(t, "observer gone", func() bool { _, ok := m.UserByName("gawk"); return !ok && tb.Status().Observers == 0 })
+	eventually(t, "observer gone", func() bool { _, ok := m.UserByName("gawkBridgeBot"); return !ok && tb.Status().Observers == 0 })
 	eventually(t, "temp channel gone", func() bool { _, ok := m.Channel(parent, name); return !ok })
 }
 
@@ -519,7 +519,7 @@ func TestTempChannelSharedAcrossPods(t *testing.T) {
 		t.Fatal(err)
 	}
 	ol.waitRoster(t, func(m voice.Message) bool { return m.Available && rosterHas(m, "alice [web]") })
-	if u, _ := m.UserByName("gawk"); u.Channel != ch {
+	if u, _ := m.UserByName("gawkBridgeBot"); u.Channel != ch {
 		t.Fatal("observer on pod B is in another channel")
 	}
 }
