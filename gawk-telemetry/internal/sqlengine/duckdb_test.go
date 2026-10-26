@@ -279,7 +279,7 @@ func TestARegistrationThatRunsOutOfTimeLeavesTheCatalogueAlone(t *testing.T) {
 	e := eng.(*engine)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	e.register(ctx, true)
+	e.register(ctx)
 	for _, v := range e.Views() {
 		if v.Name == "rollups" && !v.Available {
 			t.Fatal("a registration that ran out of time marked rollups unavailable")

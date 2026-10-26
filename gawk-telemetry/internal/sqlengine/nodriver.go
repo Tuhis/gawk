@@ -10,10 +10,12 @@ package sqlengine
 // different message from a query error, and the UI renders it as such rather
 // than as a broken editor.
 
+import "time"
+
 // Open reports that no engine is compiled in.
 func Open(Options) (Engine, error) { return nil, ErrNoEngine }
 
-func openScoped(Options, map[string]bool) (Engine, error) { return nil, ErrNoEngine }
+func openScoped(Options, map[string]bool, time.Time) (Engine, error) { return nil, ErrNoEngine }
 
 // Compiled reports whether this build carries a query engine. The console asks
 // before it renders.
