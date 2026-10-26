@@ -140,14 +140,15 @@ A round is requested in two cases. Both share one cap of 3 rounds per PR:
 **Track which commit each review covered.**
 
 - **Automatic review with findings:** the `original_commit_id` of its
-  inline comments in `pulls/<N>/comments`.
+  inline comments in `pulls/<N>/comments`. Runs can overlap, so if two
+  posted, take the older SHA.
 - **Automatic review with a clean summary:** the `headSha` of the
   `claude-review` run whose `createdAt`…`updatedAt` window contains the
   summary's `created_at` (`gh run list --workflow claude-code-review.yml
   --branch <branch> --json headSha,createdAt,updatedAt`). Both times come
   from GitHub, so this is safe.
 - **No Claude review comment on the PR at all:** nothing is reviewed. The
-  check can go green without posting anything. Round 1 is then a full
+  check can go green, or be skipped, without posting anything. Round 1 is then a full
   review of the PR.
 - **A round:** the head SHA when you posted the request, so name it in the
   comment.
@@ -201,7 +202,8 @@ Merge only when **all** of these hold for the **current head SHA**:
   later review covered. A review whose findings were all declined, with
   nothing pushed, satisfies this. Nothing re-runs, and nothing needs to. The only
   exception is a reached 3-round cap: the commits after round 3 then merge
-  unreviewed, and the final report names them.
+  unreviewed, and the final report names them. Round 3's fixed findings
+  count as handled once each has a reply naming its commit.
 - On a large PR, the `@claude` rounds are finished: a clean round, or 3
   rounds with round 3's findings handled as in §2.
 - No review thread is unresolved, and no person's comment is unanswered.
@@ -212,6 +214,7 @@ Merge only when **all** of these hold for the **current head SHA**:
   force-push with `--force-with-lease`, and go back to §2. The reviewed SHA
   is no longer an ancestor of `HEAD`, so compare the two versions with
   `git range-diff <old merge-base>..<last reviewed sha> origin/main..HEAD`.
+  If the old SHA is missing locally, run `git fetch origin <sha>` first.
   Commits that come out identical stay reviewed, and the marker moves to the
   rebased copy of the reviewed SHA. Changed commits, such as conflict
   resolutions, are unreviewed. If the round cap is already used up and the
