@@ -92,6 +92,7 @@ jobs:
       notices: ${{ steps.filter.outputs.notices }}
       helm: ${{ steps.filter.outputs.helm }}
       e2e: ${{ steps.filter.outputs.e2e }}
+      e2e_voice: ${{ steps.filter.outputs.e2e_voice }}
       dev_stack: ${{ steps.filter.outputs.dev_stack }}
       dev_stack_images: ${{ steps.filter.outputs.dev_stack_images }}
       coverage_tool: ${{ steps.filter.outputs.coverage_tool }}
@@ -222,6 +223,9 @@ jobs:
           # filtering honest: two PRs that each skip the other's tests still meet
           # here, on the merged tree.
           e2e=$(decide          e2e          '^(gawk-server|gawk-app|gawk-telemetry|e2e)/')
+          # R79 MV7: the voice e2e spans the relay, the bridge, the app and a
+          # real murmur, so it runs on any of their changes.
+          e2e_voice=$(decide    e2e_voice    '^(gawk-server|gawk-app|gawk-mumble-bridge|e2e)/')
           # R38 (docs/41): the compose stack is assembled from the relay's
           # certificate path, the frontend's runtime config, both images and
           # the dev/ scripts — so a change to any of them can break the one
@@ -2859,6 +2863,64 @@ jobs:
   # It is also the job that keeps the path filtering above honest: it is the
   # only one that spans modules, and it triggers on all four, so two PRs that
   # each skipped the other's unit tests still meet here — on the merged tree.
+  # R79 MV7 (docs/80 §9): room voice with every real component — the relay,
+  # two gawk-mumble-bridge pods behind a UDP LoadBalancer stand-in
+  # (e2e/udp-lb.mjs), murmur 1.6 in docker, three browsers on Chromium's fake
+  # microphone and a scripted native Mumble user. Six passes: the roster
+  # before anyone is in voice, audio both ways, a Mumble mute and kick, a
+  # bridge pod drain mid-call, a dynamic room's temporary channel, and a gawk
+  # IP ban. Its first run found the rejoin-during-a-drain bug (the observer
+  # leaves with the draining pod, so the immediate rejoin is told
+  # Unavailable), which no unit test had the topology to see.
+  e2e-voice:
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.e2e_voice == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
+        with:
+          go-version-file: gawk-server/go.mod
+          cache-dependency-path: |
+            gawk-server/go.sum
+            gawk-mumble-bridge/go.sum
+      - uses: ./.github/actions/go-shared-cache
+      - name: Ensure UDP buffer limits for quic-go
+        run: |
+          need=7340032
+          if [ "$(sysctl -n net.core.rmem_max)" -lt "$need" ] || [ "$(sysctl -n net.core.wmem_max)" -lt "$need" ]; then
+            sudo sysctl -w net.core.rmem_max="$need" net.core.wmem_max="$need"
+          fi
+      - name: Build the relay, the bridge and the simulators
+        run: |
+          mkdir -p e2e/bin
+          (cd gawk-server && go build -o ../e2e/bin/ ./cmd/gawk-server ./cmd/gawk-pubsim ./cmd/gawk-devcert)
+          (cd gawk-mumble-bridge && CGO_ENABLED=0 go build -o ../e2e/bin/ ./cmd/gawk-mumble-bridge ./cmd/gawk-mumblesim)
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            gawk-app/package-lock.json
+            e2e/package-lock.json
+      - run: npm ci
+        working-directory: gawk-app
+      - run: npm run build
+        working-directory: gawk-app
+      - run: npm ci
+        working-directory: e2e
+      - name: Run the voice E2E (R79)
+        run: node voice.mjs
+        working-directory: e2e
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: e2e-voice
+          path: e2e/out/voice
+          if-no-files-found: ignore
+
   e2e:
     needs: changes
     if: github.event_name == 'pull_request' && needs.changes.outputs.e2e == 'true'
