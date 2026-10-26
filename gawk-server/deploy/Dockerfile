@@ -34,7 +34,7 @@
 # 465 of that job's 504 seconds (run 30762746378), for one manifest. The cache
 # handles both tags now, so this pin is no longer what makes the build fast —
 # but if a base image ever resolves slowly again, that is the shape to look for.
-FROM golang:1.26-trixie AS build
+FROM golang:1.27-trixie AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 # go.mod replaces quic-go with the vendored, patched copy (docs/75 D7); its

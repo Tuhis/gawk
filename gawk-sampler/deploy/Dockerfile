@@ -38,7 +38,7 @@
 # nasm buys the decoders their SIMD paths (the script builds without it, just
 # slower per sample). Only the script is copied first, so a Go-only change
 # reuses this layer — the slowest one in the build.
-FROM golang:1.26-trixie AS ffmpeg
+FROM golang:1.27-trixie AS ffmpeg
 RUN apt-get update \
  && apt-get install -y --no-install-recommends nasm xz-utils \
  && rm -rf /var/lib/apt/lists/*
@@ -56,7 +56,7 @@ RUN sh /usr/local/bin/build-ffmpeg.sh /opt/ffmpeg /tmp/ffmpeg-build \
 # variant): the CPU package by default; a GPU variant sets ORT_PACKAGE to a
 # CUDA package and ORT_SHA256 to its digest — and needs a CUDA runtime base
 # instead of distroless, which is why it is not a variant today.
-FROM golang:1.26-trixie AS onnxruntime
+FROM golang:1.27-trixie AS onnxruntime
 ARG ORT_VERSION=1.29.0
 ARG ORT_PACKAGE=onnxruntime-linux-x64
 ARG ORT_SHA256=c3fddc4f139a045b0c4902c57410f0694f1c2fdf9b6939fbe38b1aeae7cd14ba
@@ -73,7 +73,7 @@ RUN curl -fsSL -o ort.tgz \
        "${ORT_PACKAGE}-${ORT_VERSION}/VERSION_NUMBER" /out/licenses/
 
 # ── the sampler ───────────────────────────────────────────────────────────
-FROM golang:1.26-trixie AS build
+FROM golang:1.27-trixie AS build
 WORKDIR /src
 # Manifests before sources: the `go mod download` layer then depends on the
 # go.mod/go.sum files alone and survives every edit that does not touch

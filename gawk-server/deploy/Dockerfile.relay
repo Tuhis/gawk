@@ -34,7 +34,7 @@ COPY gawk-app/ ./
 RUN npx tsc -b && npx vite build --base=./ --outDir /out/app --emptyOutDir
 
 # `-trixie` for the reason written in deploy/Dockerfile.
-FROM --platform=$BUILDPLATFORM golang:1.26-trixie AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-trixie AS build
 WORKDIR /src/gawk-server
 COPY gawk-server/go.mod gawk-server/go.sum ./
 # go.mod replaces quic-go with the vendored, patched copy (docs/75 D7): the
