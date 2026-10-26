@@ -555,6 +555,37 @@ func TestUnknownFieldsSurviveIntoTheAvailableList(t *testing.T) {
 	}
 }
 
+// A bool field is offered in the explorer's picker (it is in `available`) and
+// drawn there as a 0/1 step line, so the timeline must carry it as a number.
+// Points are numeric-only; reading them through schema.Number dropped every
+// bool, and the explorer skips an all-null series without a word.
+func TestBoolFieldsReachTheTimelineAsZeroOrOne(t *testing.T) {
+	f := newFixture(t)
+	sid := "070000000000000000000002"
+	stats := healthyViewerStats(4)
+	for i := range stats {
+		stats[i]["documentHidden"] = i%2 == 1
+	}
+	f.seed(t, sid, "viewer", stats, nil)
+
+	tl, err := f.api.GetSessionDetail(sid, SessionQuery{Fields: []string{"documentHidden"}, Full: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tl.Points) != len(stats) {
+		t.Fatalf("got %d points for %d samples", len(tl.Points), len(stats))
+	}
+	for i, p := range tl.Points {
+		v, ok := p["documentHidden"]
+		if !ok {
+			t.Fatalf("point %d has no documentHidden; a bool field never charts", i)
+		}
+		if want := float64(i % 2); v != want {
+			t.Errorf("point %d documentHidden = %v, want %v", i, v, want)
+		}
+	}
+}
+
 // --- TH6: verdicts, evidence and the rule catalogue ------------------------
 
 func TestRuleCatalogueComesFromTheGoRules(t *testing.T) {
