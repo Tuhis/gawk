@@ -1,6 +1,6 @@
 ---
 name: ship-pr
-description: Open a PR for the current branch and drive it to merge — watch CI and review comments, fix failures and findings as they arrive, request up to 3 `@claude` review rounds on large PRs (>2k changed lines), and squash-merge once everything is green and resolved. Use when asked to "ship", "open and merge", or "land" a branch.
+description: Open a PR for the current branch and drive it to merge — watch CI and review comments, fix failures and findings as they arrive, request up to 3 `@claude` review rounds (always on large PRs over 2k changed lines, and on any PR to review fixes the automatic review skips), and squash-merge once everything is green and resolved. Use when asked to "ship", "open and merge", or "land" a branch.
 ---
 
 # Ship a PR
@@ -17,12 +17,13 @@ Verify them if something behaves unexpectedly, because they can drift:
   `changes`, `app`, `server`, `server-coverage` and `common-ts-lock`, but this
   skill waits for **every** check, not only the required ones.
 - **`claude-review`** (`.github/workflows/claude-code-review.yml`) runs
-  automatically on `opened`/`synchronize`/`reopened`. It posts inline
-  comments for findings, or a `## Code review` summary comment ("No issues
-  found…") when the review is clean. **Once that clean summary exists, later
-  runs stop without reviewing**: the code-review plugin treats the PR as
-  already reviewed, and the check still goes green. Commits pushed after
-  the clean summary are therefore unreviewed (see §4).
+  automatically on `opened`/`synchronize`/`reopened`, but it **reviews a PR
+  once**. It posts inline comments for findings, or a `## Code review`
+  summary ("No issues found…") when the review is clean. Every later run
+  stops as soon as it sees that Claude has already commented on the PR,
+  and the check still goes green. Commits pushed after the first review,
+  including the fixes for its findings, are therefore **not reviewed
+  automatically** (see §3 and §4).
 - **`@claude`** (`.github/workflows/claude.yml`) answers a PR comment that
   mentions it. The comment must come from a writer or `tuhokuutio[bot]`. The
   reply is an issue comment from `claude[bot]` that starts with
@@ -117,17 +118,22 @@ claim to verify, not an order:
 - For findings in an issue comment, such as an `@claude` round's report,
   reply in one PR comment that covers each point with its commit SHA.
 
-Push the batch, then go back to waiting. Until the PR has a clean summary,
-each push gets a new `claude-review`, and its findings need the same
-treatment.
+Push the batch, then go back to waiting. The automatic review won't look at
+the fixes. §3 gets them reviewed.
 
-## 3. `@claude` review rounds (large PRs only)
+## 3. `@claude` review rounds
 
-Skip this section when the PR is 2000 lines or fewer. The automatic
-`claude-review` is enough there.
+A round is requested in two cases. Both share one cap of 3 rounds per PR:
 
-For a large PR, after the automatic review's findings on the current head
-are handled and CI is green, request an explicit round with a PR comment:
+- **Large PR (more than 2000 lines):** always request rounds, even when the
+  automatic review was clean.
+- **Any PR with commits pushed after the automatic review**, such as fixes
+  for its findings: request rounds until those commits are reviewed. A small
+  PR whose automatic review was clean and that got no later commits needs
+  no rounds.
+
+Request a round once the previous review's findings are handled and CI is
+green on the current head. Post a PR comment:
 
 ```
 @claude please review again (round K of 3). Since your last review:
@@ -138,8 +144,8 @@ are handled and CI is green, request an explicit round with a PR comment:
 Focus on <the parts most likely to be wrong>.
 ```
 
-For round 1, ask for a full review of the PR instead of "since your last
-review".
+On a large PR with a clean automatic review, ask for a full review of the
+PR in round 1, instead of "since your last review".
 
 - **At most 3 rounds.** A round counts once its job has **succeeded**: count
   the `claude[bot]` replies starting with "**Claude finished …**" that answer
@@ -161,12 +167,12 @@ Merge only when **all** of these hold for the **current head SHA**:
 
 - Every check has finished, each as `success`, `skipped` or `neutral`, with
   none pending. That includes `claude-review`.
-- `claude-review` has posted its clean `## Code review` summary. If commits
-  were pushed **after** that summary, they are unreviewed. Ask `@claude` to
-  review them, naming the commits as in §3, and handle what it finds. On a
-  large PR this is the next round. On a small PR it is a one-off review.
-- On a large PR, the `@claude` rounds are finished (a clean round, or 3
-  rounds).
+- Every commit has been reviewed. The automatic `claude-review` has run, and
+  any commits pushed after it were covered by an `@claude` round (§3) that
+  found nothing actionable. The 3-round cap reached is the only exception;
+  say so in the final report.
+- On a large PR, the `@claude` rounds are finished: a clean round, or 3
+  rounds.
 - No review thread is unresolved, and no person's comment is unanswered.
 - The PR title is still a correct Conventional Commit for the final diff.
   Edit it with `gh pr edit --title` if the scope changed.
