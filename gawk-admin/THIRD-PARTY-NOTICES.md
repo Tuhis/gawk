@@ -61,7 +61,7 @@ script for what counts as a dependency here and why.
 | `github.com/jackc/pgerrcode` | v0.0.0-20220416144525-469b46aa5efa | `MIT` | Copyright (c) 2019 Jack Christensen |
 | `github.com/jackc/pgpassfile` | v1.0.0 | `MIT` | Copyright (c) 2019 Jack Christensen |
 | `github.com/jackc/pgservicefile` | v0.0.0-20240606120523-5a60cdf6a761 | `MIT` | Copyright (c) 2020 Jack Christensen |
-| `github.com/jackc/pgx/v5` | v5.10.0 | `MIT` | Copyright (c) 2013-2021 Jack Christensen |
+| `github.com/jackc/pgx/v5` | v5.11.0 | `MIT` | Copyright (c) 2013-2021 Jack Christensen |
 | `github.com/jackc/puddle/v2` | v2.2.2 | `MIT` | Copyright (c) 2018 Jack Christensen |
 | `github.com/json-iterator/go` | v1.1.12 | `MIT` | Copyright (c) 2016 json-iterator |
 | `github.com/klauspost/compress` | v1.20.1 | `Apache-2.0 OR MIT OR BSD-3-Clause` | Copyright (c) 2012 The Go Authors. All rights reserved<br>Copyright (c) 2019 Klaus Post. All rights reserved<br>Copyright 2016-2017 The New York Times Company<br>Copyright (c) 2015 Klaus Post<br>Copyright (c) 2011 The Snappy-Go Authors. All rights reserved<br>Copyright 2016 The filepathx Authors |
