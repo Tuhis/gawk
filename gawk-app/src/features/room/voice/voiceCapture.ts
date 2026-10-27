@@ -685,9 +685,10 @@ export class VoiceCapture implements VoiceCaptureLike {
   }
 
   // docs/82 D6, in place: ramped across the block from the last block's gain
-  // so a change never steps, and clipped to ±1.
+  // so a change never steps, and clipped to ±1. Never on a Browser track:
+  // the browser's auto gain is on there (D5), and ours on top would clip.
   private applyGain(pcm: Float32Array): void {
-    const target = 10 ** ((this.cb.gainDb?.() ?? 0) / 20);
+    const target = this.running === 'browser' ? 1 : 10 ** ((this.cb.gainDb?.() ?? 0) / 20);
     const from = this.gainLin ?? target;
     this.gainLin = target;
     if (from === 1 && target === 1) return;

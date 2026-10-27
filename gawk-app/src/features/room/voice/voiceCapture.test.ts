@@ -304,6 +304,14 @@ describe('VoiceCapture, the gain after the gate (docs/82 D6)', () => {
     cap.stop();
   });
 
+  it('Browser mode never applies it: the browser’s auto gain is on there (review)', async () => {
+    const cb = { ...callbacks(), gainDb: () => 18 };
+    const { cap, node } = await started('browser', cb);
+    block(node(), 0.1);
+    expect(encoders[0].encoded[0].level).toBeCloseTo(0.1, 6);
+    cap.stop();
+  });
+
   it('no gain callback, or 0 dB, leaves the block untouched', async () => {
     const { cap, node } = await started('off');
     block(node(), 0.3);
