@@ -329,3 +329,46 @@ describe('createOpusDecoder', () => {
     expect(made[0].closed).toBe(1);
   });
 });
+
+describe('VoicePlayback, Hear yourself (docs/81 D16)', () => {
+  it('plays your own packets through a speaker of its own: never in the speaking set or the cap', () => {
+    const { p, onSpeaking } = makePlayback();
+    p.handleSelfFrame({ end: true, seq: 0 }, new Uint8Array(0)); // a bare terminator builds nothing
+    expect(decoders).toHaveLength(0);
+    p.handleSelfFrame({ end: false, seq: 3 }, opus);
+    p.handleSelfFrame({ end: false, seq: 4 }, opus);
+    expect(decoders).toHaveLength(1);
+    expect(decoders[0].decoded.map((d) => d.ts)).toEqual([30_000, 40_000]);
+    expect(sinks[0].volume).toBe(1);
+    expect(p.speakerCount).toBe(0);
+    expect(onSpeaking).not.toHaveBeenCalled();
+    // A new spurt re-anchors, as anyone's does.
+    p.handleSelfFrame({ end: true, seq: 5 }, new Uint8Array(0));
+    p.handleSelfFrame({ end: false, seq: 50 }, opus);
+    expect(sinks[0].flushes).toBe(1);
+    // Others fill the cap without evicting it.
+    for (let s = 1; s <= MAX_VOICE_SPEAKERS + 1; s++) p.handleFrame(frame(s, 0), opus);
+    expect(decoders[0].closed).toBe(false);
+    p.stopSelf();
+    expect(decoders[0].closed).toBe(true);
+    expect(sinks[0].disposed).toBe(true);
+    p.stopSelf();
+    p.dispose();
+  });
+
+  it('is released when idle, on a decoder error, and on dispose; nothing after dispose', () => {
+    const { p } = makePlayback();
+    p.handleSelfFrame({ end: false, seq: 0 }, opus);
+    clock = SPEAKER_IDLE_RELEASE_MS;
+    p.sweep();
+    expect(decoders[0].closed).toBe(true);
+    p.handleSelfFrame({ end: false, seq: 1 }, opus);
+    decoders[1].fail(new Error('bad'));
+    expect(sinks[1].disposed).toBe(true);
+    p.handleSelfFrame({ end: false, seq: 2 }, opus);
+    p.dispose();
+    expect(decoders[2].closed).toBe(true);
+    p.handleSelfFrame({ end: false, seq: 3 }, opus);
+    expect(decoders).toHaveLength(3);
+  });
+});

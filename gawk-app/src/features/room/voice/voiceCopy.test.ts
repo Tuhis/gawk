@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { VOICE_NOTICE, failureText, serverStateNote, unavailableText } from './voiceCopy';
+import {
+  VOICE_NOTICE,
+  failureText,
+  noiseCostText,
+  noiseStatusText,
+  serverStateNote,
+  unavailableText,
+} from './voiceCopy';
+import type { NoiseStatus } from './voiceCapture';
 
 describe('voice copy', () => {
   it('says the channel is Mumble’s, shared, and recordable (docs/80 §6)', () => {
@@ -22,5 +30,40 @@ describe('voice copy', () => {
     expect(serverStateNote({ ...none, suppressed: true })).toMatch(/can’t speak/);
     expect(serverStateNote({ ...none, serverMuted: true })).toMatch(/muted you/);
     expect(serverStateNote({ ...none, serverMuted: true, serverDeafened: true })).toMatch(/deafened you/);
+  });
+});
+
+describe('Audio section copy (docs/81 D13, D15)', () => {
+  const base: NoiseStatus = {
+    requested: 'rnnoise',
+    running: 'rnnoise',
+    loading: false,
+    fallback: null,
+    pending: false,
+    offAvailable: true,
+  };
+
+  it('owns RNNoise’s 20 ms, and what Browser and Off cost', () => {
+    expect(noiseCostText('rnnoise')).toMatch(/adds 20 ms/);
+    expect(noiseCostText('browser')).toMatch(/no added delay/);
+    expect(noiseCostText('off')).toMatch(/No noise suppression/);
+  });
+
+  it('says nothing when all is well, loading while it loads, and why it fell back and to what', () => {
+    expect(noiseStatusText(null)).toBeNull();
+    expect(noiseStatusText(base)).toBeNull();
+    expect(noiseStatusText({ ...base, loading: true })).toBe('RNNoise is loading…');
+    expect(noiseStatusText({ ...base, running: 'off', fallback: 'it is too slow on this device (52 % of real time)' })).toBe(
+      'RNNoise isn’t available here: it is too slow on this device (52 % of real time). Using Off.',
+    );
+  });
+
+  it('says when a choice waits for the next join', () => {
+    expect(noiseStatusText({ ...base, requested: 'browser', pending: true })).toBe(
+      'Browser applies when you next join; RNNoise for now.',
+    );
+    expect(
+      noiseStatusText({ ...base, running: 'browser', fallback: 'the download failed', pending: true }),
+    ).toMatch(/^RNNoise isn’t available here: the download failed\. Using Browser\. RNNoise applies when you next join/);
   });
 });

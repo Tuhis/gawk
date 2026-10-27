@@ -204,3 +204,113 @@
     padding: 0.45rem 1.1rem;
   }
 }
+
+/* R80 (docs/81 D15): the Audio section, collapsed by default. */
+.audio {
+  align-self: stretch;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-sm);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.audioSummary {
+  padding: 0.45rem 0.65rem;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.audioBody {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0 0.65rem 0.65rem;
+}
+
+.audioLabel {
+  display: flex;
+  justify-content: space-between;
+  align-self: stretch;
+  gap: 0.5rem;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.audioValue {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-weight: 400;
+}
+
+.audioNote {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--faint);
+  line-height: 1.4;
+}
+
+.audioSlider {
+  align-self: stretch;
+  accent-color: var(--accent);
+}
+
+.audioReset {
+  font-size: var(--fs-xs);
+}
+
+.audioCheck {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.meterRow {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  gap: 0.5rem;
+}
+
+.meter {
+  position: relative;
+  flex: 1;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.meterFill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: color-mix(in srgb, var(--accent) 70%, transparent);
+  transition: width 50ms linear;
+}
+
+.meterMark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--text);
+}
+
+.meterLamp {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 50%;
+  border: 1px solid var(--faint);
+}
+
+.meterLamp[data-open='true'] {
+  background: var(--ok);
+  border-color: var(--ok);
+}

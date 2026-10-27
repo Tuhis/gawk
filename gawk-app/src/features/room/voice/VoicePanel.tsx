@@ -18,6 +18,7 @@ import { loadSpeakerVolume, pttKeyLabel } from './voicePrefs';
 import type { VoiceActions } from './useRoomVoice';
 import { voiceCaptureSupported } from './voiceCapture';
 import { REMOVED_MESSAGE } from './voiceController';
+import { AudioSettings } from './VoiceAudio';
 import { VOICE_NOTICE, VOICE_ROOM_UNAVAILABLE, failureText, serverStateNote, unavailableText } from './voiceCopy';
 
 function inVoice(phase: VoiceStoreState['phase']): boolean {
@@ -317,6 +318,7 @@ export function VoiceSection({ snapshot, actions }: { snapshot: RoomState; actio
                   <HoldToTalk actions={actions} held={s.pttHeld} />
                 </>
               )}
+              <AudioSettings actions={actions} />
             </>
           )}
         </div>
