@@ -1,0 +1,86 @@
+{
+  "variant": "v02-avx",
+  "rows": [
+    {
+      "noise": "noise-keyboard",
+      "path": "direct",
+      "lagSamples": 960,
+      "noiseAttenuationDb": 32.90974180048281,
+      "siSdrDb": 6.761105788385295,
+      "probAgreementWithDirect": 1,
+      "meanProb": 0.7376057578722636
+    },
+    {
+      "noise": "noise-keyboard",
+      "path": "linear",
+      "lagSamples": 960,
+      "noiseAttenuationDb": 33.356262434828956,
+      "siSdrDb": 6.761615867670852,
+      "probAgreementWithDirect": 0.9959993332222037,
+      "meanProb": 0.7380575819211436
+    },
+    {
+      "noise": "noise-keyboard",
+      "path": "unresampled",
+      "lagSamples": 960,
+      "noiseAttenuationDb": 42.023804610208096,
+      "siSdrDb": -42.00183431764158,
+      "probAgreementWithDirect": 0.976233671988389,
+      "meanProb": 0.7362637369635316
+    },
+    {
+      "noise": "noise-restaurant",
+      "path": "direct",
+      "lagSamples": 960,
+      "noiseAttenuationDb": 7.941085670965286,
+      "siSdrDb": 6.802015754675859,
+      "probAgreementWithDirect": 1,
+      "meanProb": 0.7684888462275267
+    },
+    {
+      "noise": "noise-restaurant",
+      "path": "linear",
+      "lagSamples": 960,
+      "noiseAttenuationDb": 8.0805978221372,
+      "siSdrDb": 6.8197204103518825,
+      "probAgreementWithDirect": 0.9948324720786798,
+      "meanProb": 0.7657256630395408
+    },
+    {
+      "noise": "noise-restaurant",
+      "path": "unresampled",
+      "lagSamples": 960,
+      "noiseAttenuationDb": 8.513745112149032,
+      "siSdrDb": -44.38532966090129,
+      "probAgreementWithDirect": 0.9677068214804064,
+      "meanProb": 0.7625446181273945
+    },
+    {
+      "noise": "noise-street",
+      "path": "direct",
+      "lagSamples": 960,
+      "noiseAttenuationDb": 38.93490964757612,
+      "siSdrDb": 7.901051132528998,
+      "probAgreementWithDirect": 1,
+      "meanProb": 0.7230593111167352
+    },
+    {
+      "noise": "noise-street",
+      "path": "linear",
+      "lagSamples": 960,
+      "noiseAttenuationDb": 39.91537480493072,
+      "siSdrDb": 7.896912316735736,
+      "probAgreementWithDirect": 0.997832972162027,
+      "meanProb": 0.7226994206685189
+    },
+    {
+      "noise": "noise-street",
+      "path": "unresampled",
+      "lagSamples": 960,
+      "noiseAttenuationDb": 30.39238060163727,
+      "siSdrDb": -42.29127601468146,
+      "probAgreementWithDirect": 0.9824020319303338,
+      "meanProb": 0.7251701737403956
+    }
+  ]
+}
