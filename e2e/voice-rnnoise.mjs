@@ -252,15 +252,37 @@ async function openAudio(section) {
   fail(`the Audio section did not open: ${await audio.innerText()}`);
 }
 
+async function failWithShot(section, msg) {
+  const page = section.page();
+  await page.screenshot({ path: join(OUT, 'failure.png'), fullPage: true }).catch(() => {});
+  // What the next person needs to tell a slow download from a dead worklet.
+  const st = await page
+    .evaluate(() => ({
+      context: window.__gawkContext?.state ?? null,
+      rate: window.__gawkContextRate ?? null,
+      gum: (window.__gum ?? []).length,
+      framesOut: window.__voiceE2E?.framesOut ?? null,
+      wasm: performance
+        .getEntriesByType('resource')
+        .filter((e) => e.name.endsWith('.wasm'))
+        .map((e) => ({ name: e.name, start: Math.round(e.startTime), end: Math.round(e.responseEnd), bytes: e.transferSize })),
+    }))
+    .catch((e) => String(e));
+  log(`browser ${page.context().browser()?.version()}; ${JSON.stringify(st)}`);
+  fail(msg);
+}
+
 // RNNoise running: the cost line says so and nothing says loading or fallback.
 async function waitForRnnoise(section, name) {
   const by = Date.now() + 20_000;
   for (;;) {
     await openAudio(section);
-    const text = await section.getByTestId('voice-audio').innerText();
-    if (/isn’t available here/.test(text)) fail(`${name}: RNNoise fell back: ${text}`);
+    // textContent, not innerText: it does not depend on how the browser
+    // lays the open section out.
+    const text = (await section.getByTestId('voice-audio').textContent()) ?? '';
+    if (/isn’t available here/.test(text)) await failWithShot(section, `${name}: RNNoise fell back: ${text}`);
     if (/RNNoise adds 20 ms/.test(text) && !/loading/.test(text)) return;
-    if (Date.now() > by) fail(`${name}: RNNoise never ran: ${text}`);
+    if (Date.now() > by) await failWithShot(section, `${name}: RNNoise never ran: ${text}`);
     await sleep(200);
   }
 }
@@ -310,7 +332,7 @@ async function chromiumContext(browser) {
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('console', (m) => {
-    if (/voice|rnnoise/i.test(m.text())) log('page:', m.text());
+    if (/voice|rnnoise|wasm|worklet/i.test(m.text()) || m.type() === 'error') log('page:', m.text());
   });
   return { context, page, errors };
 }
