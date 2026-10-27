@@ -262,6 +262,18 @@ RNNoise's speech probability over the keyboard-only lead, NS on + RNNoise: max 1
 
 RNNoise's speech probability over the keyboard-only lead, NS off, auto gain off + RNNoise: max 0.999, ≥ 0.5 on 3.3 % of frames, ≥ 0.9 on 1.3 %.
 
+The default gate (on 0.90, off 0.70, hold 300 ms, floor -50 dBFS) over the 4 s lead, where one spurt is ~8 %: NS off + RNNoise 11.8 % (2 spurts); NS on + RNNoise 33.0 % (3 spurts); NS off, auto gain off + RNNoise 8.3 % (1 spurts).
+
+**A minute of keyboard alone** at -36 dBFS through Chromium, suppression off (D11), then RNNoise and the default gate (1–59 s):
+
+| Capture | Level into RNNoise dBFS | After RNNoise dBFS | Sent | Spurts/min |
+| --- | --- | --- | --- | --- |
+| The file itself (no browser) | -36.0 | -68.8 | 0.5 % | 1.0 |
+| Chromium, auto gain on | -26.6 | -56.3 | 2.2 % | 4.1 |
+| Chromium, auto gain off | -36.9 | -65.7 | 3.1 % | 6.2 |
+
+**Stop, then re-open** (D11): a track opened with NS off for 8 s, `stop()`, then `getUserMedia` with NS on at once (14.5 ms). The new track: `getSettings()` NS true, 2–9 s -25.25 dBFS, 12–19 s -24.38 dBFS (compare `onNoSwitch` and `offNoSwitch` above: the fake device restarts its file for a new capture).
+
 **Two tracks at once** (keyboard alone, auto gain on): the first opened with NS off, the second, while the first is open, with NS on.
 
 | Track | Asked for NS | `getSettings()` NS | 2–9 s dBFS | 12–19 s dBFS |

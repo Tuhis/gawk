@@ -418,7 +418,7 @@
       "secondDbfs": -24.38113084383484
     }
   },
-  "recordDate": "2026-10-27T10:41:25.732Z",
+  "recordDate": "2026-10-27T10:56:54.226Z",
   "twoTracks": {
     "first": {
       "samples": 960960,
@@ -437,6 +437,47 @@
       },
       "firstDbfs": -25.01117891165173,
       "secondDbfs": -25.44059388758768
+    }
+  },
+  "reopen": {
+    "first": {
+      "samples": 384480,
+      "settings": {
+        "noiseSuppression": false,
+        "autoGainControl": true
+      }
+    },
+    "second": {
+      "samples": 960000,
+      "settings": {
+        "noiseSuppression": true,
+        "autoGainControl": true
+      },
+      "firstDbfs": -25.251176136689992,
+      "secondDbfs": -24.38113084383484
+    },
+    "reopenMs": 14.5
+  },
+  "keyboardMinute": {
+    "agcOn": {
+      "sampleRate": 48000,
+      "settings": {
+        "noiseSuppression": false,
+        "echoCancellation": true,
+        "autoGainControl": true
+      },
+      "samples": 2976960,
+      "applied": null
+    },
+    "agcOff": {
+      "sampleRate": 48000,
+      "settings": {
+        "noiseSuppression": false,
+        "echoCancellation": true,
+        "autoGainControl": false
+      },
+      "samples": 2976960,
+      "applied": null
     }
   }
 }

@@ -14,6 +14,7 @@
 //                f32 for offline analysis; optionally switching suppression
 //                with applyConstraints part-way through
 //   recordPair   (Chromium) two tracks on the device at once, NS off and on
+//   recordReopen (Chromium) stop() a track and open one with other processing
 
 const FRAME = 480;
 
@@ -356,5 +357,56 @@ async function recordPair({ first, second, seconds }) {
   };
 }
 
-window.ns0 = { caps, cpuMain, worklet, rates, constraints, record, recordPair };
+// Chromium: D11's re-open in one page. Read a track opened with `first`
+// for firstSeconds, stop() it, call getUserMedia with `second` at once,
+// and return the new track's audio: does it get the new processing?
+async function recordReopen({ first, second, firstSeconds, seconds }) {
+  const open = (o) => navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, channelCount: 1, ...o } });
+  const a = (await open(first)).getAudioTracks()[0];
+  const ra = a.getSettings();
+  const reader = new MediaStreamTrackProcessor({ track: a }).readable.getReader();
+  const end = performance.now() + firstSeconds * 1000;
+  let n = 0;
+  while (performance.now() < end) {
+    const { value } = await reader.read();
+    if (!value) break;
+    n += value.numberOfFrames;
+    value.close();
+  }
+  reader.releaseLock();
+  a.stop();
+  const t0 = performance.now();
+  const b = (await open(second)).getAudioTracks()[0];
+  const reopenMs = performance.now() - t0;
+  const sb = b.getSettings();
+  const rb = await (async () => {
+    const r = new MediaStreamTrackProcessor({ track: b }).readable.getReader();
+    const chunks = [];
+    let m = 0;
+    const stop = performance.now() + seconds * 1000;
+    while (performance.now() < stop) {
+      const { value } = await r.read();
+      if (!value) break;
+      const p = new Float32Array(value.numberOfFrames);
+      value.copyTo(p, { planeIndex: 0, format: 'f32-planar' });
+      chunks.push(p); m += p.length;
+      value.close();
+    }
+    b.stop();
+    const all = new Float32Array(m);
+    let o = 0;
+    for (const c of chunks) { all.set(c, o); o += c.length; }
+    const u8 = new Uint8Array(all.buffer);
+    let s = '';
+    for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000));
+    return { samples: m, f32: btoa(s) };
+  })();
+  return {
+    first: { samples: n, settings: { noiseSuppression: ra.noiseSuppression, autoGainControl: ra.autoGainControl } },
+    second: { ...rb, settings: { noiseSuppression: sb.noiseSuppression, autoGainControl: sb.autoGainControl } },
+    reopenMs,
+  };
+}
+
+window.ns0 = { caps, cpuMain, worklet, rates, constraints, record, recordPair, recordReopen };
 window.ns0Ready = true;

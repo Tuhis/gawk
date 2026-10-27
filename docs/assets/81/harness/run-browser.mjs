@@ -32,9 +32,11 @@ const OUT = resolve(arg('out', join(HERE, '..', 'results')));
 const CAPTURE_OUT = resolve(arg('capture-out', OUT));
 const VARIANTS = ['v02-avx', 'v02-avx2', 'main-scalar', 'main-avx', 'main-avx2', 'main-little-scalar', 'main-little-avx', 'main-little-avx2'];
 const REC_SECONDS = 30;
-// --only record: just Chromium's recordings, merged into the existing
-// browser-chromium.json (the other probes' numbers stay as they were).
-const ONLY_RECORD = arg('only', null) === 'record';
+// --only record | reopen: just Chromium's recordings, or just the re-open
+// probe, merged into the existing browser-chromium.json (the other probes'
+// numbers stay as they were).
+const ONLY = arg('only', null);
+const ONLY_RECORD = ONLY === 'record' || ONLY === 'reopen' || ONLY === 'keyboard';
 
 function serve() {
   const types = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm' };
@@ -87,12 +89,14 @@ function mixWav(dir) {
   return path;
 }
 
-// 20 s of keyboard alone at -36 dBFS, for the applyConstraints probe.
-function keyboardWav(dir) {
-  const nz = f32(readFileSync(join(CORPUS, 'noise-keyboard.f32'))).subarray(0, 20 * 48000);
+// Keyboard alone at -36 dBFS: 20 s for the applyConstraints probe, the
+// whole minute for the default gate through Chromium's processing.
+function keyboardWav(dir, seconds = 20) {
+  const nz = f32(readFileSync(join(CORPUS, 'noise-keyboard.f32'))).subarray(0, seconds * 48000);
   const rms = Math.sqrt(nz.reduce((a, v) => a + v * v, 0) / nz.length);
   const g = 10 ** (-36 / 20) / rms;
-  const path = join(dir, 'keyboard.wav');
+  const path = join(dir, `keyboard-${seconds}.wav`);
+  if (seconds === 60) writeFileSync(join(CAPTURE_OUT, 'capture-kb-input.f32'), Buffer.from(nz.map((v) => v * g).buffer));
   wav16(path, nz.map((v) => v * g));
   return path;
 }
@@ -202,6 +206,8 @@ async function main() {
       if (name === 'chromium' && CORPUS) {
         const tmp = join(tmpdir(), `ns0-${process.pid}`);
         mkdirSync(tmp, { recursive: true });
+        const kwav = keyboardWav(tmp);
+        if (ONLY === 'record' || !ONLY) {
         const wav = mixWav(tmp);
         res.record = {};
         // auto gain on as in production; the third is D11's mode with it off
@@ -218,7 +224,6 @@ async function main() {
         // Does applyConstraints change the audio, whatever getSettings() says?
         // Keyboard alone; the level of 2-9 s against 12-19 s, with a switch at
         // 10 s and without one (the file's own drift).
-        const kwav = keyboardWav(tmp);
         res.applyConstraints = {};
         for (const [label, o] of [
           ['offThenOn', { noiseSuppression: false, applyAtS: 10, applyTo: true }],
@@ -253,6 +258,37 @@ async function main() {
             }
           }
           res.twoTracks = r;
+        }
+        }
+        // D11's re-open: NS off for 8 s, stop(), NS on at once. Its own
+        // timeline's 2-9 / 12-19 s against the single-track runs above.
+        if (ONLY === 'reopen' || !ONLY) {
+          const b = await launch('chromium', kwav);
+          const r = await onPage(b, name, (p) => p.evaluate((x) => window.ns0.recordReopen(x), { first: { noiseSuppression: false, autoGainControl: true }, second: { noiseSuppression: true, autoGainControl: true }, firstSeconds: 8, seconds: 20 }));
+          await b.close();
+          if (r.second?.f32) {
+            const x = f32(Buffer.from(r.second.f32, 'base64'));
+            r.second.firstDbfs = dbfsOf(x, 2 * 48000, 9 * 48000);
+            r.second.secondDbfs = dbfsOf(x, 12 * 48000, Math.min(x.length, 19 * 48000));
+            delete r.second.f32;
+          }
+          res.reopen = r;
+        }
+        // A minute of keyboard, nobody talking, suppression off (D11's mode)
+        // with auto gain on and off: capture.mjs runs the default gate on it.
+        if (ONLY === 'keyboard' || !ONLY) {
+          const kmin = keyboardWav(tmp, 60);
+          res.keyboardMinute = {};
+          for (const [key, agc] of [['agcOn', true], ['agcOff', false]]) {
+            const b = await launch('chromium', kmin);
+            const r = await onPage(b, name, (p) => p.evaluate((o) => window.ns0.record(o), { noiseSuppression: false, autoGainControl: agc, seconds: 62 }));
+            await b.close();
+            if (r.f32) {
+              writeFileSync(join(CAPTURE_OUT, `capture-kb-agc-${agc ? 'on' : 'off'}.f32`), Buffer.from(r.f32, 'base64'));
+              delete r.f32;
+            }
+            res.keyboardMinute[key] = r;
+          }
         }
       }
       writeFileSync(join(OUT, `browser-${name}.json`), JSON.stringify(res, null, 2) + '\n');

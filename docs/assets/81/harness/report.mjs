@@ -243,6 +243,27 @@ if (cap) {
     P(`RNNoise's speech probability over the keyboard-only lead, ${label[k]}: max ${f(lp.max, 3)}, ≥ 0.5 on ${pct(lp.over05)} of frames, ≥ 0.9 on ${pct(lp.over09)}.`);
     P();
   }
+  if (cap.defaultGateLead) {
+    P(`The default gate (on 0.90, off 0.70, hold 300 ms, floor -50 dBFS) over the 4 s lead, where one spurt is ~8 %: ` +
+      Object.entries(cap.defaultGateLead).map(([k, v]) => `${label[k]} ${pct(v.sentFraction)} (${v.spurts} spurts)`).join('; ') + '.');
+    P();
+  }
+  if (cap.keyboardMinute) {
+    P('**A minute of keyboard alone** at -36 dBFS through Chromium, suppression off (D11), then RNNoise and the default gate (1–59 s):');
+    P();
+    P(row(['Capture', 'Level into RNNoise dBFS', 'After RNNoise dBFS', 'Sent', 'Spurts/min']));
+    P(row(Array(5).fill('---')));
+    const kl = { input: 'The file itself (no browser)', agcOn: 'Chromium, auto gain on', agcOff: 'Chromium, auto gain off' };
+    for (const [k, v] of Object.entries(cap.keyboardMinute)) P(row([kl[k], f(v.inDbfs), f(v.outDbfs), pct(v.sentFraction), f(v.spurtsPerMin)]));
+    P();
+  }
+  const ro = br.chromium?.reopen;
+  if (ro) {
+    P(`**Stop, then re-open** (D11): a track opened with NS off for 8 s, \`stop()\`, then \`getUserMedia\` with NS on at once (${f(ro.reopenMs)} ms). ` +
+      `The new track: \`getSettings()\` NS ${ro.second.settings.noiseSuppression}, 2–9 s ${f(ro.second.firstDbfs, 2)} dBFS, 12–19 s ${f(ro.second.secondDbfs, 2)} dBFS ` +
+      '(compare `onNoSwitch` and `offNoSwitch` above: the fake device restarts its file for a new capture).');
+    P();
+  }
   const tt = br.chromium?.twoTracks;
   if (tt) {
     P('**Two tracks at once** (keyboard alone, auto gain on): the first opened with NS off, the second, while the first is open, with NS on.');

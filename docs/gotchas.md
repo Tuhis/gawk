@@ -2455,7 +2455,8 @@ entries still describe code `gawk-pubsim` runs (now
   track's processing**, whatever it asked for: opened with
   `noiseSuppression: true` beside a suppression-off track, its
   `getSettings()` says off and its audio equals the first's. To change
-  processing, stop the old track before `getUserMedia`.
+  processing, stop the old track before `getUserMedia` (measured: the
+  immediate re-open then gets the new processing).
   ([docs/81](81-noise-suppression.md) §12.6, D11)
 
 **CI / deployment**

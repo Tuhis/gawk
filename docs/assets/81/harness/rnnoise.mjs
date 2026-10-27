@@ -40,3 +40,20 @@ export function instantiate(module) {
 export function f32(buf) {
   return new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
 }
+
+// The probability gate (docs/81 D9), one decision per 10 ms frame: open at
+// prob >= on, stay open while >= off, then hold holdMs. With outRms (the
+// denoised frame's RMS), a frame quieter than floorRms counts as prob 0.
+export function probGate(prob, on, off, holdMs, outRms = null, floorRms = 0) {
+  const g = new Uint8Array(prob.length);
+  let open = false;
+  let held = 1e9;
+  for (let f = 0; f < prob.length; f++) {
+    const p = outRms && outRms[f] < floorRms ? 0 : prob[f];
+    const speech = p >= on || (open && p >= off);
+    open = speech;
+    held = speech ? 0 : held + 1;
+    g[f] = speech || held < holdMs / 10 ? 1 : 0;
+  }
+  return g;
+}

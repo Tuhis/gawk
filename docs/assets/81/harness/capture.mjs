@@ -17,12 +17,14 @@
 //   both           RNNoise on the NS-on capture
 //   none           the NS-off capture
 //   none-agc-off, rnnoise-agc-off  the same two with auto gain off
+// and, if present, capture-kb-{input,agc-on,agc-off}.f32: a minute of
+// keyboard alone, with the default gate run over each after RNNoise.
 //
 //   node docs/assets/81/harness/capture.mjs --wasm DIR --capture DIR [--out FILE]
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { f32, FRAME, instantiate } from './rnnoise.mjs';
+import { f32, FRAME, instantiate, probGate } from './rnnoise.mjs';
 
 const argv = process.argv.slice(2);
 const arg = (n, d) => (argv.includes(`--${n}`) ? argv[argv.indexOf(`--${n}`) + 1] : d);
@@ -137,5 +139,41 @@ const leadProb = (d) => {
 };
 res.rnnoiseLeadProb = leadProb(rn);
 res.leadProb = { rnnoise: leadProb(rn), both: leadProb(both), 'rnnoise-agc-off': leadProb(rnAgcOff) };
+// The gate that ships (D9: on 0.90, off 0.70, hold 300 ms, floor -50 dBFS
+// on the denoised frame), run from the start of the capture; the share of
+// lead frames it sends and the spurts it opens there.
+const defaultGateLead = (d) => {
+  const out = d.out.subarray(0, N);
+  const nf = Math.min(d.prob.length, Math.floor(out.length / FRAME));
+  const rms = new Float64Array(nf);
+  for (let f = 0; f < nf; f++) rms[f] = Math.sqrt(energy(out, f * FRAME, (f + 1) * FRAME));
+  const g = probGate(d.prob.subarray(0, nf), 0.9, 0.7, 300, rms, 10 ** (-50 / 20));
+  let sent = 0, spurts = 0;
+  for (let f = LEAD[0] / FRAME; f < LEAD[1] / FRAME; f++) { sent += g[f]; if (g[f] && !g[f - 1]) spurts++; }
+  return { sentFraction: sent / ((LEAD[1] - LEAD[0]) / FRAME), spurts };
+};
+res.defaultGateLead = { rnnoise: defaultGateLead(rn), both: defaultGateLead(both), 'rnnoise-agc-off': defaultGateLead(rnAgcOff) };
+// A minute of keyboard alone (-36 dBFS), nobody talking: the default gate
+// over 1-59 s of each, as offline.mjs's noise-only run does without Chromium.
+if (existsSync(join(CAP, 'capture-kb-agc-on.f32'))) {
+  res.keyboardMinute = {};
+  for (const [k, file] of [['input', 'capture-kb-input'], ['agcOn', 'capture-kb-agc-on'], ['agcOff', 'capture-kb-agc-off']]) {
+    const x = ld(file);
+    const d = denoise(x);
+    const nf = Math.min(d.prob.length, Math.floor(d.out.length / FRAME));
+    const rms = new Float64Array(nf);
+    for (let f = 0; f < nf; f++) rms[f] = Math.sqrt(energy(d.out, f * FRAME, (f + 1) * FRAME));
+    const g = probGate(d.prob.subarray(0, nf), 0.9, 0.7, 300, rms, 10 ** (-50 / 20));
+    const a = 100, b = Math.min(nf, 5900);
+    let sent = 0, spurts = 0;
+    for (let f = a; f < b; f++) { sent += g[f]; if (g[f] && !g[f - 1]) spurts++; }
+    res.keyboardMinute[k] = {
+      inDbfs: db(energy(x, a * FRAME, b * FRAME)),
+      outDbfs: db(energy(d.out, a * FRAME, b * FRAME)),
+      sentFraction: sent / (b - a),
+      spurtsPerMin: spurts / (((b - a) * FRAME) / SR / 60),
+    };
+  }
+}
 writeFileSync(OUT, JSON.stringify(res, null, 2) + '\n');
 console.log(JSON.stringify(res, null, 1));

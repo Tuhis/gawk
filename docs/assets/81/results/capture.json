@@ -89,5 +89,39 @@
       "over05": 0.0325,
       "over09": 0.0125
     }
+  },
+  "defaultGateLead": {
+    "rnnoise": {
+      "sentFraction": 0.1175,
+      "spurts": 2
+    },
+    "both": {
+      "sentFraction": 0.33,
+      "spurts": 3
+    },
+    "rnnoise-agc-off": {
+      "sentFraction": 0.0825,
+      "spurts": 1
+    }
+  },
+  "keyboardMinute": {
+    "input": {
+      "inDbfs": -35.9535385878782,
+      "outDbfs": -68.77176195521696,
+      "sentFraction": 0.005172413793103448,
+      "spurtsPerMin": 1.0344827586206897
+    },
+    "agcOn": {
+      "inDbfs": -26.623983354461494,
+      "outDbfs": -56.286607570490574,
+      "sentFraction": 0.022068965517241378,
+      "spurtsPerMin": 4.137931034482759
+    },
+    "agcOff": {
+      "inDbfs": -36.948351429703884,
+      "outDbfs": -65.69681097224552,
+      "sentFraction": 0.031379310344827584,
+      "spurtsPerMin": 6.206896551724138
+    }
   }
 }

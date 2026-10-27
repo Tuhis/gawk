@@ -12,7 +12,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir, cpus } from 'node:os';
 import { join } from 'node:path';
-import { f32, FRAME, instantiate } from './rnnoise.mjs';
+import { f32, FRAME, instantiate, probGate } from './rnnoise.mjs';
 
 const argv = process.argv.slice(2);
 const arg = (n, d) => (argv.includes(`--${n}`) ? argv[argv.indexOf(`--${n}`) + 1] : d);
@@ -120,20 +120,6 @@ function energyGate(x, thresholdRms = 0.01, holdMs = 300) {
 // `floorRms`, a frame only counts when the denoised output is also at least
 // that loud: the probability decides, the floor vetoes what RNNoise has
 // already silenced.
-function probGate(prob, on, off, holdMs, outRms = null, floorRms = 0) {
-  const g = new Uint8Array(prob.length);
-  let open = false;
-  let held = 1e9;
-  for (let f = 0; f < prob.length; f++) {
-    const p = outRms && outRms[f] < floorRms ? 0 : prob[f];
-    const speech = p >= on || (open && p >= off);
-    open = speech;
-    held = speech ? 0 : held + 1;
-    g[f] = speech || held < holdMs / FRAME_MS ? 1 : 0;
-  }
-  return g;
-}
-
 // ---- Metrics ----------------------------------------------------------------
 
 function shift(l, d) {
