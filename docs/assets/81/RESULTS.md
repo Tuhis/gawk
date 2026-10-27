@@ -30,7 +30,8 @@ desktop CPU; a phone will be slower by a factor this run cannot tell.
   `emscripten/emsdk:4.0.10` with `-O3 -flto -sSTANDALONE_WASM --no-entry`
   and a fixed 4 MB memory. The modules **import nothing**, so one
   synchronous `new WebAssembly.Instance(module, {})` starts them, inside an
-  AudioWorklet too. Two builds on the same host were byte-identical.
+  AudioWorklet too. Two full builds on the same host were byte-identical
+  for all nine variants (`results/wasm-sha256.txt`).
   The 0.2 tarball's scalar path does not compile (xiph/rnnoise#222,
   fixed on `main` by `372f7b4`, never released), so there is no
   `v02-scalar`.
@@ -65,8 +66,8 @@ PULSEAUDIO=$(nix build nixpkgs#pulseaudio --no-link --print-out-paths)/bin/pulse
 ## Findings
 
 - **The model**: 0.2 gates best. With the default gate (on 0.90, off 0.70,
-  hold 300 ms, floor −50 dBFS) it sends 99.5 % of speech, clips 1.3 % of
-  onsets and sends 0.5 % / 1.6 % of a keyboard minute at −36 / −26 dBFS.
+  hold 300 ms, floor −50 dBFS) it sends 99.5 % of speech, clips a mean of
+  1.3 % of onsets over the four noises (5.2 % on keyboard, 0 % elsewhere) and sends 0.5 % / 1.6 % of a keyboard minute at −36 / −26 dBFS.
   `main`'s models clip 8–11 % of onsets; Mumble's pin gates like 0.2 at
   twice the CPU. Only `main`'s models remove babble (29 dB against 8–9).
 - **The floor matters**: 0.2's probability alone keeps the gate open in
@@ -82,7 +83,7 @@ PULSEAUDIO=$(nix build nixpkgs#pulseaudio --no-link --print-out-paths)/bin/pulse
   Chromium ignores `applyConstraints({noiseSuppression})`; WebKit has no
   such constraint.
 - **Small sample**: the onset figures rest on 32 distinct onsets in read
-  speech.
+  speech; the keyboard's 5.2 % is 3 of 64.
 
 ## Results
 

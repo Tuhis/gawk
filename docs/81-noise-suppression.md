@@ -42,7 +42,7 @@ what the others hear.
 | RNNoise is **on by default** for every web voice participant on Chrome, Firefox and Safari, desktop and phone | NS2/NS3 unit tests; NS4 Playwright on Chromium, Firefox and WebKit; NS5 owner pass on all five platforms |
 | The wasm is **built from pinned source** in a pinned container; CI rebuilds it and fails on any byte difference from the committed file | NS1 CI job (a deliberate one-byte change fails it) |
 | With nobody talking, a minute of keyboard noise sends **≤ 1 % of frames at −36 dBFS and ≤ 2 % at −26 dBFS** with the default gate (NS0: 0.5 % and 1.6 %) | NS3 test over the NS0 rules; NS4 Playwright with a fake-mic file (Chromium) |
-| Speech is not cut: ≥ 99 % of labelled speech frames sent and ≤ 2 % of onsets clipped by ≥ 50 ms at 10 and 5 dB SNR, default gate (NS0: 99.5 % and 1.3 %, over only 32 distinct onsets) | NS3 test; NS5's real-microphone pass, which has to confirm the onset figure on conversation |
+| Speech is not cut: ≥ 99 % of labelled speech frames sent and, **as a mean over the four noises**, ≤ 2 % of onsets clipped by ≥ 50 ms at 10 and 5 dB SNR, default gate (NS0: 99.5 % and a mean of 1.3 %; per noise, keyboard 5.2 % — 3 of 64 onsets — and 0 % for the other three, over only 32 distinct onsets) | NS3 test; NS5's real-microphone pass, which has to confirm the onset figure on conversation |
 | The gate is driven by RNNoise's **speech probability**, with a user-set threshold whose default comes from §12 | NS3 unit tests; NS4 UI test |
 | The user can switch **RNNoise · Browser · Off** and the threshold mid-call, and **hear themselves** as the others hear them, without leaving voice | NS4 component and Playwright tests |
 | RNNoise never blocks voice: no SIMD, a failed download, a worklet error or a CPU overrun falls back to the browser's suppression and the level gate, and says so | NS2 unit tests for each fallback |
@@ -68,15 +68,15 @@ what the others hear.
 
 | # | Decision | Why |
 |---|---|---|
-| D1 | **The RNNoise 0.2 release** (`rnnoise-0.2.tar.gz`, sha256 `90fce4b0…`, its bundled model `0b50c45`), pinned by hash. Not `main`'s newer models, not the commit Mumble pins. | §12.3, four models through the same gates. With the default gate, 0.2 sends 99.5 % of speech, clips 1.3 % of onsets and sends 0.5–1.6 % of a keyboard with nobody talking; `main`'s default model clips 8.1 % and sends 8.3 %, its little model clips 11.3 %. Mumble's pin (`d983458`, model `5e78411`) gates like 0.2 (2.1 %, 2.5 %) at twice the CPU. Its SI-SDR is within 0.6 dB of the best model in every mix (best in 8 of 16, Mumble's pin in the other 8), and it is the cheapest: ~0.31 ms per 10 ms frame in Chromium, 0.17 in Firefox, 0.33 in WebKit (§12.1), 1.47 MB. What 0.2 does **not** do is remove babble (§6): 7.9 dB off a restaurant, where `main` takes 28.9 dB. That is the trade, and the gate is what this milestone is for. |
-| D2 | **The build lives in `gawk-app/rnnoise/`**: `build.sh` (the NS0 `build-wasm.sh` cut down to one variant), the pins, Xiph's `COPYING`, and the built **`rnnoise.wasm`, committed**. A CI job rebuilds it in `emscripten/emsdk:4.0.10` and fails on any byte difference. | OD1. The icon set's shape (docs/53): the derivative is committed and drift-checked, so `npm run build`, the app's Dockerfile, the dev stack and vitest need no Emscripten. NS0's two builds on one host were byte-identical; NS1 confirms it holds on the CI runner. |
+| D1 | **The RNNoise 0.2 release** (`rnnoise-0.2.tar.gz`, sha256 `90fce4b0…`, its bundled model `0b50c45`), pinned by hash. Not `main`'s newer models, not the commit Mumble pins. | §12.3, four models through the same gates. With the default gate, 0.2 sends 99.5 % of speech, clips a mean of 1.3 % of onsets over the four noises (5.2 % on keyboard, 0 % on the rest) and sends 0.5–1.6 % of a keyboard with nobody talking; `main`'s default model clips a mean of 8.1 % and sends 8.3 % of the loud keyboard, its little model clips 11.3 % and sends none. Both of `main`'s models clip more onsets than 0.2 at every one of the 60 gate settings swept. Mumble's pin (`d983458`, model `5e78411`) gates like 0.2 (2.1 %, 2.5 %) at twice the CPU. Its SI-SDR is within 0.6 dB of the best model in every mix (best in 8 of 16, Mumble's pin in the other 8), and it is the cheapest: ~0.31 ms per 10 ms frame in Chromium, 0.17 in Firefox, 0.33 in WebKit (§12.1), 1.47 MB. What 0.2 does **not** do is remove babble (§6): 7.9 dB off a restaurant, where `main` takes 28.9 dB. That is the trade, and the gate is what this milestone is for. |
+| D2 | **The build lives in `gawk-app/rnnoise/`**: `build.sh` (the NS0 `build-wasm.sh` cut down to one variant), the pins, Xiph's `COPYING`, and the built **`rnnoise.wasm`, committed**. A CI job rebuilds it in `emscripten/emsdk:4.0.10` and fails on any byte difference. | OD1. The icon set's shape (docs/53): the derivative is committed and drift-checked, so `npm run build`, the app's Dockerfile, the dev stack and vitest need no Emscripten. NS0's two full builds on one host were byte-identical for all nine variants (`assets/81/results/wasm-sha256.txt`); NS1 confirms it holds on the CI runner. |
 | D3 | **One binary: `-O3 -flto -msimd128 -mavx`, `-sSTANDALONE_WASM --no-entry`, fixed 4 MB memory, no JS glue.** Exports `rnnoise_create`, `rnnoise_process_frame`, `rnnoise_destroy`, `malloc`, `free`, `memory`, `_initialize`; **imports nothing**. No scalar fallback build (0.2's scalar path does not compile anyway, §11). | Emscripten lowers `vec_avx.h`'s SSE/AVX intrinsics to 128-bit wasm SIMD; `-mavx` and `-mavx2` are within 10 % of each other on every engine, `-mavx` ahead on Firefox and WebKit (§12.1). Every engine gawk supports has wasm SIMD (all three in NS0; Safari since 16.4). A module with no imports instantiates synchronously inside an AudioWorklet with three lines of loader. 1.47 MB uncompressed, 1.21 MB gzipped. |
 | D4 | **Loaded on demand.** Vite emits `rnnoise.wasm` as a hashed asset (`?url`), served from `/assets/` with the existing immutable cache header; nginx's `gzip_types` gains `application/wasm` (its `mime.types` already has it). `WebAssembly.compileStreaming` starts when the user presses **Join voice**, in parallel with the microphone prompt. Listen-only never fetches it. | The download is paid once per release, by voice users only. Starting it with the permission prompt hides it behind a dialog that takes seconds anyway. |
 | D5 | **RNNoise runs in the capture AudioWorklet, on every browser, while it is on.** The existing `gawk-voice-capture` processor grows a denoise mode. The main thread compiles the module and passes the `WebAssembly.Module` in `processorOptions`; the worklet instantiates it in its constructor. Chromium leaves its MSTP pump for the worklet while RNNoise is on and goes back to it when RNNoise is off. | The audio thread is the one place that never janks with React. NS0: a compiled module reaches the worklet through `processorOptions` and the port on Chromium, Firefox and WebKit, and the worklet keeps real time. MV0 measured Chromium's worklet and MSTP paths at the same transit (23.3 ms), so leaving MSTP costs nothing. |
 | D6 | **The worklet resamples to 48 kHz.** When the context does not run at 48 kHz, a linear interpolator (state carried across render quanta) turns its input into 48 kHz before RNNoise, and the 10 ms blocks it posts are 48 kHz. The encoder is configured from the first block, as today, so it now always runs at 48 kHz. | RNNoise only works at 48 kHz, and an AudioContext need not run at the rate asked (docs/gotchas.md, macOS). NS0: linear resampling from 44.1 kHz changes nothing measurable (SI-SDR within 0.05 dB, probability decisions agree on ≥ 99.5 % of frames); feeding 44.1 kHz samples as if they were 48 kHz agrees on 61–63 % (§12.5). A second, 48 kHz context would break docs/44's one context per room and still be refused on macOS. |
 | D7 | **Framing and scale.** 480 samples (10 ms) per call, which is also the voice block (`VOICE_BLOCK_MS`), so a denoised block maps 1:1 onto an Opus frame. Samples are multiplied by 32768 in and divided out: RNNoise works on int16-scaled floats (Mumble's `AudioInput.cpp` feeds it shorts). The worklet posts `{pcm, prob}` per block, the PCM buffer transferred. | One block in, one block out: no added buffering beyond RNNoise's own delay. The scale is a silent failure if wrong (the model sees near-silence). |
 | D8 | **RNNoise adds 20 ms**, and that is all it adds. NS0 measured 960 samples of output delay on every variant (RNNoise 0.2 added a frame of lookahead, xiph `84fe83b`). The probability returned with a call runs one frame (10 ms) ahead of the audio returned with it (§12.2), so gating each output block with its own call's probability opens the gate 10 ms early, never late. | Owned, not hidden: the settings say it, and **Browser** remains a one-click lowest-latency choice, as the R73 lesson asks. |
-| D9 | **The gate: a speech detector over RNNoise's probability** (OD4), Mumble's shape plus a level floor. A block counts as speech when its probability is ≥ **on**, or ≥ **off** while the gate is already open, **and** the denoised block is louder than the **floor**; the gate stays open **hold** after the last speech block. **Defaults: on 0.90, off 0.70, hold 300 ms, floor −50 dBFS** (§12.3). The user's slider sets **on** (0.50–0.99); **off** follows at on − 0.2; hold and floor are fixed. | §12.3: without the floor, 0.2's probability stays open through the pauses in noisy speech (27–29 % of pause frames sent on keyboard and street); the floor, on a signal RNNoise has already silenced, takes that to 0 % and costs nothing in speech. Across on = 0.6–0.95 the floor gate sends ≥ 99.4 % of speech; 0.9 is the highest on that keeps onset clipping at the 0.6–0.8 level (1.3 %) while halving the keyboard sent at −26 dBFS against 0.6–0.8 (1.6 % vs 2.6–3.1 %). Mumble's gate has the same two thresholds and a hold (`fVADmax` 0.98, `fVADmin` 0.80, `iVoiceHold` 200 ms) over Speex's probability. One slider is what people tune; two are what they get wrong. |
+| D9 | **The gate: a speech detector over RNNoise's probability** (OD4), Mumble's shape plus a level floor. A block counts as speech when its probability is ≥ **on**, or ≥ **off** while the gate is already open, **and** the denoised block is louder than the **floor**; the gate stays open **hold** after the last speech block. **Defaults: on 0.90, off 0.70, hold 300 ms, floor −50 dBFS** (§12.3). The user's slider sets **on** (0.50–0.99); **off** follows at on − 0.2; hold and floor are fixed. | §12.3: without the floor, 0.2's probability stays open through the pauses in noisy speech (27–29 % of pause frames sent on keyboard and street); the floor, on a signal RNNoise has already silenced, takes that to 0 % and costs nothing in speech. Across on = 0.6–0.95 the floor gate sends ≥ 99.4 % of speech; 0.9 is the highest on that keeps onset clipping at the 0.6–0.8 level (a mean of 1.3 %; on keyboard every on ≥ 0.6 clips the same onsets, 5.2 %) while halving the keyboard sent at −26 dBFS against 0.6–0.8 (1.6 % vs 2.6–3.1 %). Mumble's gate has the same two thresholds and a hold (`fVADmax` 0.98, `fVADmin` 0.80, `iVoiceHold` 200 ms) over Speex's probability. One slider is what people tune; two are what they get wrong. |
 | D10 | **The level gate stays** for **Browser** and **Off**, and becomes configurable too (OD5): its slider is in dBFS, default the current −40 dBFS (`VAD_THRESHOLD_RMS`). | Without RNNoise there is no probability; a fixed −40 dBFS cannot suit every microphone. |
 | D11 | **Browser suppression is off while RNNoise is on**: the microphone opens with `noiseSuppression: false`, echo cancellation and auto gain on. **Browser** opens it with all three on (today's constraints); **Off** with suppression off and no RNNoise. Switching between them **re-opens the microphone** inside the running voice session (a capture restart, not a rejoin). | NS0: suppression twice (Chromium's, then RNNoise) left 3.8 dB more keyboard than RNNoise alone, and the level gate sent 21.5 % of a keyboard-only stretch against 7.8 % (§12.4). Chromium 156 accepts `applyConstraints({noiseSuppression})` and changes nothing (`getSettings()` stays put), so a re-open is the only switch that works. |
 | D12 | **Safari can't turn its suppression off.** WebKit lists no `noiseSuppression` or `autoGainControl` constraint; its voice processing comes with echo cancellation. RNNoise runs after it there. NS5 checks on the owner's Mac and iPhone that the two together are not worse than either alone; if they are, Safari's default becomes **Browser**. | Measured on WPE WebKit, not Safari: the owner-device pass decides. |
@@ -156,7 +156,9 @@ section), `deploy/nginx.conf`, and `gawk-app/rnnoise/`.
   Mumble. If NS5 finds babble is the common case, revisit D1 with
   `main` and a level-based gate; the harness has every number for it.
 - **Few onsets.** The onset-clipping figure rests on 32 distinct speech
-  onsets in read speech. NS5 checks it on conversation.
+  onsets in read speech, and the §1 criterion holds only as a mean: on
+  keyboard the default gate clips 5.2 %, which is 3 onsets. NS5 checks it
+  per noise on conversation.
 
 ---
 
@@ -185,9 +187,10 @@ section), `deploy/nginx.conf`, and `gawk-app/rnnoise/`.
   `main`; 0.2's scalar path does not compile), for browsers without SIMD
   that gawk does not support anyway (D3).
 - **`main`'s default or little model** and **Mumble's pinned commit**:
-  measured against 0.2 in §12.3. `main`'s models clip onsets and pass more
-  keyboard through any probability gate; Mumble's gates like 0.2 at twice
-  the CPU.
+  measured against 0.2 in §12.3. `main`'s models clip more onsets than 0.2
+  at every gate setting swept (8–11 % against 1.3 % at the default), and
+  the default model sends 8.3 % of keyboard at −26 dBFS; Mumble's gates
+  like 0.2 at twice the CPU.
 - **Keeping the browser's suppression on under RNNoise** (except Safari,
   D12): measured worse (§12.4).
 
@@ -267,8 +270,8 @@ host; offline runs in Node 24 (V8 13.6) on the same host.
 ### 12.1 Builds and CPU
 
 All nine builds compile to a module with **no imports** and start with one
-synchronous `new WebAssembly.Instance`. Three builds on the NS0 host were
-byte-identical. Against a native gcc build of the same (`main`) sources,
+synchronous `new WebAssembly.Instance`. Two full builds on the NS0 host
+were byte-identical for all nine (`results/wasm-sha256.txt`). Against a native gcc build of the same (`main`) sources,
 the wasm output agrees to 62–63 dB SNR and the probability to within 0.02.
 
 | ms per 10 ms frame, main thread | Chromium 156 | Firefox 157 | WebKit 27.2 | wasm |
@@ -295,7 +298,7 @@ Mumble's pin, two frames (with the audio) on `main`'s models.
 Speech at −26 dBFS active level, keyboard, restaurant, street and white
 noise at 20/10/5/0 dB SNR; noise alone for a minute at −36 and −26 dBFS.
 
-| Default gate (on 0.90, off 0.70, hold 300 ms, floor −50 dBFS) | Speech sent · onsets clipped (10, 5 dB) | Keyboard alone, −36 / −26 dBFS | Restaurant alone, −26 | Babble attenuation |
+| Default gate (on 0.90, off 0.70, hold 300 ms, floor −50 dBFS) | Speech sent · onsets clipped, mean of the four noises (10, 5 dB) | Keyboard alone, −36 / −26 dBFS | Restaurant alone, −26 | Babble attenuation |
 |---|---|---|---|---|
 | **0.2** | **99.5 % · 1.3 %** | **0.5 % / 1.6 %** | 95.9 % | 7.9 dB |
 | Mumble's pin | 99.6 % · 2.1 % | 0.5 % / 2.5 % | 95.9 % | 9.3 dB |
@@ -304,9 +307,13 @@ noise at 20/10/5/0 dB SNR; noise alone for a minute at −36 and −26 dBFS.
 
 For comparison on 0.2: **today's gate on the unprocessed signal sends
 96 % of the keyboard minute**, and the same gate after RNNoise sends 0–1.5 %
-of it but clips 3.7 % of onsets (p90 32 ms against the floor gate's
+of it but clips a mean of 3.7 % of onsets (5.2 % on keyboard, 8.2 % on
+restaurant) (p90 32 ms against the floor gate's
 23 ms). The probability alone (no floor) sends 27–29 % of the pauses in
-keyboard and street mixes; the floor takes that to 0 %.
+keyboard and street mixes; the floor takes that to 0 %. Per noise, the
+default gate clips 5.2 % of keyboard onsets (3 of 64, one or two per
+reading) and none on the other three; every gate with on ≥ 0.6 clips the
+same keyboard onsets.
 
 ### 12.4 Chromium's suppression against RNNoise
 

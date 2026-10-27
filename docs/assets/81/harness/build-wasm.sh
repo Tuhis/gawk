@@ -71,4 +71,7 @@ EOF
 docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
   -v "$WORK/v02:/v02:ro" -v "$WORK/main:/main:ro" -v "$WORK/mumble:/mumble:ro" -v "$OUT:/out" -v "$WORK/inner.sh:/inner.sh:ro" \
   "$EMSDK_IMAGE" sh /inner.sh
+# The record a second build is checked against (results/wasm-sha256.txt is
+# NS0's): sha256sum -c it in another build's directory.
+(cd "$OUT" && sha256sum ./*.wasm | sed 's| \./| |' >SHA256SUMS)
 ls -l "$OUT"
