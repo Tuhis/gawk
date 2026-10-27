@@ -2692,3 +2692,13 @@ entries still describe code `gawk-pubsim` runs (now
   and pinned to the version the crate builds) and `LICENSE_TEXT_FALLBACK`.
   A new `-sys` crate that compiles C in needs an entry.
   ([docs/74](74-open-source-licences-in-app.md) D1)
+- **Chromium's auto gain makes a hum as loud as the speaker.** Between
+  words it raises the gain, so a person humming 15 dB below the speaker
+  reaches the encoder ~20 dB louder, at the speaker's own level (−21 against
+  −22 dBFS after RNNoise), and a background voice 15 dB below ends 7 dB
+  below. RNNoise calls both voice, so after auto gain no level rule can
+  separate them: every gate VX0 tried still sent 87–94 % of the hum. Voice
+  now opens the microphone without auto gain under RNNoise and Off and
+  applies its own gain after the gate. A level measured "after the browser"
+  is not the level in the room. ([docs/82](82-voice-ux-and-learned-gate.md)
+  D5, §12.2)
