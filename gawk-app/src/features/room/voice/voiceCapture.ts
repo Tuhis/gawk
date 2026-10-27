@@ -53,14 +53,18 @@ export const VOICE_FALLBACK_FRAME_US = 20_000;
 // One VoiceFrame seq unit (wire.ts: seq counts 10 ms).
 export const VOICE_SEQ_UNIT_US = 10_000;
 
-// docs/81 D11: echo cancellation and auto gain always; the browser's own
-// suppression only in the Browser mode (before RNNoise it leaves 16 dB more
-// keyboard, NS0 §12.4).
+// docs/81 D11: echo cancellation always; the browser's own suppression only
+// in the Browser mode (before RNNoise it leaves 16 dB more keyboard, NS0
+// §12.4). docs/82 D5: auto gain only in the Browser mode too — in a pause it
+// lifts a hum or a TV to the speaker's own level, where no level floor can
+// tell them apart (VX0 §12); the gain after the gate (D6) does its job.
+// RNNoise and Off keep one set of constraints, so switching between them
+// stays the worklet's alone.
 export function voiceAudioConstraints(mode: NoiseMode): MediaTrackConstraints {
   return {
     echoCancellation: true,
     noiseSuppression: mode === 'browser',
-    autoGainControl: true,
+    autoGainControl: mode === 'browser',
     channelCount: 1,
   };
 }
@@ -173,6 +177,9 @@ export interface VoiceCaptureCallbacks {
   onError: (err: VoiceError) => void;
   // The noise suppression changed (a switch, a fallback, RNNoise loaded).
   onNoise: (status: NoiseStatus) => void;
+  // docs/82 D6: the gain for blocks the gate passed, dB (asked after
+  // shouldSend, so the gate always judges the block as captured).
+  gainDb?: () => number;
 }
 
 // The AudioContext the worklet runs in: the room's shared one.
@@ -297,6 +304,8 @@ export class VoiceCapture implements VoiceCaptureLike {
   // count (10 ms each), across re-opens and node rebuilds.
   private blocks = 0;
   private sending = false;
+  // The gain the last sent block ended at, linear (docs/82 D6).
+  private gainLin: number | null = null;
   private stopped = false;
   private failed = false;
 
@@ -664,6 +673,7 @@ export class VoiceCapture implements VoiceCaptureLike {
     const send = this.gate(blockRms(pcm), prob);
     this.blocks++;
     if (!send) return;
+    this.applyGain(pcm);
     let data: VoiceAudioData;
     try {
       data = this.deps.createAudioData(blockAudioDataInit(pcm, VOICE_CAPTURE_RATE, timestampUs));
@@ -672,6 +682,20 @@ export class VoiceCapture implements VoiceCaptureLike {
       return;
     }
     this.encode(data);
+  }
+
+  // docs/82 D6, in place: ramped across the block from the last block's gain
+  // so a change never steps, and clipped to ±1.
+  private applyGain(pcm: Float32Array): void {
+    const target = 10 ** ((this.cb.gainDb?.() ?? 0) / 20);
+    const from = this.gainLin ?? target;
+    this.gainLin = target;
+    if (from === 1 && target === 1) return;
+    const step = (target - from) / pcm.length;
+    for (let i = 0; i < pcm.length; i++) {
+      const v = pcm[i] * (from + step * i);
+      pcm[i] = v > 1 ? 1 : v < -1 ? -1 : v;
+    }
   }
 
   // ---- Gate and encoder -------------------------------------------------------

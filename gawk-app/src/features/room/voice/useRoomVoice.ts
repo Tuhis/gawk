@@ -29,6 +29,8 @@ import {
   savePttKey,
   saveSpeakerVolume,
   saveSpeechThreshold,
+  loadSpeechLevel,
+  saveSpeechLevel,
   saveTalkMode,
   validPttKey,
   type NoiseMode,
@@ -117,9 +119,15 @@ export function useRoomVoice({
         setVoiceMuted: (muted) => mixerRef.current?.setVoiceMuted(muted),
         now: () => performance.now(),
         onChange: (st) => useVoiceStore.getState().set(st),
+        saveSpeechLevel,
       },
       store.talkMode,
-      { noiseMode: store.noiseMode, speechThreshold: store.speechThreshold, levelThresholdDb: store.levelThresholdDb },
+      {
+        noiseMode: store.noiseMode,
+        speechThreshold: store.speechThreshold,
+        levelThresholdDb: store.levelThresholdDb,
+        speechLevelDb: loadSpeechLevel(),
+      },
     );
     ctrlRef.current = ctrl;
     return () => {
@@ -216,6 +224,7 @@ export function useRoomVoice({
         clearAudioPrefs();
         const ctrl = ctrlRef.current;
         if (!ctrl) return;
+        ctrl.forgetSpeechLevel();
         if (ctrl.getState().noiseMode !== DEFAULT_NOISE_MODE) ctrl.setNoiseMode(DEFAULT_NOISE_MODE);
         ctrl.setSpeechThreshold(DEFAULT_SPEECH_THRESHOLD);
         ctrl.setLevelThresholdDb(DEFAULT_LEVEL_THRESHOLD_DB);

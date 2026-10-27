@@ -275,16 +275,40 @@ describe('encoder config', () => {
   });
 });
 
-describe('constraints (docs/81 D11)', () => {
-  it('echo cancellation and auto gain always; the browser’s suppression only for Browser', () => {
+describe('constraints (docs/81 D11, docs/82 D5)', () => {
+  it('echo cancellation always; the browser’s suppression and auto gain only for Browser', () => {
     expect(voiceAudioConstraints('rnnoise')).toEqual({
       echoCancellation: true,
       noiseSuppression: false,
+      autoGainControl: false,
+      channelCount: 1,
+    });
+    expect(voiceAudioConstraints('off')).toEqual(voiceAudioConstraints('rnnoise'));
+    expect(voiceAudioConstraints('browser')).toEqual({
+      echoCancellation: true,
+      noiseSuppression: true,
       autoGainControl: true,
       channelCount: 1,
     });
-    expect(voiceAudioConstraints('off').noiseSuppression).toBe(false);
-    expect(voiceAudioConstraints('browser').noiseSuppression).toBe(true);
+  });
+});
+
+describe('VoiceCapture, the gain after the gate (docs/82 D6)', () => {
+  it('the gate judges the block as captured; the encoder gets it with the gain, clipped to ±1', async () => {
+    const cb = { ...callbacks(), gainDb: () => 20 * Math.log10(2) };
+    const { cap, node } = await started('off', cb);
+    block(node(), 0.1);
+    block(node(), 0.8);
+    expect(cb.gated.map(([rms]) => rms)).toEqual([expect.closeTo(0.1, 6), expect.closeTo(0.8, 6)]);
+    expect(encoders[0].encoded.map((d) => d.level)).toEqual([expect.closeTo(0.2, 6), 1]);
+    cap.stop();
+  });
+
+  it('no gain callback, or 0 dB, leaves the block untouched', async () => {
+    const { cap, node } = await started('off');
+    block(node(), 0.3);
+    expect(encoders[0].encoded[0].level).toBeCloseTo(0.3, 6);
+    cap.stop();
   });
 });
 
