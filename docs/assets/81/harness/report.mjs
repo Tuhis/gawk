@@ -24,6 +24,12 @@ const br = Object.fromEntries(['chromium', 'firefox', 'webkit'].map((b) => [b, j
 const f = (x, d = 1) => (x === null || x === undefined || Number.isNaN(x) ? '–' : Number(x).toFixed(d));
 const pct = (x) => (x === null || x === undefined ? '–' : `${(100 * x).toFixed(1)} %`);
 const mean = (a) => a.reduce((s, v) => s + v, 0) / a.length;
+// Onsets clipped ≥ 50 ms over onsets, pooled across runs (not a mean of
+// per-run rates: the readings have 9, 11 and 12 onsets).
+const pooledClip = (rows) => {
+  const n = rows.reduce((s, x) => s + x.onsets, 0);
+  return n ? rows.reduce((s, x) => s + x.onsetsClipped50ms * x.onsets, 0) / n : null;
+};
 const row = (cells) => `| ${cells.join(' | ')} |`;
 const out = [];
 const P = (s = '') => out.push(s);
@@ -94,7 +100,7 @@ if (off) {
   P(`### The talk gate (\`${GV}\`)`);
   P();
   P('In the output\'s time base. *Speech sent*: labelled speech frames the gate passed. ' +
-    '*Clipped*: speech onsets (after ≥ 300 ms quiet) that lost ≥ 50 ms before the gate opened; *clip p90*: the 90th-percentile loss, ms. ' +
+    '*Clipped*: speech onsets (after ≥ 300 ms quiet) that lost ≥ 50 ms before the gate opened, pooled (clipped ÷ onsets over every run in the cell); *clip p90*: the 90th-percentile loss, ms. ' +
     '*Noise only*: 60 s of the noise with nobody talking, the share of frames sent and the spurts per minute. ' +
     '`energy-raw` is today\'s gate (RMS ≥ 0.01, 300 ms hold) on the unprocessed signal — pessimistic, because in production it runs after the ' +
     'browser\'s own suppression (§ Chromium below shows how little that removes from a keyboard); `energy-rnn` is the same gate after RNNoise; ' +
@@ -115,7 +121,7 @@ if (off) {
   for (const k of featured) {
     P(row([`\`${k}\``, ...noises.map((nz) => {
       const r = at(GV, k, (m) => m.noise === nz && (m.snr === 10 || m.snr === 5));
-      return `${pct(mean(r.map((x) => x.speechSent)))} · ${pct(mean(r.map((x) => x.onsetsClipped50ms)))}`;
+      return `${pct(mean(r.map((x) => x.speechSent)))} · ${pct(pooledClip(r))}`;
     })]));
   }
   P();
@@ -139,7 +145,7 @@ if (off) {
   const nonBabble = noises.filter((n) => n !== 'noise-restaurant');
   for (const k of keys.filter((x) => x.startsWith('prob')).concat(['energy-raw', 'energy-rnn'])) {
     const r = at(GV, k, () => true);
-    P(row([`\`${k}\``, pct(mean(r.map((x) => x.speechSent))), pct(mean(r.map((x) => x.onsetsClipped50ms))), f(mean(r.map((x) => x.onsetClipP90Ms)), 0),
+    P(row([`\`${k}\``, pct(mean(r.map((x) => x.speechSent))), pct(pooledClip(r)), f(mean(r.map((x) => x.onsetClipP90Ms)), 0),
       ...levels.map((l) => pct(mean(nonBabble.map((nz) => only(GV, k, nz, l)?.noiseSent ?? 0)))),
       ...levels.map((l) => f(mean(nonBabble.map((nz) => only(GV, k, nz, l)?.falseSpurtsPerMin ?? 0))))]));
   }
@@ -151,7 +157,7 @@ if (off) {
     P(row(Array(2 + noises.length).fill('---')));
     for (const v of vs) {
       const r = at(v, DEFAULT_GATE, (m) => m.snr === 10 || m.snr === 5);
-      P(row([`\`${v}\``, `${pct(mean(r.map((x) => x.speechSent)))} · ${pct(mean(r.map((x) => x.onsetsClipped50ms)))}`,
+      P(row([`\`${v}\``, `${pct(mean(r.map((x) => x.speechSent)))} · ${pct(pooledClip(r))}`,
         ...noises.map((nz) => pct(only(v, DEFAULT_GATE, nz, levels.at(-1))?.noiseSent))]));
     }
     P();
@@ -182,21 +188,46 @@ if (bNames.length) {
   P(row(['`voiceIsolation` a supported constraint', ...cell((r) => (r.caps.supportedConstraints.includes('voiceIsolation') ? 'yes' : 'no'))]));
   P(row(['`WebAssembly.Module` → worklet via `processorOptions`', ...cell((r) => (r.worklet.filter((w) => w.via === 'processorOptions').every((w) => w.kind === 'ready') ? 'yes' : 'no'))]));
   P(row(['`WebAssembly.Module` → worklet via `port.postMessage`', ...cell((r) => (r.worklet.filter((w) => w.via === 'port').every((w) => w.kind === 'ready') ? 'yes' : 'no'))]));
-  P(row(['Worklet keeps real time (frames/s, expected 91.9 at 44.1 kHz / 100 at 48 kHz)', ...cell((r) => r.worklet.filter((w) => w.realtime).map((w) => `${w.contextRate / 1000}k: ${f(w.realtime.framesPerSecond)}`).join(', '))]));
-  P(row(['48 kHz context + `createMediaStreamSource` of the mic', ...cell((r) => r.rates.contexts.find((c) => c.requested === 48000)?.mediaStreamSource)]));
-  P(row(['44.1 kHz context + `createMediaStreamSource`', ...cell((r) => r.rates.contexts.find((c) => c.requested === 44100)?.mediaStreamSource)]));
+  P(row(['Worklet render ratio over 6 s, min–max of the runs (`currentFrame` ÷ the worklet\'s clock ÷ rate; 1 = real time)', ...cell((r) => {
+    const v = r.worklet.filter((w) => w.realtime).map((w) => w.realtime.renderRatio);
+    return `${f(Math.min(...v), 4)}–${f(Math.max(...v), 4)} (${v.length} runs)`;
+  })]));
+  const msrc = (rate) => (r) => {
+    const c = r.rates.contexts.find((x) => x.requested === rate);
+    return `${c?.mediaStreamSource}, peak ${f(c?.peak, 3)}`;
+  };
+  P(row(['48 kHz context + `createMediaStreamSource` of the mic, peak over 500 ms', ...cell(msrc(48000))]));
+  P(row(['44.1 kHz context + `createMediaStreamSource`, peak over 500 ms', ...cell(msrc(44100))]));
   P(row(['Mic opened with NS off → `getSettings().noiseSuppression`', ...cell((r) => String(r.constraints.openedWithNsOff.noiseSuppression))]));
   P(row(['… after `applyConstraints({noiseSuppression: true})`', ...cell((r) => String(r.constraints.afterApplyNsOn.noiseSuppression))]));
   P(row(['wasm fetch + compile + instantiate ms (`main-avx`, localhost)', ...cell((r) => `${f(r.cpuMain['main-avx'].fetchMs)} + ${f(r.cpuMain['main-avx'].compileMs)} + ${f(r.cpuMain['main-avx'].instantiateMs)}`)]));
   P();
+  const ac = br.chromium?.applyConstraints;
+  if (ac) {
+    P('#### Chromium: does `applyConstraints({noiseSuppression})` change the audio?');
+    P();
+    P('The fake microphone plays keyboard alone at -36 dBFS for 20 s (auto gain on). Level of 2–9 s and of 12–19 s; ' +
+      'the switch runs at 10 s, and the no-switch runs show the file\'s own drift.');
+    P();
+    P(row(['Run', 'Opened with NS', 'Switched to', '`getSettings()` after', '2–9 s dBFS', '12–19 s dBFS']));
+    P(row(Array(6).fill('---')));
+    for (const [k, v] of Object.entries(ac)) {
+      P(row([k, String(v.settings?.noiseSuppression), v.applied ? String(!v.settings?.noiseSuppression) : '–',
+        v.applied ? String(v.applied.settingsAfter ?? v.applied.error) : '–', f(v.firstDbfs, 2), f(v.secondDbfs, 2)]));
+    }
+    P();
+  }
 }
 
 // ---- Chromium capture -----------------------------------------------------------
+const capAgc = br.chromium?.record
+  ? `\`getSettings()\`: auto gain ${br.chromium.record.nsOn.settings.autoGainControl} / ${br.chromium.record.nsOff.settings.autoGainControl} in the NS on / off recordings`
+  : 'settings not recorded';
 if (cap) {
   P(`### Chromium's own noise suppression vs RNNoise (\`${cap.variant}\`), same fake microphone`);
   P();
   P(`The fake device plays 5 s of keyboard (${f(cap.inputLeadDbfs)} dBFS), then speech + keyboard at 10 dB SNR. ` +
-    'Echo cancellation on, auto gain off. Lead = 0.5–4.5 s, keyboard only.');
+    `Echo cancellation and auto gain on, as \`voiceCapture.ts\` opens it today (${capAgc}). Lead = 0.5–4.5 s, keyboard only.`);
   P();
   P(row(['Condition', 'Lead noise dBFS', 'Attenuation vs input dB', 'Speech level change dB', 'Energy gate in the lead: spurts / sent']));
   P(row(Array(5).fill('---')));

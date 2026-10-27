@@ -1,0 +1,10 @@
+# file bytes gzip-9-bytes
+main-avx2.wasm 3616232 2825549
+main-avx.wasm 3615580 2825418
+main-little-avx2.wasm 1625574 1354700
+main-little-avx.wasm 1624922 1353119
+main-little-scalar.wasm 1603835 1350639
+main-scalar.wasm 3594493 2820865
+mumble-avx.wasm 3615580 2814180
+v02-avx2.wasm 1471317 1211159
+v02-avx.wasm 1470665 1210998

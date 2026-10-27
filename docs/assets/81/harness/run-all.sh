@@ -34,6 +34,9 @@ if [ ! -x "$WORK/native-ref" ]; then
     kiss_fft.c celt_lpc.c nnet.c nnet_default.c parse_lpcnet_weights.c rnnoise_data.c rnnoise_tables.c -lm -o "$WORK/native-ref")
 fi
 
+# Keep it in /tmp: PulseAudio's socket path has to fit a Unix socket's
+# 108 bytes; with a longer one PulseAudio never listens and headless
+# Firefox's audio probes hang.
 RT=$(mktemp -d)
 chmod 700 "$RT"
 PULSEAUDIO=${PULSEAUDIO:-pulseaudio}

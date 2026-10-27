@@ -84,6 +84,22 @@ function mixWav(dir) {
   return path;
 }
 
+// 20 s of keyboard alone at -36 dBFS, for the applyConstraints probe.
+function keyboardWav(dir) {
+  const nz = f32(readFileSync(join(CORPUS, 'noise-keyboard.f32'))).subarray(0, 20 * 48000);
+  const rms = Math.sqrt(nz.reduce((a, v) => a + v * v, 0) / nz.length);
+  const g = 10 ** (-36 / 20) / rms;
+  const path = join(dir, 'keyboard.wav');
+  wav16(path, nz.map((v) => v * g));
+  return path;
+}
+
+const dbfsOf = (x, a, b) => {
+  let s = 0;
+  for (let i = a; i < b; i++) s += x[i] * x[i];
+  return 10 * Math.log10(s / (b - a) + 1e-20);
+};
+
 async function launch(name, wav) {
   if (name === 'chromium') {
     return pw.chromium.launch({
@@ -105,7 +121,19 @@ async function launch(name, wav) {
   return pw.webkit.launch({ headless: true });
 }
 
-async function withPage(browser, name, fn) {
+// One browser per engine, relaunched if a probe took it down (headless
+// Firefox has died between probes); the probe that follows says so.
+let current = null;
+async function withPage(name, fn) {
+  let relaunched = false;
+  if (!current.isConnected()) { current = await launch(name, null); relaunched = true; }
+  const t0 = Date.now();
+  const r = await onPage(current, name, fn);
+  console.log(`[ns0] ${name}:   ${((Date.now() - t0) / 1000).toFixed(1)} s${r?.fatal ? ` fatal: ${r.fatal}` : ''}`);
+  return relaunched && r && typeof r === 'object' ? { ...r, relaunched } : r;
+}
+
+async function onPage(browser, name, fn) {
   const context = await browser.newContext();
   if (name !== 'firefox') await context.grantPermissions(['microphone']).catch(() => {});
   const page = await context.newPage();
@@ -115,7 +143,15 @@ async function withPage(browser, name, fn) {
   try {
     await page.goto(base);
     await page.waitForFunction(() => window.ns0Ready === true, null, { timeout: 15000 });
-    return await fn(page);
+    // A probe that never settles (an AudioContext that stays suspended)
+    // must fail on its own, not stall the whole run.
+    let timer;
+    const limit = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('probe timed out after 120 s')), 120000); });
+    try {
+      return await Promise.race([fn(page), limit]);
+    } finally {
+      clearTimeout(timer);
+    }
   } catch (e) {
     return { fatal: String(e), console: consoleLines.slice(0, 20) };
   } finally {
@@ -131,23 +167,30 @@ async function main() {
   base = `http://127.0.0.1:${srv.address().port}/ns-browser.html`;
   try {
     for (const name of BROWSERS) {
-      const browser = await launch(name, null);
-      const res = { browser: name, version: browser.version(), playwright: require('playwright-core/package.json').version, date: new Date().toISOString() };
+      current = await launch(name, null);
+      const res = { browser: name, version: current.version(), playwright: require('playwright-core/package.json').version, date: new Date().toISOString() };
       console.log(`[ns0] ${name} ${res.version}`);
-      res.caps = await withPage(browser, name, (p) => p.evaluate(() => window.ns0.caps()));
-      res.cpuMain = await withPage(browser, name, (p) => p.evaluate((v) => window.ns0.cpuMain({ variants: v }), VARIANTS));
+      const step = (s) => console.log(`[ns0] ${name}: ${s}`);
+      step('caps');
+      res.caps = await withPage(name, (p) => p.evaluate(() => window.ns0.caps()));
+      step('cpuMain');
+      res.cpuMain = await withPage(name, (p) => p.evaluate((v) => window.ns0.cpuMain({ variants: v }), VARIANTS));
       res.worklet = [];
       for (const variant of ['v02-avx', 'main-avx', 'main-little-avx']) {
         for (const via of ['processorOptions', 'port']) {
-          res.worklet.push(await withPage(browser, name, (p) => p.evaluate((o) => window.ns0.worklet(o), { variant, via })));
+          step(`worklet ${variant} ${via}`);
+          res.worklet.push(await withPage(name, (p) => p.evaluate((o) => window.ns0.worklet(o), { variant, via, seconds: 6 })));
         }
       }
       for (const contextRate of [44100, 48000]) {
-        res.worklet.push(await withPage(browser, name, (p) => p.evaluate((o) => window.ns0.worklet(o), { variant: 'main-avx', via: 'port', contextRate })));
+        step(`worklet ${contextRate}`);
+        res.worklet.push(await withPage(name, (p) => p.evaluate((o) => window.ns0.worklet(o), { variant: 'v02-avx', via: 'port', contextRate, seconds: 6 })));
       }
-      res.rates = await withPage(browser, name, (p) => p.evaluate(() => window.ns0.rates()));
-      res.constraints = await withPage(browser, name, (p) => p.evaluate(() => window.ns0.constraints()));
-      await browser.close();
+      step('rates');
+      res.rates = await withPage(name, (p) => p.evaluate(() => window.ns0.rates()));
+      step('constraints');
+      res.constraints = await withPage(name, (p) => p.evaluate(() => window.ns0.constraints()));
+      await current.close();
       if (name === 'chromium' && CORPUS) {
         const tmp = join(tmpdir(), `ns0-${process.pid}`);
         mkdirSync(tmp, { recursive: true });
@@ -155,7 +198,7 @@ async function main() {
         res.record = {};
         for (const ns of [true, false]) {
           const b = await launch('chromium', wav);
-          const r = await withPage(b, name, (p) => p.evaluate((o) => window.ns0.record(o), { noiseSuppression: ns, seconds: REC_SECONDS }));
+          const r = await onPage(b, name, (p) => p.evaluate((o) => window.ns0.record(o), { noiseSuppression: ns, autoGainControl: true, seconds: REC_SECONDS }));
           await b.close();
           if (r.f32) {
             writeFileSync(join(CAPTURE_OUT, `capture-ns-${ns ? 'on' : 'off'}.f32`), Buffer.from(r.f32, 'base64'));
@@ -163,9 +206,32 @@ async function main() {
           }
           res.record[ns ? 'nsOn' : 'nsOff'] = r;
         }
+        // Does applyConstraints change the audio, whatever getSettings() says?
+        // Keyboard alone; the level of 2-9 s against 12-19 s, with a switch at
+        // 10 s and without one (the file's own drift).
+        const kwav = keyboardWav(tmp);
+        res.applyConstraints = {};
+        for (const [label, o] of [
+          ['offThenOn', { noiseSuppression: false, applyAtS: 10, applyTo: true }],
+          ['onThenOff', { noiseSuppression: true, applyAtS: 10, applyTo: false }],
+          ['offNoSwitch', { noiseSuppression: false }],
+          ['onNoSwitch', { noiseSuppression: true }],
+        ]) {
+          const b = await launch('chromium', kwav);
+          const r = await onPage(b, name, (p) => p.evaluate((x) => window.ns0.record(x), { ...o, autoGainControl: true, seconds: 20 }));
+          await b.close();
+          if (r.f32) {
+            const buf = Buffer.from(r.f32, 'base64');
+            const x = f32(buf);
+            r.firstDbfs = dbfsOf(x, 2 * 48000, 9 * 48000);
+            r.secondDbfs = dbfsOf(x, 12 * 48000, Math.min(x.length, 19 * 48000));
+            delete r.f32;
+          }
+          res.applyConstraints[label] = r;
+        }
       }
       writeFileSync(join(OUT, `browser-${name}.json`), JSON.stringify(res, null, 2) + '\n');
-      console.log(JSON.stringify({ caps: res.caps, cpu: Object.fromEntries(Object.entries(res.cpuMain).map(([k, v]) => [k, v.msPerFrame ?? v.error ?? v.fatal])), worklet: res.worklet.map((w) => [w.variant, w.via, w.contextRate, w.kind, w.benchMsPerFrame, w.error, w.realtime?.framesPerSecond?.toFixed(1)]), rates: res.rates, constraints: res.constraints }, null, 1));
+      console.log(JSON.stringify({ caps: res.caps, cpu: Object.fromEntries(Object.entries(res.cpuMain).map(([k, v]) => [k, v.msPerFrame ?? v.error ?? v.fatal])), worklet: res.worklet.map((w) => [w.variant, w.via, w.contextRate, w.kind, w.benchMsPerFrame, w.error, w.realtime?.renderRatio?.toFixed(4)]), rates: res.rates, constraints: res.constraints, applyConstraints: res.applyConstraints }, null, 1));
     }
   } finally {
     srv.close();

@@ -74,8 +74,9 @@ function denoise(x) {
   const o = new Float32Array(FRAME);
   for (let f = 0; f < n; f++) { prob[f] = d.process(x.subarray(f * FRAME, (f + 1) * FRAME), o); out.set(o, f * FRAME); }
   d.destroy();
-  // undo RNNoise's 20 ms
-  return { out: out.subarray(960), prob: prob.subarray(2) };
+  // undo RNNoise's 20 ms; 0.2's probability runs one frame ahead of its
+  // audio (docs/81 §12.2), so it is one frame late, not two
+  return { out: out.subarray(960), prob: prob.subarray(1) };
 }
 
 function energyGateSpurts(x, a, b) {

@@ -1,45 +1,45 @@
 {
   "variant": "v02-avx",
   "lagSamples": {
-    "nsOn": 732,
-    "nsOff": 446
+    "nsOn": 730,
+    "nsOff": 444
   },
   "inputLeadDbfs": -38.22134780499728,
   "conditions": {
     "none": {
-      "leadNoiseDbfs": -39.464834004350024,
-      "leadAttenuationDb": 1.2434861993527448,
-      "speechLevelChangeDb": -0.5419765829309746,
+      "leadNoiseDbfs": -26.976085824884226,
+      "leadAttenuationDb": -11.245261980113053,
+      "speechLevelChangeDb": 2.79394956140775,
       "energyGateLead": {
         "spurts": 1,
-        "sentFraction": 0.5525
+        "sentFraction": 0.625
       }
     },
     "chromium-ns": {
-      "leadNoiseDbfs": -40.71693948798247,
-      "leadAttenuationDb": 2.495591682985193,
-      "speechLevelChangeDb": -1.4446769265121908,
+      "leadNoiseDbfs": -26.07917801063493,
+      "leadAttenuationDb": -12.14216979436235,
+      "speechLevelChangeDb": 2.9331534715011216,
       "energyGateLead": {
-        "spurts": 2,
-        "sentFraction": 0.5325
+        "spurts": 1,
+        "sentFraction": 0.555
       }
     },
     "rnnoise": {
-      "leadNoiseDbfs": -53.74404415021751,
-      "leadAttenuationDb": 15.522696345220233,
-      "speechLevelChangeDb": -1.7987477159984948,
+      "leadNoiseDbfs": -47.86451346297066,
+      "leadAttenuationDb": 9.643165657973384,
+      "speechLevelChangeDb": 1.223495896305888,
       "energyGateLead": {
-        "spurts": 1,
-        "sentFraction": 0.0775
+        "spurts": 3,
+        "sentFraction": 0.4
       }
     },
     "both": {
-      "leadNoiseDbfs": -49.94128990638959,
-      "leadAttenuationDb": 11.719942101392313,
-      "speechLevelChangeDb": -1.7671093601863568,
+      "leadNoiseDbfs": -32.88252440126995,
+      "leadAttenuationDb": -5.338823403727332,
+      "speechLevelChangeDb": 2.4763598209494546,
       "energyGateLead": {
         "spurts": 2,
-        "sentFraction": 0.215
+        "sentFraction": 0.4825
       }
     },
     "input": {
@@ -50,8 +50,8 @@
     }
   },
   "rnnoiseLeadProb": {
-    "max": 0.9986175298690796,
+    "max": 0.9931060075759888,
     "over05": 0.0325,
-    "over09": 0.0125
+    "over09": 0.015
   }
 }

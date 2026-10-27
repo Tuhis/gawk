@@ -15,7 +15,8 @@
 # xiph/rnnoise#222, fixed on main by 372f7b4), so there is no v02-scalar.
 set -euo pipefail
 OUT=$(realpath -m "${1:?usage: build-wasm.sh OUT_DIR}")
-EMSDK_IMAGE=emscripten/emsdk:4.0.10
+# By digest: a byte-compare is exactly where a re-pushed tag would show up.
+EMSDK_IMAGE=emscripten/emsdk:4.0.10@sha256:90b757eb11fa9a0e3ce4d2d9f76d932a56018e4accc37b5a28b2783751e60eb7
 V02_SHA256=90fce4b00b9ff24c08dbfe31b82ffd43bae383d85c5535676d28b0a2b11c0d37
 MAIN_COMMIT=70f1d256acd4b34a572f999a05c87bf00b67730d
 MODEL_SHA256=0a8755f8e2d834eff6a54714ecc7d75f9932e845df35f8b59bc52a7cfe6e8b37
@@ -74,4 +75,5 @@ docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
 # The record a second build is checked against (results/wasm-sha256.txt is
 # NS0's): sha256sum -c it in another build's directory.
 (cd "$OUT" && sha256sum ./*.wasm | sed 's| \./| |' >SHA256SUMS)
+(cd "$OUT" && for f in *.wasm; do echo "$f $(wc -c <"$f") $(gzip -9c "$f" | wc -c)"; done >SIZES)
 ls -l "$OUT"

@@ -283,7 +283,8 @@ function gates(x, r, lIn, lOut) {
   const outRms = Array.from(frameEnergy(r.out), Math.sqrt);
   for (const on of ON) for (const dOff of OFF_DELTA) for (const h of HOLD) {
     const off = Math.max(0, on - dOff);
-    // the probability is for the frame RNNoise outputs at that call
+    // gated as production gates it: each output block with its own call's
+    // probability (0.2 and Mumble's pin run one frame ahead, §12.2)
     g[`prob-${on}-${off.toFixed(2)}-${h}`] = gateMetrics(probGate(r.prob, on, off, h), lOut);
   }
   for (const on of ON) for (const fl of FLOORS) {

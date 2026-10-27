@@ -25,7 +25,7 @@
       "lagSamples": 960,
       "noiseAttenuationDb": 42.023804610208096,
       "siSdrDb": -42.00183431764158,
-      "probAgreementWithDirect": 0.6166545718432511,
+      "probAgreementWithDirect": 0.976233671988389,
       "meanProb": 0.7362637369635316
     },
     {
@@ -52,7 +52,7 @@
       "lagSamples": 960,
       "noiseAttenuationDb": 8.513745112149032,
       "siSdrDb": -44.38532966090129,
-      "probAgreementWithDirect": 0.6308055152394775,
+      "probAgreementWithDirect": 0.9677068214804064,
       "meanProb": 0.7625446181273945
     },
     {
@@ -79,7 +79,7 @@
       "lagSamples": 960,
       "noiseAttenuationDb": 30.39238060163727,
       "siSdrDb": -42.29127601468146,
-      "probAgreementWithDirect": 0.6084905660377359,
+      "probAgreementWithDirect": 0.9824020319303338,
       "meanProb": 0.7251701737403956
     }
   ]

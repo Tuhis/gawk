@@ -10,7 +10,9 @@
 //   rates        AudioContext at 44.1 / 48 kHz / default + the microphone
 //   constraints  noiseSuppression off and back on with applyConstraints
 //   record       (Chromium) the fake microphone, with the browser's noise
-//                suppression on or off, as f32 for offline analysis
+//                suppression on or off (auto gain on, as in production), as
+//                f32 for offline analysis; optionally switching suppression
+//                with applyConstraints part-way through
 
 const FRAME = 480;
 
@@ -128,7 +130,7 @@ class NsProbe extends AudioWorkletProcessor {
     else this.port.postMessage({ kind: 'noOptionsModule', type: typeof m });
     this.port.onmessage = (ev) => {
       if (ev.data && ev.data.module) start(ev.data.module, 'port');
-      if (ev.data === 'stats') this.port.postMessage({ kind: 'stats', frames: this.frames, quanta: this.quanta, prob: this.prob });
+      if (ev.data === 'stats') this.port.postMessage({ kind: 'stats', frames: this.frames, quanta: this.quanta, prob: this.prob, renderFrame: currentFrame, workletMs: Date.now() });
     };
   }
   process(inputs, outputs) {
@@ -195,17 +197,23 @@ async function worklet({ variant, via, seconds = 4, contextRate }) {
       node.port.postMessage('stats');
     });
     src.start();
-    const t0 = performance.now();
+    // Real time, judged inside the worklet: how far the render clock
+    // (currentFrame) advanced against the worklet's own Date.now() over a
+    // long window, after a second of start-up. Main-thread wall time around a
+    // port round trip skews short windows (it read WebKit above real time).
+    await new Promise((r2) => setTimeout(r2, 1000));
     const s0 = await stats();
     await new Promise((r2) => setTimeout(r2, seconds * 1000));
     const s1 = await stats();
-    const wallS = (performance.now() - t0) / 1000;
+    const ms = s1.workletMs - s0.workletMs;
     res.realtime = {
-      wallS,
-      framesPerSecond: (s1.frames - s0.frames) / wallS,
+      workletWindowMs: ms,
+      renderRateHz: ((s1.renderFrame - s0.renderFrame) / ms) * 1000,
+      contextRateHz: ctx.sampleRate,
+      // rendered audio ÷ elapsed time: 1.0 keeps real time, < 1 falls behind
+      renderRatio: ((s1.renderFrame - s0.renderFrame) / ms) * 1000 / ctx.sampleRate,
+      framesPerSecond: ((s1.frames - s0.frames) / ms) * 1000,
       expectedFramesPerSecond: ctx.sampleRate / FRAME,
-      quantaPerSecond: (s1.quanta - s0.quanta) / wallS,
-      expectedQuantaPerSecond: ctx.sampleRate / 128,
     };
     src.stop();
     return res;
@@ -269,15 +277,28 @@ async function constraints() {
 
 // Chromium: the fake microphone (a WAV the driver chose) through the
 // browser's processing, captured with MSTP, returned as base64 f32.
-async function record({ noiseSuppression, seconds }) {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression, autoGainControl: false, channelCount: 1 } });
+// applyAtS: switch noiseSuppression to `applyTo` with applyConstraints that
+// many seconds in, to see whether the audio (not getSettings()) changes.
+async function record({ noiseSuppression, autoGainControl = true, seconds, applyAtS = null, applyTo = null }) {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression, autoGainControl, channelCount: 1 } });
   const track = stream.getAudioTracks()[0];
   const settings = track.getSettings();
   const reader = new MediaStreamTrackProcessor({ track }).readable.getReader();
   const chunks = [];
   let n = 0, rate = 0;
-  const end = performance.now() + seconds * 1000;
+  const t0 = performance.now();
+  const end = t0 + seconds * 1000;
+  let applied = null;
   while (performance.now() < end) {
+    if (applyAtS !== null && applied === null && performance.now() - t0 >= applyAtS * 1000) {
+      applied = { atSample: n };
+      try {
+        await track.applyConstraints({ echoCancellation: true, noiseSuppression: applyTo, autoGainControl, channelCount: 1 });
+        applied.settingsAfter = track.getSettings().noiseSuppression;
+      } catch (e) {
+        applied.error = `${e.name}: ${e.message}`;
+      }
+    }
     const { value } = await reader.read();
     if (!value) break;
     rate = value.sampleRate;
@@ -293,7 +314,7 @@ async function record({ noiseSuppression, seconds }) {
   const u8 = new Uint8Array(all.buffer);
   let s = '';
   for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000));
-  return { sampleRate: rate, settings: { noiseSuppression: settings.noiseSuppression, echoCancellation: settings.echoCancellation, autoGainControl: settings.autoGainControl }, samples: n, f32: btoa(s) };
+  return { sampleRate: rate, settings: { noiseSuppression: settings.noiseSuppression, echoCancellation: settings.echoCancellation, autoGainControl: settings.autoGainControl }, samples: n, applied, f32: btoa(s) };
 }
 
 window.ns0 = { caps, cpuMain, worklet, rates, constraints, record };

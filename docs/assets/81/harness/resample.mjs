@@ -84,7 +84,9 @@ const res = { variant: VARIANT, rows: [] };
 for (const noise of ['noise-keyboard', 'noise-restaurant', 'noise-street']) {
   const sp = ld('speech-a');
   const nz = ld(noise).subarray(0, sp.length);
-  // active speech ≈ -26 dBFS, noise 10 dB below
+  // active speech ≈ -26 dBFS (samples above 0.01, a cruder rule than
+  // offline.mjs's labels, so this "10 dB" is not the quality table's and
+  // the absolute SI-SDR differs; compare the paths with each other only)
   const gs = Math.sqrt(10 ** (-2.6) / (ms(sp.filter((v) => Math.abs(v) > 0.01)) || 1));
   const gn = Math.sqrt(10 ** (-3.6) / ms(nz));
   const clean = sp.map((v) => v * gs);
@@ -101,9 +103,17 @@ for (const noise of ['noise-keyboard', 'noise-restaurant', 'noise-street']) {
     const nr = rn(f(noiseOnly));
     const L = bestLag(clean, r.out, 960, 48);
     const n = Math.min(clean.length - 2000, r.out.length - L);
-    const nf = Math.min(r.prob.length, ref.prob.length);
-    let agree = 0;
-    for (let k = 0; k < nf; k++) agree += (r.prob[k] >= 0.6) === (ref.prob[k] >= 0.6) ? 1 : 0;
+    // Compare the same stretch of time: an unresampled frame is 480 samples
+    // at 44.1 kHz (10.88 ms), so its k-th frame is direct's frame
+    // k·48000/44100, not k (indexing by k drifts ~5 s over the minute).
+    const toDirect = name === 'unresampled' ? 48000 / 44100 : 1;
+    let agree = 0, nf = 0;
+    for (let k = 0; k < r.prob.length; k++) {
+      const j = Math.round(k * toDirect);
+      if (j >= ref.prob.length) break;
+      agree += (r.prob[k] >= 0.6) === (ref.prob[j] >= 0.6) ? 1 : 0;
+      nf++;
+    }
     res.rows.push({
       noise, path: name,
       lagSamples: L,

@@ -2438,10 +2438,18 @@ entries still describe code `gawk-pubsim` runs (now
   of the int8 weights; `-DDISABLE_DEBUG_FLOAT` drops them.
   ([docs/81](81-noise-suppression.md) §11)
 - **Chromium accepts `applyConstraints({noiseSuppression})` on an audio
-  track and changes nothing** (`getSettings()` keeps the old value, measured
-  on 156); re-open the microphone to switch. **WebKit has no
+  track and changes nothing**: `getSettings()` keeps the old value and so
+  does the audio (on 156, a keyboard's level after a mid-recording switch
+  matched a run without one to 0.01 dB, both ways); re-open the microphone
+  to switch. **WebKit has no
   `noiseSuppression` or `autoGainControl` constraint at all.**
   ([docs/81](81-noise-suppression.md) §12.6)
+- **Chromium's auto gain lifts steady noise as readily as speech**: with
+  echo cancellation, suppression and auto gain on (gawk's voice
+  constraints since R79), a −38 dBFS keyboard alone comes out 11–12 dB
+  louder, and suppression on or off moves it by under 1 dB. Measure a
+  denoiser or gate on what the track delivers, with the constraints
+  production uses. ([docs/81](81-noise-suppression.md) §12.4)
 
 **CI / deployment**
 
