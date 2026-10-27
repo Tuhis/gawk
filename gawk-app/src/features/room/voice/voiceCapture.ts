@@ -130,7 +130,6 @@ export interface VoiceCaptureDeps {
     cb: { output: (data: Uint8Array, durationUs: number | null) => void; error: (e: Error) => void },
   ) => VoiceEncoderLike;
   createAudioData: (init: AudioDataInit) => VoiceAudioData;
-  now: () => number;
   // docs/81 D13: synchronous, before the first getUserMedia.
   wasmSimd: () => boolean;
   // Fetch and compile rnnoise.wasm; rejects with a reason to show.
@@ -239,7 +238,6 @@ export function realCaptureDeps(): VoiceCaptureDeps {
       };
     },
     createAudioData: (init) => new AudioData(init) as unknown as VoiceAudioData,
-    now: () => performance.now(),
     wasmSimd: wasmSimdSupported,
     loadRnnoise: () => compileRnnoise(),
     micPermissionGranted: () => queryMicPermission(),
@@ -467,8 +465,7 @@ export class VoiceCapture implements VoiceCaptureLike {
   // fails ends the capture as a lost microphone does.
   private async reopen(target: NoiseMode): Promise<void> {
     const ctx = this.context;
-    const node = this.node;
-    if (!ctx || !node) return;
+    if (!ctx || !this.node) return;
     this.unwatchTrack();
     this.stopTracks(this.stream);
     this.stream = null;
@@ -492,6 +489,10 @@ export class VoiceCapture implements VoiceCaptureLike {
       return;
     }
     this.watchTrack(track);
+    // The node as it is now: the module landing or a processor error during
+    // the await may have swapped it (review round 1).
+    const node = this.node;
+    if (!node) return;
     try {
       const source = ctx.createMediaStreamSource(stream);
       source.connect(node);
@@ -596,6 +597,13 @@ export class VoiceCapture implements VoiceCaptureLike {
     old.port.onmessage = null;
     old.onprocessorerror = null;
     this.disconnect(old);
+    // disconnect() drops only the old node's own outputs: the source would
+    // otherwise keep the old processor, and its wasm memory, alive.
+    try {
+      this.source?.disconnect(old);
+    } catch {
+      // not connected
+    }
     this.rnnoiseReady = false;
     const node = this.createNode(ctx, denoise);
     try {
@@ -653,8 +661,8 @@ export class VoiceCapture implements VoiceCaptureLike {
   handleBlock(pcm: Float32Array, prob: number | null): void {
     if (this.stopped) return;
     const timestampUs = this.blocks * VOICE_BLOCK_MS * 1000;
-    this.blocks++;
     const send = this.gate(blockRms(pcm), prob);
+    this.blocks++;
     if (!send) return;
     let data: VoiceAudioData;
     try {
@@ -669,7 +677,10 @@ export class VoiceCapture implements VoiceCaptureLike {
   // ---- Gate and encoder -------------------------------------------------------
 
   private gate(rms: number, prob: number | null): boolean {
-    const send = this.cb.shouldSend(rms, prob, this.deps.now());
+    // Audio time, not arrival time: blocks reach the main thread in bursts
+    // behind React and GC, and the gate's hold must count audio as NS0's
+    // probGate counts blocks (review round 1).
+    const send = this.cb.shouldSend(rms, prob, this.blocks * VOICE_BLOCK_MS);
     if (this.sending && !send) this.endSpurt();
     this.sending = send;
     return send;

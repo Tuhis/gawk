@@ -90,7 +90,7 @@ let encoders: {
   error: (e: Error) => void;
 }[];
 let workletNodes: FakeNode[];
-let sources: { stream: MediaStream; connected: unknown[]; disconnected: number }[];
+let sources: { stream: MediaStream; connected: unknown[]; disconnected: number; disconnectedFrom: unknown[] }[];
 let ctxRate: number;
 
 const MODULE = { fake: 'module' } as unknown as WebAssembly.Module;
@@ -116,7 +116,6 @@ function deps(over: Partial<VoiceCaptureDeps> = {}): VoiceCaptureDeps {
       };
     },
     createAudioData: (init) => new FakeData((init.data as Float32Array)[0] ?? 0, init.timestamp, init.sampleRate),
-    now: () => 0,
     wasmSimd: () => simd,
     loadRnnoise: () => {
       loads++;
@@ -137,9 +136,11 @@ function callbacks(gateOpen: (rms: number, prob: number | null) => boolean = (rm
     ends: 0,
     errors: [] as VoiceError[],
     gated: [] as [number, number | null][],
+    gatedAt: [] as number[],
     noise: [] as NoiseStatus[],
-    shouldSend: (rms: number, prob: number | null) => {
+    shouldSend: (rms: number, prob: number | null, nowMs: number) => {
       cb.gated.push([rms, prob]);
+      cb.gatedAt.push(nowMs);
       return gateOpen(rms, prob);
     },
     onPacket: (p: Uint8Array, units: number) => cb.packets.push([p.length, units]),
@@ -156,11 +157,13 @@ function fakeContext() {
       kind,
       connected: [] as unknown[],
       disconnected: 0,
+      disconnectedFrom: [] as unknown[],
       connect(to: unknown) {
         n.connected.push(to);
       },
-      disconnect() {
-        n.disconnected++;
+      disconnect(from?: unknown) {
+        if (from === undefined) n.disconnected++;
+        else n.disconnectedFrom.push(from);
       },
     };
     return n;
@@ -370,6 +373,9 @@ describe('VoiceCapture, RNNoise (docs/81 D4, D13)', () => {
     const fresh = node();
     expect(fresh.options.processorOptions).toEqual({ denoise: true, module: MODULE });
     expect(n.disconnected).toBe(1);
+    // The source lets go of the old node too, or it keeps the old processor
+    // (and its wasm memory) alive.
+    expect(sources[0].disconnectedFrom).toEqual([n]);
     expect(n.port.onmessage).toBeNull();
     expect(n.port.posted).toContainEqual({ t: 'close' });
     expect(sources[0].connected).toContain(fresh);
@@ -436,7 +442,42 @@ describe('VoiceCapture, RNNoise (docs/81 D4, D13)', () => {
   });
 });
 
+describe('VoiceCapture, the gate clock (review round 1)', () => {
+  it('the gate reads audio time (10 ms a block), not when a block reached the main thread', async () => {
+    // A burst: three blocks delivered at one main-thread instant.
+    const { cb, node } = await started('off');
+    block(node(), 0);
+    block(node(), 0);
+    block(node(), 0);
+    expect(cb.gatedAt).toEqual([0, 10, 20]);
+  });
+});
+
 describe('VoiceCapture, the re-open (docs/81 D11, §10)', () => {
+  it('a module that lands while the re-open waits for getUserMedia: the new source feeds the live node', async () => {
+    let release!: () => void;
+    let calls = 0;
+    const base = deps();
+    const { cap, node } = await started('rnnoise', callbacks(), {
+      getUserMedia: async (c) => {
+        if (++calls === 2) await new Promise<void>((r) => (release = r));
+        return base.getUserMedia(c);
+      },
+    });
+    const p = cap.setNoise('browser');
+    await flush();
+    // Mid re-open, RNNoise still the running mode: the module's node swap.
+    moduleLoad!.resolve(MODULE);
+    await flush();
+    release();
+    await p;
+    const live = node();
+    expect(sources.at(-1)!.connected).toEqual([live]);
+    expect(live.connected[0]).toMatchObject({ kind: 'gain' });
+    expect(live.port.posted.at(-1)).toEqual({ t: 'denoise', on: false });
+  });
+
+
   it('to Browser: stops the old track first, re-opens with suppression, keeps the worklet, encoder and clock', async () => {
     const { cap, cb, node } = await started('rnnoise');
     const n = node();
