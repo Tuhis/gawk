@@ -397,7 +397,8 @@ export function RoomView({
   // overlays give it room. An unpinned voice flyout floats over the stage.
   const sideOpen = panelOpen || (voiceShown && (voicePinned || narrow));
   // The one-time hint: a voice room where nobody is in voice yet (with
-  // someone there, the invite chip says it instead).
+  // someone there, the invite chip says it instead). It fades with the
+  // header rather than holding the chrome over the video (review round 1).
   const showVoiceHint =
     hasVoice && joined && !hintSeen && !voiceOpen && voicePhase === 'idle' && voiceAvailable && voiceRosterLen === 0;
   const dismissVoiceHint = useCallback(() => {
@@ -464,7 +465,6 @@ export function RoomView({
     !!presetMenu ||
     masterOpen ||
     editingNick ||
-    showVoiceHint ||
     (creatorHelpOpen && isRoomCreator(snapshot));
   const stageLive = tilesShown || previewOnly;
   const chromeVisible = useAutoHide(CONTROL_IDLE_MS, stageLive && !anyOverlayOpen);
