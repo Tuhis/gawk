@@ -46,7 +46,8 @@ describe('Audio section copy (docs/81 D13, D15)', () => {
   it('owns RNNoise’s 20 ms, and what Browser and Off cost', () => {
     expect(noiseCostText('rnnoise')).toMatch(/adds 20 ms/);
     expect(noiseCostText('browser')).toMatch(/no added delay/);
-    expect(noiseCostText('off')).toMatch(/No noise suppression/);
+    // Off still gates on level: it does not send everything.
+    expect(noiseCostText('off')).toBe('No noise suppression: the level threshold decides what is sent.');
   });
 
   it('says nothing when all is well, loading while it loads, and why it fell back and to what', () => {
@@ -56,6 +57,10 @@ describe('Audio section copy (docs/81 D13, D15)', () => {
     expect(noiseStatusText({ ...base, running: 'off', fallback: 'it is too slow on this device (52 % of real time)' })).toBe(
       'RNNoise isn’t available here: it is too slow on this device (52 % of real time). Using Off.',
     );
+  });
+
+  it('says nothing of a fallback while Browser or Off is the choice', () => {
+    expect(noiseStatusText({ ...base, requested: 'off', running: 'off', fallback: 'it is too slow on this device (52 % of real time)' })).toBeNull();
   });
 
   it('says when a choice waits for the next join', () => {

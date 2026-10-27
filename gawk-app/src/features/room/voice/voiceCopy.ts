@@ -54,7 +54,7 @@ export function noiseCostText(mode: NoiseMode): string {
     case 'browser':
       return 'The browser’s own noise suppression: no added delay.';
     default:
-      return 'No noise suppression: everything the microphone hears is sent.';
+      return 'No noise suppression: the level threshold decides what is sent.';
   }
 }
 
@@ -62,7 +62,9 @@ export function noiseCostText(mode: NoiseMode): string {
 export function noiseStatusText(n: NoiseStatus | null): string | null {
   if (!n) return null;
   const parts: string[] = [];
-  if (n.fallback !== null) {
+  // A fallback matters only while RNNoise is the choice: a late watchdog or
+  // download failure after a switch away from it is nobody's business.
+  if (n.fallback !== null && n.requested === 'rnnoise') {
     parts.push(`RNNoise isn’t available here: ${n.fallback}. Using ${NOISE_MODE_LABEL[n.running]}.`);
   } else if (n.loading) {
     parts.push('RNNoise is loading…');

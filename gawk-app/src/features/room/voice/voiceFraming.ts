@@ -229,6 +229,9 @@ class GawkVoiceCapture extends AudioWorkletProcessor {
         e._initialize();
         const inP = e.malloc(FRAME * 4);
         const outP = e.malloc(FRAME * 4);
+        // One view for good: rnnoise/build.sh links with
+        // ALLOW_MEMORY_GROWTH=0, so malloc never detaches the buffer.
+        // Allowing growth would mean re-taking this view after allocations.
         this.wasm = { e, inP, outP, heap: new Float32Array(e.memory.buffer), inO: inP >> 2, outO: outP >> 2 };
       }
       this.state = this.wasm.e.rnnoise_create(0);

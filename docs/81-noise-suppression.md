@@ -275,6 +275,11 @@ Every letter is claimed; this milestone's prefix is **NS**.
   context rate and the mode (D5, D6), so the `VoiceFrame` seq arithmetic
   (10 ms units) does not change, and the encoder, configured once from the
   first block (`this.encoder ??=`), never sees a rate change.
+- **The gate runs on audio time.** Its hold is measured in blocks (10 ms
+  each, the capture's block counter), as NS0's `probGate` counts frames,
+  never in main-thread arrival time: blocks arrive in bursts behind
+  rendering and GC, and a wall-clock hold would drop a burst of held blocks
+  or stretch past 300 ms of audio.
 - **The re-open is not a `start()`.** `VoiceCapture.start()`'s catch calls
   `release()`, which would tear down the session's capture on a failed
   re-open; a failed re-open goes through `fail()`, so its error reaches
