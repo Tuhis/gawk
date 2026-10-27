@@ -237,6 +237,8 @@ export class TalkGate {
   // level, else the last one it had, else the one stored from an earlier
   // session (`storedLevelDb`). Never the floor's: that waits for evidence.
   private gainLevelDb: number | null;
+  // This tab learned a level of its own (only then is it worth storing).
+  private learnedHere = false;
 
   constructor(
     mode: TalkMode,
@@ -303,7 +305,10 @@ export class TalkGate {
     } else if (prob === null) this.sending = this.vad.update(rms, nowMs);
     else this.sending = this.speech.update(prob, rms, nowMs);
     const learned = this.speech.learnedLevelDb();
-    if (learned !== null) this.gainLevelDb = learned;
+    if (learned !== null) {
+      this.gainLevelDb = learned;
+      this.learnedHere = true;
+    }
     return this.sending;
   }
 
@@ -318,10 +323,12 @@ export class TalkGate {
     return this.speech.learnedLevelDb();
   }
 
-  // The level the gain works from (what to store for the next session):
-  // kept through a silence the learned level does not outlive.
-  levelForGain(): number | null {
-    return this.gainLevelDb;
+  // What to store for the next session: the level the gain works from,
+  // kept through a silence the learned level does not outlive — but only
+  // if this tab learned one, so a seed loaded long ago (and maybe reset in
+  // another tab since) is never written back (review round 2).
+  levelToStore(): number | null {
+    return this.learnedHere ? this.gainLevelDb : null;
   }
 
   // docs/82 D6: the gain to apply to sent blocks, dB.
@@ -334,6 +341,7 @@ export class TalkGate {
   forgetLevel(): void {
     this.speech.forgetLevel();
     this.gainLevelDb = null;
+    this.learnedHere = false;
   }
 
   // The own speaking indicator (docs/80 D16): from this gate, never from the

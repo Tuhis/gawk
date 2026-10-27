@@ -804,6 +804,15 @@ describe('VoiceController learned level (R81, docs/82 D2–D7)', () => {
     c.dispose();
   });
 
+  it('a call that learned nothing stores nothing, so it never writes back an old seed (review round 2)', async () => {
+    const c = make('vad', { speechLevelDb: -35 });
+    await connected(c);
+    captures[0].cb.shouldSend(at(-70), 0.01, 0);
+    c.leave();
+    expect(savedLevels).toEqual([]);
+    c.dispose();
+  });
+
   it('forgetting the level drops the floor and the gain', async () => {
     const c = make('vad', { speechLevelDb: -35 });
     await connected(c);

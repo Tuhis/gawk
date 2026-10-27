@@ -114,6 +114,9 @@ that follows the speaker's own level does.
   the fixed floor (on unprocessed corpus audio); through Chromium 2 of 88
   against 1 of 88 (auto gain off) and 0 of 88 (auto gain on). VX4's real
   microphones decide whether that is heard.
+- **Off mode gates on the gained level** (D6), so a stored −40 dBFS level
+  puts its −40 dBFS threshold at about −60 dBFS on the raw input, roughly
+  what auto gain did; steady background may open it. VX4 checks it.
 - **Loud humming or singing along** is louder than the floor; no level rule
   helps. Push to talk does.
 - **Our gain is not auto gain.** It follows confident speech slowly and is
@@ -140,7 +143,7 @@ Every letter is claimed; this milestone's prefix is **VX**.
 | **VX1** ✅ | The learned gate: D5–D9 in `talkGate.ts`, `voiceCapture.ts`, `voiceController.ts`, `voicePrefs.ts`, `useRoomVoice.ts`. | Vitest first: tracker (minimum evidence, confident-only, eligibility, quantile under a quieter hum, half-life, seed), margin curve, floor clamps, the learned floor rejecting a quiet confident block, a speaker 22 dB quieter followed within 30 s, PTT learning only while held, blocked learns nothing, the gain from a stored level and from the session's, kept through silence, capped, forgotten on reset; constraints per mode; the gain applied after the gate and clipped; the meter's floor; the stored level saved on leave. The TS gate decides identically to the harness on VX0's captures. |
 | **VX2** ✅ | The UI: D1–D4, D9. | Component tests (button count and live state, chip and hint rules, flyout/pinned/sheet, one side panel, close keeps the call, first-join card, PTT hides the threshold, popover open/close/Escape, phone tabs and thumb bar); `e2e/voice-panel.mjs` and `e2e/voice-rnnoise.mjs` pass in Chromium with screenshots at four widths, no overflow. |
 | **VX3** ✅ | Per-person volume and the limiter: D10. | Tests: clamp 0..2, per-sink maximum (streams 1), limiter wiring and settings, streams bypass it, the boost amber and the reset. |
-| **VX4** | **Owner pass** on the reference deployment: Chrome, Firefox and Safari on desktop, Chrome on Android, Safari on iOS, real microphones; a real hum and a TV behind the speaker; leaning back mid-call; a quiet microphone through D6's gain; the limiter with two boosted people; `e2e/voice-rnnoise.mjs` on Firefox and WebKit (needs a sound server); `e2e/voice.mjs` against the compose stack. | §1's rows confirmed by ear and by Hear yourself on all five; findings written into §12. |
+| **VX4** | **Owner pass** on the reference deployment: Chrome, Firefox and Safari on desktop, Chrome on Android, Safari on iOS, real microphones; a real hum and a TV behind the speaker; leaning back mid-call; a quiet microphone through D6's gain (listen for clipping); Off with a stored level and a fan or keyboard; the limiter with two boosted people; `e2e/voice-rnnoise.mjs` on Firefox and WebKit (needs a sound server); `e2e/voice.mjs` against the compose stack. | §1's rows confirmed by ear and by Hear yourself on all five; findings written into §12. |
 
 ---
 
