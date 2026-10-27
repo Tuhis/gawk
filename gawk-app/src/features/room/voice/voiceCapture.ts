@@ -55,6 +55,8 @@ export const VOICE_SEQ_UNIT_US = 10_000;
 
 // docs/82 D6: the highest peak the gain may lift a block to.
 const GAIN_PEAK_CEILING = 0.98;
+// docs/82 D6: the most the gain may rise per 10 ms block (0.5 dB, 50 dB/s).
+const GAIN_RISE_PER_BLOCK = 10 ** (0.5 / 20);
 
 // docs/81 D11: echo cancellation always; the browser's own suppression only
 // in the Browser mode (before RNNoise it leaves 16 dB more keyboard, NS0
@@ -694,10 +696,11 @@ export class VoiceCapture implements VoiceCaptureLike {
   }
 
   // docs/82 D6, in place, like a limiter: a fall takes effect at once (the
-  // cap must hold from the block's first sample, review round 2), a rise is
-  // ramped across the block from the last block's gain so it never steps;
-  // capped so the block's peak stays under full scale (never below unity),
-  // and clipped to ±1 as a last resort. Never on
+  // cap must hold from the block's first sample, review round 2); a rise is
+  // ramped across the block from the last block's gain and limited to
+  // GAIN_RISE_PER_BLOCK, so the gain does not pump at the block rate
+  // (review round 3); capped so the block's peak stays under full scale
+  // (never below unity). The ±1 clip is a guard only. Never on
   // a Browser track: the browser's auto gain is on there (D5), and ours on
   // top would clip.
   private applyGain(pcm: Float32Array): void {
@@ -707,6 +710,7 @@ export class VoiceCapture implements VoiceCaptureLike {
       for (let i = 0; i < pcm.length; i++) peak = Math.max(peak, Math.abs(pcm[i]));
       if (peak > 0) target = Math.max(1, Math.min(target, GAIN_PEAK_CEILING / peak));
     }
+    if (this.gainLin !== null) target = Math.min(target, Math.max(1, this.gainLin * GAIN_RISE_PER_BLOCK));
     const from = Math.min(this.gainLin ?? target, target);
     this.gainLin = target;
     if (from === 1 && target === 1) return;

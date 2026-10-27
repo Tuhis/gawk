@@ -338,6 +338,16 @@ describe('VoiceCapture, the gain after the gate (docs/82 D6)', () => {
     cap.stop();
   });
 
+  it('after a capped loud block the gain rises at most 0.5 dB a block (review round 3)', async () => {
+    const cb = { ...callbacks(), gainDb: () => 20 * Math.log10(4) };
+    const { cap, node } = await started('off', cb);
+    block(node(), 0.5, 0.97); // capped at ×1.96
+    block(node(), 0.06, 0.97); // wants ×4: rises to ×1.96 · 10^(0.5/20)
+    block(node(), 0.06, 0.97); // starts where the last one ended
+    expect(encoders[0].encoded[2].level).toBeCloseTo(0.06 * 1.96 * 10 ** (0.5 / 20), 6);
+    cap.stop();
+  });
+
   it('no gain callback, or 0 dB, leaves the block untouched', async () => {
     const { cap, node } = await started('off');
     block(node(), 0.3);
