@@ -111,12 +111,18 @@ export interface VoiceMeter {
   levelDb: number;
   // The gate sent the block.
   open: boolean;
+  // The level floor the block had to meet while RNNoise ran, dBFS, else
+  // null (docs/82 D7: the meter greys a block under it).
+  floorDb: number | null;
 }
 
 export interface VoiceAudioPrefs {
   noiseMode: NoiseMode;
   speechThreshold: number;
   levelThresholdDb: number;
+  // docs/82 D6: the level learned in an earlier session, for the gain's
+  // first blocks.
+  speechLevelDb: number | null;
 }
 
 export const INITIAL_VOICE_STATE: VoiceViewState = {
@@ -161,6 +167,8 @@ export interface VoiceControllerDeps {
   setVoiceMuted: (muted: boolean) => void;
   now: () => number;
   onChange: (state: VoiceViewState) => void;
+  // docs/82 D6: the learned level outlives the session (voicePrefs).
+  saveSpeechLevel?: (db: number) => void;
 }
 
 // No ticket this long after VoiceJoin: the relay is not answering.
@@ -213,7 +221,7 @@ export class VoiceController {
   private seq = 0;
   private seqEpochMs: number | null = null;
   private spurtStarting = true;
-  private lastMeter: VoiceMeter = { prob: null, levelDb: -100, open: false };
+  private lastMeter: VoiceMeter = { prob: null, levelDb: -100, open: false, floorDb: null };
   private readonly unsubscribe: () => void;
   private disposed = false;
 
@@ -226,7 +234,7 @@ export class VoiceController {
       speechThreshold: audio?.speechThreshold ?? DEFAULT_SPEECH_THRESHOLD,
       levelThresholdDb: audio?.levelThresholdDb ?? DEFAULT_LEVEL_THRESHOLD_DB,
     };
-    this.gate = new TalkGate(talkMode);
+    this.gate = new TalkGate(talkMode, undefined, undefined, audio?.speechLevelDb ?? null);
     this.gate.setSpeechThreshold(this.state.speechThreshold);
     this.gate.setLevelThresholdDb(this.state.levelThresholdDb);
     this.gate.setBlocked(true);
@@ -350,6 +358,11 @@ export class VoiceController {
   setLevelThresholdDb(db: number): void {
     this.gate.setLevelThresholdDb(db);
     this.update({ levelThresholdDb: db });
+  }
+
+  // Reset to defaults (docs/82 D6): the learned level goes too.
+  forgetSpeechLevel(): void {
+    this.gate.forgetLevel();
   }
 
   // Hear yourself (D16): your own packets, after the gate, through the same
@@ -544,7 +557,7 @@ export class VoiceController {
       shouldSend: (rms, prob, nowMs) => {
         if (gen !== this.gen) return false;
         const send = this.gate.update(rms, prob, nowMs);
-        this.lastMeter = { prob, levelDb: rmsToDbfs(rms), open: send };
+        this.lastMeter = { prob, levelDb: rmsToDbfs(rms), open: send, floorDb: this.gate.floorDb() };
         const talking = send && this.state.phase === 'connected';
         if (talking !== this.state.talking) this.update({ talking });
         return send;
@@ -573,6 +586,7 @@ export class VoiceController {
       onNoise: (noise) => {
         if (gen === this.gen) this.update({ noise });
       },
+      gainDb: () => this.gate.gainDb(),
       onError: (err) => {
         if (gen !== this.gen) return;
         this.capture = null;
@@ -617,12 +631,19 @@ export class VoiceController {
     this.capture = null;
     capture?.stop();
     this.stopPlayback();
+    // The gain's level, not the tracker's: a long listen before leaving
+    // empties the tracker but not what the gain was using (review round 1).
+    const level = this.gate.levelToStore();
+    if (capture && level !== null) {
+      this.deps.saveSpeechLevel?.(level);
+      this.gate.markStored();
+    }
     this.seq = 0;
     this.seqEpochMs = null;
     this.spurtStarting = true;
     this.gate.setPttHeld(false);
     this.gate.setBlocked(true);
-    this.lastMeter = { prob: null, levelDb: -100, open: false };
+    this.lastMeter = { prob: null, levelDb: -100, open: false, floorDb: null };
     if (this.state.talking || this.state.speaking.length > 0 || this.state.pttHeld || this.state.noise) {
       this.update({ talking: false, speaking: [], pttHeld: false, noise: null });
     }

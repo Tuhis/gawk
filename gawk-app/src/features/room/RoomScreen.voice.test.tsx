@@ -152,7 +152,8 @@ import {
   VOICE_STATE_FLAG_SERVER_MUTE,
   type RoomState,
 } from '../../transport/wire';
-import { VOICE_NOTICE } from './voice/voiceCopy';
+import { VOICE_HINT, VOICE_NOTICE } from './voice/voiceCopy';
+import { NARROW_QUERY } from '../../lib/useMediaMatch';
 import { useVoiceStore } from './voice/voiceStore';
 
 function state(caps: number): RoomState {
@@ -193,9 +194,23 @@ async function join(caps: number, roster: unknown = ROSTER) {
   return room;
 }
 
+function voiceButton() {
+  return screen.getByRole('button', { name: /^Voice/ });
+}
+
+// R81: voice has its own panel, opened from the header's Voice button.
 function openPanel() {
-  fireEvent.click(screen.getByRole('button', { name: 'People and chat' }));
-  return screen.getByRole('complementary', { name: 'People and chat' });
+  fireEvent.click(voiceButton());
+  return screen.getByRole('complementary', { name: 'Voice' });
+}
+
+function voicePanel() {
+  return screen.getByRole('complementary', { name: 'Voice' });
+}
+
+// The roster row's button opens that person's volume.
+function openVolume(panel: HTMLElement, label: string) {
+  fireEvent.click(within(panel).getByRole('button', { name: `${label}: volume` }));
 }
 
 async function inVoice(listenOnly: boolean) {
@@ -207,7 +222,7 @@ async function inVoice(listenOnly: boolean) {
   await waitFor(() => expect(voiceSessions).toHaveLength(1));
   const vs = voiceSessions[0];
   act(() => vs.cb.onState({ flags: VOICE_STATE_FLAG_CONNECTED, session: 42, name: 'me [web]' }));
-  return { room, panel, vs };
+  return { room, panel: voicePanel(), vs };
 }
 
 beforeEach(() => {
@@ -224,8 +239,11 @@ afterEach(cleanup);
 describe('room voice UI', () => {
   it('shows no voice UI at all without the voice capability', async () => {
     await join(0, null);
-    const panel = openPanel();
-    expect(within(panel).queryByTestId('voice-section')).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Voice/ })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'People and chat' }));
+    expect(screen.queryByTestId('voice-panel')).toBeNull();
+    expect(screen.queryByTestId('voice-invite')).toBeNull();
+    expect(screen.queryByTestId('voice-hint')).toBeNull();
     expect(screen.queryByText(VOICE_NOTICE)).toBeNull();
     expect(screen.queryByRole('button', { name: /Join voice|Listen only/ })).toBeNull();
     expect(screen.queryByTestId('voice-dock')).toBeNull();
@@ -233,8 +251,7 @@ describe('room voice UI', () => {
 
   it('with the capability: the §6 notice and the merged roster, gawk nickname and Mumble marker', async () => {
     await join(ROOM_CAP_VOICE);
-    const panel = openPanel();
-    const section = within(panel).getByTestId('voice-section');
+    const section = openPanel();
     expect(within(section).getByText(VOICE_NOTICE)).toBeTruthy();
     const rows = within(section).getAllByTestId('voice-row');
     expect(rows).toHaveLength(2);
@@ -250,7 +267,7 @@ describe('room voice UI', () => {
 
   it('a roster without Available says voice is unavailable and offers no join', async () => {
     await join(ROOM_CAP_VOICE, { ...ROSTER, voiceFlags: 0, voiceRoster: [] });
-    const section = within(openPanel()).getByTestId('voice-section');
+    const section = openPanel();
     expect(within(section).getByText('Voice is unavailable right now.')).toBeTruthy();
     expect((within(section).getByRole('button', { name: 'Join voice' }) as HTMLButtonElement).disabled).toBe(true);
   });
@@ -262,7 +279,9 @@ describe('room voice UI', () => {
     expect(captures).toHaveLength(0);
     expect(screen.getByTestId('voice-dock')).toBeTruthy();
     expect(within(panel).getByText('Listening only — your microphone is off.')).toBeTruthy();
-    // In voice, others get a volume control and speaking indicators.
+    // In voice, others get a volume control (a click on their row) and
+    // speaking indicators.
+    openVolume(panel, 'bob');
     expect(within(panel).getByLabelText('Volume of bob')).toBeTruthy();
     act(() => vs.cb.onFrame({ end: false, target: 0, speaker: 3, seq: 1 }, new Uint8Array([1])));
     await waitFor(() => expect(within(panel).getAllByTestId('voice-row')[0].querySelector('[data-on="true"]')).toBeTruthy());
@@ -273,6 +292,7 @@ describe('room voice UI', () => {
 
   it('per-person volume persists by Mumble name', async () => {
     const { panel } = await inVoice(true);
+    openVolume(panel, 'bob');
     fireEvent.change(within(panel).getByLabelText('Volume of bob'), { target: { value: '0.3' } });
     expect(localStorage.getItem('gawk:voice-volume:bob')).toBe('0.3');
   });
@@ -283,6 +303,7 @@ describe('room voice UI', () => {
   it('a per-person mute silences them without overwriting their saved volume', async () => {
     const gain = vi.spyOn(VoiceController.prototype, 'setSpeakerVolume');
     const { panel } = await inVoice(true);
+    openVolume(panel, 'bob');
     fireEvent.change(within(panel).getByLabelText('Volume of bob'), { target: { value: '0.3' } });
     fireEvent.click(within(panel).getByRole('button', { name: 'Mute bob for you' }));
     expect(gain.mock.calls.at(-1)).toEqual([3, 0]);
@@ -298,6 +319,7 @@ describe('room voice UI', () => {
   // saved volume. The volume a new speaker starts at must honour the mute.
   it('a per-person mute holds for a speaker created after it, and after a rejoin', async () => {
     const { room, panel, vs } = await inVoice(true);
+    openVolume(panel, 'bob');
     fireEvent.change(within(panel).getByLabelText('Volume of bob'), { target: { value: '0.3' } });
     fireEvent.click(within(panel).getByRole('button', { name: 'Mute bob for you' }));
     // bob has not spoken: his speaker is built later, at this volume.
@@ -316,7 +338,10 @@ describe('room voice UI', () => {
         voiceRoster: [{ ...ROSTER.voiceRoster[0], session: 33 }, ROSTER.voiceRoster[1]],
       }),
     );
-    await waitFor(() => expect(within(panel).getByRole('button', { name: 'Unmute bob' })).toBeTruthy());
+    // A new session is a new row, its volume closed again.
+    await waitFor(() => expect(within(panel).getByRole('button', { name: 'bob: volume' })).toBeTruthy());
+    openVolume(panel, 'bob');
+    expect(within(panel).getByRole('button', { name: 'Unmute bob' })).toBeTruthy();
     expect(playbackVolumeFors.at(-1)!(33)).toBe(0);
     // Unmuting restores the saved volume for the next speaker built.
     fireEvent.click(within(panel).getByRole('button', { name: 'Unmute bob' }));
@@ -339,8 +364,7 @@ describe('room voice UI', () => {
   });
 
   it('push-to-talk: the key talks while held, typing in a field does not, the hold button talks', async () => {
-    await inVoice(false);
-    const panel = screen.getByRole('complementary', { name: 'People and chat' });
+    const { panel } = await inVoice(false);
     fireEvent.click(within(panel).getByRole('radio', { name: 'Push to talk' }));
     expect(localStorage.getItem('gawk:voice-mode')).toBe('ptt');
     expect(within(panel).getByText('V')).toBeTruthy();
@@ -354,7 +378,7 @@ describe('room voice UI', () => {
     fireEvent.keyDown(input, { code: 'KeyV' });
     expect(useVoiceStore.getState().pttHeld).toBe(false);
     input.remove();
-    const hold = within(screen.getByTestId('voice-dock')).getByRole('button', { name: /Hold to talk/ });
+    const hold = within(screen.getByTestId('voice-dock')).getByRole('button', { name: /Hold V/ });
     fireEvent.pointerDown(hold, { button: 0, pointerId: 1 });
     expect(useVoiceStore.getState().pttHeld).toBe(true);
     fireEvent.pointerUp(hold, { pointerId: 1 });
@@ -413,5 +437,224 @@ describe('room voice UI', () => {
   it('asks the relay for the voice roster only where voice can play (none in jsdom)', async () => {
     await join(0, null);
     expect(roomSessions[0].opts.wantVoice).toBe(false);
+  });
+});
+
+// R81 (docs/82): voice's own surfaces — the header button, the invite chip,
+// the one-time hint, the flyout and its pin, the first join's card, the
+// dock's Microphone popover and the phone's sheet and thumb bar.
+describe('room voice UI, R81', () => {
+  const stage = () => document.querySelector('[data-mode][data-panel]:not([data-status])') as HTMLElement;
+
+  it('the header button counts who is in voice and shows "In voice" once connected', async () => {
+    await join(ROOM_CAP_VOICE);
+    expect(voiceButton().getAttribute('aria-label')).toBe('Voice: 2 in voice');
+    expect(voiceButton().textContent).toContain('2');
+    fireEvent.click(within(openPanel()).getByRole('button', { name: 'Listen only' }));
+    const room = roomSessions[0];
+    await waitFor(() => expect(room.voiceJoins).toBe(1));
+    await act(async () => room.cbs.onVoiceTicket!('https://bridge.test/voice', new Uint8Array([1])));
+    act(() => voiceSessions[0].cb.onState({ flags: VOICE_STATE_FLAG_CONNECTED, session: 42, name: 'me [web]' }));
+    expect(voiceButton().textContent).toContain('In voice · 2');
+    expect(voiceButton().getAttribute('data-live')).toBe('true');
+  });
+
+  it('the invite chip: someone in voice, not us; join from it; × hides it for the visit', async () => {
+    const room = await join(ROOM_CAP_VOICE);
+    const chip = screen.getByTestId('voice-invite');
+    expect(chip.textContent).toContain('2 in voice');
+    expect(screen.queryByTestId('voice-hint')).toBeNull();
+    // A first join opens the panel on "How do you want to talk?".
+    fireEvent.click(within(chip).getByRole('button', { name: 'Join voice' }));
+    await waitFor(() => expect(room.voiceJoins).toBe(1));
+    expect(screen.queryByTestId('voice-invite')).toBeNull();
+    await act(async () => room.cbs.onVoiceTicket!('https://bridge.test/voice', new Uint8Array([1])));
+    act(() => voiceSessions[0].cb.onState({ flags: VOICE_STATE_FLAG_CONNECTED, session: 42, name: 'me [web]' }));
+    expect(within(voicePanel()).getByTestId('voice-first-join')).toBeTruthy();
+  });
+
+  it('the chip’s × hides it, and it never shows while the panel is open', async () => {
+    await join(ROOM_CAP_VOICE);
+    fireEvent.click(within(screen.getByTestId('voice-invite')).getByRole('button', { name: 'Hide' }));
+    expect(screen.queryByTestId('voice-invite')).toBeNull();
+    cleanup();
+    roomSessions.length = 0;
+    useRoomStore.getState().reset();
+    await join(ROOM_CAP_VOICE);
+    expect(screen.getByTestId('voice-invite')).toBeTruthy();
+    openPanel();
+    expect(screen.queryByTestId('voice-invite')).toBeNull();
+  });
+
+  it('the one-time hint: nobody in voice, never with the chip, gone for good on Got it', async () => {
+    await join(ROOM_CAP_VOICE, { ...ROSTER, voiceRoster: [] });
+    expect(screen.queryByTestId('voice-invite')).toBeNull();
+    const hint = screen.getByTestId('voice-hint');
+    expect(hint.textContent).toContain(VOICE_HINT);
+    fireEvent.click(within(hint).getByRole('button', { name: 'Got it' }));
+    expect(screen.queryByTestId('voice-hint')).toBeNull();
+    expect(localStorage.getItem('gawk:voice-hint-seen')).toBe('1');
+  });
+
+  it('opening the voice panel also retires the hint', async () => {
+    await join(ROOM_CAP_VOICE, { ...ROSTER, voiceRoster: [] });
+    expect(screen.getByTestId('voice-hint')).toBeTruthy();
+    openPanel();
+    expect(screen.queryByTestId('voice-hint')).toBeNull();
+    expect(localStorage.getItem('gawk:voice-hint-seen')).toBe('1');
+  });
+
+  it('a flyout floats over the stage; pinned, the stage gives it a column, and the pin is remembered', async () => {
+    await join(ROOM_CAP_VOICE);
+    const panel = openPanel();
+    expect(panel.getAttribute('data-layout')).toBe('flyout');
+    expect(stage().getAttribute('data-panel')).toBe('false');
+    fireEvent.click(within(panel).getByRole('button', { name: 'Pin beside the stage' }));
+    expect(voicePanel().getAttribute('data-layout')).toBe('pinned');
+    expect(stage().getAttribute('data-panel')).toBe('true');
+    expect(localStorage.getItem('gawk:voice-pinned')).toBe('1');
+    fireEvent.click(within(voicePanel()).getByRole('button', { name: 'Unpin' }));
+    expect(localStorage.getItem('gawk:voice-pinned')).toBeNull();
+  });
+
+  it('the column holds one panel: People closes Voice and Voice closes People', async () => {
+    await join(ROOM_CAP_VOICE);
+    openPanel();
+    fireEvent.click(screen.getByRole('button', { name: 'People and chat' }));
+    expect(screen.queryByTestId('voice-panel')).toBeNull();
+    expect(screen.getByRole('complementary', { name: 'People and chat' })).toBeTruthy();
+    openPanel();
+    expect(screen.queryByRole('complementary', { name: 'People and chat' })).toBeNull();
+  });
+
+  it('closing the panel does not leave voice', async () => {
+    const { vs } = await inVoice(true);
+    fireEvent.click(within(voicePanel()).getByRole('button', { name: 'Close (you stay in voice)' }));
+    expect(screen.queryByTestId('voice-panel')).toBeNull();
+    expect(vs.closed).toBe(0);
+    expect(screen.getByTestId('voice-dock')).toBeTruthy();
+  });
+
+  it('the first join asks how to talk, once; Done leaves the switch and the Audio section', async () => {
+    const { panel } = await inVoice(false);
+    const card = within(panel).getByTestId('voice-first-join');
+    expect(within(card).getByRole('radio', { name: 'Voice activity' }).getAttribute('aria-checked')).toBe('true');
+    expect(within(card).getByLabelText(/Speech threshold|Level threshold/)).toBeTruthy();
+    expect(within(panel).queryByTestId('voice-audio')).toBeNull();
+    fireEvent.click(within(card).getByRole('button', { name: 'Done' }));
+    expect(localStorage.getItem('gawk:voice-talk-chosen')).toBe('1');
+    expect(within(panel).queryByTestId('voice-first-join')).toBeNull();
+    expect(within(panel).getByRole('radiogroup', { name: 'Talk mode' })).toBeTruthy();
+    expect(within(panel).getByTestId('voice-audio')).toBeTruthy();
+  });
+
+  it('listen-only never shows the first join card', async () => {
+    const { panel } = await inVoice(true);
+    expect(within(panel).queryByTestId('voice-first-join')).toBeNull();
+  });
+
+  it('a boost past 100 % turns the value amber, and the value puts it back', async () => {
+    const { panel } = await inVoice(true);
+    openVolume(panel, 'bob');
+    const slider = within(panel).getByLabelText('Volume of bob') as HTMLInputElement;
+    expect(slider.max).toBe('2');
+    fireEvent.change(slider, { target: { value: '1.5' } });
+    expect(localStorage.getItem('gawk:voice-volume:bob')).toBe('1.5');
+    const value = within(panel).getByRole('button', { name: 'bob at 150%: back to 100%' });
+    expect(value.getAttribute('data-boost')).toBe('true');
+    fireEvent.click(value);
+    expect(localStorage.getItem('gawk:voice-volume:bob')).toBe('1');
+  });
+
+  it('the dock: who is in voice opens the panel; the caret opens the Microphone popover, Escape and a press outside close it', async () => {
+    const { panel } = await inVoice(false);
+    fireEvent.click(within(panel).getByRole('button', { name: 'Close (you stay in voice)' }));
+    const dock = screen.getByTestId('voice-dock');
+    const caret = within(dock).getByRole('button', { name: 'Microphone settings' });
+    fireEvent.click(caret);
+    const pop = screen.getByTestId('voice-mic-popover');
+    expect(within(pop).getByRole('radiogroup', { name: 'Talk mode' })).toBeTruthy();
+    expect(within(pop).getByRole('radio', { name: 'RNNoise' })).toBeTruthy();
+    expect(within(pop).getByLabelText('Hear yourself')).toBeTruthy();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByTestId('voice-mic-popover')).toBeNull();
+    fireEvent.click(caret);
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByTestId('voice-mic-popover')).toBeNull();
+    // Push to talk: no threshold in the popover.
+    fireEvent.click(caret);
+    fireEvent.click(within(screen.getByTestId('voice-mic-popover')).getByRole('radio', { name: 'Push to talk' }));
+    expect(within(screen.getByTestId('voice-mic-popover')).queryByLabelText(/threshold/)).toBeNull();
+    // "Voice panel" opens the panel and closes the popover.
+    fireEvent.click(within(screen.getByTestId('voice-mic-popover')).getByRole('button', { name: 'Voice panel' }));
+    expect(screen.queryByTestId('voice-mic-popover')).toBeNull();
+    expect(voicePanel()).toBeTruthy();
+    fireEvent.click(within(voicePanel()).getByRole('button', { name: 'Close (you stay in voice)' }));
+    fireEvent.click(within(screen.getByTestId('voice-dock')).getByRole('button', { name: /^Open voice/ }));
+    expect(voicePanel()).toBeTruthy();
+  });
+
+  it('the popover follows its caret in tab order, and does not reopen by itself on the next join (review round 1)', async () => {
+    const { room, panel } = await inVoice(false);
+    const dock = screen.getByTestId('voice-dock');
+    fireEvent.click(within(dock).getByRole('button', { name: 'Microphone settings' }));
+    const pop = screen.getByTestId('voice-mic-popover');
+    const caret = within(dock).getByRole('button', { name: 'Microphone settings' });
+    // Tab from the caret lands in the popover, not past it.
+    expect(caret.compareDocumentPosition(pop) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Leave with it open (a click, no press outside), then join again.
+    fireEvent.click(within(panel).getByRole('button', { name: 'Leave voice' }));
+    await waitFor(() => expect(screen.queryByTestId('voice-dock')).toBeNull());
+    fireEvent.click(within(voicePanel()).getByRole('button', { name: 'Join voice' }));
+    await waitFor(() => expect(room.voiceJoins).toBe(2));
+    await act(async () => room.cbs.onVoiceTicket!('https://bridge.test/voice', new Uint8Array([1])));
+    await waitFor(() => expect(voiceSessions).toHaveLength(2));
+    act(() => voiceSessions[1].cb.onState({ flags: VOICE_STATE_FLAG_CONNECTED, session: 43, name: 'me [web]' }));
+    await waitFor(() => expect(screen.getByTestId('voice-dock')).toBeTruthy());
+    expect(screen.queryByTestId('voice-mic-popover')).toBeNull();
+  });
+
+  it('listen-only: the dock has no mic and no popover', async () => {
+    await inVoice(true);
+    const dock = screen.getByTestId('voice-dock');
+    expect(within(dock).queryByRole('button', { name: 'Microphone settings' })).toBeNull();
+    expect(within(dock).queryByRole('button', { name: 'Mute microphone' })).toBeNull();
+  });
+
+  describe('on a phone', () => {
+    beforeEach(() => {
+      vi.stubGlobal('matchMedia', (query: string) => ({
+        matches: query === NARROW_QUERY,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      }));
+    });
+    afterEach(() => vi.unstubAllGlobals());
+
+    it('People and Voice are tabs of one sheet, with no pin', async () => {
+      await join(ROOM_CAP_VOICE);
+      const panel = openPanel();
+      expect(panel.getAttribute('data-layout')).toBe('sheet');
+      expect(within(panel).queryByRole('button', { name: 'Pin beside the stage' })).toBeNull();
+      fireEvent.click(within(panel).getByRole('tab', { name: /People/ }));
+      const people = screen.getByRole('complementary', { name: 'People and chat' });
+      expect(screen.queryByTestId('voice-panel')).toBeNull();
+      fireEvent.click(within(people).getByRole('tab', { name: /Voice/ }));
+      expect(voicePanel()).toBeTruthy();
+    });
+
+    it('the thumb bar: a big Mute in voice activity, Hold to talk in push to talk, raised over the sheet', async () => {
+      const { panel } = await inVoice(false);
+      const bar = screen.getByTestId('voice-dock');
+      expect(bar.getAttribute('data-raised')).toBe('true');
+      expect(within(bar).getByRole('button', { name: 'Mute microphone' }).textContent).toContain('Mute');
+      fireEvent.click(within(panel).getByRole('radio', { name: 'Push to talk' }));
+      const hold = within(screen.getByTestId('voice-dock')).getByRole('button', { name: /Hold to talk/ });
+      fireEvent.pointerDown(hold, { button: 0, pointerId: 1 });
+      expect(useVoiceStore.getState().pttHeld).toBe(true);
+      fireEvent.pointerUp(hold, { pointerId: 1 });
+      fireEvent.click(within(voicePanel()).getByRole('button', { name: 'Close (you stay in voice)' }));
+      expect(screen.getByTestId('voice-dock').getAttribute('data-raised')).toBe('false');
+    });
   });
 });

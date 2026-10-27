@@ -14,6 +14,28 @@
   cursor: pointer;
 }
 
+/* A boostable range (max > 1): the slider with a tick where 100 % is. */
+.inlineWrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.inlineWrap .inline {
+  margin: 0;
+}
+
+.unity {
+  position: absolute;
+  top: 50%;
+  width: 2px;
+  height: 12px;
+  margin: -6px 0 0 -1px;
+  border-radius: 1px;
+  background: var(--muted);
+  pointer-events: none;
+}
+
 /* The button: round, so the level ring hugs it. touch-action keeps a
    press-and-drag on it from scrolling or zooming the page. */
 .trigger {

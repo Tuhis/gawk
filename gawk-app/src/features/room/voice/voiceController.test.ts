@@ -133,6 +133,7 @@ let captureHold: Promise<void> | null;
 let busMuted: boolean[];
 let clock: number;
 let states: VoiceViewState[];
+let savedLevels: number[];
 
 function make(mode: 'vad' | 'ptt' = 'vad', audio?: Partial<VoiceAudioPrefs>) {
   return new VoiceController(
@@ -168,6 +169,7 @@ function make(mode: 'vad' | 'ptt' = 'vad', audio?: Partial<VoiceAudioPrefs>) {
       setVoiceMuted: (m) => busMuted.push(m),
       now: () => clock,
       onChange: (s) => states.push(s),
+      saveSpeechLevel: (db) => savedLevels.push(db),
     },
     mode,
     audio,
@@ -205,6 +207,7 @@ beforeEach(() => {
   busMuted = [];
   clock = 0;
   states = [];
+  savedLevels = [];
 });
 afterEach(() => vi.useRealTimers());
 
@@ -725,7 +728,7 @@ describe('VoiceController audio settings (R80, docs/81 D9, D10, D15–D17)', () 
     await connected(c);
     const cap = captures[0].cb;
     expect(cap.shouldSend(0.05, 0.65, 0)).toBe(true);
-    expect(c.meter()).toEqual({ prob: 0.65, levelDb: expect.closeTo(-26, 0), open: true });
+    expect(c.meter()).toEqual({ prob: 0.65, levelDb: expect.closeTo(-26, 0), open: true, floorDb: -50 });
     c.setSpeechThreshold(0.9);
     expect(c.getState().speechThreshold).toBe(0.9);
     expect(cap.shouldSend(0.05, 0.65, 1000)).toBe(false);
@@ -735,8 +738,9 @@ describe('VoiceController audio settings (R80, docs/81 D9, D10, D15–D17)', () 
     expect(c.getState().levelThresholdDb).toBe(-30);
     expect(cap.shouldSend(0.05, null, 3000)).toBe(true);
     expect(c.meter().prob).toBeNull();
+    expect(c.meter().floorDb).toBeNull();
     c.leave();
-    expect(c.meter()).toEqual({ prob: null, levelDb: -100, open: false });
+    expect(c.meter()).toEqual({ prob: null, levelDb: -100, open: false, floorDb: null });
     c.dispose();
   });
 
@@ -761,6 +765,78 @@ describe('VoiceController audio settings (R80, docs/81 D9, D10, D15–D17)', () 
     c.setHearSelf(true);
     c.leave();
     expect(c.getState().hearSelf).toBe(false);
+    c.dispose();
+  });
+});
+
+describe('VoiceController learned level (R81, docs/82 D2–D7)', () => {
+  const at = (db: number) => 10 ** (db / 20);
+
+  it('the stored level sets the capture’s gain from the first block', async () => {
+    const c = make('vad', { speechLevelDb: -35 });
+    await connected(c);
+    expect(captures[0].cb.gainDb?.()).toBe(15);
+    c.dispose();
+  });
+
+  it('learns from the blocks it judges, raises the meter’s floor, and stores the level on leave', async () => {
+    const c = make();
+    await connected(c);
+    const cap = captures[0].cb;
+    for (let f = 0; f < 400; f++) cap.shouldSend(at(-24), 0.99, f * 10);
+    expect(c.meter().floorDb).toBe(-36);
+    expect(cap.gainDb?.()).toBe(4);
+    // A confident hum 16 dB under the speaker is under the floor.
+    expect(cap.shouldSend(at(-40), 0.99, 10_000)).toBe(false);
+    c.leave();
+    expect(savedLevels).toEqual([-24]);
+    c.dispose();
+  });
+
+  it('leaving after a long quiet stretch still stores the level the gain was using (review round 1)', async () => {
+    const c = make();
+    await connected(c);
+    const cap = captures[0].cb;
+    for (let f = 0; f < 400; f++) cap.shouldSend(at(-24), 0.99, f * 10);
+    for (let f = 400; f < 20_000; f++) cap.shouldSend(at(-70), 0.01, f * 10);
+    c.leave();
+    expect(savedLevels).toEqual([-24]);
+    c.dispose();
+  });
+
+  it('a call that learned nothing stores nothing, so it never writes back an old seed (review round 2)', async () => {
+    const c = make('vad', { speechLevelDb: -35 });
+    await connected(c);
+    captures[0].cb.shouldSend(at(-70), 0.01, 0);
+    c.leave();
+    expect(savedLevels).toEqual([]);
+    c.dispose();
+  });
+
+  it('a later call in the same tab that learned nothing stores nothing (review round 3)', async () => {
+    const c = make();
+    await connected(c);
+    for (let f = 0; f < 400; f++) captures[0].cb.shouldSend(at(-24), 0.99, f * 10);
+    c.leave();
+    expect(savedLevels).toEqual([-24]);
+    await connected(c);
+    captures[1].cb.shouldSend(at(-70), 0.01, 0);
+    c.leave();
+    expect(savedLevels).toEqual([-24]);
+    c.dispose();
+  });
+
+  it('forgetting the level drops the floor and the gain', async () => {
+    const c = make('vad', { speechLevelDb: -35 });
+    await connected(c);
+    const cap = captures[0].cb;
+    for (let f = 0; f < 400; f++) cap.shouldSend(at(-24), 0.99, f * 10);
+    c.forgetSpeechLevel();
+    expect(cap.gainDb?.()).toBe(0);
+    cap.shouldSend(at(-24), 0.99, 5000);
+    expect(c.meter().floorDb).toBe(-50);
+    c.leave();
+    expect(savedLevels).toEqual([]);
     c.dispose();
   });
 });

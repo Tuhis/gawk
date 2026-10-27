@@ -811,6 +811,32 @@ describe('AudioSink with an injected output (R42 room mixing)', () => {
   });
 });
 
+// R81: a room voice speaker may be boosted to 200 %; a stream's sink still
+// stops at 100 %.
+describe('AudioSink volume ceiling', () => {
+  it('clamps to 1 by default and to the given maxVolume', async () => {
+    stubWebAudio(() => {});
+    const context = new (globalThis as { AudioContext: new () => AudioContext }).AudioContext();
+    const destination = {} as unknown as AudioNode;
+    const output = { context, destination, ensureWorklet: () => Promise.resolve() };
+    const stream = new AudioSink({}, undefined, { output });
+    const voice = new AudioSink({}, undefined, { output, maxVolume: 2 });
+    await stream.start(SAMPLE_RATE);
+    await voice.start(SAMPLE_RATE);
+    const gains = (context as unknown as { createGain: ReturnType<typeof vi.fn> }).createGain.mock.results.map(
+      (r) => r.value as { gain: { value: number } },
+    );
+    stream.setVolume(1.5);
+    voice.setVolume(1.5);
+    expect(gains[0].gain.value).toBe(1);
+    expect(gains[1].gain.value).toBe(1.5);
+    voice.setVolume(5);
+    expect(gains[1].gain.value).toBe(2);
+    stream.dispose();
+    voice.dispose();
+  });
+});
+
 // A sink that opened its own AudioContext must close it exactly once on every
 // failure/teardown path; a shared one is never its to close. The fake follows
 // the spec: close() on an already-closed context rejects with InvalidStateError.

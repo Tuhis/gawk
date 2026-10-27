@@ -10,9 +10,12 @@
 // (getUserMedia → MediaStreamTrackProcessor → AudioEncoder) really runs, and
 // the looped frames really go through AudioDecoder and the room's mixer.
 //
-// It clicks Join voice, waits for the panel to say it is in voice, checks
-// that frames went out and came back (speaking indicator) and that the voice
-// session dialled with the same certificate pins as the relay, then saves
+// It finds the invite chip, opens the voice panel from the header's Voice
+// button (R81, docs/82), clicks Join voice, waits for the panel to say it is
+// in voice, checks that frames went out and came back (speaking indicator)
+// and that the voice session dialled with the same certificate pins as the
+// relay, answers the first-join card, opens the dock's Microphone popover and
+// pins the panel, then saves
 // screenshots at 360, 390, 430 and 1280 px into e2e/out/voice-panel/
 // (gitignored, e2e/out*/), asserting no horizontal overflow at each width.
 //
@@ -96,11 +99,15 @@ async function main() {
     });
     await page.goto(`${APP_URL}#/room/AB2CD3`);
 
-    await page.getByRole('button', { name: 'People and chat' }).click();
-    const section = page.getByTestId('voice-section');
-    await section.waitFor({ timeout: 15_000 });
+    // R81 (docs/82): people in voice and you not → the invite chip at the
+    // dock's spot; the header's own Voice button opens the voice panel.
+    await page.getByTestId('voice-invite').waitFor({ timeout: 15_000 });
     const e2e = () => page.evaluate(() => window.__voiceE2E);
     if ((await e2e()).wantCaps !== 0x02) fail(`RoomHello wantCaps ${(await e2e()).wantCaps}, want ROOM_CAP_VOICE`);
+    await page.screenshot({ path: join(OUT, 'invite-1280.png') });
+    await page.getByRole('button', { name: /^Voice: / }).click();
+    const section = page.getByTestId('voice-panel');
+    await section.waitFor({ timeout: 5000 });
     await section.getByText('This is a Mumble channel shared with people outside gawk').waitFor();
     if ((await section.getByTestId('voice-row').count()) !== 4) fail('the roster does not show four people');
     await page.screenshot({ path: join(OUT, 'before-join-1280.png') });
@@ -110,9 +117,7 @@ async function main() {
     const joinBy = Date.now() + 20_000;
     for (;;) {
       if ((await section.getByText(/Couldn’t/).count()) > 0) fail(`voice failed: ${await section.innerText()}`);
-      if ((await e2e()).helloFlags !== null && (await page.getByTestId('voice-dock').innerText()).includes('Voice')) {
-        if (!(await page.getByTestId('voice-dock').innerText()).includes('Voice…')) break;
-      }
+      if ((await e2e()).helloFlags !== null && (await section.innerText()).includes('connected')) break;
       if (Date.now() > joinBy) fail(`never got into voice: ${await section.innerText()}`);
       await sleep(200);
     }
@@ -122,6 +127,10 @@ async function main() {
       fail(`the voice session's pins ${JSON.stringify(st.voiceDials)} differ from the relay's (${st.roomPins})`);
     }
     if (st.helloFlags !== 0) fail(`hello flags ${st.helloFlags}, want 0 (speaking, not muted)`);
+    // The first join asks how to talk, once.
+    const first = section.getByTestId('voice-first-join');
+    await first.waitFor({ timeout: 5000 });
+    await page.screenshot({ path: join(OUT, 'first-join-1280.png') });
     log('in voice; waiting for the fake mic to talk');
     // Chromium's fake microphone beeps: voice activity sends, the bridge
     // loops it back as bob, and bob's row lights.
@@ -135,24 +144,37 @@ async function main() {
       null,
       { timeout: 10_000 },
     );
-    await page.getByTestId('voice-dock').getByRole('button', { name: 'Mute microphone' }).click();
+    const dock = page.getByTestId('voice-dock');
+    await dock.getByRole('button', { name: 'Mute microphone' }).click();
     if (!(await e2e()).controls.includes(0x01)) fail('mute sent no VoiceControl');
-    await page.getByTestId('voice-dock').getByRole('button', { name: 'Unmute microphone' }).click();
-    await section.getByRole('radio', { name: 'Push to talk' }).click();
+    await dock.getByRole('button', { name: 'Unmute microphone' }).click();
+    await first.getByRole('radio', { name: 'Push to talk' }).click();
+    await first.getByRole('button', { name: 'Done' }).click();
+    if ((await section.getByTestId('voice-first-join').count()) !== 0) fail('the first-join card outlived Done');
+    // The dock's Microphone popover: open, screenshot, Escape closes it.
+    await dock.getByRole('button', { name: 'Microphone settings' }).click();
+    await page.getByTestId('voice-mic-popover').waitFor({ timeout: 3000 });
+    await page.screenshot({ path: join(OUT, 'mic-popover-1280.png') });
+    await page.keyboard.press('Escape');
+    if ((await page.getByTestId('voice-mic-popover').count()) !== 0) fail('Escape left the Microphone popover open');
+    // Pinned: a column the stage reflows beside.
+    await section.getByRole('button', { name: 'Pin beside the stage' }).click();
+    if ((await section.getAttribute('data-layout')) !== 'pinned') fail('pinning did not pin the panel');
+    await sleep(400); // the column's slide-in
+    await page.screenshot({ path: join(OUT, 'pinned-1280.png') });
 
     for (const width of WIDTHS) {
       await page.setViewportSize({ width, height: width < 720 ? 800 : 800 });
       await sleep(400);
-      await section.scrollIntoViewIfNeeded();
       await noOverflow(page, width);
       await page.screenshot({ path: join(OUT, `in-voice-${width}.png`) });
       log(`screenshot ${width}px ok`);
     }
-    // The hold button on a phone layout talks while pressed.
-    // On a phone the open panel is a bottom sheet over the dock: close it,
-    // the call (and the dock) stays.
+    // On a phone the panel is the room sheet's Voice tab; closed, the call
+    // (and the thumb bar) stays, and its hold button talks while pressed.
     await page.setViewportSize({ width: 390, height: 800 });
-    await page.getByRole('button', { name: 'Close panel' }).click();
+    await sleep(400);
+    await page.getByRole('button', { name: 'Close (you stay in voice)' }).click();
     await noOverflow(page, 390);
     const hold = page.getByTestId('voice-dock').getByRole('button', { name: /Hold to talk/ });
     await hold.hover();

@@ -4,6 +4,21 @@ Confirmed, not-yet-fixed defects. Each entry says how it was found, what the
 impact is, and where a fix would start. Remove entries when fixed (and move
 anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 
+## Room footer: a round control sits on top of the quality pill at 390 px
+
+- **Found**: 2026-10-28, reading `e2e/voice-panel.mjs`'s `hold-to-talk-390.png`
+  during R81 (docs/82). The same overlap is in the screenshot from the base
+  commit (772d99e4), so it predates R81.
+- **What**: in the room view at 390 px wide, a round control (the footer's
+  stream-volume control, by its position — not confirmed in the DOM) draws
+  over the left of the **Balanced** quality pill. Both stay usable, but the
+  pill's label is partly covered.
+- **Impact**: cosmetic on phones; a tap at that spot hits whichever is on top.
+- **Fix would start**: in `room.module.css`'s narrow footer rules: let the
+  footer's left group shrink or wrap before it reaches the right-hand
+  controls, then add the footer to `e2e/voice-fake.mjs` `overflowAt`'s checks
+  (it looks for horizontal overflow, not for overlap).
+
 ## Broadcaster falls back to the main-thread pipeline with no reason given (seen on Chrome/macOS)
 
 - **Found**: 2026-08-03, running R11's overdue manual browser verification on

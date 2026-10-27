@@ -7,6 +7,8 @@ import {
   clampLevelThresholdDb,
   clampSpeechThreshold,
   clearAudioPrefs,
+  loadSpeechLevel,
+  saveSpeechLevel,
   loadLevelThresholdDb,
   loadNoiseMode,
   loadSpeechThreshold,
@@ -22,6 +24,12 @@ import {
   saveSpeakerVolume,
   saveTalkMode,
   validPttKey,
+  loadTalkModeChosen,
+  loadVoiceHintSeen,
+  loadVoicePinned,
+  saveTalkModeChosen,
+  saveVoiceHintSeen,
+  saveVoicePinned,
 } from './voicePrefs';
 
 beforeEach(() => localStorage.clear());
@@ -56,12 +64,18 @@ describe('voice preferences', () => {
     expect(pttKeyLabel('Space')).toBe('Space');
   });
 
-  it('per-person volume persists by Mumble name, clamped', () => {
+  it('per-person volume persists by Mumble name, clamped to 0..2 (R81 boost)', () => {
     expect(loadSpeakerVolume('bob')).toBe(1);
     saveSpeakerVolume('bob', 0.4);
     expect(loadSpeakerVolume('bob')).toBe(0.4);
+    saveSpeakerVolume('bob', 1.5);
+    expect(loadSpeakerVolume('bob')).toBe(1.5);
     saveSpeakerVolume('bob', 7);
-    expect(loadSpeakerVolume('bob')).toBe(1);
+    expect(loadSpeakerVolume('bob')).toBe(2);
+    saveSpeakerVolume('bob', -1);
+    expect(loadSpeakerVolume('bob')).toBe(0);
+    localStorage.setItem('gawk:voice-volume:bob', '9');
+    expect(loadSpeakerVolume('bob')).toBe(2);
     localStorage.setItem('gawk:voice-volume:eve', 'x');
     expect(loadSpeakerVolume('eve')).toBe(1);
     expect(loadSpeakerVolume('tuhis [web]')).toBe(1);
@@ -116,5 +130,33 @@ describe('audio preferences (R80, docs/81 D17)', () => {
     expect(localStorage.getItem('gawk:voice-speech-threshold')).toBeNull();
     expect(localStorage.getItem('gawk:voice-level-threshold')).toBeNull();
     expect(loadPttKey()).toBe('KeyT');
+  });
+
+  it('R81 learned speech level: stored to the dB, clamped, forgotten by Reset to defaults', () => {
+    expect(loadSpeechLevel()).toBeNull();
+    saveSpeechLevel(-24.4);
+    expect(localStorage.getItem('gawk:voice-speech-level')).toBe('-24');
+    expect(loadSpeechLevel()).toBe(-24);
+    localStorage.setItem('gawk:voice-speech-level', '12');
+    expect(loadSpeechLevel()).toBe(0);
+    localStorage.setItem('gawk:voice-speech-level', 'loud');
+    expect(loadSpeechLevel()).toBeNull();
+    saveSpeechLevel(-30);
+    clearAudioPrefs();
+    expect(loadSpeechLevel()).toBeNull();
+  });
+
+  it('R81 UI flags: pinned toggles, the hint and the first-join card are one-way', () => {
+    expect(loadVoicePinned()).toBe(false);
+    saveVoicePinned(true);
+    expect(loadVoicePinned()).toBe(true);
+    saveVoicePinned(false);
+    expect(localStorage.getItem('gawk:voice-pinned')).toBeNull();
+    expect(loadVoiceHintSeen()).toBe(false);
+    saveVoiceHintSeen();
+    expect(loadVoiceHintSeen()).toBe(true);
+    expect(loadTalkModeChosen()).toBe(false);
+    saveTalkModeChosen();
+    expect(loadTalkModeChosen()).toBe(true);
   });
 });

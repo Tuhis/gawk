@@ -53,14 +53,23 @@ export const VOICE_FALLBACK_FRAME_US = 20_000;
 // One VoiceFrame seq unit (wire.ts: seq counts 10 ms).
 export const VOICE_SEQ_UNIT_US = 10_000;
 
-// docs/81 D11: echo cancellation and auto gain always; the browser's own
-// suppression only in the Browser mode (before RNNoise it leaves 16 dB more
-// keyboard, NS0 §12.4).
+// docs/82 D6: the highest peak the gain may lift a block to.
+const GAIN_PEAK_CEILING = 0.98;
+// docs/82 D6: the most the gain may rise per 10 ms block (0.5 dB, 50 dB/s).
+const GAIN_RISE_PER_BLOCK = 10 ** (0.5 / 20);
+
+// docs/81 D11: echo cancellation always; the browser's own suppression only
+// in the Browser mode (before RNNoise it leaves 16 dB more keyboard, NS0
+// §12.4). docs/82 D5: auto gain only in the Browser mode too — in a pause it
+// lifts a hum or a TV to the speaker's own level, where no level floor can
+// tell them apart (VX0 §12); the gain after the gate (D6) does its job.
+// RNNoise and Off keep one set of constraints, so switching between them
+// stays the worklet's alone.
 export function voiceAudioConstraints(mode: NoiseMode): MediaTrackConstraints {
   return {
     echoCancellation: true,
     noiseSuppression: mode === 'browser',
-    autoGainControl: true,
+    autoGainControl: mode === 'browser',
     channelCount: 1,
   };
 }
@@ -173,6 +182,9 @@ export interface VoiceCaptureCallbacks {
   onError: (err: VoiceError) => void;
   // The noise suppression changed (a switch, a fallback, RNNoise loaded).
   onNoise: (status: NoiseStatus) => void;
+  // docs/82 D6: the gain for blocks the gate passed, dB (asked after
+  // shouldSend, so the gate always judges the block as captured).
+  gainDb?: () => number;
 }
 
 // The AudioContext the worklet runs in: the room's shared one.
@@ -297,6 +309,8 @@ export class VoiceCapture implements VoiceCaptureLike {
   // count (10 ms each), across re-opens and node rebuilds.
   private blocks = 0;
   private sending = false;
+  // The gain the last sent block ended at, linear (docs/82 D6).
+  private gainLin: number | null = null;
   private stopped = false;
   private failed = false;
 
@@ -661,9 +675,16 @@ export class VoiceCapture implements VoiceCaptureLike {
   handleBlock(pcm: Float32Array, prob: number | null): void {
     if (this.stopped) return;
     const timestampUs = this.blocks * VOICE_BLOCK_MS * 1000;
+    // docs/82 D6: a denoised block is gated as captured (the learned floor is
+    // a captured level), then gained; one that was not denoised (Off, or
+    // RNNoise still loading or fallen back) is gained first, so the level
+    // gate judges what auto gain used to give it (review round 1).
+    const denoised = prob !== null;
+    if (!denoised) this.applyGain(pcm);
     const send = this.gate(blockRms(pcm), prob);
     this.blocks++;
     if (!send) return;
+    if (denoised) this.applyGain(pcm);
     let data: VoiceAudioData;
     try {
       data = this.deps.createAudioData(blockAudioDataInit(pcm, VOICE_CAPTURE_RATE, timestampUs));
@@ -672,6 +693,32 @@ export class VoiceCapture implements VoiceCaptureLike {
       return;
     }
     this.encode(data);
+  }
+
+  // docs/82 D6, in place, like a limiter: a fall takes effect at once (the
+  // cap must hold from the block's first sample, review round 2); a rise is
+  // ramped across the block from the last block's gain and limited to
+  // GAIN_RISE_PER_BLOCK, so the gain does not pump at the block rate
+  // (review round 3); capped so the block's peak stays under full scale
+  // (never below unity). The ±1 clip is a guard only. Never on
+  // a Browser track: the browser's auto gain is on there (D5), and ours on
+  // top would clip.
+  private applyGain(pcm: Float32Array): void {
+    let target = this.running === 'browser' ? 1 : 10 ** ((this.cb.gainDb?.() ?? 0) / 20);
+    if (target > 1) {
+      let peak = 0;
+      for (let i = 0; i < pcm.length; i++) peak = Math.max(peak, Math.abs(pcm[i]));
+      if (peak > 0) target = Math.max(1, Math.min(target, GAIN_PEAK_CEILING / peak));
+    }
+    if (this.gainLin !== null) target = Math.min(target, Math.max(1, this.gainLin * GAIN_RISE_PER_BLOCK));
+    const from = Math.min(this.gainLin ?? target, target);
+    this.gainLin = target;
+    if (from === 1 && target === 1) return;
+    const step = (target - from) / pcm.length;
+    for (let i = 0; i < pcm.length; i++) {
+      const v = pcm[i] * (from + step * i);
+      pcm[i] = v > 1 ? 1 : v < -1 ? -1 : v;
+    }
   }
 
   // ---- Gate and encoder -------------------------------------------------------

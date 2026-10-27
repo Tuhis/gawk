@@ -214,12 +214,12 @@ export async function waitForHttp(url, ms) {
 }
 
 // Horizontal overflow of the page, the people panel or anything in the voice
-// section at this width, as a message, or null.
+// panel at this width, as a message, or null.
 export async function overflowAt(page, width) {
   const r = await page.evaluate(() => {
     const doc = document.documentElement;
     const panel = document.querySelector('[aria-label="People and chat"]');
-    const voice = document.querySelector('[data-testid="voice-section"]');
+    const voice = document.querySelector('[data-testid="voice-panel"]');
     const offenders = [...(voice?.querySelectorAll('*') ?? [])]
       .filter((el) => {
         const b = el.getBoundingClientRect();

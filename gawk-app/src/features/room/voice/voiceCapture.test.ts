@@ -275,16 +275,84 @@ describe('encoder config', () => {
   });
 });
 
-describe('constraints (docs/81 D11)', () => {
-  it('echo cancellation and auto gain always; the browser’s suppression only for Browser', () => {
+describe('constraints (docs/81 D11, docs/82 D5)', () => {
+  it('echo cancellation always; the browser’s suppression and auto gain only for Browser', () => {
     expect(voiceAudioConstraints('rnnoise')).toEqual({
       echoCancellation: true,
       noiseSuppression: false,
+      autoGainControl: false,
+      channelCount: 1,
+    });
+    expect(voiceAudioConstraints('off')).toEqual(voiceAudioConstraints('rnnoise'));
+    expect(voiceAudioConstraints('browser')).toEqual({
+      echoCancellation: true,
+      noiseSuppression: true,
       autoGainControl: true,
       channelCount: 1,
     });
-    expect(voiceAudioConstraints('off').noiseSuppression).toBe(false);
-    expect(voiceAudioConstraints('browser').noiseSuppression).toBe(true);
+  });
+});
+
+describe('VoiceCapture, the gain after the gate (docs/82 D6)', () => {
+  it('a denoised block is gated as captured, then gained', async () => {
+    const cb = { ...callbacks(), gainDb: () => 20 * Math.log10(2) };
+    const { cap, node } = await started('off', cb);
+    block(node(), 0.1, 0.97);
+    expect(cb.gated.map(([rms]) => rms)).toEqual([expect.closeTo(0.1, 6)]);
+    expect(encoders[0].encoded.map((d) => d.level)).toEqual([expect.closeTo(0.2, 6)]);
+    cap.stop();
+  });
+
+  it('a block that was not denoised is gained before the level gate (review round 1: Off lost auto gain)', async () => {
+    const cb = { ...callbacks(), gainDb: () => 20 * Math.log10(4) };
+    const { cap, node } = await started('off', cb);
+    // 0.02 alone is under the fake gate's 0.05; gained ×4 it opens it.
+    block(node(), 0.02);
+    expect(cb.gated.map(([rms]) => rms)).toEqual([expect.closeTo(0.08, 6)]);
+    expect(encoders[0].encoded.map((d) => d.level)).toEqual([expect.closeTo(0.08, 6)]);
+    cap.stop();
+  });
+
+  it('the gain is capped so the block’s peak stays under full scale (review round 1)', async () => {
+    const cb = { ...callbacks(), gainDb: () => 20 * Math.log10(4) };
+    const { cap, node } = await started('off', cb);
+    block(node(), 0.5, 0.97);
+    expect(encoders[0].encoded[0].level).toBeCloseTo(0.98, 6);
+    cap.stop();
+  });
+
+  it('Browser mode never applies it: the browser’s auto gain is on there (review)', async () => {
+    const cb = { ...callbacks(), gainDb: () => 18 };
+    const { cap, node } = await started('browser', cb);
+    block(node(), 0.1);
+    expect(encoders[0].encoded[0].level).toBeCloseTo(0.1, 6);
+    cap.stop();
+  });
+
+  it('a loud block after a quiet one is not ramped down from the quiet one’s gain (review round 2)', async () => {
+    const cb = { ...callbacks(), gainDb: () => 20 * Math.log10(4) };
+    const { cap, node } = await started('off', cb);
+    block(node(), 0.01); // ×4 → 0.04: under the fake gate, but it sets the gain
+    block(node(), 0.5); // capped at 0.98 / 0.5 from its first sample
+    expect(encoders[0].encoded.map((d) => d.level)).toEqual([expect.closeTo(0.98, 6)]);
+    cap.stop();
+  });
+
+  it('after a capped loud block the gain rises at most 0.5 dB a block (review round 3)', async () => {
+    const cb = { ...callbacks(), gainDb: () => 20 * Math.log10(4) };
+    const { cap, node } = await started('off', cb);
+    block(node(), 0.5, 0.97); // capped at ×1.96
+    block(node(), 0.06, 0.97); // wants ×4: rises to ×1.96 · 10^(0.5/20)
+    block(node(), 0.06, 0.97); // starts where the last one ended
+    expect(encoders[0].encoded[2].level).toBeCloseTo(0.06 * 1.96 * 10 ** (0.5 / 20), 6);
+    cap.stop();
+  });
+
+  it('no gain callback, or 0 dB, leaves the block untouched', async () => {
+    const { cap, node } = await started('off');
+    block(node(), 0.3);
+    expect(encoders[0].encoded[0].level).toBeCloseTo(0.3, 6);
+    cap.stop();
   });
 });
 
