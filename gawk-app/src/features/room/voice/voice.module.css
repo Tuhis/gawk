@@ -621,7 +621,7 @@ button.rosterRow:hover {
   white-space: nowrap;
 }
 
-.voiceBtn[aria-pressed='true'] {
+.voiceBtn[aria-expanded='true'] {
   border-color: color-mix(in srgb, var(--accent) 60%, transparent);
 }
 

@@ -590,7 +590,6 @@ export function VoiceButton({
         type="button"
         className={styles.voiceBtn}
         data-live={live ? 'true' : 'false'}
-        aria-pressed={open}
         aria-expanded={open}
         aria-label={live ? `Voice: in voice, ${inVoiceText(n)}` : n > 0 ? `Voice: ${inVoiceText(n)}` : 'Voice'}
         onClick={onToggle}
@@ -713,7 +712,14 @@ function SpeakerSummary({ snapshot, onOpenPanel }: { snapshot: RoomState; onOpen
 // (its caret opens the Microphone popover) and deafen, so the voice panel
 // need not stay open while talking. Never fades; no Leave, which a stray
 // click must not reach.
-export function VoiceDock({
+export function VoiceDock(props: { snapshot: RoomState; actions: VoiceActions; onOpenPanel: () => void }) {
+  const live = useVoiceStore((s) => inVoice(s.phase));
+  // Mounted per call, so a popover left open never reopens with the next
+  // join (review round 1).
+  return live ? <DockBody {...props} /> : null;
+}
+
+function DockBody({
   snapshot,
   actions,
   onOpenPanel,
@@ -726,7 +732,6 @@ export function VoiceDock({
   const [popover, setPopover] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const caretRef = useRef<HTMLButtonElement | null>(null);
-  const live = inVoice(s.phase);
   const canTalk = !s.listenOnly;
 
   // A press anywhere outside closes it; Escape closes back onto the caret.
@@ -748,18 +753,8 @@ export function VoiceDock({
     };
   }, [popover]);
 
-  if (!live) return null;
   return (
     <div ref={rootRef} className={styles.dock} data-testid="voice-dock" role="group" aria-label="Voice controls">
-      {popover && canTalk && (
-        <MicPopover
-          actions={actions}
-          onOpenPanel={() => {
-            setPopover(false);
-            onOpenPanel();
-          }}
-        />
-      )}
       <SpeakerSummary snapshot={snapshot} onOpenPanel={onOpenPanel} />
       <span className={styles.dockDivider} aria-hidden="true" />
       {s.phase !== 'connected' && <span className={styles.dockLabel}>Voice…</span>}
@@ -785,6 +780,16 @@ export function VoiceDock({
             <span aria-hidden="true">▴</span>
           </IconButton>
         </span>
+      )}
+      {/* After the caret in the DOM, so Tab goes from the caret into it. */}
+      {popover && canTalk && (
+        <MicPopover
+          actions={actions}
+          onOpenPanel={() => {
+            setPopover(false);
+            onOpenPanel();
+          }}
+        />
       )}
       <DeafenToggle actions={actions} s={s} />
     </div>

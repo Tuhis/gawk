@@ -594,6 +594,26 @@ describe('room voice UI, R81', () => {
     expect(voicePanel()).toBeTruthy();
   });
 
+  it('the popover follows its caret in tab order, and does not reopen by itself on the next join (review round 1)', async () => {
+    const { room, panel } = await inVoice(false);
+    const dock = screen.getByTestId('voice-dock');
+    fireEvent.click(within(dock).getByRole('button', { name: 'Microphone settings' }));
+    const pop = screen.getByTestId('voice-mic-popover');
+    const caret = within(dock).getByRole('button', { name: 'Microphone settings' });
+    // Tab from the caret lands in the popover, not past it.
+    expect(caret.compareDocumentPosition(pop) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Leave with it open (a click, no press outside), then join again.
+    fireEvent.click(within(panel).getByRole('button', { name: 'Leave voice' }));
+    await waitFor(() => expect(screen.queryByTestId('voice-dock')).toBeNull());
+    fireEvent.click(within(voicePanel()).getByRole('button', { name: 'Join voice' }));
+    await waitFor(() => expect(room.voiceJoins).toBe(2));
+    await act(async () => room.cbs.onVoiceTicket!('https://bridge.test/voice', new Uint8Array([1])));
+    await waitFor(() => expect(voiceSessions).toHaveLength(2));
+    act(() => voiceSessions[1].cb.onState({ flags: VOICE_STATE_FLAG_CONNECTED, session: 43, name: 'me [web]' }));
+    await waitFor(() => expect(screen.getByTestId('voice-dock')).toBeTruthy());
+    expect(screen.queryByTestId('voice-mic-popover')).toBeNull();
+  });
+
   it('listen-only: the dock has no mic and no popover', async () => {
     await inVoice(true);
     const dock = screen.getByTestId('voice-dock');
