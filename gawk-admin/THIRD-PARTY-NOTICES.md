@@ -64,7 +64,7 @@ script for what counts as a dependency here and why.
 | `github.com/jackc/pgx/v5` | v5.10.0 | `MIT` | Copyright (c) 2013-2021 Jack Christensen |
 | `github.com/jackc/puddle/v2` | v2.2.2 | `MIT` | Copyright (c) 2018 Jack Christensen |
 | `github.com/json-iterator/go` | v1.1.12 | `MIT` | Copyright (c) 2016 json-iterator |
-| `github.com/klauspost/compress` | v1.20.1 | `Apache-2.0 OR MIT OR BSD-3-Clause` | Copyright (c) 2012 The Go Authors. All rights reserved<br>Copyright (c) 2019 Klaus Post. All rights reserved<br>Copyright 2016-2017 The New York Times Company<br>Copyright (c) 2015 Klaus Post<br>Copyright (c) 2011 The Snappy-Go Authors. All rights reserved<br>Copyright 2016 The filepathx Authors |
+| `github.com/klauspost/compress` | v1.20.3 | `Apache-2.0 OR MIT OR BSD-3-Clause` | Copyright (c) 2012 The Go Authors. All rights reserved<br>Copyright (c) 2019 Klaus Post. All rights reserved<br>Copyright 2016-2017 The New York Times Company<br>Copyright (c) 2015 Klaus Post<br>Copyright (c) 2011 The Snappy-Go Authors. All rights reserved<br>Copyright 2016 The filepathx Authors |
 | `github.com/modern-go/concurrent` | v0.0.0-20180306012644-bacd9c7ef1dd | `Apache-2.0` | — |
 | `github.com/modern-go/reflect2` | v1.0.3-0.20250322232337-35a7c28c31ee | `Apache-2.0` | — |
 | `github.com/munnerz/goautoneg` | v0.0.0-20191010083416-a7dc8b61c822 | `BSD-3-Clause` | Copyright (c) 2011, Open Knowledge Foundation Ltd |
@@ -80,13 +80,13 @@ script for what counts as a dependency here and why.
 | `github.com/x448/float16` | v0.8.4 | `MIT` | Copyright (c) 2019 Montgomery Edwards⁴⁴⁸ and Faye Amacker |
 | `go.yaml.in/yaml/v2` | v2.4.4 | `Apache-2.0 OR MIT` | Copyright (c) 2006 Kirill Simonov<br>Copyright 2011-2016 Canonical Ltd |
 | `go.yaml.in/yaml/v3` | v3.0.5 | `Apache-2.0 OR MIT OR Apache-2.0` | copyright staring in 2011 when the project was ported over:<br>Copyright (c) 2006-2010 Kirill Simonov<br>Copyright (c) 2006-2011 Kirill Simonov<br>Copyright (c) 2011-2019 Canonical Ltd<br>Copyright 2011-2016 Canonical Ltd |
-| `golang.org/x/crypto` | v0.57.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
-| `golang.org/x/net` | v0.58.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
+| `golang.org/x/crypto` | v0.58.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
+| `golang.org/x/net` | v0.60.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/oauth2` | v0.36.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
-| `golang.org/x/sync` | v0.23.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
-| `golang.org/x/sys` | v0.48.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
-| `golang.org/x/term` | v0.46.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
-| `golang.org/x/text` | v0.42.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
+| `golang.org/x/sync` | v0.24.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
+| `golang.org/x/sys` | v0.49.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
+| `golang.org/x/term` | v0.47.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
+| `golang.org/x/text` | v0.43.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/time` | v0.16.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `google.golang.org/protobuf` | v1.36.12 | `BSD-3-Clause` | Copyright (c) 2018 The Go Authors. All rights reserved |
 | `gopkg.in/evanphx/json-patch.v4` | v4.13.0 | `BSD-3-Clause` | Copyright (c) 2014, Evan Phoenix |
