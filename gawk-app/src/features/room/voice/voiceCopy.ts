@@ -3,6 +3,9 @@
 
 import { LOST_MESSAGE } from './voiceController';
 import type { VoiceViewState } from './voiceController';
+import type { NoiseStatus } from './voiceCapture';
+import { RNNOISE_DELAY_MS } from './voiceFraming';
+import type { NoiseMode } from './voicePrefs';
 
 // docs/80 §6: the channel is Mumble's, shared and recordable.
 export const VOICE_NOTICE =
@@ -34,3 +37,40 @@ export function serverStateNote(s: Pick<VoiceViewState, 'serverMuted' | 'serverD
   return null;
 }
 
+
+// ---- The Audio section (R80, docs/81 D13, D15) ----------------------------
+
+export const NOISE_MODE_LABEL: Record<NoiseMode, string> = {
+  rnnoise: 'RNNoise',
+  browser: 'Browser',
+  off: 'Off',
+};
+
+// What the chosen mode costs, in one line (D15; D8 owns the 20 ms).
+export function noiseCostText(mode: NoiseMode): string {
+  switch (mode) {
+    case 'rnnoise':
+      return `RNNoise adds ${RNNOISE_DELAY_MS} ms and opens on speech, not on loudness.`;
+    case 'browser':
+      return 'The browser’s own noise suppression: no added delay.';
+    default:
+      return 'No noise suppression: the level threshold decides what is sent.';
+  }
+}
+
+// The status line under the selector, or null when there is nothing to say.
+export function noiseStatusText(n: NoiseStatus | null): string | null {
+  if (!n) return null;
+  const parts: string[] = [];
+  // A fallback matters only while RNNoise is the choice: a late watchdog or
+  // download failure after a switch away from it is nobody's business.
+  if (n.fallback !== null && n.requested === 'rnnoise') {
+    parts.push(`RNNoise isn’t available here: ${n.fallback}. Using ${NOISE_MODE_LABEL[n.running]}.`);
+  } else if (n.loading) {
+    parts.push('RNNoise is loading…');
+  }
+  if (n.pending) {
+    parts.push(`${NOISE_MODE_LABEL[n.requested]} applies when you next join; ${NOISE_MODE_LABEL[n.running]} for now.`);
+  }
+  return parts.length > 0 ? parts.join(' ') : null;
+}

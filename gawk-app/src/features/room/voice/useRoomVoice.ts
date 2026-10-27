@@ -11,12 +11,29 @@ import { selectCertHashList, useTransportStore } from '../../../state/transportS
 import { roomHasVoice, useRoomStore } from '../../../state/roomStore';
 import type { RoomAudioMixer } from '../roomAudio';
 import type { RoomCommands, RoomVoiceEvents } from '../useRoomSession';
-import { VoiceController, type RoomVoiceReadiness } from './voiceController';
+import { VoiceController, type RoomVoiceReadiness, type VoiceMeter } from './voiceController';
 import { VoiceCapture } from './voiceCapture';
 import { VoicePlayback, realPlaybackDeps } from './voicePlayback';
 import { VoiceSession } from './voiceSession';
 import { useVoiceStore } from './voiceStore';
-import { loadSpeakerVolume, savePttKey, saveSpeakerVolume, saveTalkMode, validPttKey, type TalkMode } from './voicePrefs';
+import {
+  DEFAULT_LEVEL_THRESHOLD_DB,
+  DEFAULT_NOISE_MODE,
+  DEFAULT_SPEECH_THRESHOLD,
+  clampLevelThresholdDb,
+  clampSpeechThreshold,
+  clearAudioPrefs,
+  loadSpeakerVolume,
+  saveLevelThresholdDb,
+  saveNoiseMode,
+  savePttKey,
+  saveSpeakerVolume,
+  saveSpeechThreshold,
+  saveTalkMode,
+  validPttKey,
+  type NoiseMode,
+  type TalkMode,
+} from './voicePrefs';
 
 export interface VoiceActions {
   join: (listenOnly: boolean) => void;
@@ -32,6 +49,13 @@ export interface VoiceActions {
   setSpeakerVolume: (session: number, mumbleName: string, volume: number, muted: boolean) => void;
   // Whether this visit muted the person, for a roster row being (re)built.
   isSpeakerMuted: (mumbleName: string) => boolean;
+  // The Audio section (R80, docs/81 D15, D17): each applies live and saves.
+  setNoiseMode: (mode: NoiseMode) => void;
+  setSpeechThreshold: (on: number) => void;
+  setLevelThresholdDb: (db: number) => void;
+  setHearSelf: (on: boolean) => void;
+  resetAudio: () => void;
+  meter: () => VoiceMeter | null;
 }
 
 export function roomVoiceReadiness(): RoomVoiceReadiness {
@@ -79,7 +103,7 @@ export function useRoomVoice({
         // bridge serves the relay's certificate.
         webTransportInit: () => webTransportInit({ certHashHex: selectCertHashList(useTransportStore.getState()) }),
         createSession: (opts, cb) => new VoiceSession(opts, cb),
-        createCapture: (cb) => new VoiceCapture(cb),
+        createCapture: (cb, noise) => new VoiceCapture(cb, undefined, noise),
         captureContext: () => {
           const context = mixerRef.current?.context() ?? null;
           return context ? { context } : null;
@@ -95,6 +119,7 @@ export function useRoomVoice({
         onChange: (st) => useVoiceStore.getState().set(st),
       },
       store.talkMode,
+      { noiseMode: store.noiseMode, speechThreshold: store.speechThreshold, levelThresholdDb: store.levelThresholdDb },
     );
     ctrlRef.current = ctrl;
     return () => {
@@ -172,6 +197,31 @@ export function useRoomVoice({
         ctrlRef.current?.setSpeakerVolume(session, muted ? 0 : volume);
       },
       isSpeakerMuted: (name) => mutedRef.current.has(name),
+      setNoiseMode: (mode) => {
+        saveNoiseMode(mode);
+        ctrlRef.current?.setNoiseMode(mode);
+      },
+      setSpeechThreshold: (on) => {
+        const v = clampSpeechThreshold(on);
+        saveSpeechThreshold(v);
+        ctrlRef.current?.setSpeechThreshold(v);
+      },
+      setLevelThresholdDb: (db) => {
+        const v = clampLevelThresholdDb(db);
+        saveLevelThresholdDb(v);
+        ctrlRef.current?.setLevelThresholdDb(v);
+      },
+      setHearSelf: (on) => ctrlRef.current?.setHearSelf(on),
+      resetAudio: () => {
+        clearAudioPrefs();
+        const ctrl = ctrlRef.current;
+        if (!ctrl) return;
+        if (ctrl.getState().noiseMode !== DEFAULT_NOISE_MODE) ctrl.setNoiseMode(DEFAULT_NOISE_MODE);
+        ctrl.setSpeechThreshold(DEFAULT_SPEECH_THRESHOLD);
+        ctrl.setLevelThresholdDb(DEFAULT_LEVEL_THRESHOLD_DB);
+        ctrl.setHearSelf(false);
+      },
+      meter: () => ctrlRef.current?.meter() ?? null,
     }),
     [mixerRef],
   );

@@ -1,33 +1,45 @@
-// The microphone → Opus path (docs/80 D21) against fakes: the 10 ms / 20 ms
-// encoder probe, the MSTP pump and the AudioWorklet path, the gate deciding
-// what is encoded, the spurt end after the encoder drains, and every failure
-// releasing the track.
+// The microphone → Opus path (docs/80 D21; docs/81 NS2) against fakes: the
+// 10 ms / 20 ms encoder probe, the AudioWorklet path on every browser, the
+// gate deciding what is encoded, the spurt end after the encoder drains, the
+// noise modes (constraints, the in-worklet switch, the re-open and when it
+// may happen), every RNNoise fallback, and every failure releasing the track.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  VOICE_AUDIO_CONSTRAINTS,
   VOICE_BITRATE_BPS,
   VOICE_FALLBACK_FRAME_US,
   VOICE_FRAME_US,
   VoiceCapture,
   chooseFrameDuration,
+  queryMicPermission,
   seqUnitsFor,
+  voiceAudioConstraints,
   voiceCaptureSupported,
   voiceEncoderConfig,
+  type NoiseStatus,
   type VoiceAudioData,
   type VoiceCaptureDeps,
   type VoiceEncoderConfig,
 } from './voiceCapture';
 import { VoiceError } from './voiceSession';
-import { CAPTURE_PROCESSOR_NAME } from './voiceFraming';
+import { CAPTURE_PROCESSOR_NAME, type CaptureWorkletCommand, type CaptureWorkletEvent } from './voiceFraming';
+import type { NoiseMode } from './voicePrefs';
 
 class FakeTrack {
   stopped = 0;
   listeners: Record<string, (() => void)[]> = {};
+  readonly id: number;
+  constructor(id: number) {
+    this.id = id;
+  }
   stop() {
     this.stopped++;
+    log.push(`stop track ${this.id}`);
   }
   addEventListener(type: string, fn: () => void) {
     (this.listeners[type] ??= []).push(fn);
+  }
+  removeEventListener(type: string, fn: () => void) {
+    this.listeners[type] = (this.listeners[type] ?? []).filter((f) => f !== fn);
   }
   fire(type: string) {
     for (const fn of this.listeners[type] ?? []) fn();
@@ -36,94 +48,199 @@ class FakeTrack {
 
 class FakeData implements VoiceAudioData {
   closed = 0;
+  readonly numberOfChannels = 1;
+  readonly numberOfFrames = 480;
   readonly level: number;
   readonly timestamp: number;
   readonly sampleRate: number;
-  readonly numberOfChannels = 1;
-  readonly numberOfFrames = 480;
-  constructor(level: number, timestamp = 0, sampleRate = 48000) {
+  constructor(level: number, timestamp: number, sampleRate: number) {
     this.level = level;
     this.timestamp = timestamp;
     this.sampleRate = sampleRate;
-  }
-  copyTo(dst: Float32Array) {
-    dst.fill(this.level);
   }
   close() {
     this.closed++;
   }
 }
 
-let track: FakeTrack;
+interface FakeNode {
+  options: { processorOptions: { denoise: boolean; module: WebAssembly.Module | null } };
+  port: { onmessage: ((e: { data: CaptureWorkletEvent }) => void) | null; posted: CaptureWorkletCommand[]; postMessage(m: CaptureWorkletCommand): void };
+  onprocessorerror: (() => void) | null;
+  connected: unknown[];
+  disconnected: number;
+}
+
+let log: string[];
+let tracks: FakeTrack[];
+let gumCalls: MediaTrackConstraints[];
+let gumError: unknown;
+let supported: number[];
+let granted: boolean;
+let simd: boolean;
+let suppressible: boolean;
+let moduleLoad: { resolve: (m: WebAssembly.Module) => void; reject: (e: Error) => void } | null;
+let loads: number;
 let encoders: {
   config: VoiceEncoderConfig;
-  encoded: VoiceAudioData[];
+  encoded: FakeData[];
   flushes: number;
   closed: number;
   output: (d: Uint8Array, dur: number | null) => void;
   error: (e: Error) => void;
 }[];
-let gumError: unknown;
-let supported: number[];
-let mstpCtl: ReadableStreamDefaultController<VoiceAudioData> | null;
+let workletNodes: FakeNode[];
+let sources: { stream: MediaStream; connected: unknown[]; disconnected: number; disconnectedFrom: unknown[] }[];
+let ctxRate: number;
+
+const MODULE = { fake: 'module' } as unknown as WebAssembly.Module;
 
 function deps(over: Partial<VoiceCaptureDeps> = {}): VoiceCaptureDeps {
   return {
     getUserMedia: async (c) => {
-      expect(c.audio).toEqual(VOICE_AUDIO_CONSTRAINTS);
+      gumCalls.push(c.audio as MediaTrackConstraints);
+      log.push('getUserMedia');
       if (gumError) throw gumError;
-      return { getAudioTracks: () => [track], getTracks: () => [track] } as unknown as MediaStream;
+      const t = new FakeTrack(tracks.length);
+      tracks.push(t);
+      return { getAudioTracks: () => [t], getTracks: () => [t] } as unknown as MediaStream;
     },
     isConfigSupported: async (c) => ({ supported: supported.includes(c.opus.frameDuration) }),
     createEncoder: (config, cb) => {
-      const e = {
-        config,
-        encoded: [] as VoiceAudioData[],
-        flushes: 0,
-        closed: 0,
-        output: cb.output,
-        error: cb.error,
-      };
+      const e = { config, encoded: [] as FakeData[], flushes: 0, closed: 0, output: cb.output, error: cb.error };
       encoders.push(e);
       return {
-        encode: (d) => void e.encoded.push(d),
+        encode: (d) => void e.encoded.push(d as FakeData),
         flush: async () => void e.flushes++,
         close: () => void e.closed++,
       };
     },
-    createProcessor: () =>
-      new ReadableStream<VoiceAudioData>({
-        start: (c) => {
-          mstpCtl = c;
-        },
-      }),
     createAudioData: (init) => new FakeData((init.data as Float32Array)[0] ?? 0, init.timestamp, init.sampleRate),
-    now: () => 0,
+    wasmSimd: () => simd,
+    loadRnnoise: () => {
+      loads++;
+      log.push('loadRnnoise');
+      return new Promise((resolve, reject) => {
+        moduleLoad = { resolve, reject };
+      });
+    },
+    micPermissionGranted: async () => granted,
+    suppressionConstraint: () => suppressible,
     ...over,
   };
 }
 
-function callbacks(gateOpen: (rms: number) => boolean = (rms) => rms > 0.05) {
+function callbacks(gateOpen: (rms: number, prob: number | null) => boolean = (rms) => rms > 0.05) {
   const cb = {
     packets: [] as [number, number][],
     ends: 0,
     errors: [] as VoiceError[],
-    shouldSend: (rms: number) => gateOpen(rms),
+    gated: [] as [number, number | null][],
+    gatedAt: [] as number[],
+    noise: [] as NoiseStatus[],
+    shouldSend: (rms: number, prob: number | null, nowMs: number) => {
+      cb.gated.push([rms, prob]);
+      cb.gatedAt.push(nowMs);
+      return gateOpen(rms, prob);
+    },
     onPacket: (p: Uint8Array, units: number) => cb.packets.push([p.length, units]),
     onSpurtEnd: () => void cb.ends++,
     onError: (e: VoiceError) => void cb.errors.push(e),
+    onNoise: (n: NoiseStatus) => void cb.noise.push(n),
   };
   return cb;
 }
 
-const flush = () => new Promise((r) => setTimeout(r, 0));
+function fakeContext() {
+  const node = (kind: string) => {
+    const n = {
+      kind,
+      connected: [] as unknown[],
+      disconnected: 0,
+      disconnectedFrom: [] as unknown[],
+      connect(to: unknown) {
+        n.connected.push(to);
+      },
+      disconnect(from?: unknown) {
+        if (from === undefined) n.disconnected++;
+        else n.disconnectedFrom.push(from);
+      },
+    };
+    return n;
+  };
+  return {
+    sampleRate: ctxRate,
+    destination: { kind: 'destination' },
+    audioWorklet: { addModule: vi.fn(async () => {}) },
+    createMediaStreamSource: (stream: MediaStream) => {
+      const s = Object.assign(node('source'), { stream });
+      sources.push(s);
+      return s;
+    },
+    createGain: () => Object.assign(node('gain'), { gain: { value: 1 } }),
+  } as unknown as AudioContext;
+}
+
+const flush = async () => {
+  for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
+};
+
+async function started(noise: NoiseMode, cb = callbacks(), over: Partial<VoiceCaptureDeps> = {}) {
+  const ctx = fakeContext();
+  const cap = new VoiceCapture(cb, deps(over), noise);
+  await cap.start(() => ({ context: ctx }));
+  return { cap, cb, ctx, node: () => workletNodes[workletNodes.length - 1] };
+}
+
+function block(n: FakeNode, level: number, prob = -1) {
+  n.port.onmessage!({ data: { t: 'block', seq: 0, pcm: new Float32Array(480).fill(level), prob } });
+}
+
+const last = (cb: ReturnType<typeof callbacks>) => cb.noise[cb.noise.length - 1];
 
 beforeEach(() => {
-  track = new FakeTrack();
-  encoders = [];
+  log = [];
+  tracks = [];
+  gumCalls = [];
   gumError = null;
   supported = [VOICE_FRAME_US, VOICE_FALLBACK_FRAME_US];
-  mstpCtl = null;
+  granted = true;
+  simd = true;
+  suppressible = true;
+  moduleLoad = null;
+  loads = 0;
+  encoders = [];
+  workletNodes = [];
+  sources = [];
+  ctxRate = 48000;
+  vi.stubGlobal(
+    'AudioWorkletNode',
+    class implements FakeNode {
+      options: FakeNode['options'];
+      port: FakeNode['port'] = {
+        onmessage: null,
+        posted: [],
+        postMessage(m: CaptureWorkletCommand) {
+          this.posted.push(m);
+        },
+      };
+      onprocessorerror: (() => void) | null = null;
+      connected: unknown[] = [];
+      disconnected = 0;
+      constructor(_ctx: unknown, name: string, options: FakeNode['options']) {
+        expect(name).toBe(CAPTURE_PROCESSOR_NAME);
+        this.options = options;
+        workletNodes.push(this);
+      }
+      connect(to: unknown) {
+        this.connected.push(to);
+      }
+      disconnect() {
+        this.disconnected++;
+      }
+    },
+  );
+  vi.stubGlobal('URL', { createObjectURL: () => 'blob:x', revokeObjectURL: () => {} });
 });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -158,65 +275,366 @@ describe('encoder config', () => {
   });
 });
 
-describe('VoiceCapture, MSTP path', () => {
-  it('encodes only what the gate passes, configured from the frame in hand', async () => {
-    const cb = callbacks();
-    const cap = new VoiceCapture(cb, deps());
-    await cap.start(() => null);
-    const quiet = new FakeData(0);
-    const loud = new FakeData(0.5, 0, 44100);
-    mstpCtl!.enqueue(quiet);
-    mstpCtl!.enqueue(loud);
-    await flush();
-    expect(quiet.closed).toBe(1);
+describe('constraints (docs/81 D11)', () => {
+  it('echo cancellation and auto gain always; the browser’s suppression only for Browser', () => {
+    expect(voiceAudioConstraints('rnnoise')).toEqual({
+      echoCancellation: true,
+      noiseSuppression: false,
+      autoGainControl: true,
+      channelCount: 1,
+    });
+    expect(voiceAudioConstraints('off').noiseSuppression).toBe(false);
+    expect(voiceAudioConstraints('browser').noiseSuppression).toBe(true);
+  });
+});
+
+describe('VoiceCapture, the worklet path', () => {
+  it('encodes only what the gate passes, as 48 kHz AudioData on a 10 ms clock, muted to the speakers', async () => {
+    const { cap, cb, node } = await started('off');
+    const n = node();
+    expect(n.options.processorOptions).toEqual({ denoise: false, module: null });
+    expect(n.connected[0]).toMatchObject({ kind: 'gain', gain: { value: 0 } });
+    block(n, 0);
+    block(n, 0.5);
+    block(n, 0.5, 0.97);
+    n.port.onmessage!({ data: null as never });
+    expect(cb.gated.map(([, p]) => p)).toEqual([null, null, 0.97]);
     expect(encoders).toHaveLength(1);
-    expect(encoders[0].config.sampleRate).toBe(44100);
+    expect(encoders[0].config.sampleRate).toBe(48000);
     expect(encoders[0].config.opus.frameDuration).toBe(VOICE_FRAME_US);
-    expect(encoders[0].encoded).toEqual([loud]);
-    expect(loud.closed).toBe(1);
+    expect(encoders[0].encoded.map((d) => d.timestamp)).toEqual([10_000, 20_000]);
+    expect(encoders[0].encoded.every((d) => d.closed === 1)).toBe(true);
     encoders[0].output(new Uint8Array(50), 10_000);
     encoders[0].output(new Uint8Array(0), 10_000); // empty: never sent
     expect(cb.packets).toEqual([[50, 1]]);
     // The spurt ends: the encoder drains, THEN the terminator is due.
-    mstpCtl!.enqueue(new FakeData(0));
+    block(n, 0);
     await flush();
     expect(encoders[0].flushes).toBe(1);
     expect(cb.ends).toBe(1);
     cap.stop();
-    expect(track.stopped).toBe(1);
+    expect(tracks[0].stopped).toBe(1);
     expect(encoders[0].closed).toBe(1);
+    expect(n.port.posted).toContainEqual({ t: 'close' });
+    expect(sources[0].disconnected).toBe(1);
+    expect(n.port.onmessage).toBeNull();
   });
 
   it('uses 20 ms frames where 10 ms is refused', async () => {
     supported = [VOICE_FALLBACK_FRAME_US];
-    const cb = callbacks();
-    const cap = new VoiceCapture(cb, deps());
-    await cap.start(() => null);
-    mstpCtl!.enqueue(new FakeData(0.5));
-    await flush();
+    const { cap, cb, node } = await started('off');
+    block(node(), 0.5);
     expect(encoders[0].config.opus.frameDuration).toBe(VOICE_FALLBACK_FRAME_US);
     encoders[0].output(new Uint8Array(60), null);
     expect(cb.packets).toEqual([[60, 2]]);
     cap.stop();
   });
 
+  it('a block the gate refuses is never built into AudioData, and a bad AudioData fails', async () => {
+    const create = vi.fn(() => {
+      throw new Error('bad init');
+    });
+    const { cb, node } = await started('off', callbacks(), { createAudioData: create });
+    block(node(), 0);
+    expect(create).not.toHaveBeenCalled();
+    block(node(), 0.5);
+    expect(cb.errors[0].phase).toBe('capture');
+    expect(tracks[0].stopped).toBe(1);
+  });
+
   it('an encoder that cannot be built fails the capture and releases the track', async () => {
-    let open = true;
-    const cb = callbacks(() => open);
-    const cap = new VoiceCapture(cb, {
-      ...deps(),
+    const { cb, node } = await started('off', callbacks(), {
       createEncoder: () => {
         throw new Error('no encoder');
       },
     });
-    await cap.start(() => null);
-    mstpCtl!.enqueue(new FakeData(0.5));
+    block(node(), 0.5);
+    expect(cb.errors[0].message).toMatch(/no encoder/);
+    expect(tracks[0].stopped).toBe(1);
+  });
+});
+
+describe('VoiceCapture, RNNoise (docs/81 D4, D13)', () => {
+  it('starts the download before the prompt and runs the worklet as RNNoise, loading, until the module is in', async () => {
+    const { cb, node } = await started('rnnoise');
+    expect(log.slice(0, 2)).toEqual(['loadRnnoise', 'getUserMedia']);
+    expect(gumCalls[0].noiseSuppression).toBe(false);
+    const n = node();
+    expect(n.options.processorOptions).toEqual({ denoise: true, module: null });
+    expect(last(cb)).toMatchObject({ requested: 'rnnoise', running: 'rnnoise', loading: true, fallback: null });
+    // Meanwhile the level gate decides (no probability).
+    block(n, 0.5);
+    expect(cb.gated[0][1]).toBeNull();
+    moduleLoad!.resolve(MODULE);
     await flush();
-    // The encoder could not be built: a capture failure, track released.
+    // The module rides a new node's processorOptions, never the port (D5):
+    // the new node takes the old one's place between source and sink.
+    expect(workletNodes).toHaveLength(2);
+    const fresh = node();
+    expect(fresh.options.processorOptions).toEqual({ denoise: true, module: MODULE });
+    expect(n.disconnected).toBe(1);
+    // The source lets go of the old node too, or it keeps the old processor
+    // (and its wasm memory) alive.
+    expect(sources[0].disconnectedFrom).toEqual([n]);
+    expect(n.port.onmessage).toBeNull();
+    expect(n.port.posted).toContainEqual({ t: 'close' });
+    expect(sources[0].connected).toContain(fresh);
+    expect(fresh.connected[0]).toMatchObject({ kind: 'gain' });
+    expect(workletNodes.every((w) => w.port.posted.every((m) => (m as { t: string }).t !== 'module'))).toBe(true);
+    fresh.port.onmessage!({ data: { t: 'ready' } });
+    expect(last(cb)).toMatchObject({ running: 'rnnoise', loading: false });
+    // The block clock carries on across the swap; no re-open for any of it.
+    block(fresh, 0.5);
+    expect(encoders[0].encoded.map((d) => d.timestamp)).toEqual([0, 10_000]);
+    expect(gumCalls).toHaveLength(1);
+  });
+
+  it('without wasm SIMD opens the microphone as Browser before any prompt, and never downloads', async () => {
+    simd = false;
+    const { cb } = await started('rnnoise');
+    expect(loads).toBe(0);
+    expect(gumCalls).toEqual([voiceAudioConstraints('browser')]);
+    expect(last(cb)).toMatchObject({ requested: 'rnnoise', running: 'browser', fallback: expect.stringMatching(/SIMD/) });
+  });
+
+  it('Browser and Off never download the module', async () => {
+    await started('browser');
+    await started('off');
+    expect(loads).toBe(0);
+  });
+
+  it('RNNoise ↔ Off switches inside the worklet and never re-opens', async () => {
+    const { cap, cb, node } = await started('rnnoise');
+    moduleLoad!.resolve(MODULE);
+    await cap.setNoise('off');
+    expect(node().port.posted).toContainEqual({ t: 'denoise', on: false });
+    expect(last(cb)).toMatchObject({ requested: 'off', running: 'off', loading: false });
+    await cap.setNoise('rnnoise');
+    expect(node().port.posted.at(-1)).toEqual({ t: 'denoise', on: true });
+    expect(last(cb)).toMatchObject({ running: 'rnnoise', loading: true });
+    expect(gumCalls).toHaveLength(1);
+    expect(loads).toBe(1);
+  });
+
+  it('Off → RNNoise downloads then, and a node carrying the module takes over when it lands', async () => {
+    const { cap, node } = await started('off');
+    await cap.setNoise('rnnoise');
+    expect(loads).toBe(1);
+    expect(workletNodes).toHaveLength(1);
+    moduleLoad!.resolve(MODULE);
+    await flush();
+    expect(workletNodes).toHaveLength(2);
+    expect(node().options.processorOptions).toEqual({ denoise: true, module: MODULE });
+  });
+
+  it('a module that landed while Off is used by the next switch to RNNoise, without another download', async () => {
+    const { cap, node } = await started('rnnoise');
+    moduleLoad!.resolve(MODULE);
+    await flush();
+    await cap.setNoise('off');
+    expect(node().port.posted.at(-1)).toEqual({ t: 'denoise', on: false });
+    const nodes = workletNodes.length;
+    await cap.setNoise('rnnoise');
+    // The current node already has the module: no new node, just denoise on.
+    expect(workletNodes).toHaveLength(nodes);
+    expect(node().port.posted.at(-1)).toEqual({ t: 'denoise', on: true });
+    expect(loads).toBe(1);
+  });
+});
+
+describe('VoiceCapture, the gate clock (review round 1)', () => {
+  it('the gate reads audio time (10 ms a block), not when a block reached the main thread', async () => {
+    // A burst: three blocks delivered at one main-thread instant.
+    const { cb, node } = await started('off');
+    block(node(), 0);
+    block(node(), 0);
+    block(node(), 0);
+    expect(cb.gatedAt).toEqual([0, 10, 20]);
+  });
+});
+
+describe('VoiceCapture, the re-open (docs/81 D11, §10)', () => {
+  it('a module that lands while the re-open waits for getUserMedia: the new source feeds the live node', async () => {
+    let release!: () => void;
+    let calls = 0;
+    const base = deps();
+    const { cap, node } = await started('rnnoise', callbacks(), {
+      getUserMedia: async (c) => {
+        if (++calls === 2) await new Promise<void>((r) => (release = r));
+        return base.getUserMedia(c);
+      },
+    });
+    const p = cap.setNoise('browser');
+    await flush();
+    // Mid re-open, RNNoise still the running mode: the module's node swap.
+    moduleLoad!.resolve(MODULE);
+    await flush();
+    release();
+    await p;
+    const live = node();
+    expect(sources.at(-1)!.connected).toEqual([live]);
+    expect(live.connected[0]).toMatchObject({ kind: 'gain' });
+    expect(live.port.posted.at(-1)).toEqual({ t: 'denoise', on: false });
+  });
+
+
+  it('to Browser: stops the old track first, re-opens with suppression, keeps the worklet, encoder and clock', async () => {
+    const { cap, cb, node } = await started('rnnoise');
+    const n = node();
+    block(n, 0.5);
+    log = [];
+    await cap.setNoise('browser');
+    expect(log).toEqual(['stop track 0', 'getUserMedia']);
+    expect(gumCalls[1]).toEqual(voiceAudioConstraints('browser'));
+    expect(workletNodes).toHaveLength(1);
+    expect(sources[0].disconnected).toBe(1);
+    expect(sources[1].connected).toEqual([n]);
+    expect(n.port.posted.at(-1)).toEqual({ t: 'denoise', on: false });
+    expect(last(cb)).toMatchObject({ requested: 'browser', running: 'browser', pending: false });
+    // The deliberately stopped track ending is not a lost microphone.
+    tracks[0].fire('ended');
+    expect(cb.errors).toHaveLength(0);
+    block(n, 0.5);
+    expect(encoders).toHaveLength(1);
+    expect(encoders[0].encoded.map((d) => d.timestamp)).toEqual([0, 10_000]);
+    // And back.
+    await cap.setNoise('rnnoise');
+    expect(gumCalls[2].noiseSuppression).toBe(false);
+    expect(last(cb)).toMatchObject({ running: 'rnnoise' });
+    // The new track ending is.
+    tracks[2].fire('ended');
+    expect(cb.errors[0].message).toMatch(/stopped/);
+  });
+
+  it('without a granted permission it never prompts: the choice waits for the next join', async () => {
+    granted = false;
+    const { cap, cb } = await started('rnnoise');
+    await cap.setNoise('browser');
+    expect(gumCalls).toHaveLength(1);
+    expect(last(cb)).toMatchObject({ requested: 'browser', running: 'rnnoise', pending: true });
+    // Choosing the running mode again clears it.
+    await cap.setNoise('rnnoise');
+    expect(last(cb)).toMatchObject({ requested: 'rnnoise', pending: false });
+  });
+
+  it('on WebKit (no suppression constraint) nothing re-opens and Off is Browser', async () => {
+    suppressible = false;
+    const { cap, cb } = await started('off');
+    expect(last(cb)).toMatchObject({ requested: 'off', running: 'browser', offAvailable: false });
+    await cap.setNoise('rnnoise');
+    await cap.setNoise('browser');
+    await cap.setNoise('rnnoise');
+    expect(gumCalls).toHaveLength(1);
+  });
+
+  it('a re-open that fails ends the capture like a lost microphone', async () => {
+    const { cap, cb } = await started('rnnoise');
+    gumError = { name: 'NotReadableError' };
+    await cap.setNoise('browser');
+    expect(cb.errors).toHaveLength(1);
     expect(cb.errors[0].phase).toBe('capture');
-    expect(track.stopped).toBe(1);
-    open = false;
+    expect(cb.errors[0].message).toMatch(/re-opened/);
+    expect(tracks[0].stopped).toBe(1);
+    expect(encoders.every((e) => e.closed === 1)).toBe(true);
+  });
+
+  it('a stop during the re-open releases the new track', async () => {
+    const { cap } = await started('rnnoise');
+    const p = cap.setNoise('browser');
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
     cap.stop();
+    await p;
+    expect(tracks.every((t) => t.stopped >= 1)).toBe(true);
+  });
+});
+
+describe('VoiceCapture, fallbacks after the microphone opened (docs/81 D13)', () => {
+  const failures: [string, (n: FakeNode) => void, RegExp][] = [
+    ['download error', () => moduleLoad!.reject(new Error('the download failed (HTTP 404)')), /HTTP 404/],
+    ['compile error', () => moduleLoad!.reject(new Error('it could not be compiled (bad magic)')), /compiled/],
+    ['worklet error', (n) => n.port.onmessage!({ data: { t: 'error', reason: 'no exports' } }), /failed to start \(no exports\)/],
+    ['watchdog', (n) => n.port.onmessage!({ data: { t: 'slow', load: 0.52 } }), /too slow.*52 %/],
+  ];
+
+  it.each(failures)('%s, permission granted: Browser by a re-open, with the reason', async (_name, trigger, reason) => {
+    const { cb, node } = await started('rnnoise');
+    trigger(node());
+    await flush();
+    expect(node().port.posted).toContainEqual({ t: 'denoise', on: false });
+    expect(gumCalls.map((c) => c.noiseSuppression)).toEqual([false, true]);
+    expect(last(cb)).toMatchObject({ requested: 'rnnoise', running: 'browser', fallback: expect.stringMatching(reason) });
+  });
+
+  it.each(failures)('%s, permission not granted: Off on the open track, with the reason', async (_name, trigger, reason) => {
+    granted = false;
+    const { cb, node } = await started('rnnoise');
+    trigger(node());
+    await flush();
+    expect(gumCalls).toHaveLength(1);
+    expect(last(cb)).toMatchObject({ running: 'off', fallback: expect.stringMatching(reason) });
+  });
+
+  it('on WebKit a fallback lands on Browser without a re-open', async () => {
+    suppressible = false;
+    const { cb } = await started('rnnoise');
+    moduleLoad!.reject(new Error('the download failed'));
+    await flush();
+    expect(gumCalls).toHaveLength(1);
+    expect(last(cb)).toMatchObject({ running: 'browser', fallback: 'the download failed' });
+  });
+
+  it('falls back once; RNNoise chosen again waits for the next join', async () => {
+    const { cap, cb, node } = await started('rnnoise');
+    node().port.onmessage!({ data: { t: 'slow', load: 0.5 } });
+    node().port.onmessage!({ data: { t: 'error', reason: 'x' } });
+    await flush();
+    expect(gumCalls).toHaveLength(2);
+    await cap.setNoise('rnnoise');
+    expect(last(cb)).toMatchObject({ requested: 'rnnoise', running: 'browser', pending: true });
+  });
+
+  it('a failed download while the user already chose Browser changes nothing but the reason', async () => {
+    const { cap, cb } = await started('rnnoise');
+    await cap.setNoise('browser');
+    moduleLoad!.reject(new Error('the download failed'));
+    await flush();
+    expect(gumCalls).toHaveLength(2);
+    expect(last(cb)).toMatchObject({ running: 'browser', fallback: 'the download failed' });
+  });
+
+  it('on a 44.1 kHz context, the watchdog fallback and RNNoise → Off keep the encoder on 48 kHz blocks', async () => {
+    ctxRate = 44100;
+    granted = false;
+    const { cap, node } = await started('rnnoise');
+    moduleLoad!.resolve(MODULE);
+    block(node(), 0.5, 0.95);
+    node().port.onmessage!({ data: { t: 'slow', load: 0.5 } });
+    await flush();
+    block(node(), 0.5);
+    await cap.setNoise('rnnoise');
+    await cap.setNoise('off');
+    block(node(), 0.5);
+    expect(encoders).toHaveLength(1);
+    expect(encoders[0].config.sampleRate).toBe(48000);
+    expect(encoders[0].encoded.map((d) => d.sampleRate)).toEqual([48000, 48000, 48000]);
+  });
+
+  it('a processor error rebuilds the worklet without RNNoise and falls back', async () => {
+    const { cb, node } = await started('rnnoise');
+    moduleLoad!.resolve(MODULE);
+    await flush();
+    const dead = node();
+    dead.onprocessorerror!();
+    await flush();
+    // One node from start, one carrying the module, one rebuilt plain.
+    expect(workletNodes).toHaveLength(3);
+    expect(dead.disconnected).toBe(1);
+    const fresh = node();
+    expect(fresh.options.processorOptions).toEqual({ denoise: false, module: MODULE });
+    expect(sources.at(-1)!.connected).toContain(fresh);
+    expect(last(cb)).toMatchObject({ running: 'browser', fallback: 'the audio worklet failed' });
   });
 });
 
@@ -227,8 +645,8 @@ describe('VoiceCapture failures release the microphone', () => {
     [new Error('busy'), /busy/],
   ])('getUserMedia rejecting is a capture error (%#)', async (err, msg) => {
     gumError = err;
-    const cap = new VoiceCapture(callbacks(), deps());
-    const e = await cap.start(() => null).catch((x: unknown) => x);
+    const cap = new VoiceCapture(callbacks(), deps(), 'off');
+    const e = await cap.start(() => ({ context: fakeContext() })).catch((x: unknown) => x);
     expect(e).toBeInstanceOf(VoiceError);
     expect((e as VoiceError).phase).toBe('capture');
     expect((e as VoiceError).message).toMatch(msg);
@@ -236,150 +654,73 @@ describe('VoiceCapture failures release the microphone', () => {
 
   it('no Opus encoder at all fails before the prompt', async () => {
     supported = [];
-    const gum = vi.fn();
-    const cap = new VoiceCapture(callbacks(), deps({ getUserMedia: gum }));
+    const cap = new VoiceCapture(callbacks(), deps(), 'rnnoise');
     const e = await cap.start(() => null).catch((x: unknown) => x);
     expect((e as VoiceError).message).toMatch(/Opus/);
-    expect(gum).not.toHaveBeenCalled();
+    expect(gumCalls).toHaveLength(0);
+    expect(loads).toBe(0);
   });
 
   it('a track without audio, or stopped while starting, releases the stream', async () => {
+    const t = new FakeTrack(9);
     const empty = new VoiceCapture(callbacks(), {
       ...deps(),
-      getUserMedia: async () => ({ getAudioTracks: () => [], getTracks: () => [track] }) as unknown as MediaStream,
+      getUserMedia: async () => ({ getAudioTracks: () => [], getTracks: () => [t] }) as unknown as MediaStream,
     });
     await expect(empty.start(() => null)).rejects.toBeInstanceOf(VoiceError);
-    expect(track.stopped).toBe(1);
+    expect(t.stopped).toBe(1);
 
-    track = new FakeTrack();
-    const cap = new VoiceCapture(callbacks(), deps());
-    const started = cap.start(() => null);
+    const cap = new VoiceCapture(callbacks(), deps(), 'off');
+    const s = cap.start(() => ({ context: fakeContext() }));
     cap.stop();
-    await expect(started).rejects.toBeInstanceOf(VoiceError);
-    expect(track.stopped).toBeGreaterThanOrEqual(1);
+    await expect(s).rejects.toBeInstanceOf(VoiceError);
+    expect(tracks[0].stopped).toBeGreaterThanOrEqual(1);
+    // A mode change after a failed start does nothing.
+    await cap.setNoise('browser');
+    expect(gumCalls).toHaveLength(1);
   });
 
   it('the track ending and an encoder error each fail once, releasing everything', async () => {
-    const cb = callbacks();
-    const cap = new VoiceCapture(cb, deps());
-    await cap.start(() => null);
-    mstpCtl!.enqueue(new FakeData(0.5));
-    await flush();
+    const { cb, node } = await started('off');
+    block(node(), 0.5);
     encoders[0].error(new Error('opus died'));
-    track.fire('ended');
+    tracks[0].fire('ended');
     expect(cb.errors).toHaveLength(1);
     expect(cb.errors[0].message).toMatch(/opus died/);
-    expect(track.stopped).toBe(1);
+    expect(tracks[0].stopped).toBe(1);
     expect(encoders[0].closed).toBe(1);
   });
 
-  it('the worklet path needs a context', async () => {
-    const cap = new VoiceCapture(callbacks(), deps({ createProcessor: null }));
+  it('needs a context', async () => {
+    const cap = new VoiceCapture(callbacks(), deps(), 'off');
     const e = await cap.start(() => null).catch((x: unknown) => x);
     expect((e as VoiceError).message).toMatch(/Web Audio/);
-    expect(track.stopped).toBe(1);
-  });
-});
-
-describe('VoiceCapture, AudioWorklet path (Firefox, Safari)', () => {
-  function fakeContext(sampleRate = 48000) {
-    const nodes: { kind: string; connected: unknown[]; disconnected: number; gain?: { value: number } }[] = [];
-    const node = (kind: string) => {
-      const n = {
-        kind,
-        connected: [] as unknown[],
-        disconnected: 0,
-        connect(to: unknown) {
-          n.connected.push(to);
-        },
-        disconnect() {
-          n.disconnected++;
-        },
-      };
-      nodes.push(n);
-      return n;
-    };
-    const ctx = {
-      sampleRate,
-      destination: { kind: 'destination' },
-      audioWorklet: { addModule: vi.fn(async () => {}) },
-      createMediaStreamSource: () => node('source'),
-      createGain: () => Object.assign(node('gain'), { gain: { value: 1 } }),
-    };
-    const worklets: { name: string; port: { onmessage: ((e: { data: unknown }) => void) | null } }[] = [];
-    vi.stubGlobal(
-      'AudioWorkletNode',
-      class {
-        port = { onmessage: null as ((e: { data: unknown }) => void) | null };
-        connected: unknown[] = [];
-        disconnected = 0;
-        constructor(_ctx: unknown, name: string) {
-          worklets.push({ name, port: this.port });
-        }
-        connect(to: unknown) {
-          this.connected.push(to);
-        }
-        disconnect() {
-          this.disconnected++;
-        }
-      },
-    );
-    vi.stubGlobal('URL', { createObjectURL: () => 'blob:x', revokeObjectURL: () => {} });
-    return { ctx: ctx as unknown as AudioContext, nodes, worklets };
-  }
-
-  it('frames the worklet PCM into 10 ms AudioData for the encoder, muted to the speakers', async () => {
-    const { ctx, nodes, worklets } = fakeContext();
-    const cb = callbacks();
-    const cap = new VoiceCapture(cb, deps({ createProcessor: null }));
-    await cap.start(() => ({ context: ctx }));
-    expect(worklets[0].name).toBe(CAPTURE_PROCESSOR_NAME);
-    // The mic is never heard: a zero gain is what pulls the node.
-    const gain = nodes.find((n) => n.kind === 'gain')!;
-    expect(gain.gain!.value).toBe(0);
-    for (let q = 0; q < 8; q++) worklets[0].port.onmessage!({ data: new Float32Array(128).fill(0.5) });
-    worklets[0].port.onmessage!({ data: 'not pcm' });
-    // 1024 samples → two 480-sample blocks.
-    expect(encoders[0].encoded).toHaveLength(2);
-    const d = encoders[0].encoded[1] as FakeData;
-    expect(d.timestamp).toBe(10_000);
-    expect(d.closed).toBe(1);
-    cap.stop();
-    expect(track.stopped).toBe(1);
-    expect(nodes.every((n) => n.disconnected === 1)).toBe(true);
-    worklets[0].port.onmessage?.({ data: new Float32Array(480).fill(0.5) });
-    expect(encoders[0].encoded).toHaveLength(2);
-  });
-
-  it('a block the gate refuses is never built into AudioData, and a bad AudioData fails', async () => {
-    const { ctx, worklets } = fakeContext();
-    const create = vi.fn(() => {
-      throw new Error('bad init');
-    });
-    const cb = callbacks();
-    const cap = new VoiceCapture(cb, deps({ createProcessor: null, createAudioData: create }));
-    await cap.start(() => ({ context: ctx }));
-    worklets[0].port.onmessage!({ data: new Float32Array(480) });
-    expect(create).not.toHaveBeenCalled();
-    worklets[0].port.onmessage!({ data: new Float32Array(480).fill(0.5) });
-    expect(cb.errors[0].phase).toBe('capture');
-    expect(track.stopped).toBe(1);
+    expect(tracks[0].stopped).toBe(1);
   });
 });
 
 describe('voiceCaptureSupported', () => {
-  it('needs getUserMedia, AudioEncoder and a frame source', () => {
+  it('needs getUserMedia, AudioEncoder, AudioWorkletNode and AudioData', () => {
     vi.stubGlobal('navigator', { mediaDevices: { getUserMedia: () => {} } });
     vi.stubGlobal('AudioEncoder', undefined);
     expect(voiceCaptureSupported()).toBe(false);
     vi.stubGlobal('AudioEncoder', class {});
-    vi.stubGlobal('MediaStreamTrackProcessor', class {});
-    expect(voiceCaptureSupported()).toBe(true);
-    vi.stubGlobal('MediaStreamTrackProcessor', undefined);
-    vi.stubGlobal('AudioWorkletNode', class {});
+    vi.stubGlobal('AudioData', undefined);
+    expect(voiceCaptureSupported()).toBe(false);
     vi.stubGlobal('AudioData', class {});
     expect(voiceCaptureSupported()).toBe(true);
     vi.stubGlobal('navigator', {});
     expect(voiceCaptureSupported()).toBe(false);
+  });
+});
+
+describe('queryMicPermission', () => {
+  it('is granted only when the Permissions API says granted', async () => {
+    const q = (state: string) => ({ query: async () => ({ state }) });
+    expect(await queryMicPermission(q('granted'))).toBe(true);
+    expect(await queryMicPermission(q('prompt'))).toBe(false);
+    expect(await queryMicPermission(q('denied'))).toBe(false);
+    expect(await queryMicPermission({ query: async () => Promise.reject(new TypeError('microphone')) })).toBe(false);
+    expect(await queryMicPermission(undefined)).toBe(false);
   });
 });

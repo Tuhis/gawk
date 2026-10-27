@@ -14,6 +14,11 @@
 // cushion, once per spurt, which is exactly what a jitter buffer is for.
 //
 // Speaking indicators (speaking.ts) are fed from the same frames.
+//
+// Hear yourself (R80, docs/81 D16) is one more speaker: your own packets,
+// after the gate, through the same decoder, jitter buffer and voice bus, so
+// you hear what the others hear. It is never in the speaking set or the cap,
+// and nothing of it is kept.
 
 import { log } from '../../../lib/logger';
 import type { AudioBufferProfile, AudioChunk } from '../../../transport/audio-buffer';
@@ -56,9 +61,15 @@ export interface VoicePlaybackCallbacks {
 
 export interface VoicePlaybackLike {
   handleFrame(header: VoiceFrameHeader, payload: Uint8Array): void;
+  // One of your own packets (or a bare terminator), for Hear yourself.
+  handleSelfFrame(header: Pick<VoiceFrameHeader, 'end' | 'seq'>, payload: Uint8Array): void;
+  stopSelf(): void;
   setSpeakerVolume(session: number, volume: number): void;
   dispose(): void;
 }
+
+// The self speaker's key; Mumble sessions are unsigned.
+const SELF = -1;
 
 interface Speaker {
   session: number;
@@ -129,6 +140,7 @@ export class VoicePlayback implements VoicePlaybackLike {
   private readonly cb: VoicePlaybackCallbacks;
   private readonly volumeFor: (session: number) => number;
   private readonly speakers = new Map<number, Speaker>();
+  private self: Speaker | null = null;
   private readonly speaking = new SpeakingTracker();
   private speakingTimer: ReturnType<typeof setTimeout> | null = null;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
@@ -153,26 +165,41 @@ export class VoicePlayback implements VoicePlaybackLike {
     this.armSpeakingTimer();
 
     let sp = this.speakers.get(session);
+    if (!sp && !(header.end && payload.length === 0)) sp = this.addSpeaker(session, now);
+    if (sp) this.feed(sp, header, payload, now);
+  }
+
+  handleSelfFrame(header: Pick<VoiceFrameHeader, 'end' | 'seq'>, payload: Uint8Array): void {
+    if (this.disposed) return;
+    const now = this.deps.now();
+    if (!this.self && !(header.end && payload.length === 0)) {
+      this.self = { session: SELF, decoder: null, sink: null, lastFrameAtMs: now, ended: false };
+      this.startParts(this.self, 1);
+    }
+    if (this.self) this.feed(this.self, header, payload, now);
+  }
+
+  stopSelf(): void {
+    const sp = this.self;
+    this.self = null;
+    if (sp) this.closeParts(sp);
+  }
+
+  private feed(sp: Speaker, header: Pick<VoiceFrameHeader, 'end' | 'seq'>, payload: Uint8Array, now: number): void {
     if (header.end && payload.length === 0) {
       // A bare terminator: the spurt is over; nothing to decode.
-      if (sp) {
-        sp.ended = true;
-        sp.lastFrameAtMs = now;
-      }
+      sp.ended = true;
+      sp.lastFrameAtMs = now;
       return;
     }
-    if (!sp) {
-      sp = this.addSpeaker(session, now);
-    } else if (sp.ended || now - sp.lastFrameAtMs > SPURT_GAP_MS) {
-      sp.sink?.flush();
-    }
+    if (sp.ended || now - sp.lastFrameAtMs > SPURT_GAP_MS) sp.sink?.flush();
     sp.ended = header.end;
     sp.lastFrameAtMs = now;
     if (!sp.decoder) return;
     try {
       sp.decoder.decode(payload, header.seq * VOICE_SEQ_UNIT_US);
     } catch (e) {
-      log.warn(`voice decode failed for speaker ${session}; releasing it:`, e);
+      log.warn(`voice decode failed for speaker ${sp.session}; releasing it:`, e);
       this.release(sp);
     }
   }
@@ -188,6 +215,7 @@ export class VoicePlayback implements VoicePlaybackLike {
     for (const sp of [...this.speakers.values()]) {
       if (now - sp.lastFrameAtMs >= SPEAKER_IDLE_RELEASE_MS) this.release(sp);
     }
+    if (this.self && now - this.self.lastFrameAtMs >= SPEAKER_IDLE_RELEASE_MS) this.stopSelf();
   }
 
   dispose(): void {
@@ -198,6 +226,7 @@ export class VoicePlayback implements VoicePlaybackLike {
     if (this.speakingTimer !== null) clearTimeout(this.speakingTimer);
     this.speakingTimer = null;
     for (const sp of [...this.speakers.values()]) this.release(sp);
+    this.stopSelf();
     this.speaking.clear();
   }
 
@@ -209,26 +238,31 @@ export class VoicePlayback implements VoicePlaybackLike {
     }
     const sp: Speaker = { session, decoder: null, sink: null, lastFrameAtMs: now, ended: false };
     this.speakers.set(session, sp);
+    this.startParts(sp, this.volumeFor(session));
+    return sp;
+  }
+
+  private startParts(sp: Speaker, volume: number): void {
     try {
       sp.sink = this.deps.createSink();
-      sp.sink?.setVolume(this.volumeFor(session));
+      sp.sink?.setVolume(volume);
       const sink = sp.sink;
       sp.decoder = this.deps.createDecoder(
         (chunk) => sink?.push(chunk),
         (e) => {
-          log.warn(`voice decoder for speaker ${session} failed:`, e);
-          if (this.speakers.get(session) === sp) this.release(sp);
+          log.warn(`voice decoder for speaker ${sp.session} failed:`, e);
+          this.release(sp);
         },
       );
     } catch (e) {
-      log.warn(`voice playback for speaker ${session} could not start:`, e);
+      log.warn(`voice playback for speaker ${sp.session} could not start:`, e);
       this.closeParts(sp);
     }
-    return sp;
   }
 
   private release(sp: Speaker): void {
-    if (this.speakers.get(sp.session) === sp) this.speakers.delete(sp.session);
+    if (sp === this.self) this.self = null;
+    else if (this.speakers.get(sp.session) === sp) this.speakers.delete(sp.session);
     this.closeParts(sp);
   }
 
