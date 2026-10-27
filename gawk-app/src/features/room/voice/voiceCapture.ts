@@ -310,6 +310,8 @@ export class VoiceCapture implements VoiceCaptureLike {
   private fallback: string | null = null;
   private pending = false;
   private module: WebAssembly.Module | null = null;
+  // Whether the current node was built with the module.
+  private nodeHasModule = false;
   private moduleRequested = false;
   // Resolves once start() has the microphone and the worklet up; rejects if
   // it never does. Mode changes wait for it.
@@ -454,6 +456,7 @@ export class VoiceCapture implements VoiceCaptureLike {
     this.rnnoiseReady = false;
     if (target === 'rnnoise') this.requestModule();
     this.post({ t: 'denoise', on: target === 'rnnoise' });
+    this.ensureModuleInNode();
     this.emitNoise();
   }
 
@@ -507,7 +510,7 @@ export class VoiceCapture implements VoiceCaptureLike {
       (m) => {
         if (this.stopped) return;
         this.module = m;
-        this.post({ t: 'module', module: m });
+        this.ensureModuleInNode();
       },
       (e: unknown) => {
         if (!this.stopped) void this.fallBack(reasonOf(e));
@@ -559,8 +562,11 @@ export class VoiceCapture implements VoiceCaptureLike {
     this.sink = sink;
   }
 
+  // The module, when compiled, rides processorOptions (D5): Chromium ≤ 154
+  // cannot post one through the port.
   private createNode(ctx: AudioContext, denoise: boolean): AudioWorkletNode {
-    const opts: CaptureProcessorOptions = { denoise };
+    const opts: CaptureProcessorOptions = { denoise, module: this.module };
+    this.nodeHasModule = this.module !== null;
     const node = new AudioWorkletNode(ctx, CAPTURE_PROCESSOR_NAME, {
       numberOfInputs: 1,
       numberOfOutputs: 1,
@@ -573,27 +579,44 @@ export class VoiceCapture implements VoiceCaptureLike {
     // A processor that throws is dead for good: build a plain one in its
     // place and fall back (D13).
     node.onprocessorerror = () => this.replaceNode();
-    if (this.module) this.post({ t: 'module', module: this.module });
     return node;
   }
 
-  private replaceNode(): void {
+  // A new node in the old one's place between source and sink. The encoder
+  // and the block clock carry on; the old node frees its RNNoise state.
+  private swapNode(denoise: boolean): boolean {
     const ctx = this.context;
     const old = this.node;
-    if (this.stopped || !ctx || !old) return;
-    log.warn('voice capture worklet failed; rebuilding it without RNNoise');
+    if (this.stopped || !ctx || !old) return false;
+    try {
+      old.port.postMessage({ t: 'close' } satisfies CaptureWorkletCommand);
+    } catch {
+      // a dead processor's port
+    }
     old.port.onmessage = null;
     old.onprocessorerror = null;
     this.disconnect(old);
     this.rnnoiseReady = false;
-    const node = this.createNode(ctx, false);
+    const node = this.createNode(ctx, denoise);
     try {
       this.source?.connect(node);
       if (this.sink) node.connect(this.sink);
     } catch (e) {
       this.fail(new VoiceError('capture', `voice capture: ${reasonOf(e)}`));
-      return;
+      return false;
     }
+    return true;
+  }
+
+  // RNNoise is running and its module has landed, but the node predates it.
+  private ensureModuleInNode(): void {
+    if (this.running === 'rnnoise' && this.module && !this.nodeHasModule) this.swapNode(true);
+  }
+
+  private replaceNode(): void {
+    if (this.stopped || !this.node) return;
+    log.warn('voice capture worklet failed; rebuilding it without RNNoise');
+    if (!this.swapNode(false)) return;
     if (this.running === 'rnnoise') void this.fallBack('the audio worklet failed');
   }
 

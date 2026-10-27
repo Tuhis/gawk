@@ -2470,6 +2470,12 @@ entries still describe code `gawk-pubsim` runs (now
   looked at speech decisions at probability 0.6 and missed it. **Headless
   Chromium's AudioContext runs at 44.1 kHz** by default, so this path is
   the one an e2e takes. ([docs/81](81-noise-suppression.md) §12.7, D6)
+- **Chromium ≤ 154 cannot post a `WebAssembly.Module` to an AudioWorklet
+  port**: the processor gets a `messageerror` and nothing else, so code
+  waiting for the module waits forever (156 delivers it). Pass it in the
+  node's `processorOptions`, which works on 151 and 156, and handle
+  `messageerror` in the processor. ([docs/81](81-noise-suppression.md)
+  D5, §12.7)
 - **Headless Firefox (and WebKit) in a container with no sound server
   leave an AudioContext `suspended`**: nothing renders, so an AudioWorklet
   capture posts no audio while everything else looks connected. Give the

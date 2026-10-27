@@ -64,7 +64,7 @@ class FakeData implements VoiceAudioData {
 }
 
 interface FakeNode {
-  options: { processorOptions: { denoise: boolean } };
+  options: { processorOptions: { denoise: boolean; module: WebAssembly.Module | null } };
   port: { onmessage: ((e: { data: CaptureWorkletEvent }) => void) | null; posted: CaptureWorkletCommand[]; postMessage(m: CaptureWorkletCommand): void };
   onprocessorerror: (() => void) | null;
   connected: unknown[];
@@ -289,7 +289,7 @@ describe('VoiceCapture, the worklet path', () => {
   it('encodes only what the gate passes, as 48 kHz AudioData on a 10 ms clock, muted to the speakers', async () => {
     const { cap, cb, node } = await started('off');
     const n = node();
-    expect(n.options.processorOptions).toEqual({ denoise: false });
+    expect(n.options.processorOptions).toEqual({ denoise: false, module: null });
     expect(n.connected[0]).toMatchObject({ kind: 'gain', gain: { value: 0 } });
     block(n, 0);
     block(n, 0.5);
@@ -357,17 +357,29 @@ describe('VoiceCapture, RNNoise (docs/81 D4, D13)', () => {
     expect(log.slice(0, 2)).toEqual(['loadRnnoise', 'getUserMedia']);
     expect(gumCalls[0].noiseSuppression).toBe(false);
     const n = node();
-    expect(n.options.processorOptions).toEqual({ denoise: true });
+    expect(n.options.processorOptions).toEqual({ denoise: true, module: null });
     expect(last(cb)).toMatchObject({ requested: 'rnnoise', running: 'rnnoise', loading: true, fallback: null });
     // Meanwhile the level gate decides (no probability).
     block(n, 0.5);
     expect(cb.gated[0][1]).toBeNull();
     moduleLoad!.resolve(MODULE);
     await flush();
-    expect(n.port.posted).toContainEqual({ t: 'module', module: MODULE });
-    n.port.onmessage!({ data: { t: 'ready' } });
+    // The module rides a new node's processorOptions, never the port (D5):
+    // the new node takes the old one's place between source and sink.
+    expect(workletNodes).toHaveLength(2);
+    const fresh = node();
+    expect(fresh.options.processorOptions).toEqual({ denoise: true, module: MODULE });
+    expect(n.disconnected).toBe(1);
+    expect(n.port.onmessage).toBeNull();
+    expect(n.port.posted).toContainEqual({ t: 'close' });
+    expect(sources[0].connected).toContain(fresh);
+    expect(fresh.connected[0]).toMatchObject({ kind: 'gain' });
+    expect(workletNodes.every((w) => w.port.posted.every((m) => (m as { t: string }).t !== 'module'))).toBe(true);
+    fresh.port.onmessage!({ data: { t: 'ready' } });
     expect(last(cb)).toMatchObject({ running: 'rnnoise', loading: false });
-    // No re-open for any of it.
+    // The block clock carries on across the swap; no re-open for any of it.
+    block(fresh, 0.5);
+    expect(encoders[0].encoded.map((d) => d.timestamp)).toEqual([0, 10_000]);
     expect(gumCalls).toHaveLength(1);
   });
 
@@ -398,16 +410,29 @@ describe('VoiceCapture, RNNoise (docs/81 D4, D13)', () => {
     expect(loads).toBe(1);
   });
 
-  it('Off → RNNoise downloads then, and the worklet starts it when the module lands', async () => {
+  it('Off → RNNoise downloads then, and a node carrying the module takes over when it lands', async () => {
     const { cap, node } = await started('off');
     await cap.setNoise('rnnoise');
     expect(loads).toBe(1);
+    expect(workletNodes).toHaveLength(1);
     moduleLoad!.resolve(MODULE);
     await flush();
-    expect(node().port.posted.slice(-2)).toEqual([
-      { t: 'denoise', on: true },
-      { t: 'module', module: MODULE },
-    ]);
+    expect(workletNodes).toHaveLength(2);
+    expect(node().options.processorOptions).toEqual({ denoise: true, module: MODULE });
+  });
+
+  it('a module that landed while Off is used by the next switch to RNNoise, without another download', async () => {
+    const { cap, node } = await started('rnnoise');
+    moduleLoad!.resolve(MODULE);
+    await flush();
+    await cap.setNoise('off');
+    expect(node().port.posted.at(-1)).toEqual({ t: 'denoise', on: false });
+    const nodes = workletNodes.length;
+    await cap.setNoise('rnnoise');
+    // The current node already has the module: no new node, just denoise on.
+    expect(workletNodes).toHaveLength(nodes);
+    expect(node().port.posted.at(-1)).toEqual({ t: 'denoise', on: true });
+    expect(loads).toBe(1);
   });
 });
 
@@ -562,11 +587,11 @@ describe('VoiceCapture, fallbacks after the microphone opened (docs/81 D13)', ()
     const dead = node();
     dead.onprocessorerror!();
     await flush();
-    expect(workletNodes).toHaveLength(2);
+    // One node from start, one carrying the module, one rebuilt plain.
+    expect(workletNodes).toHaveLength(3);
     expect(dead.disconnected).toBe(1);
     const fresh = node();
-    expect(fresh.options.processorOptions).toEqual({ denoise: false });
-    expect(fresh.port.posted).toContainEqual({ t: 'module', module: MODULE });
+    expect(fresh.options.processorOptions).toEqual({ denoise: false, module: MODULE });
     expect(sources.at(-1)!.connected).toContain(fresh);
     expect(last(cb)).toMatchObject({ running: 'browser', fallback: 'the audio worklet failed' });
   });

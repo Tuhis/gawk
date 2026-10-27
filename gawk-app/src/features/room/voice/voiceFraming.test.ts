@@ -131,8 +131,7 @@ describe('the capture worklet: framing and resampling (D6)', () => {
 
 describe('the capture worklet: RNNoise (D3, D7, D13, D14)', () => {
   it('denoises with the real wasm at int16 scale: noise drops, speech stays, probability per block', () => {
-    const noise = runWorklet(48000, true);
-    noise.send({ t: 'module', module: rnnoiseModule() });
+    const noise = runWorklet(48000, true, rnnoiseModule());
     expect(noise.events[0]).toEqual({ t: 'ready' });
     const white = scaleTo(syntheticWhite(2, 1), -30);
     noise.feed(white);
@@ -141,8 +140,7 @@ describe('the capture worklet: RNNoise (D3, D7, D13, D14)', () => {
     // After RNNoise's 20 ms, steady white noise comes out far quieter.
     expect(powerDb(white, 10) - powerDb(joined(nb), 10)).toBeGreaterThan(8);
 
-    const speech = runWorklet(48000, true);
-    speech.send({ t: 'module', module: rnnoiseModule() });
+    const speech = runWorklet(48000, true, rnnoiseModule());
     const voiced = scaleTo(syntheticSpeech(3, 2), -26);
     speech.feed(voiced);
     const sb = speech.blocks();
@@ -152,19 +150,21 @@ describe('the capture worklet: RNNoise (D3, D7, D13, D14)', () => {
     expect(sb.filter((b) => b.prob >= 0.9).length / sb.length).toBeGreaterThan(0.5);
   });
 
-  it('runs without RNNoise until the module arrives, then switches with no gap (D13)', () => {
+  it('denoising without a module posts plain blocks; nothing reaches it through the port (D5)', () => {
     const w = runWorklet(48000, true);
     w.feed(new Float32Array(960));
-    w.send({ t: 'module', module: rnnoiseModule() });
-    w.feed(new Float32Array(960));
-    const blocks = w.blocks();
-    expect(blocks.map((b) => b.prob >= 0)).toEqual([false, false, true, true]);
-    expect(blocks.map((b) => b.seq)).toEqual([0, 1, 2, 3]);
+    expect(w.blocks().map((b) => b.prob)).toEqual([-1, -1]);
+    expect(w.events.some((e) => e.t === 'ready')).toBe(false);
+  });
+
+  it('a message the port cannot deliver (Chromium ≤ 154 with a Module) is an error, not a silent hang', () => {
+    const w = runWorklet(48000, true);
+    w.processor.port.onmessageerror!();
+    expect(w.events).toEqual([{ t: 'error', reason: 'a message could not reach the audio worklet' }]);
   });
 
   it('denoise off stops RNNoise on the same stream, and on starts a fresh state from the kept module', () => {
-    const w = runWorklet(48000, true);
-    w.send({ t: 'module', module: rnnoiseModule() });
+    const w = runWorklet(48000, true, rnnoiseModule());
     w.feed(new Float32Array(480));
     w.send({ t: 'denoise', on: false });
     const x = ramp(480);
@@ -178,10 +178,9 @@ describe('the capture worklet: RNNoise (D3, D7, D13, D14)', () => {
   });
 
   it('a module that is not RNNoise posts an error and the audio carries on undenoised', () => {
-    const w = runWorklet(48000, true);
     // A valid module with none of RNNoise's exports.
     const empty = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
-    w.send({ t: 'module', module: empty });
+    const w = runWorklet(48000, true, empty);
     expect(w.events[0].t).toBe('error');
     w.feed(new Float32Array(480));
     expect(w.blocks()[0].prob).toBe(-1);
@@ -191,8 +190,7 @@ describe('the capture worklet: RNNoise (D3, D7, D13, D14)', () => {
     let t = 0;
     // Each Date.now() advances 5 ms: 5 ms per 10 ms block, 50 % of real time.
     vi.spyOn(Date, 'now').mockImplementation(() => (t += 5));
-    const w = runWorklet(48000, true);
-    w.send({ t: 'module', module: rnnoiseModule() });
+    const w = runWorklet(48000, true, rnnoiseModule());
     const windowBlocks = WATCHDOG_WINDOW_MS / 10;
     w.feed(new Float32Array(FRAME * (windowBlocks + 2)));
     const slow = w.events.find((e) => e.t === 'slow');
@@ -205,15 +203,13 @@ describe('the capture worklet: RNNoise (D3, D7, D13, D14)', () => {
   it('stays under the watchdog at a fast clock', () => {
     let t = 0;
     vi.spyOn(Date, 'now').mockImplementation(() => (t += 1));
-    const w = runWorklet(48000, true);
-    w.send({ t: 'module', module: rnnoiseModule() });
+    const w = runWorklet(48000, true, rnnoiseModule());
     w.feed(new Float32Array(FRAME * 450));
     expect(w.events.some((e) => e.t === 'slow')).toBe(false);
   });
 
   it('close frees RNNoise and ends the processor', () => {
-    const w = runWorklet(48000, true);
-    w.send({ t: 'module', module: rnnoiseModule() });
+    const w = runWorklet(48000, true, rnnoiseModule());
     w.send({ t: 'close' });
     expect(w.processor.process([[new Float32Array(128)]])).toBe(false);
     w.send({ t: 'denoise', on: true });

@@ -53,13 +53,16 @@ export type CaptureWorkletEvent =
   | { t: 'slow'; load: number };
 
 // Main thread → worklet.
-export type CaptureWorkletCommand =
-  | { t: 'module'; module: WebAssembly.Module }
-  | { t: 'denoise'; on: boolean }
-  | { t: 'close' };
+export type CaptureWorkletCommand = { t: 'denoise'; on: boolean } | { t: 'close' };
 
+// The compiled module travels in processorOptions, never through the port:
+// Chromium ≤ 154 delivers a WebAssembly.Module posted to a worklet port as a
+// messageerror (156 delivers it), while processorOptions carries it on every
+// engine (docs/81 D5, §12.7). A module that lands after the node exists gets
+// a new node.
 export interface CaptureProcessorOptions {
   denoise: boolean;
+  module: WebAssembly.Module | null;
 }
 
 export const CAPTURE_PROCESSOR_NAME = 'gawk-voice-capture';
@@ -191,22 +194,24 @@ class GawkVoiceCapture extends AudioWorkletProcessor {
     this.frame = new Float32Array(FRAME);
     this.fill = 0;
     this.seq = 0;
-    this.denoise = !!(options && options.processorOptions && options.processorOptions.denoise);
-    this.module = null;
+    const o = (options && options.processorOptions) || {};
+    this.denoise = !!o.denoise;
+    this.module = o.module || null;
     this.wasm = null;
     this.state = 0;
     this.busyMs = 0;
     this.watched = 0;
     this.closed = false;
     this.port.onmessage = (e) => this.command(e.data);
+    // Never a silent hang: anything the port cannot deliver is reported.
+    this.port.onmessageerror = () =>
+      this.port.postMessage({ t: 'error', reason: 'a message could not reach the audio worklet' });
+    if (this.denoise) this.startDenoise();
   }
 
   command(m) {
     if (!m || this.closed) return;
-    if (m.t === 'module') {
-      this.module = m.module;
-      if (this.denoise) this.startDenoise();
-    } else if (m.t === 'denoise') {
+    if (m.t === 'denoise') {
       this.denoise = !!m.on;
       if (this.denoise) this.startDenoise();
       else this.stopDenoise();

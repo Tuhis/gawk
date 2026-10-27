@@ -26,8 +26,7 @@ import {
 const LAG_FRAMES = 2;
 
 function defaultGate(x: Float32Array): Uint8Array {
-  const w = runWorklet(48000, true);
-  w.send({ t: 'module', module: rnnoiseModule() });
+  const w = runWorklet(48000, true, rnnoiseModule());
   w.feed(x);
   const d = new SpeechDetector();
   return Uint8Array.from(w.blocks(), (b, f) => (d.update(b.prob, blockRms(b.pcm), f * 10) ? 1 : 0));

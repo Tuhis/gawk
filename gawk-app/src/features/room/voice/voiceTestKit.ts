@@ -23,7 +23,11 @@ export function rnnoiseModule(): WebAssembly.Module {
 }
 
 interface FakeProcessor {
-  port: { postMessage: (m: CaptureWorkletEvent, transfer?: Transferable[]) => void; onmessage: ((e: { data: unknown }) => void) | null };
+  port: {
+    postMessage: (m: CaptureWorkletEvent, transfer?: Transferable[]) => void;
+    onmessage: ((e: { data: unknown }) => void) | null;
+    onmessageerror: (() => void) | null;
+  };
   process(inputs: Float32Array[][]): boolean;
 }
 
@@ -37,13 +41,15 @@ export interface WorkletRun {
 }
 
 // Evaluates CAPTURE_PROCESSOR_SOURCE at a context rate and builds one
-// processor, as `new AudioWorkletNode(...)` would.
-export function runWorklet(contextRate: number, denoise: boolean): WorkletRun {
+// processor, as `new AudioWorkletNode(...)` would, with the module (if any)
+// in its processorOptions.
+export function runWorklet(contextRate: number, denoise: boolean, module: WebAssembly.Module | null = null): WorkletRun {
   const events: CaptureWorkletEvent[] = [];
   class AudioWorkletProcessor {
     port = {
       postMessage: (m: CaptureWorkletEvent) => void events.push(m),
       onmessage: null as ((e: { data: unknown }) => void) | null,
+      onmessageerror: null as (() => void) | null,
     };
   }
   let Cls: (new (o: unknown) => FakeProcessor) | null = null;
@@ -54,7 +60,7 @@ export function runWorklet(contextRate: number, denoise: boolean): WorkletRun {
     },
     contextRate,
   );
-  const processor = new Cls!({ processorOptions: { denoise } });
+  const processor = new Cls!({ processorOptions: { denoise, module } });
   return {
     processor,
     events,
