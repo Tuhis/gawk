@@ -338,7 +338,7 @@
         "echoCancellation": true,
         "autoGainControl": true
       },
-      "samples": 1440960,
+      "samples": 1440480,
       "applied": null
     },
     "nsOff": {
@@ -348,7 +348,17 @@
         "echoCancellation": true,
         "autoGainControl": true
       },
-      "samples": 1438560,
+      "samples": 1440480,
+      "applied": null
+    },
+    "nsOffAgcOff": {
+      "sampleRate": 48000,
+      "settings": {
+        "noiseSuppression": false,
+        "echoCancellation": true,
+        "autoGainControl": false
+      },
+      "samples": 1440480,
       "applied": null
     }
   },
@@ -360,13 +370,13 @@
         "echoCancellation": true,
         "autoGainControl": true
       },
-      "samples": 959520,
+      "samples": 960480,
       "applied": {
-        "atSample": 480960,
+        "atSample": 480480,
         "settingsAfter": false
       },
-      "firstDbfs": -25.015723315794766,
-      "secondDbfs": -25.416873320961187
+      "firstDbfs": -25.01117891165173,
+      "secondDbfs": -25.44059388758768
     },
     "onThenOff": {
       "sampleRate": 48000,
@@ -375,13 +385,13 @@
         "echoCancellation": true,
         "autoGainControl": true
       },
-      "samples": 960960,
+      "samples": 960480,
       "applied": {
         "atSample": 480960,
         "settingsAfter": true
       },
-      "firstDbfs": -25.173028295416856,
-      "secondDbfs": -24.315537168428918
+      "firstDbfs": -25.251176136689992,
+      "secondDbfs": -24.38113084383484
     },
     "offNoSwitch": {
       "sampleRate": 48000,
@@ -392,8 +402,8 @@
       },
       "samples": 960480,
       "applied": null,
-      "firstDbfs": -25.015723315794766,
-      "secondDbfs": -25.416873320961187
+      "firstDbfs": -25.01117891165173,
+      "secondDbfs": -25.44059388758768
     },
     "onNoSwitch": {
       "sampleRate": 48000,
@@ -402,10 +412,31 @@
         "echoCancellation": true,
         "autoGainControl": true
       },
-      "samples": 960480,
+      "samples": 960960,
       "applied": null,
-      "firstDbfs": -25.173028295416856,
-      "secondDbfs": -24.315537168428918
+      "firstDbfs": -25.251176136689992,
+      "secondDbfs": -24.38113084383484
+    }
+  },
+  "recordDate": "2026-10-27T10:41:25.732Z",
+  "twoTracks": {
+    "first": {
+      "samples": 960960,
+      "settings": {
+        "noiseSuppression": false,
+        "autoGainControl": true
+      },
+      "firstDbfs": -25.01117891165173,
+      "secondDbfs": -25.44059388758768
+    },
+    "second": {
+      "samples": 960960,
+      "settings": {
+        "noiseSuppression": false,
+        "autoGainControl": true
+      },
+      "firstDbfs": -25.01117891165173,
+      "secondDbfs": -25.44059388758768
     }
   }
 }

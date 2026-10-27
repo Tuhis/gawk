@@ -24,10 +24,10 @@ A room's voice is people talking while they play. The noise that matters
 is the keyboard and mouse under the microphone, a fan, a TV or someone
 else in the room, and today the browser's own suppression is all that
 stands between it and everyone else's headphones. NS0 measured what that
-leaves on Chromium with today's constraints (§12.4): a keyboard alone
-comes out **11–12 dB louder** than it went in, because auto gain lifts it
-and suppression on or off moves it by under 1 dB, and today's level gate
-sends 55 % of it. (On the unprocessed signal, before any of that, the same
+leaves on Chromium with today's constraints (§12.4): while nobody is
+talking, a keyboard comes out **11–13 dB louder** than it went in, because
+auto gain lifts it (over speech it adds ~3 dB) and suppression does not
+reduce it at all, and today's level gate sends 55 % of it. (On the unprocessed signal, before any of that, the same
 gate is open for 96 % of a minute of typing.) Mumble users have
 had RNNoise for years; a web user next to them should not be the noisy
 one.
@@ -48,7 +48,7 @@ what the others hear.
 | Speech is not cut: ≥ 99 % of labelled speech frames sent and ≤ 2 % of onsets clipped by ≥ 50 ms, **pooled over the four noises** (clipped onsets ÷ onsets, every reading at 10 and 5 dB SNR), default gate (NS0: 99.5 % and 1.2 %, 3 of 256; per noise, keyboard 4.7 % — 3 of 64 — and 0 % for the other three, over only 32 distinct onsets) | NS3 test; NS5's real-microphone pass, which has to confirm the onset figure on conversation |
 | The gate is driven by RNNoise's **speech probability**, with a user-set threshold whose default comes from §12 | NS3 unit tests; NS4 UI test |
 | The user can switch **RNNoise · Browser · Off** and the threshold mid-call, and **hear themselves** as the others hear them, without leaving voice | NS4 component and Playwright tests |
-| RNNoise never blocks voice: no SIMD, a failed download, a worklet error or a CPU overrun falls back to the browser's suppression and the level gate, and says so | NS2 unit tests for each fallback |
+| RNNoise never blocks voice: no SIMD, a failed download, a worklet error or a CPU overrun falls back to **Browser**, or to **Off** where the switch would need a prompt (D13), and says which | NS2 unit tests for each fallback |
 | Added mouth-to-ear latency is RNNoise's **20 ms** and nothing more (no extra buffering) | NS2 framing test; NS4 Playwright transit check as in docs/assets/80 |
 | Listen-only never downloads the wasm or opens the microphone | NS2 test |
 | No voice audio is written, logged or sent anywhere new (docs/80 D24) | review; NS2 test that the worklet posts only to its own port |
@@ -76,15 +76,15 @@ what the others hear.
 | D3 | **One binary: `-O3 -flto -msimd128 -mavx`, `-sSTANDALONE_WASM --no-entry`, fixed 4 MB memory, no JS glue.** Exports `rnnoise_create`, `rnnoise_process_frame`, `rnnoise_destroy`, `malloc`, `free`, `memory`, `_initialize`; **imports nothing**. No scalar fallback build (0.2's scalar path does not compile anyway, §11). | Emscripten lowers `vec_avx.h`'s SSE/AVX intrinsics to 128-bit wasm SIMD; `-mavx2` buys nothing: within 10 % of `-mavx` on every engine, and slower in all but one cell (§12.1). Every engine gawk supports has wasm SIMD (all three in NS0; Safari since 16.4). A module with no imports instantiates synchronously inside an AudioWorklet with three lines of loader. 1.47 MB uncompressed, 1.21 MB gzipped (`results/wasm-sizes.txt`). |
 | D4 | **Loaded on demand.** Vite emits `rnnoise.wasm` as a hashed asset (`?url`), served from `/assets/` with the existing immutable cache header; nginx's `gzip_types` gains `application/wasm` (its `mime.types` already has it). `WebAssembly.compileStreaming` starts when the user presses **Join voice**, in parallel with the microphone prompt. Listen-only never fetches it. | The download is paid once per release, by voice users only. Starting it with the permission prompt hides it behind a dialog that takes seconds anyway. |
 | D5 | **RNNoise runs in the capture AudioWorklet, on every browser, while it is on.** The existing `gawk-voice-capture` processor grows a denoise mode. The main thread compiles the module and passes the `WebAssembly.Module` in `processorOptions`; the worklet instantiates it in its constructor. Chromium leaves its MSTP pump for the worklet while RNNoise is on and goes back to it when RNNoise is off. | The audio thread is the one place that never janks with React. NS0: a compiled module reaches the worklet through `processorOptions` and the port on Chromium, Firefox and WebKit, and the worklet keeps real time (its render clock advances 0.9996–1.0004 s per second on every engine, §12.1). MV0 measured Chromium's worklet and MSTP paths at the same transit (23.3 ms), so leaving MSTP costs nothing. |
-| D6 | **The worklet resamples to 48 kHz.** When the context does not run at 48 kHz, a linear interpolator (state carried across render quanta) turns its input into 48 kHz before RNNoise, and the 10 ms blocks it posts are 48 kHz. The encoder is configured from the first block, as today, so it now always runs at 48 kHz. | RNNoise only works at 48 kHz, and an AudioContext need not run at the rate asked (docs/gotchas.md, macOS). NS0: linear resampling from 44.1 kHz changes nothing measurable (SI-SDR within 0.05 dB, probability decisions agree on ≥ 99.5 % of frames, §12.5). Feeding 44.1 kHz samples as if they were 48 kHz still mostly agrees on speech or not (96.8–98.2 % of frames, aligned in time), but moves the noise removed by up to 9 dB either way, and its blocks would reach the encoder at the wrong rate. A second, 48 kHz context would break docs/44's one context per room and still be refused on macOS. |
+| D6 | **The worklet resamples to 48 kHz.** When the context does not run at 48 kHz, a linear interpolator (state carried across render quanta) turns its input into 48 kHz before RNNoise, and the 10 ms blocks it posts are 48 kHz. The encoder is configured from the first block, as today, so it now always runs at 48 kHz. | RNNoise only works at 48 kHz, and an AudioContext need not run at the rate asked (docs/gotchas.md, macOS). NS0: linear resampling from 44.1 kHz changes nothing measurable (SI-SDR within 0.05 dB, probability decisions at 0.6 agree on ≥ 99.4 % of frames, §12.5). Feeding 44.1 kHz samples as if they were 48 kHz still mostly agrees on speech or not (96.8–98.2 % of frames, aligned in time), but moves the noise removed by up to 9 dB either way, and its blocks would reach the encoder at the wrong rate. A second, 48 kHz context would break docs/44's one context per room and still be refused on macOS. |
 | D7 | **Framing and scale.** 480 samples (10 ms) per call, which is also the voice block (`VOICE_BLOCK_MS`), so a denoised block maps 1:1 onto an Opus frame. Samples are multiplied by 32768 in and divided out: RNNoise works on int16-scaled floats (Mumble's `AudioInput.cpp` feeds it shorts). The worklet posts `{pcm, prob}` per block, the PCM buffer transferred. | One block in, one block out: no added buffering beyond RNNoise's own delay. The scale is a silent failure if wrong (the model sees near-silence). |
 | D8 | **RNNoise adds 20 ms**, and that is all it adds. NS0 measured 960 samples of output delay on every variant (RNNoise 0.2 added a frame of lookahead, xiph `84fe83b`). The probability returned with a call runs one frame (10 ms) ahead of the audio returned with it (§12.2). A gate on the probability alone, fed each output block with its own call's probability, therefore opens 10 ms early, never late; the default gate's floor (D9) reads the denoised block, which is the delayed audio, so it opens with the audio. | Owned, not hidden: the settings say it, and **Browser** remains a one-click lowest-latency choice, as the R73 lesson asks. |
-| D9 | **The gate: a speech detector over RNNoise's probability** (OD4), Mumble's shape plus a level floor. A block counts as speech when its probability is ≥ **on**, or ≥ **off** while the gate is already open, **and** the denoised block is louder than the **floor**; the gate stays open **hold** after the last speech block. **Defaults: on 0.90, off 0.70, hold 300 ms, floor −50 dBFS** (§12.3). The user's slider sets **on** (0.50–0.99); **off** follows at on − 0.2; hold and floor are fixed. | §12.3: without the floor, 0.2's probability stayed open through a pause in one reading (`speech-a`: 88 % of its pause frames sent with keyboard, 80 % with street, at both SNRs; the other two readings sent none) and, with nobody talking, sends 2.7 % of the loud keyboard. The floor, on a signal RNNoise has already silenced, takes the pause to 0 % and the keyboard to 1.6 %, and costs nothing in speech. Across on = 0.6–0.95 the floor gate sends ≥ 99.4 % of speech; 0.9 is the highest on that keeps onset clipping at the 0.6–0.8 level (1.2 % pooled; on keyboard every floor gate with on ≥ 0.6 clips the same three onsets, 4.7 %; 0.95 clips 2.0 %, 6.3 % on keyboard) while halving the keyboard sent at −26 dBFS against 0.6–0.8 (1.6 % vs 2.6–3.1 %). Mumble's gate has the same two thresholds and a hold (`fVADmax` 0.98, `fVADmin` 0.80, `iVoiceHold` 200 ms) over Speex's probability. One slider is what people tune; two are what they get wrong. |
+| D9 | **The gate: a speech detector over RNNoise's probability** (OD4), Mumble's shape plus a level floor. A block counts as speech when its probability is ≥ **on**, or ≥ **off** while the gate is already open, **and** the denoised block is louder than the **floor**; the gate stays open **hold** after the last speech block. **Defaults: on 0.90, off 0.70, hold 300 ms, floor −50 dBFS** (§12.3). The user's slider sets **on** (0.50–0.99); **off** follows at on − 0.2; hold and floor are fixed. | §12.3: without the floor, 0.2's probability stayed open through a pause in one reading (`speech-a`: 88 % of its pause frames sent with keyboard, 80 % with street, at both SNRs; the other two readings sent none) and, with nobody talking, sends 2.7 % of the loud keyboard. The floor, on a signal RNNoise has already silenced, takes the pause to 0 % and the keyboard to 1.6 %, and costs nothing in speech. Across on = 0.6–0.95 the floor gate sends ≥ 99.4 % of speech; 0.9 is the highest on that keeps onset clipping at the 0.6–0.8 level (1.2 % pooled; on keyboard every floor gate with on 0.5–0.9 and a floor of −55 dBFS or higher clips the same three onsets, 4.7 %; 0.95 clips 2.0 %, 6.3 % on keyboard) while halving the keyboard sent at −26 dBFS against 0.6–0.8 (1.6 % vs 2.6–3.1 %). Mumble's gate has the same two thresholds and a hold (`fVADmax` 0.98, `fVADmin` 0.80, `iVoiceHold` 200 ms) over Speex's probability. One slider is what people tune; two are what they get wrong. |
 | D10 | **The level gate stays** for **Browser** and **Off**, and becomes configurable too (OD5): its slider is in dBFS, default the current −40 dBFS (`VAD_THRESHOLD_RMS`). | Without RNNoise there is no probability; a fixed −40 dBFS cannot suit every microphone. |
-| D11 | **Browser suppression is off while RNNoise is on**: the microphone opens with `noiseSuppression: false`, echo cancellation and auto gain on. **Browser** opens it with all three on (today's constraints); **Off** with suppression off and no RNNoise. Switching between them **re-opens the microphone** inside the running voice session (a capture restart, not a rejoin). The re-open is a second `getUserMedia`, which can prompt again (Firefox without *Remember this decision*, Safari set to *Ask*) or be refused: then capture **keeps the old track and mode**, voice carries on, and the Audio section says the switch needs the microphone permission. **On WebKit no switch re-opens**: it has no suppression constraint to change (D12), so every switch there is the worklet's alone. | NS0 (§12.4, auto gain on as here): suppression twice (Chromium's, then RNNoise) left 15 dB more keyboard than RNNoise alone (−32.9 against −47.9 dBFS), and the level gate sent 48 % of a keyboard-only stretch against 40 %. Chromium 156 accepts `applyConstraints({noiseSuppression})` and changes neither `getSettings()` nor the audio: on keyboard alone, the level after a switch matched a run without one to 0.01 dB, both ways (§12.6). A re-open is the only switch that works. A refused re-open must not end voice: the user asked for a different denoiser, not to leave. |
+| D11 | **Browser suppression is off while RNNoise is on**: the microphone opens with `noiseSuppression: false`, echo cancellation and auto gain on. **Browser** opens it with all three on (today's constraints); **Off** with suppression off and no RNNoise. RNNoise ↔ Off has the same constraints and is the worklet's alone. A switch to or from **Browser** **re-opens the microphone** inside the running voice session (a capture restart, not a rejoin): **stop the old track, then `getUserMedia`**. It re-opens only when `navigator.permissions.query({name: 'microphone'})` says `granted`, so it never prompts; otherwise the choice is saved, applies at the next join, and the Audio section says so. A re-open that still fails ends the capture as a lost microphone does today. **On WebKit no switch re-opens**: it has no suppression constraint to change (D12). | NS0 (§12.4, auto gain on as here): suppression before RNNoise left 16 dB more keyboard than RNNoise alone (−32.8 against −48.4 dBFS), and RNNoise then called 11.3 % of the keyboard frames speech (probability ≥ 0.9) against 1.5 %. Chromium 156 accepts `applyConstraints({noiseSuppression})` and changes neither `getSettings()` nor the audio (§12.6), so a re-open is the only switch. The old track goes **first** because Chromium gives a second track on an open microphone the first one's processing: asked for suppression on while a suppression-off track was open, it came back off, its audio identical to the first's (§12.6). "Open the new one, keep the old one if refused" cannot work there, and a prompt mid-call, on Firefox without *Remember this decision* or Safari set to *Ask*, would risk the microphone for a denoiser choice. **Auto gain stays on**: with it off RNNoise leaves the keyboard 5 dB lower and ~2 dB more below the speech, but the probability that drives the gate is about the same (≥ 0.9 on 1.3 % of keyboard frames against 1.5 %), and a quiet microphone needs the gain to clear the −50 dBFS floor and reach the encoder at a usable level. NS5 compares the two by ear (§8). |
 | D12 | **Safari can't turn its suppression off.** WebKit lists no `noiseSuppression` or `autoGainControl` constraint; its voice processing comes with echo cancellation. RNNoise runs after it there. NS5 checks on the owner's Mac and iPhone that the two together are not worse than either alone; if they are, Safari's default becomes **Browser**. | Measured on WPE WebKit, not Safari: the owner-device pass decides. |
-| D13 | **Fallbacks, never a failure.** No wasm SIMD, a failed fetch or compile, an instantiate or worklet error, or the CPU watchdog (D14) moves the capture to **Browser** behaviour (suppression on, level gate) for the rest of the voice session and shows *RNNoise isn't available here: {reason}* in the Audio section. The user's saved choice stays **RNNoise**, so the next session tries again. | RNNoise is an improvement, not a dependency: voice that fails to join because a denoiser didn't load would be a regression. |
-| D14 | **A CPU watchdog in the worklet.** It sums `Date.now()` deltas around each RNNoise call (the only clock every worklet scope has; with millisecond ticks the sum is unbiased over many calls) and compares them with the audio processed. Above **40 % of real time over 2 s** it bypasses RNNoise and posts `slow`, which D13 turns into the fallback. | The worklet shares the room's context with every stream's and every speaker's playback; a denoiser that can't keep up would glitch all of it. 40 % is ~6× the worst cost NS0 measured for 0.2 in a worklet (0.69 ms per 10 ms frame, 6.9 %, one WebKit run at 48 kHz; its other WebKit runs 0.35–0.46 ms, 9–11×), room for a slow phone, not for a broken one. NS5 records the real numbers on phones. |
+| D13 | **Fallbacks, never a failure.** The SIMD check is synchronous and runs before the first `getUserMedia`, so without SIMD the microphone opens as **Browser**. Anything after the microphone is open (a failed fetch or compile, an instantiate or worklet error, the CPU watchdog, D14) moves the capture to **Browser** by D11's re-open when the permission is `granted`, and otherwise to **Off** (no RNNoise, no browser suppression, the level gate) on the open track, for the rest of the voice session. The Audio section shows *RNNoise isn't available here: {reason}* and the mode it ended in. The user's saved choice stays **RNNoise**, so the next session tries again. | RNNoise is an improvement, not a dependency: voice that fails to join because a denoiser didn't load would be a regression. |
+| D14 | **A CPU watchdog in the worklet.** It sums `Date.now()` deltas around each RNNoise call (the only clock every worklet scope has; with millisecond ticks the sum is unbiased over many calls) and compares them with the audio processed. Above **40 % of real time over 2 s** it bypasses RNNoise and posts `slow`, which D13 turns into the fallback. | The worklet shares the room's context with every stream's and every speaker's playback; a denoiser that can't keep up would glitch all of it. 40 % is ~6× the worst cost NS0 measured for 0.2 in a worklet (0.69 ms per 10 ms frame, 6.9 %, one WebKit run at 48 kHz; its other WebKit runs 0.35–0.38 ms, ~10–11×), room for a slow phone, not for a broken one. NS5 records the real numbers on phones. |
 | D15 | **The Audio section** (OD3) in the voice panel, collapsed by default: **Noise suppression** RNNoise · Browser · Off; the detector's **threshold slider** with a **live meter** (the current probability or level, the threshold mark, and a lamp when the gate is open); **Hear yourself**; **Reset to defaults**; and one line saying what the chosen mode costs (*RNNoise adds 20 ms*). Every control applies live. On a phone the section is the same, full width. | A/B means switching while talking and hearing the result. The meter answers "why didn't it send?" without guesswork. |
 | D16 | **Hear yourself plays your own packets back** through a local speaker in `voicePlayback.ts`: the same Opus decoder, jitter buffer and voice bus the others' audio uses, after the gate. Off by default and never saved; the toggle warns to use headphones. | You hear what the others hear: the denoising, the codec and the gate's cuts. A raw monitor of the microphone would hide the gate. |
 | D17 | **Preferences** (per browser, `voicePrefs.ts`): `gawk:voice-noise` `rnnoise` \| `browser` \| `off` (default `rnnoise`); `gawk:voice-speech-threshold` 0..1 (default D9's **on**); `gawk:voice-level-threshold` dBFS (default −40). | OD2, OD5. Same storage helpers and validation as the existing voice prefs. |
@@ -113,7 +113,9 @@ main thread: VoiceCapture.handleBlock                                   │
 
 With **Browser** or **Off**, or after a fallback, capture is today's: the
 MSTP pump on Chromium, the worklet without denoising elsewhere, and the
-level gate.
+level gate. (docs/80 D21 also names Safari's worker MSTP; `voiceCapture.ts`
+uses main-thread MSTP only, so Safari takes the worklet, and this design
+keeps that.)
 
 Files that change: `voiceCapture.ts` (mode, the module hand-off, the
 re-open), `voiceFraming.ts` (the processor source: resampler, RNNoise
@@ -163,10 +165,17 @@ section), `deploy/nginx.conf`, and `gawk-app/rnnoise/`.
   noises: on keyboard the default gate clips 4.7 %, 3 of 64 (two in one
   reading, once at each SNR, and one in another). NS5 checks it per noise
   on conversation.
-- **A mode switch can prompt.** D11's re-open is a second `getUserMedia`;
-  Firefox and Safari may show the permission prompt again, or the user may
-  refuse it. D11 keeps the old track then. NS2 tests the refusal with a
-  stubbed `getUserMedia`; NS5 sees the real prompts.
+- **A mode switch could prompt.** D11's re-open is a second
+  `getUserMedia`, so it runs only when the permission is already granted.
+  The cost: a user who did not remember the permission switches to or
+  from Browser at the next join, and a fallback lands on Off rather than
+  Browser (D13). NS2 tests both branches with a stubbed permission state;
+  NS5 checks Firefox's and Safari's real ones.
+- **Two tracks share processing.** On Chromium a second track on an open
+  microphone gets the first one's processing (§12.6), so the re-open must
+  stop the old track first. Whether Firefox and Safari do the same is
+  unmeasured (their fake devices have no processing); NS4 checks the new
+  track's audio after a switch.
 
 ---
 
@@ -210,6 +219,9 @@ section), `deploy/nginx.conf`, and `gawk-app/rnnoise/`.
   thresholds; this design exposes one and fixes the rest until NS5 says
   otherwise.
 - Whether Safari's default should be **Browser** (D12, NS5).
+- Whether auto gain should be off under RNNoise (D11, §12.4): off, the
+  keyboard ends ~2 dB further below the speech, and the gate's input, the
+  probability, hardly changes. NS5 listens to both.
 
 ---
 
@@ -221,10 +233,10 @@ Every letter is claimed; this milestone's prefix is **NS**.
 |---|---|---|
 | **NS0** | **Measurement spike** (done 2026-10-27): builds, parity, delay, CPU, quality, gates, browser probes, Chromium's suppression against RNNoise. | `docs/assets/81/RESULTS.md` with raw data and a harness that reproduces it; §12 filled from it. |
 | **NS1** | `gawk-app/rnnoise/`: `build.sh`, pins, `COPYING`, the committed `rnnoise.wasm`; the CI job (`emscripten/emsdk:4.0.10` container, pinned by digest, on the self-hosted runners, triggered by `gawk-app/rnnoise/**`); D19's notices entry; nginx `gzip_types`. | CI rebuild is byte-identical; a one-byte edit to the wasm fails the job; `tools/licenses` check passes and the notices list RNNoise; `curl` of the asset from the built image is served `application/wasm`, gzipped. |
-| **NS2** | Denoiser: `rnnoise.ts` (SIMD check, fetch, compile), the worklet's denoise mode (D5–D7, D14), `VoiceCapture` choosing the worklet path while RNNoise is on, the D11 constraints and the in-session re-open, D13's fallbacks. | Vitest: resampler and framing (44.1 and 48 kHz in, 480-sample 48 kHz blocks out, timestamps on the 48 kHz clock, no sample lost or repeated across quanta); the scale; the processor source evaluated in a fake worklet scope with the real wasm (Node runs it) denoising a test signal; each fallback (no SIMD, fetch error, compile error, worklet error, watchdog) ends in Browser behaviour with the reason; listen-only fetches nothing; a re-open keeps the voice session and its seq clock; a refused re-open keeps the old track and mode (D11); on WebKit a switch never calls `getUserMedia`. |
+| **NS2** | Denoiser: `rnnoise.ts` (SIMD check, fetch, compile), the worklet's denoise mode (D5–D7, D14), `VoiceCapture` choosing the worklet path while RNNoise is on, the D11 constraints and the in-session re-open, D13's fallbacks. | Vitest: resampler and framing (44.1 and 48 kHz in, 480-sample 48 kHz blocks out, timestamps on the 48 kHz clock, no sample lost or repeated across quanta); the scale; the processor source evaluated in a fake worklet scope with the real wasm (Node runs it) denoising a test signal; no SIMD opens the microphone as Browser before any prompt; listen-only fetches nothing; a re-open keeps the voice session and its seq clock, stops the old track before `getUserMedia`, and runs only with the permission `granted` (otherwise the choice waits for the next join); RNNoise ↔ Off and every WebKit switch never call `getUserMedia`; each later fallback (fetch error, compile error, worklet error, watchdog) ends in Browser with the permission granted and in Off without it, each with the reason. |
 | **NS3** | Gate: the speech detector in `talkGate.ts` (D9), the level threshold (D10), D17's prefs, `voiceController.ts` passing probability and level. | Vitest: hysteresis, floor and hold, frame by frame; PTT unaffected (D18); prefs validation; the §1 rows for noise only and for speech, computed over NS0's corpus rule (onsets pooled as in §1) on a short committed synthetic fixture (no third-party audio in the repo). |
-| **NS4** | UI: the Audio section (D15), the meter, Hear yourself (D16), reset, phone layout. | Component tests for every control and the fallback message; Playwright on Chromium with a fake-mic WAV (keyboard, then speech): no packets during the keyboard, packets during speech, the switch to Browser and back mid-call; Firefox and WebKit smoke (join, RNNoise on, packets flow); screens at 360/390/430 px and desktop. |
-| **NS5** | Docs and the owner pass: docs/80 D21's pointer here, any new gotchas, the README's voice paragraph if it has one; on the reference deployment, Chrome, Firefox and Safari on desktop and Chrome on Android and Safari on iOS, each with a real microphone and a keyboard: RNNoise vs Browser by ear with Hear yourself, the watchdog's measured cost, the default threshold, and on Firefox and Safari a mode switch without a remembered permission (D11's prompt). | The §1 table ticked on all five platforms, the phone CPU numbers and D12's verdict written into §12. |
+| **NS4** | UI: the Audio section (D15), the meter, Hear yourself (D16), reset, phone layout. | Component tests for every control and the fallback message; Playwright on Chromium with a fake-mic WAV (keyboard, then speech): no packets during the keyboard, packets during speech, the switch to Browser and back mid-call, judged on the new track's audio, not `getSettings()` (§12.6's method); Firefox and WebKit smoke (join, RNNoise on, packets flow); screens at 360/390/430 px and desktop. |
+| **NS5** | Docs and the owner pass: docs/80 D21's pointer here, any new gotchas, the README's voice paragraph if it has one; on the reference deployment, Chrome, Firefox and Safari on desktop and Chrome on Android and Safari on iOS, each with a real microphone and a keyboard: RNNoise vs Browser by ear with Hear yourself, the watchdog's measured cost, the default threshold, and on Firefox and Safari a switch to Browser with and without a remembered permission (D11). | The §1 table ticked on all five platforms, the phone CPU numbers and D12's verdict written into §12. |
 
 ---
 
@@ -245,6 +257,10 @@ Every letter is claimed; this milestone's prefix is **NS**.
   download.
 - **Seq clock.** Blocks are 10 ms at 48 kHz whatever the context rate, so
   the `VoiceFrame` seq arithmetic (10 ms units) does not change.
+- **The re-open is not a `start()`.** `VoiceCapture.start()`'s catch calls
+  `release()`, which would tear down the session's capture on a failed
+  re-open; and the old track's `ended` listener (it fails the capture)
+  must come off before the deliberate `stop()`.
 
 ---
 
@@ -267,6 +283,11 @@ Also in `docs/gotchas.md`:
   track and changes nothing, neither `getSettings()` nor the audio (§12.6);
   re-open the microphone to switch.
 - WebKit has no `noiseSuppression` or `autoGainControl` constraint at all.
+- Chromium gives a second track on an already open microphone the first
+  track's processing, whatever it asked for (`getSettings()` and audio
+  both): stop the old track before opening one with other constraints.
+- Chromium's auto gain lifts a keyboard with nobody talking by 11–13 dB;
+  over speech it adds ~3 dB.
 
 ---
 
@@ -301,8 +322,12 @@ engines, and one WebKit run at 48 kHz at 0.69 ms.
 
 The worklet keeps real time. Over 6 s, after a second of start-up, its
 render clock (`currentFrame`) advanced 0.9996–1.0004 s per second of the
-worklet's own clock: every variant, both hand-offs, 44.1 and 48 kHz, all
-three engines. NS0's first run instead divided frames by main-thread time
+worklet's own clock on all three engines: the six variant × hand-off runs
+at 44.1 kHz and one at 48 kHz (`v02-avx` via the port; D5's
+`processorOptions` hand-off did not run at 48 kHz). It denoised every
+frame: 91.73–91.98 frames/s against 91.875, and 99.98–100.03 against 100.
+At ~3 % load that shows no backlog, not headroom; and headless engines
+render to a fake sink, so glitches on a real device are NS5's. NS0's first run instead divided frames by main-thread time
 around a port round trip, which read WebKit up to 10 % above real time and
 one Chromium run 19 % below it; that measured the round trip, not the
 worklet.
@@ -334,28 +359,36 @@ of its pause frames sent with keyboard, 80 % with street; the other two
 readings none); the floor takes that to 0 %. Per noise, the default gate
 clips 4.7 % of keyboard onsets (3 of 64: two in `speech-a`, once at each
 SNR and probably the same onset, one in `speech-b`, none in `speech-c`)
-and none on the other three; every floor gate with on ≥ 0.6 clips the same
-three.
+and none on the other three; every floor gate with on 0.5–0.9 and a floor
+of −55 dBFS or higher clips the same three.
 
 ### 12.4 Chromium's suppression against RNNoise
 
 The same fake microphone (5 s of keyboard at −38.2 dBFS, then speech
-over keyboard at 10 dB), echo cancellation and auto gain on, as
-`voiceCapture.ts` opens it today:
+over keyboard at 10 dB), echo cancellation on and, except in the last two
+rows, auto gain on, as `voiceCapture.ts` opens it today. The lead is the
+keyboard-only start, before anyone speaks:
 
-| | Keyboard lead, dBFS | Against the input | Level gate on the keyboard lead |
-|---|---|---|---|
-| Chromium, suppression off | −27.0 | 11.2 dB louder | 62.5 % sent |
-| **Chromium, suppression on** (today) | **−26.1** | **12.1 dB louder** | 55.5 % sent |
-| Suppression off + RNNoise (D11) | −47.9 | 9.6 dB quieter | 40.0 % sent |
-| Suppression on + RNNoise | −32.9 | 5.3 dB louder | 48.3 % sent |
+| | Keyboard lead, dBFS | Against the input | Level gate on the lead | RNNoise probability ≥ 0.9 on the lead |
+|---|---|---|---|---|
+| Chromium, suppression off | −27.0 | 11.3 dB louder | 62.5 % sent | |
+| **Chromium, suppression on** (today) | **−25.7** | **12.5 dB louder** | 55.3 % sent | |
+| Suppression off + RNNoise (D11) | −48.4 | 10.2 dB quieter | 40.3 % sent | 1.5 % |
+| Suppression on + RNNoise | −32.8 | 5.4 dB louder | 54.0 % sent | 11.3 % |
+| Suppression and auto gain off | −39.5 | 1.2 dB quieter | 55.3 % sent | |
+| Suppression and auto gain off + RNNoise | −53.7 | 15.5 dB quieter | 7.8 % sent | 1.3 % |
 
-Auto gain lifts the keyboard by 11–12 dB whether suppression is on or
-off, so today's capture sends a keyboard louder than it came in. RNNoise
-after suppression off ends 21 dB below today; after suppression on, 15 dB
-above RNNoise alone. Clicks still cross the level gate after RNNoise; the
-probability is what keeps them out: over the same lead, with suppression
-off, RNNoise's probability is ≥ 0.9 on 1.5 % of frames.
+With nobody talking, auto gain lifts the keyboard 11–13 dB; over the
+speech that follows it adds ~3 dB (+2.8 and +3.0 dB against the input).
+NS0 did not measure the keyboard's level once speech has set the gain.
+Chromium's suppression does not reduce the keyboard at all (it ends 1.3 dB
+louder than with suppression off). RNNoise after suppression off ends
+23 dB below today; after suppression on, 16 dB above RNNoise alone, and it
+then calls 7× as many keyboard frames speech. Clicks still cross the level
+gate after RNNoise; the probability is what keeps them out. With auto gain
+off too, RNNoise leaves the keyboard 5 dB lower and the speech 3 dB lower
+(−1.8 against +1.2 dB), ~2 dB more separation, for about the same
+probability (D11).
 
 A waveform score is not given: Chromium's processing filters the capture
 even with suppression off, so SI-SDR against the clean speech is ~0 dB in
@@ -365,7 +398,8 @@ every condition and measures the filter.
 
 0.2 on a mix resampled 48 → 44.1 (ffmpeg) → 48 kHz (linear, D6): noise
 attenuation and SI-SDR within 1 dB and 0.05 dB of the direct run, the
-probability decision agreeing on ≥ 99.5 % of frames. Fed the 44.1 kHz
+probability decision at 0.6 (a model check, not the default gate)
+agreeing on ≥ 99.4 % of frames. Fed the 44.1 kHz
 samples as if they were 48 kHz, each frame compared with the direct run's
 frame at the same time (`round(k·48000/44100)`): 96.8–98.2 % agreement,
 but the noise removed moves by up to 9 dB (keyboard 42.0 against 32.9 dB,
@@ -390,6 +424,11 @@ that table.
   so does the audio. On keyboard alone (auto gain on), the level of 12–19 s
   after a switch at 10 s matched a run without a switch to 0.01 dB, off →
   on and on → off (`results/tables.md`).
+- Chromium: a second track opened with suppression **on** while a
+  suppression-off track is open comes back with the first one's
+  processing: `getSettings()` says off and its audio equals the first
+  track's to every digit. Each recording opens the fake device alone; this
+  is the only run with two at once.
 - WebKit: no `noiseSuppression` or `autoGainControl` constraint.
   Firefox's fake device reports every processing flag false, so its
   constraint rows say nothing about a real microphone.

@@ -5,6 +5,8 @@
 //   capture-clean.f32  the speech alone, same timeline
 //   capture-ns-on.f32  Chromium with noiseSuppression: true
 //   capture-ns-off.f32 Chromium with noiseSuppression: false
+//   capture-ns-off-agc-off.f32  the same with autoGainControl: false too
+//                      (the other two have it on, as production does)
 // and compares, after aligning each capture to the input, the noise left in
 // the keyboard-only lead and what the energy gate does with it. No waveform
 // score (SI-SDR): Chromium's processing filters the capture even with noise
@@ -14,6 +16,7 @@
 //   rnnoise        RNNoise (v0.2) on the NS-off capture
 //   both           RNNoise on the NS-on capture
 //   none           the NS-off capture
+//   none-agc-off, rnnoise-agc-off  the same two with auto gain off
 //
 //   node docs/assets/81/harness/capture.mjs --wasm DIR --capture DIR [--out FILE]
 
@@ -97,21 +100,27 @@ const nsOnRaw = ld('capture-ns-on');
 const nsOffRaw = ld('capture-ns-off');
 const lagOn = align(input, nsOnRaw);
 const lagOff = align(input, nsOffRaw);
+const nsOffAgcOffRaw = ld('capture-ns-off-agc-off');
+const lagOffAgcOff = align(input, nsOffAgcOffRaw);
 const nsOn = slice(nsOnRaw, lagOn, N);
 const nsOff = slice(nsOffRaw, lagOff, N);
+const nsOffAgcOff = slice(nsOffAgcOffRaw, lagOffAgcOff, N);
 const rn = denoise(nsOff);
 const both = denoise(nsOn);
+const rnAgcOff = denoise(nsOffAgcOff);
 const conds = {
   none: nsOff,
   'chromium-ns': nsOn,
   rnnoise: slice(rn.out, 0, N),
   both: slice(both.out, 0, N),
+  'none-agc-off': nsOffAgcOff,
+  'rnnoise-agc-off': slice(rnAgcOff.out, 0, N),
 };
 
 // The lead (0.5–4.5 s) is keyboard only; speech runs from 5 s.
 const LEAD = [0.5 * SR, 4.5 * SR];
 const SPEECH = [5 * SR, N - SR];
-const res = { variant: VARIANT, lagSamples: { nsOn: lagOn, nsOff: lagOff }, inputLeadDbfs: db(energy(input, ...LEAD)), conditions: {} };
+const res = { variant: VARIANT, lagSamples: { nsOn: lagOn, nsOff: lagOff, nsOffAgcOff: lagOffAgcOff }, inputLeadDbfs: db(energy(input, ...LEAD)), conditions: {} };
 for (const [k, y] of Object.entries(conds)) {
   res.conditions[k] = {
     leadNoiseDbfs: db(energy(y, ...LEAD)),
@@ -122,7 +131,11 @@ for (const [k, y] of Object.entries(conds)) {
 }
 res.conditions.input = { energyGateLead: energyGateSpurts(input, ...LEAD) };
 // RNNoise's probability over the lead (keyboard only): frames ≥ 0.5 / 0.9.
-const lp = rn.prob.subarray(LEAD[0] / FRAME, LEAD[1] / FRAME);
-res.rnnoiseLeadProb = { max: Math.max(...lp), over05: lp.filter((p) => p >= 0.5).length / lp.length, over09: lp.filter((p) => p >= 0.9).length / lp.length };
+const leadProb = (d) => {
+  const lp = d.prob.subarray(LEAD[0] / FRAME, LEAD[1] / FRAME);
+  return { max: Math.max(...lp), over05: lp.filter((p) => p >= 0.5).length / lp.length, over09: lp.filter((p) => p >= 0.9).length / lp.length };
+};
+res.rnnoiseLeadProb = leadProb(rn);
+res.leadProb = { rnnoise: leadProb(rn), both: leadProb(both), 'rnnoise-agc-off': leadProb(rnAgcOff) };
 writeFileSync(OUT, JSON.stringify(res, null, 2) + '\n');
 console.log(JSON.stringify(res, null, 1));

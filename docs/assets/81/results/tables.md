@@ -238,21 +238,34 @@ The fake microphone plays keyboard alone at -36 dBFS for 20 s (auto gain on). Le
 
 | Run | Opened with NS | Switched to | `getSettings()` after | 2–9 s dBFS | 12–19 s dBFS |
 | --- | --- | --- | --- | --- | --- |
-| offThenOn | false | true | false | -25.02 | -25.42 |
-| onThenOff | true | false | true | -25.17 | -24.32 |
-| offNoSwitch | false | – | – | -25.02 | -25.42 |
-| onNoSwitch | true | – | – | -25.17 | -24.32 |
+| offThenOn | false | true | false | -25.01 | -25.44 |
+| onThenOff | true | false | true | -25.25 | -24.38 |
+| offNoSwitch | false | – | – | -25.01 | -25.44 |
+| onNoSwitch | true | – | – | -25.25 | -24.38 |
 
 ### Chromium's own noise suppression vs RNNoise (`v02-avx`), same fake microphone
 
-The fake device plays 5 s of keyboard (-38.2 dBFS), then speech + keyboard at 10 dB SNR. Echo cancellation and auto gain on, as `voiceCapture.ts` opens it today (`getSettings()`: auto gain true / true in the NS on / off recordings). Lead = 0.5–4.5 s, keyboard only.
+The fake device plays 5 s of keyboard (-38.2 dBFS), then speech + keyboard at 10 dB SNR. Echo cancellation and auto gain on, as `voiceCapture.ts` opens it today (`getSettings()`: auto gain true / true in the NS on / off recordings), except the two auto-gain-off rows. Lead = 0.5–4.5 s, keyboard only, before any speech.
 
 | Condition | Lead noise dBFS | Attenuation vs input dB | Speech level change dB | Energy gate in the lead: spurts / sent |
 | --- | --- | --- | --- | --- |
-| Chromium, NS off | -27.0 | -11.2 | 2.8 | 1 / 62.5 % |
-| Chromium, NS on | -26.1 | -12.1 | 2.9 | 1 / 55.5 % |
-| NS off + RNNoise | -47.9 | 9.6 | 1.2 | 3 / 40.0 % |
-| NS on + RNNoise | -32.9 | -5.3 | 2.5 | 2 / 48.3 % |
+| Chromium, NS off | -27.0 | -11.3 | 2.8 | 1 / 62.5 % |
+| Chromium, NS on | -25.7 | -12.5 | 3.0 | 1 / 55.3 % |
+| NS off + RNNoise | -48.4 | 10.2 | 1.2 | 3 / 40.3 % |
+| NS on + RNNoise | -32.8 | -5.4 | 2.5 | 2 / 54.0 % |
+| Chromium, NS off, auto gain off | -39.5 | 1.2 | -0.5 | 1 / 55.3 % |
+| NS off, auto gain off + RNNoise | -53.7 | 15.5 | -1.8 | 1 / 7.8 % |
 
-RNNoise's speech probability over the keyboard-only lead: max 0.993, ≥ 0.5 on 3.3 % of frames, ≥ 0.9 on 1.5 %.
+RNNoise's speech probability over the keyboard-only lead, NS off + RNNoise: max 0.992, ≥ 0.5 on 3.3 % of frames, ≥ 0.9 on 1.5 %.
+
+RNNoise's speech probability over the keyboard-only lead, NS on + RNNoise: max 1.000, ≥ 0.5 on 22.8 % of frames, ≥ 0.9 on 11.3 %.
+
+RNNoise's speech probability over the keyboard-only lead, NS off, auto gain off + RNNoise: max 0.999, ≥ 0.5 on 3.3 % of frames, ≥ 0.9 on 1.3 %.
+
+**Two tracks at once** (keyboard alone, auto gain on): the first opened with NS off, the second, while the first is open, with NS on.
+
+| Track | Asked for NS | `getSettings()` NS | 2–9 s dBFS | 12–19 s dBFS |
+| --- | --- | --- | --- | --- |
+| first | false | false | -25.01 | -25.44 |
+| second | true | false | -25.01 | -25.44 |
 

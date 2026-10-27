@@ -1,45 +1,64 @@
 {
   "variant": "v02-avx",
   "lagSamples": {
-    "nsOn": 730,
-    "nsOff": 444
+    "nsOn": 731,
+    "nsOff": 445,
+    "nsOffAgcOff": 446
   },
   "inputLeadDbfs": -38.22134780499728,
   "conditions": {
     "none": {
-      "leadNoiseDbfs": -26.976085824884226,
-      "leadAttenuationDb": -11.245261980113053,
-      "speechLevelChangeDb": 2.79394956140775,
+      "leadNoiseDbfs": -26.97066269643257,
+      "leadAttenuationDb": -11.25068510856471,
+      "speechLevelChangeDb": 2.785878515279908,
       "energyGateLead": {
         "spurts": 1,
         "sentFraction": 0.625
       }
     },
     "chromium-ns": {
-      "leadNoiseDbfs": -26.07917801063493,
-      "leadAttenuationDb": -12.14216979436235,
-      "speechLevelChangeDb": 2.9331534715011216,
+      "leadNoiseDbfs": -25.71699487328136,
+      "leadAttenuationDb": -12.504352931715918,
+      "speechLevelChangeDb": 2.9544502268671806,
       "energyGateLead": {
         "spurts": 1,
-        "sentFraction": 0.555
+        "sentFraction": 0.5525
       }
     },
     "rnnoise": {
-      "leadNoiseDbfs": -47.86451346297066,
-      "leadAttenuationDb": 9.643165657973384,
-      "speechLevelChangeDb": 1.223495896305888,
+      "leadNoiseDbfs": -48.38068675921819,
+      "leadAttenuationDb": 10.159338954220914,
+      "speechLevelChangeDb": 1.2034575393032902,
       "energyGateLead": {
         "spurts": 3,
-        "sentFraction": 0.4
+        "sentFraction": 0.4025
       }
     },
     "both": {
-      "leadNoiseDbfs": -32.88252440126995,
-      "leadAttenuationDb": -5.338823403727332,
-      "speechLevelChangeDb": 2.4763598209494546,
+      "leadNoiseDbfs": -32.77887104414097,
+      "leadAttenuationDb": -5.442476760856309,
+      "speechLevelChangeDb": 2.451049385445117,
       "energyGateLead": {
         "spurts": 2,
-        "sentFraction": 0.4825
+        "sentFraction": 0.54
+      }
+    },
+    "none-agc-off": {
+      "leadNoiseDbfs": -39.464834004350024,
+      "leadAttenuationDb": 1.2434861993527448,
+      "speechLevelChangeDb": -0.5419765829309746,
+      "energyGateLead": {
+        "spurts": 1,
+        "sentFraction": 0.5525
+      }
+    },
+    "rnnoise-agc-off": {
+      "leadNoiseDbfs": -53.74404415021751,
+      "leadAttenuationDb": 15.522696345220233,
+      "speechLevelChangeDb": -1.7987477159984948,
+      "energyGateLead": {
+        "spurts": 1,
+        "sentFraction": 0.0775
       }
     },
     "input": {
@@ -50,8 +69,25 @@
     }
   },
   "rnnoiseLeadProb": {
-    "max": 0.9931060075759888,
+    "max": 0.9921440482139587,
     "over05": 0.0325,
     "over09": 0.015
+  },
+  "leadProb": {
+    "rnnoise": {
+      "max": 0.9921440482139587,
+      "over05": 0.0325,
+      "over09": 0.015
+    },
+    "both": {
+      "max": 0.9999088644981384,
+      "over05": 0.2275,
+      "over09": 0.1125
+    },
+    "rnnoise-agc-off": {
+      "max": 0.9986175298690796,
+      "over05": 0.0325,
+      "over09": 0.0125
+    }
   }
 }

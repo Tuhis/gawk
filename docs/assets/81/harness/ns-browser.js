@@ -13,6 +13,7 @@
 //                suppression on or off (auto gain on, as in production), as
 //                f32 for offline analysis; optionally switching suppression
 //                with applyConstraints part-way through
+//   recordPair   (Chromium) two tracks on the device at once, NS off and on
 
 const FRAME = 480;
 
@@ -317,5 +318,43 @@ async function record({ noiseSuppression, autoGainControl = true, seconds, apply
   return { sampleRate: rate, settings: { noiseSuppression: settings.noiseSuppression, echoCancellation: settings.echoCancellation, autoGainControl: settings.autoGainControl }, samples: n, applied, f32: btoa(s) };
 }
 
-window.ns0 = { caps, cpuMain, worklet, rates, constraints, record };
+// Chromium: two tracks open on the same device at once, the second with
+// other processing (as D11's re-open has them, briefly). Does each get its
+// own processing, and does opening the second change the first? Both are
+// read for the whole run and returned as base64 f32.
+async function recordPair({ first, second, seconds }) {
+  const open = (o) => navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, channelCount: 1, ...o } });
+  const a = (await open(first)).getAudioTracks()[0];
+  const b = (await open(second)).getAudioTracks()[0];
+  const read = async (track) => {
+    const reader = new MediaStreamTrackProcessor({ track }).readable.getReader();
+    const chunks = [];
+    let n = 0;
+    const end = performance.now() + seconds * 1000;
+    while (performance.now() < end) {
+      const { value } = await reader.read();
+      if (!value) break;
+      const p = new Float32Array(value.numberOfFrames);
+      value.copyTo(p, { planeIndex: 0, format: 'f32-planar' });
+      chunks.push(p); n += p.length;
+      value.close();
+    }
+    track.stop();
+    const all = new Float32Array(n);
+    let o = 0;
+    for (const c of chunks) { all.set(c, o); o += c.length; }
+    const u8 = new Uint8Array(all.buffer);
+    let s = '';
+    for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000));
+    return { samples: n, f32: btoa(s) };
+  };
+  const sa = a.getSettings(), sb = b.getSettings();
+  const [ra, rb] = await Promise.all([read(a), read(b)]);
+  return {
+    first: { ...ra, settings: { noiseSuppression: sa.noiseSuppression, autoGainControl: sa.autoGainControl } },
+    second: { ...rb, settings: { noiseSuppression: sb.noiseSuppression, autoGainControl: sb.autoGainControl } },
+  };
+}
+
+window.ns0 = { caps, cpuMain, worklet, rates, constraints, record, recordPair };
 window.ns0Ready = true;

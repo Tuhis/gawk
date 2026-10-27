@@ -227,17 +227,33 @@ if (cap) {
   P(`### Chromium's own noise suppression vs RNNoise (\`${cap.variant}\`), same fake microphone`);
   P();
   P(`The fake device plays 5 s of keyboard (${f(cap.inputLeadDbfs)} dBFS), then speech + keyboard at 10 dB SNR. ` +
-    `Echo cancellation and auto gain on, as \`voiceCapture.ts\` opens it today (${capAgc}). Lead = 0.5–4.5 s, keyboard only.`);
+    `Echo cancellation and auto gain on, as \`voiceCapture.ts\` opens it today (${capAgc}), except the two auto-gain-off rows. Lead = 0.5–4.5 s, keyboard only, before any speech.`);
   P();
   P(row(['Condition', 'Lead noise dBFS', 'Attenuation vs input dB', 'Speech level change dB', 'Energy gate in the lead: spurts / sent']));
   P(row(Array(5).fill('---')));
-  const label = { none: 'Chromium, NS off', 'chromium-ns': 'Chromium, NS on', rnnoise: 'NS off + RNNoise', both: 'NS on + RNNoise' };
-  for (const k of ['none', 'chromium-ns', 'rnnoise', 'both']) {
+  const label = { none: 'Chromium, NS off', 'chromium-ns': 'Chromium, NS on', rnnoise: 'NS off + RNNoise', both: 'NS on + RNNoise',
+    'none-agc-off': 'Chromium, NS off, auto gain off', 'rnnoise-agc-off': 'NS off, auto gain off + RNNoise' };
+  for (const k of Object.keys(label)) {
     const c = cap.conditions[k];
+    if (!c) continue;
     P(row([label[k], f(c.leadNoiseDbfs), f(c.leadAttenuationDb), f(c.speechLevelChangeDb), `${c.energyGateLead.spurts} / ${pct(c.energyGateLead.sentFraction)}`]));
   }
   P();
-  P(`RNNoise's speech probability over the keyboard-only lead: max ${f(cap.rnnoiseLeadProb.max, 3)}, ≥ 0.5 on ${pct(cap.rnnoiseLeadProb.over05)} of frames, ≥ 0.9 on ${pct(cap.rnnoiseLeadProb.over09)}.`);
+  for (const [k, lp] of Object.entries(cap.leadProb ?? { rnnoise: cap.rnnoiseLeadProb })) {
+    P(`RNNoise's speech probability over the keyboard-only lead, ${label[k]}: max ${f(lp.max, 3)}, ≥ 0.5 on ${pct(lp.over05)} of frames, ≥ 0.9 on ${pct(lp.over09)}.`);
+    P();
+  }
+  const tt = br.chromium?.twoTracks;
+  if (tt) {
+    P('**Two tracks at once** (keyboard alone, auto gain on): the first opened with NS off, the second, while the first is open, with NS on.');
+    P();
+    P(row(['Track', 'Asked for NS', '`getSettings()` NS', '2–9 s dBFS', '12–19 s dBFS']));
+    P(row(Array(5).fill('---')));
+    for (const [t, ask] of [['first', false], ['second', true]]) {
+      const v = tt[t];
+      P(row([t, String(ask), String(v.settings.noiseSuppression), f(v.firstDbfs, 2), f(v.secondDbfs, 2)]));
+    }
+  }
   P();
 }
 

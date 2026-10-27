@@ -32,6 +32,9 @@ const OUT = resolve(arg('out', join(HERE, '..', 'results')));
 const CAPTURE_OUT = resolve(arg('capture-out', OUT));
 const VARIANTS = ['v02-avx', 'v02-avx2', 'main-scalar', 'main-avx', 'main-avx2', 'main-little-scalar', 'main-little-avx', 'main-little-avx2'];
 const REC_SECONDS = 30;
+// --only record: just Chromium's recordings, merged into the existing
+// browser-chromium.json (the other probes' numbers stay as they were).
+const ONLY_RECORD = arg('only', null) === 'record';
 
 function serve() {
   const types = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm' };
@@ -168,9 +171,13 @@ async function main() {
   try {
     for (const name of BROWSERS) {
       current = await launch(name, null);
-      const res = { browser: name, version: current.version(), playwright: require('playwright-core/package.json').version, date: new Date().toISOString() };
+      const prev = join(OUT, `browser-${name}.json`);
+      if (ONLY_RECORD && (name !== 'chromium' || !existsSync(prev))) throw new Error('--only record needs chromium and an existing browser-chromium.json');
+      const res = ONLY_RECORD ? JSON.parse(readFileSync(prev, 'utf8')) : { browser: name, version: current.version(), playwright: require('playwright-core/package.json').version, date: new Date().toISOString() };
       console.log(`[ns0] ${name} ${res.version}`);
+      if (ONLY_RECORD) res.recordDate = new Date().toISOString();
       const step = (s) => console.log(`[ns0] ${name}: ${s}`);
+      if (!ONLY_RECORD) {
       step('caps');
       res.caps = await withPage(name, (p) => p.evaluate(() => window.ns0.caps()));
       step('cpuMain');
@@ -190,21 +197,23 @@ async function main() {
       res.rates = await withPage(name, (p) => p.evaluate(() => window.ns0.rates()));
       step('constraints');
       res.constraints = await withPage(name, (p) => p.evaluate(() => window.ns0.constraints()));
+      }
       await current.close();
       if (name === 'chromium' && CORPUS) {
         const tmp = join(tmpdir(), `ns0-${process.pid}`);
         mkdirSync(tmp, { recursive: true });
         const wav = mixWav(tmp);
         res.record = {};
-        for (const ns of [true, false]) {
+        // auto gain on as in production; the third is D11's mode with it off
+        for (const [key, file, ns, agc] of [['nsOn', 'ns-on', true, true], ['nsOff', 'ns-off', false, true], ['nsOffAgcOff', 'ns-off-agc-off', false, false]]) {
           const b = await launch('chromium', wav);
-          const r = await onPage(b, name, (p) => p.evaluate((o) => window.ns0.record(o), { noiseSuppression: ns, autoGainControl: true, seconds: REC_SECONDS }));
+          const r = await onPage(b, name, (p) => p.evaluate((o) => window.ns0.record(o), { noiseSuppression: ns, autoGainControl: agc, seconds: REC_SECONDS }));
           await b.close();
           if (r.f32) {
-            writeFileSync(join(CAPTURE_OUT, `capture-ns-${ns ? 'on' : 'off'}.f32`), Buffer.from(r.f32, 'base64'));
+            writeFileSync(join(CAPTURE_OUT, `capture-${file}.f32`), Buffer.from(r.f32, 'base64'));
             delete r.f32;
           }
-          res.record[ns ? 'nsOn' : 'nsOff'] = r;
+          res.record[key] = r;
         }
         // Does applyConstraints change the audio, whatever getSettings() says?
         // Keyboard alone; the level of 2-9 s against 12-19 s, with a switch at
@@ -228,6 +237,22 @@ async function main() {
             delete r.f32;
           }
           res.applyConstraints[label] = r;
+        }
+        // Two tracks at once, NS off then NS on: compare each with the
+        // single-track run of its own constraints above.
+        {
+          const b = await launch('chromium', kwav);
+          const r = await onPage(b, name, (p) => p.evaluate((x) => window.ns0.recordPair(x), { first: { noiseSuppression: false, autoGainControl: true }, second: { noiseSuppression: true, autoGainControl: true }, seconds: 20 }));
+          await b.close();
+          for (const t of ['first', 'second']) {
+            if (r[t]?.f32) {
+              const x = f32(Buffer.from(r[t].f32, 'base64'));
+              r[t].firstDbfs = dbfsOf(x, 2 * 48000, 9 * 48000);
+              r[t].secondDbfs = dbfsOf(x, 12 * 48000, Math.min(x.length, 19 * 48000));
+              delete r[t].f32;
+            }
+          }
+          res.twoTracks = r;
         }
       }
       writeFileSync(join(OUT, `browser-${name}.json`), JSON.stringify(res, null, 2) + '\n');
