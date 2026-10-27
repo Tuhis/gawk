@@ -238,7 +238,10 @@ Add to it when a new gotcha lands in `docs/`.
   answer `go test` with `(cached)` even when the real input changed — the broadcast relay
   integration test shells out to `go build`, whose inputs Go cannot see — so
   the action adds `-count=1` to GOFLAGS. Builds stay cached; test results
-  never are.
+  never are. Go's own 5-day trim is far too slow for this volume (a Renovate
+  wave of one-line go.mod bumps recompiles everything above each, per node,
+  and filled 120Gi in a day), so the action also deletes GOCACHE entries
+  unused for 48h, in the background, once per node every 6h (`trim.sh`).
 - **A CI staging directory named after one the checkout already has is a
   release with no binaries** — and it fails *after* the release exists, so the
   tag is already published. Both attach jobs staged their assets in `assets/`
