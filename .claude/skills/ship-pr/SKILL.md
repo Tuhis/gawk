@@ -70,6 +70,43 @@ Wait for events. Don't spin:
 - Otherwise, run `gh pr checks <N> --watch --interval 60` in the
   background and get notified when it exits. Then read the comments.
 
+### Waited 30 minutes? Investigate, don't keep waiting
+
+A wake is not guaranteed: a watch fires on events, and a stuck check or a
+review job that never answers produces none. So whenever you start waiting
+(a push, a rerun, an `@claude` request), also start a **30-minute timer** in
+the background (`sleep 1800` with `run_in_background`, never a foreground
+wait) and note the time. When it fires, or when you wake for any reason
+and the thing you are waiting for is older than 30 minutes, investigate
+before waiting any longer. Don't just say "still waiting".
+
+```sh
+gh pr checks <N> | awk -F'\t' '$2!="pass" && $2!="skipping"'   # what is not done
+gh run list --branch <branch> --limit 5 --json databaseId,name,status,conclusion,headSha,createdAt
+gh api repos/{owner}/{repo}/actions/jobs/<job-id> \
+  --jq '{status,started_at,runner_name}, (.steps[] | "\(.name) \(.status) \(.conclusion)")'
+```
+
+Compare each unfinished job against how long the same job usually takes
+on `main` (`gh api repos/{owner}/{repo}/actions/runs/<main-run-id>/jobs`),
+then act on what you find:
+
+- **Every step `completed`, but the job is still `in_progress`** (or the
+  run says `success` while a check stays pending): the runner's completion
+  never reached GitHub. Re-run that job (`gh run rerun <run-id> --job
+  <job-id>`). It will never finish by itself.
+- **`queued` with no `runner_name`**: no runner picked it up. Look for
+  other queued jobs on the same label. If the pool looks stuck, report it,
+  because rerunning won't help.
+- **Running much longer than on `main`**: read the live log (`gh api
+  repos/{owner}/{repo}/actions/jobs/<id>/logs`) for a hang. Cancel and
+  rerun once only if it is clearly stuck, and say so in the PR.
+- **An `@claude` round with no reply**: check its `claude.yml` run, as in
+  §3 (a failed run gets one retry).
+
+Tell the user what you found and what you did, then start a new 30-minute
+timer. A second stall of the same kind is a hand-back (§ *Stop and hand back*).
+
 Each time you wake, collect **everything new** before changing anything,
 then fix it all in one batch, so one push follows one round of findings:
 
