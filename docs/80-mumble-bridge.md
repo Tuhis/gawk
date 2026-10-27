@@ -173,7 +173,8 @@ runtime (D18):
   as a registered one.
 - **Mumble may record.** Murmur or a native client can record a channel;
   gawk can't prevent it. The voice panel says the channel is a Mumble
-  channel shared with others.
+  channel shared with others (since R81 without mentioning recording,
+  docs/82 OD5).
 
 ---
 

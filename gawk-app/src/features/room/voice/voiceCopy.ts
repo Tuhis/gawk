@@ -7,9 +7,9 @@ import type { NoiseStatus } from './voiceCapture';
 import { RNNOISE_DELAY_MS } from './voiceFraming';
 import type { NoiseMode } from './voicePrefs';
 
-// docs/80 §6: the channel is Mumble's, shared and recordable.
-export const VOICE_NOTICE =
-  'This is a Mumble channel shared with people outside gawk; anyone in it can hear you, and Mumble can record it.';
+// docs/80 §6: the channel is Mumble's and shared. Recording is not
+// mentioned: it only confused people (docs/82 OD5).
+export const VOICE_NOTICE = 'This is a Mumble channel shared with people outside gawk; anyone in it can hear you.';
 export const VOICE_ROOM_UNAVAILABLE = 'Voice is unavailable right now.';
 
 // ---- R81's room voice UI (docs/82) -----------------------------------------

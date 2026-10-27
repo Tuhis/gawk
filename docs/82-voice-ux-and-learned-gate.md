@@ -58,6 +58,7 @@ that follows the speaker's own level does.
 | OD2 | Per-person volume above 100 %? | **Yes**, the "option 1" of the gain discussion: up to 200 % with a limiter. A microphone boost and an auto-gain switch were not taken. |
 | OD3 | Use the level as well as RNNoise's probability, on the same slider? | **Yes**: the floor follows a learned level, the one slider moves both. |
 | OD4 | VX0 showed the floor is defeated by auto gain. Which way? | **Auto gain off under RNNoise, plus our own gain** after the gate, from the learned level (the other options were auto gain off with no gain, and keeping auto gain and parking the gate). |
+| OD5 | Should the voice notice keep "Mumble can record it"? | **No**: not relevant to users and it confused them. The notice says only that the channel is Mumble's and shared (docs/80 §6's risk stands; the UI no longer spells it out). |
 
 ---
 

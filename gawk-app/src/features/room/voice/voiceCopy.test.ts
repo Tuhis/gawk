@@ -10,9 +10,9 @@ import {
 import type { NoiseStatus } from './voiceCapture';
 
 describe('voice copy', () => {
-  it('says the channel is Mumble’s, shared, and recordable (docs/80 §6)', () => {
+  it('says the channel is Mumble’s and shared, and does not talk about recording (docs/80 §6, docs/82 OD5)', () => {
     expect(VOICE_NOTICE).toMatch(/Mumble channel shared with people outside gawk/);
-    expect(VOICE_NOTICE).toMatch(/can record it/);
+    expect(VOICE_NOTICE).not.toMatch(/record/i);
   });
 
   it('words each failure phase apart', () => {
