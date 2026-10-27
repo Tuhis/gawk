@@ -74,7 +74,9 @@ export function AudioSettings({ actions }: { actions: VoiceActions }) {
   const status = noiseStatusText(noise);
 
   return (
-    <details className={styles.audio} open={open} onToggle={(e) => setOpen(e.currentTarget.open)} data-testid="voice-audio">
+    // Uncontrolled: the element owns its open state and onToggle only mirrors
+    // it for the meter, so a re-render can never fold a section just opened.
+    <details className={styles.audio} onToggle={(e) => setOpen(e.currentTarget.open)} data-testid="voice-audio">
       <summary className={styles.audioSummary}>Audio</summary>
       <div className={styles.audioBody}>
         <span className={styles.audioLabel} id="voice-noise-label">

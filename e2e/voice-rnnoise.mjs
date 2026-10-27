@@ -236,14 +236,27 @@ async function joinVoice(page, name) {
     if (Date.now() > by) fail(`${name}: never got into voice: ${await section.innerText()}`);
     await sleep(200);
   }
-  await section.getByText('Audio', { exact: true }).click();
+  await openAudio(section);
   return section;
+}
+
+// Opens the Audio section, and keeps it open: a click on the summary that
+// lands mid-render is retried.
+async function openAudio(section) {
+  const audio = section.getByTestId('voice-audio');
+  for (let i = 0; i < 10; i++) {
+    if (await audio.evaluate((el) => el.open)) return;
+    await audio.locator('summary').click();
+    await sleep(200);
+  }
+  fail(`the Audio section did not open: ${await audio.innerText()}`);
 }
 
 // RNNoise running: the cost line says so and nothing says loading or fallback.
 async function waitForRnnoise(section, name) {
   const by = Date.now() + 20_000;
   for (;;) {
+    await openAudio(section);
     const text = await section.getByTestId('voice-audio').innerText();
     if (/isn’t available here/.test(text)) fail(`${name}: RNNoise fell back: ${text}`);
     if (/RNNoise adds 20 ms/.test(text) && !/loading/.test(text)) return;
