@@ -36,7 +36,7 @@ script for what counts as a dependency here and why.
 | `github.com/prometheus/client_model` | v0.6.3 | `Apache-2.0 OR UNKNOWN` | Copyright 2012-2015 The Prometheus Authors |
 | `github.com/prometheus/common` | v0.70.1 | `Apache-2.0 OR UNKNOWN` | Copyright 2015 The Prometheus Authors |
 | `github.com/prometheus/procfs` | v0.21.1 | `Apache-2.0 OR UNKNOWN` | Copyright 2014-2015 The Prometheus Authors |
-| `github.com/yalue/onnxruntime_go` | v1.36.0 | `MIT` | Copyright (c) 2023 Nathan Otterness |
+| `github.com/yalue/onnxruntime_go` | v1.38.0 | `MIT` | Copyright (c) 2023 Nathan Otterness |
 | `golang.org/x/sys` | v0.48.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `google.golang.org/protobuf` | v1.36.12 | `BSD-3-Clause` | Copyright (c) 2018 The Go Authors. All rights reserved |
 
