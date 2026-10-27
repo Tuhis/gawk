@@ -32,10 +32,10 @@ script for what counts as a dependency here and why.
 | `github.com/beorn7/perks` | v1.0.1 | `MIT` | Copyright (C) 2013 Blake Mizerany |
 | `github.com/cespare/xxhash/v2` | v2.3.0 | `MIT` | Copyright (c) 2016 Caleb Spare |
 | `github.com/munnerz/goautoneg` | v0.0.0-20191010083416-a7dc8b61c822 | `BSD-3-Clause` | Copyright (c) 2011, Open Knowledge Foundation Ltd |
-| `github.com/prometheus/client_golang` | v1.24.1 | `Apache-2.0 OR UNKNOWN` | Copyright 2012-2015 The Prometheus Authors<br>Copyright 2013-2015 Blake Mizerany, Björn Rabenstein<br>Copyright 2010 The Go Authors |
+| `github.com/prometheus/client_golang` | v1.25.0 | `Apache-2.0 OR UNKNOWN` | Copyright 2012-2015 The Prometheus Authors<br>Copyright 2013-2015 Blake Mizerany, Björn Rabenstein<br>Copyright 2010 The Go Authors |
 | `github.com/prometheus/client_model` | v0.6.3 | `Apache-2.0 OR UNKNOWN` | Copyright 2012-2015 The Prometheus Authors |
-| `github.com/prometheus/common` | v0.70.1 | `Apache-2.0 OR UNKNOWN` | Copyright 2015 The Prometheus Authors |
-| `github.com/prometheus/procfs` | v0.21.1 | `Apache-2.0 OR UNKNOWN` | Copyright 2014-2015 The Prometheus Authors |
+| `github.com/prometheus/common` | v0.72.0 | `Apache-2.0 OR UNKNOWN` | Copyright 2015 The Prometheus Authors |
+| `github.com/prometheus/procfs` | v0.22.0 | `Apache-2.0 OR UNKNOWN` | Copyright 2014-2015 The Prometheus Authors |
 | `github.com/yalue/onnxruntime_go` | v1.36.0 | `MIT` | Copyright (c) 2023 Nathan Otterness |
 | `golang.org/x/sys` | v0.48.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `google.golang.org/protobuf` | v1.36.12 | `BSD-3-Clause` | Copyright (c) 2018 The Go Authors. All rights reserved |

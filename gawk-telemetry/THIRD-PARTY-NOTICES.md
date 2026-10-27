@@ -32,7 +32,7 @@ script for what counts as a dependency here and why.
 | `github.com/google/uuid` | v1.6.0 | `BSD-3-Clause` | Copyright (c) 2009,2014 Google Inc. All rights reserved |
 | `github.com/marcboeker/go-duckdb/mapping` | v0.0.21 | `MIT` | Copyright 2019 Marc Boeker |
 | `github.com/marcboeker/go-duckdb/v2` | v2.4.3 | `MIT` | Copyright 2019 Marc Boeker |
-| `golang.org/x/oauth2` | v0.36.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
+| `golang.org/x/oauth2` | v0.37.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 
 ## License texts
 
