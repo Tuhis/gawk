@@ -237,7 +237,8 @@ export class TalkGate {
   // level, else the last one it had, else the one stored from an earlier
   // session (`storedLevelDb`). Never the floor's: that waits for evidence.
   private gainLevelDb: number | null;
-  // This tab learned a level of its own (only then is it worth storing).
+  // Something was learned since the level was last stored (only then is it
+  // worth storing again).
   private learnedHere = false;
 
   constructor(
@@ -307,7 +308,14 @@ export class TalkGate {
     const learned = this.speech.learnedLevelDb();
     if (learned !== null) {
       this.gainLevelDb = learned;
-      this.learnedHere = true;
+      // Only a block that taught the tracker makes the level worth storing:
+      // its evidence outlives a call (review round 3).
+      const taught =
+        prob !== null &&
+        (this.mode !== 'ptt' || this.pttHeld) &&
+        prob >= SPEECH_LEVEL_CONFIDENT &&
+        rmsToDbfs(rms) >= SPEECH_FLOOR_DBFS;
+      if (taught) this.learnedHere = true;
     }
     return this.sending;
   }
@@ -329,6 +337,11 @@ export class TalkGate {
   // another tab since) is never written back (review round 2).
   levelToStore(): number | null {
     return this.learnedHere ? this.gainLevelDb : null;
+  }
+
+  // The level was stored: the next call stores only what it learns itself.
+  markStored(): void {
+    this.learnedHere = false;
   }
 
   // docs/82 D6: the gain to apply to sent blocks, dB.

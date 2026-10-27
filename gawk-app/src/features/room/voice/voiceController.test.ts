@@ -813,6 +813,19 @@ describe('VoiceController learned level (R81, docs/82 D2–D7)', () => {
     c.dispose();
   });
 
+  it('a later call in the same tab that learned nothing stores nothing (review round 3)', async () => {
+    const c = make();
+    await connected(c);
+    for (let f = 0; f < 400; f++) captures[0].cb.shouldSend(at(-24), 0.99, f * 10);
+    c.leave();
+    expect(savedLevels).toEqual([-24]);
+    await connected(c);
+    captures[1].cb.shouldSend(at(-70), 0.01, 0);
+    c.leave();
+    expect(savedLevels).toEqual([-24]);
+    c.dispose();
+  });
+
   it('forgetting the level drops the floor and the gain', async () => {
     const c = make('vad', { speechLevelDb: -35 });
     await connected(c);
