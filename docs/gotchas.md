@@ -2461,6 +2461,21 @@ entries still describe code `gawk-pubsim` runs (now
   processing, stop the old track before `getUserMedia` (measured: the
   immediate re-open then gets the new processing).
   ([docs/81](81-noise-suppression.md) §12.6, D11)
+- **Linear interpolation from 44.1 to 48 kHz is not transparent to
+  RNNoise's gate.** It rolls the highs off (−6.6 dB at 20 kHz), and RNNoise
+  then calls more keyboard clicks speech: offline, a −26 dBFS keyboard
+  minute went from 1.57 % sent to 2.08 %, and through headless Chromium
+  3.5–4.1 % against 2.3 % at 48 kHz. A 64-tap windowed-sinc resampler is
+  indistinguishable from the direct run (1.63 %). NS0's 44.1 kHz check
+  looked at speech decisions at probability 0.6 and missed it. **Headless
+  Chromium's AudioContext runs at 44.1 kHz** by default, so this path is
+  the one an e2e takes. ([docs/81](81-noise-suppression.md) §12.7, D6)
+- **Headless Firefox (and WebKit) in a container with no sound server
+  leave an AudioContext `suspended`**: nothing renders, so an AudioWorklet
+  capture posts no audio while everything else looks connected. Give the
+  browser a PulseAudio null sink (`PULSE_SERVER`), as
+  `docs/assets/81/harness/run-all.sh` does.
+  ([docs/81](81-noise-suppression.md) §12.7)
 
 **CI / deployment**
 
