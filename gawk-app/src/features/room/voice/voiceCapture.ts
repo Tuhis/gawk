@@ -53,6 +53,9 @@ export const VOICE_FALLBACK_FRAME_US = 20_000;
 // One VoiceFrame seq unit (wire.ts: seq counts 10 ms).
 export const VOICE_SEQ_UNIT_US = 10_000;
 
+// docs/82 D6: the highest peak the gain may lift a block to.
+const GAIN_PEAK_CEILING = 0.98;
+
 // docs/81 D11: echo cancellation always; the browser's own suppression only
 // in the Browser mode (before RNNoise it leaves 16 dB more keyboard, NS0
 // §12.4). docs/82 D5: auto gain only in the Browser mode too — in a pause it
@@ -60,9 +63,6 @@ export const VOICE_SEQ_UNIT_US = 10_000;
 // tell them apart (VX0 §12); the gain after the gate (D6) does its job.
 // RNNoise and Off keep one set of constraints, so switching between them
 // stays the worklet's alone.
-// docs/82 D6: the highest peak the gain may lift a block to.
-const GAIN_PEAK_CEILING = 0.98;
-
 export function voiceAudioConstraints(mode: NoiseMode): MediaTrackConstraints {
   return {
     echoCancellation: true,
@@ -693,9 +693,11 @@ export class VoiceCapture implements VoiceCaptureLike {
     this.encode(data);
   }
 
-  // docs/82 D6, in place: ramped across the block from the last block's gain
-  // so a change never steps, capped so the block's peak stays under full
-  // scale (never below unity), and clipped to ±1 as a last resort. Never on
+  // docs/82 D6, in place, like a limiter: a fall takes effect at once (the
+  // cap must hold from the block's first sample, review round 2), a rise is
+  // ramped across the block from the last block's gain so it never steps;
+  // capped so the block's peak stays under full scale (never below unity),
+  // and clipped to ±1 as a last resort. Never on
   // a Browser track: the browser's auto gain is on there (D5), and ours on
   // top would clip.
   private applyGain(pcm: Float32Array): void {
@@ -705,7 +707,7 @@ export class VoiceCapture implements VoiceCaptureLike {
       for (let i = 0; i < pcm.length; i++) peak = Math.max(peak, Math.abs(pcm[i]));
       if (peak > 0) target = Math.max(1, Math.min(target, GAIN_PEAK_CEILING / peak));
     }
-    const from = this.gainLin ?? target;
+    const from = Math.min(this.gainLin ?? target, target);
     this.gainLin = target;
     if (from === 1 && target === 1) return;
     const step = (target - from) / pcm.length;
