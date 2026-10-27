@@ -68,7 +68,7 @@ script for what counts as a dependency here and why.
 | `github.com/modern-go/concurrent` | v0.0.0-20180306012644-bacd9c7ef1dd | `Apache-2.0` | — |
 | `github.com/modern-go/reflect2` | v1.0.3-0.20250322232337-35a7c28c31ee | `Apache-2.0` | — |
 | `github.com/munnerz/goautoneg` | v0.0.0-20191010083416-a7dc8b61c822 | `BSD-3-Clause` | Copyright (c) 2011, Open Knowledge Foundation Ltd |
-| `github.com/nats-io/nats.go` | v1.53.1 | `Apache-2.0` | — |
+| `github.com/nats-io/nats.go` | v1.55.0 | `Apache-2.0` | — |
 | `github.com/nats-io/nkeys` | v0.4.16 | `Apache-2.0` | — |
 | `github.com/nats-io/nuid` | v1.0.1 | `Apache-2.0` | — |
 | `github.com/pmezard/go-difflib` | v1.0.1-0.20181226105442-5d4384ee4fb2 | `BSD-2-Clause` | Copyright (c) 2013, Patrick Mezard |
