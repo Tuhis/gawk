@@ -1,0 +1,309 @@
+{
+  "browser": "firefox",
+  "version": "157.0",
+  "playwright": "1.64.1",
+  "date": "2026-10-27T10:21:18.336Z",
+  "caps": {
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64; rv:157.0) Gecko/20100101 Firefox/157.0",
+    "wasmSimd": true,
+    "audioWorklet": true,
+    "mstpOnWindow": false,
+    "supportedConstraints": [
+      "autoGainControl",
+      "browserWindow",
+      "channelCount",
+      "deviceId",
+      "echoCancellation",
+      "facingMode",
+      "frameRate",
+      "groupId",
+      "height",
+      "mediaSource",
+      "noiseSuppression",
+      "resizeMode",
+      "scrollWithPage",
+      "viewportHeight",
+      "viewportOffsetX",
+      "viewportOffsetY",
+      "viewportWidth",
+      "width"
+    ],
+    "defaultContextRate": 44100
+  },
+  "cpuMain": {
+    "v02-avx": {
+      "msPerFrame": 0.17342,
+      "reps": [
+        0.17342,
+        0.17653999999999997,
+        0.17767333333333332
+      ],
+      "bytes": 1470665,
+      "fetchMs": 16.919999999999987,
+      "compileMs": 5.079999999999984,
+      "instantiateMs": 1.5
+    },
+    "v02-avx2": {
+      "msPerFrame": 0.18585333333333331,
+      "reps": [
+        0.19139333333333336,
+        0.18658000000000008,
+        0.18585333333333331
+      ],
+      "bytes": 1471317,
+      "fetchMs": 15.900000000000091,
+      "compileMs": 4.900000000000091,
+      "instantiateMs": 1.5199999999999818
+    },
+    "main-scalar": {
+      "msPerFrame": 1.6079733333333333,
+      "reps": [
+        1.6136733333333335,
+        1.6079733333333333,
+        1.7471999999999994
+      ],
+      "bytes": 3594493,
+      "fetchMs": 26.460000000000036,
+      "compileMs": 10.159999999999854,
+      "instantiateMs": 4.440000000000055
+    },
+    "main-avx": {
+      "msPerFrame": 0.2885533333333333,
+      "reps": [
+        0.2902733333333332,
+        0.2885533333333333,
+        0.29015333333333304
+      ],
+      "bytes": 3615580,
+      "fetchMs": 31.42000000000189,
+      "compileMs": 9.139999999999418,
+      "instantiateMs": 4.600000000002183
+    },
+    "main-avx2": {
+      "msPerFrame": 0.30114000000000063,
+      "reps": [
+        0.44495999999999913,
+        0.3773400000000001,
+        0.30114000000000063
+      ],
+      "bytes": 3616232,
+      "fetchMs": 34.07999999999811,
+      "compileMs": 9.040000000000873,
+      "instantiateMs": 4.1599999999998545
+    },
+    "main-little-scalar": {
+      "msPerFrame": 0.7611066666666666,
+      "reps": [
+        0.793026666666666,
+        0.8588066666666673,
+        0.7611066666666666
+      ],
+      "bytes": 1603835,
+      "fetchMs": 15.659999999999854,
+      "compileMs": 5.180000000000291,
+      "instantiateMs": 1.7600000000020373
+    },
+    "main-little-avx": {
+      "msPerFrame": 0.18363333333333381,
+      "reps": [
+        0.18363333333333381,
+        0.19112666666666822,
+        0.18529999999999805
+      ],
+      "bytes": 1624922,
+      "fetchMs": 19.780000000002474,
+      "compileMs": 6.93999999999869,
+      "instantiateMs": 2.180000000000291
+    },
+    "main-little-avx2": {
+      "msPerFrame": 0.1995666666666681,
+      "reps": [
+        0.2087599999999996,
+        0.20359333333333293,
+        0.1995666666666681
+      ],
+      "bytes": 1625574,
+      "fetchMs": 19.68000000000029,
+      "compileMs": 4.559999999997672,
+      "instantiateMs": 1.7399999999979627
+    }
+  },
+  "worklet": [
+    {
+      "variant": "v02-avx",
+      "via": "processorOptions",
+      "contextRate": 44100,
+      "kind": "ready",
+      "instMs": 1,
+      "benchMsPerFrame": 0.208,
+      "sampleRate": 44100,
+      "realtime": {
+        "workletWindowMs": 6003,
+        "renderRateHz": 44095.28569048809,
+        "contextRateHz": 44100,
+        "renderRatio": 0.999893099557553,
+        "framesPerSecond": 91.95402298850574,
+        "expectedFramesPerSecond": 91.875
+      }
+    },
+    {
+      "variant": "v02-avx",
+      "via": "port",
+      "contextRate": 44100,
+      "kind": "ready",
+      "instMs": 3,
+      "benchMsPerFrame": 0.211,
+      "sampleRate": 44100,
+      "realtime": {
+        "workletWindowMs": 6114,
+        "renderRateHz": 44090.28459273798,
+        "contextRateHz": 44100,
+        "renderRatio": 0.9997796959804531,
+        "framesPerSecond": 91.75662414131502,
+        "expectedFramesPerSecond": 91.875
+      }
+    },
+    {
+      "variant": "main-avx",
+      "via": "processorOptions",
+      "contextRate": 44100,
+      "kind": "ready",
+      "instMs": 7,
+      "benchMsPerFrame": 0.314,
+      "sampleRate": 44100,
+      "realtime": {
+        "workletWindowMs": 6006,
+        "renderRateHz": 44094.5720945721,
+        "contextRateHz": 44100,
+        "renderRatio": 0.9998769182442653,
+        "framesPerSecond": 91.74159174159175,
+        "expectedFramesPerSecond": 91.875
+      }
+    },
+    {
+      "variant": "main-avx",
+      "via": "port",
+      "contextRate": 44100,
+      "kind": "ready",
+      "instMs": 5,
+      "benchMsPerFrame": 0.315,
+      "sampleRate": 44100,
+      "realtime": {
+        "workletWindowMs": 6003,
+        "renderRateHz": 44116.60836248542,
+        "contextRateHz": 44100,
+        "renderRatio": 1.0003766068590798,
+        "framesPerSecond": 91.95402298850574,
+        "expectedFramesPerSecond": 91.875
+      }
+    },
+    {
+      "variant": "main-little-avx",
+      "via": "processorOptions",
+      "contextRate": 44100,
+      "kind": "ready",
+      "instMs": 3,
+      "benchMsPerFrame": 0.228,
+      "sampleRate": 44100,
+      "realtime": {
+        "workletWindowMs": 6116,
+        "renderRateHz": 44096.795291039896,
+        "contextRateHz": 44100,
+        "renderRatio": 0.9999273308625827,
+        "framesPerSecond": 91.72661870503597,
+        "expectedFramesPerSecond": 91.875
+      }
+    },
+    {
+      "variant": "main-little-avx",
+      "via": "port",
+      "contextRate": 44100,
+      "kind": "ready",
+      "instMs": 4,
+      "benchMsPerFrame": 0.207,
+      "sampleRate": 44100,
+      "realtime": {
+        "workletWindowMs": 6005,
+        "renderRateHz": 44101.915070774354,
+        "contextRateHz": 44100,
+        "renderRatio": 1.000043425641142,
+        "framesPerSecond": 91.9233971690258,
+        "expectedFramesPerSecond": 91.875
+      }
+    },
+    {
+      "variant": "v02-avx",
+      "via": "port",
+      "contextRate": 44100,
+      "kind": "ready",
+      "instMs": 4,
+      "benchMsPerFrame": 0.351,
+      "sampleRate": 44100,
+      "realtime": {
+        "workletWindowMs": 6011,
+        "renderRateHz": 44100.48244884379,
+        "contextRateHz": 44100,
+        "renderRatio": 1.000010939883079,
+        "framesPerSecond": 91.83164198968558,
+        "expectedFramesPerSecond": 91.875
+      }
+    },
+    {
+      "variant": "v02-avx",
+      "via": "port",
+      "contextRate": 48000,
+      "kind": "ready",
+      "instMs": 4,
+      "benchMsPerFrame": 0.243,
+      "sampleRate": 48000,
+      "realtime": {
+        "workletWindowMs": 6020,
+        "renderRateHz": 48010.631229235885,
+        "contextRateHz": 48000,
+        "renderRatio": 1.0002214839424142,
+        "framesPerSecond": 100,
+        "expectedFramesPerSecond": 100
+      }
+    }
+  ],
+  "rates": {
+    "trackSampleRate": null,
+    "contexts": [
+      {
+        "requested": 44100,
+        "contextRate": 44100,
+        "mediaStreamSource": "ok",
+        "peak": 0.09997864067554474
+      },
+      {
+        "requested": 48000,
+        "contextRate": 48000,
+        "mediaStreamSource": "ok",
+        "peak": 0.09997864067554474
+      },
+      {
+        "requested": null,
+        "contextRate": 44100,
+        "mediaStreamSource": "ok",
+        "peak": 0.09997864067554474
+      }
+    ]
+  },
+  "constraints": {
+    "openedWithNsOff": {
+      "noiseSuppression": false,
+      "echoCancellation": false,
+      "autoGainControl": false
+    },
+    "afterApplyNsOn": {
+      "noiseSuppression": false,
+      "echoCancellation": false,
+      "autoGainControl": false
+    },
+    "afterApplyNsOff": {
+      "noiseSuppression": false,
+      "echoCancellation": false,
+      "autoGainControl": false
+    }
+  }
+}

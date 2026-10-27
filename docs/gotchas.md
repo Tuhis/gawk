@@ -2425,6 +2425,43 @@ entries still describe code `gawk-pubsim` runs (now
   worklet capture node posts PCM out; **Firefox ignores Opus `bitrate`**
   (~57 kbit/s for a 40 kbit/s request). (`docs/assets/80/RESULTS.md`)
 
+**RNNoise in the browser (R80)**
+
+- **The RNNoise 0.2 release tarball does not compile its scalar or NEON
+  path**: `vec.h` and `vec_neon.h` include an `os_support.h` it does not
+  ship (xiph/rnnoise#222, fixed on `main` by `372f7b4`, never released). An
+  x86 build passes because it takes the SSE path, which hides the bug until
+  someone builds for wasm without SIMD or for ARM.
+  ([docs/81](81-noise-suppression.md) §11)
+- **RNNoise takes floats at int16 scale (±32768), not ±1**, and since 0.2
+  it **delays its output by 20 ms** (two frames), not the 10 ms its frame
+  size suggests. At ±1 it sees near-silence and gates everything out.
+  ([docs/81](81-noise-suppression.md) §12.2)
+- **`main`'s model source is 78 MB of C** because it carries float copies
+  of the int8 weights; `-DDISABLE_DEBUG_FLOAT` drops them.
+  ([docs/81](81-noise-suppression.md) §11)
+- **Chromium accepts `applyConstraints({noiseSuppression})` on an audio
+  track and changes nothing**: `getSettings()` keeps the old value and so
+  does the audio (on 156, a keyboard's level after a mid-recording switch
+  matched a run without one to 0.01 dB, both ways); re-open the microphone
+  to switch. **WebKit has no
+  `noiseSuppression` or `autoGainControl` constraint at all.**
+  ([docs/81](81-noise-suppression.md) §12.6)
+- **Chromium's auto gain lifts a keyboard with nobody talking**: with
+  echo cancellation, suppression and auto gain on (gawk's voice
+  constraints since R79), a −38 dBFS keyboard alone comes out 11–13 dB
+  louder in the first seconds (over speech the gain adds ~3 dB), and
+  suppression does not reduce it at all. Measure a denoiser or gate on
+  what the track delivers, with the constraints production uses.
+  ([docs/81](81-noise-suppression.md) §12.4)
+- **A second Chromium track on an already open microphone gets the first
+  track's processing**, whatever it asked for: opened with
+  `noiseSuppression: true` beside a suppression-off track, its
+  `getSettings()` says off and its audio equals the first's. To change
+  processing, stop the old track before `getUserMedia` (measured: the
+  immediate re-open then gets the new processing).
+  ([docs/81](81-noise-suppression.md) §12.6, D11)
+
 **CI / deployment**
 
 - **`gawk-relay` ships the `gawk-app` that was current when `gawk-server`

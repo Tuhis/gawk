@@ -123,6 +123,7 @@ Reading all of them is not the point. Three give you the shape of the system:
 | [`44`](44-rooms.md) | R42 — Rooms: static and dynamic collections of broadcasts, joined as participants |
 | [`46`](46-site-downloads.md) | R46 — Download section on the project site, fed by per-component release manifests |
 | [`80`](80-mumble-bridge.md) | R79 — Room voice through a Mumble bridge: web participants talk with a room's Mumble channel through `gawk-mumble-bridge`, one Mumble user each |
+| [`81`](81-noise-suppression.md) | R80 — RNNoise noise suppression for room voice: RNNoise 0.2 built from source to wasm, run in the capture worklet, its speech probability driving the talk gate |
 
 ## Testing, telemetry, operations
 
