@@ -1,0 +1,297 @@
+{
+  "browser": "webkit",
+  "version": "27.2",
+  "playwright": "1.64.1",
+  "date": "2026-10-27T00:43:34.040Z",
+  "caps": {
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15",
+    "wasmSimd": true,
+    "audioWorklet": true,
+    "mstpOnWindow": false,
+    "supportedConstraints": [
+      "aspectRatio",
+      "backgroundBlur",
+      "deviceId",
+      "displaySurface",
+      "echoCancellation",
+      "facingMode",
+      "frameRate",
+      "groupId",
+      "height",
+      "powerEfficient",
+      "sampleRate",
+      "sampleSize",
+      "torch",
+      "volume",
+      "whiteBalanceMode",
+      "width",
+      "zoom"
+    ],
+    "defaultContextRate": 44100
+  },
+  "cpuMain": {
+    "v02-avx": {
+      "msPerFrame": 0.334,
+      "reps": [
+        0.334,
+        0.3396666666666667,
+        0.35233333333333333
+      ],
+      "bytes": 1470665,
+      "fetchMs": 30,
+      "compileMs": 5,
+      "instantiateMs": 4
+    },
+    "v02-avx2": {
+      "msPerFrame": 0.36533333333333334,
+      "reps": [
+        0.376,
+        0.36533333333333334,
+        0.4053333333333333
+      ],
+      "bytes": 1471317,
+      "fetchMs": 36,
+      "compileMs": 4,
+      "instantiateMs": 2
+    },
+    "main-scalar": {
+      "msPerFrame": 2.034666666666667,
+      "reps": [
+        2.304666666666667,
+        2.034666666666667,
+        2.1176666666666666
+      ],
+      "bytes": 3594493,
+      "fetchMs": 84,
+      "compileMs": 11,
+      "instantiateMs": 5
+    },
+    "main-avx": {
+      "msPerFrame": 0.675,
+      "reps": [
+        0.897,
+        0.675,
+        0.788
+      ],
+      "bytes": 3615580,
+      "fetchMs": 74,
+      "compileMs": 11,
+      "instantiateMs": 6
+    },
+    "main-avx2": {
+      "msPerFrame": 0.6946666666666667,
+      "reps": [
+        0.7666666666666667,
+        0.6946666666666667,
+        0.6963333333333334
+      ],
+      "bytes": 3616232,
+      "fetchMs": 73,
+      "compileMs": 10,
+      "instantiateMs": 5
+    },
+    "main-little-scalar": {
+      "msPerFrame": 0.8826666666666667,
+      "reps": [
+        1.0066666666666666,
+        0.914,
+        0.8826666666666667
+      ],
+      "bytes": 1603835,
+      "fetchMs": 28,
+      "compileMs": 4,
+      "instantiateMs": 4
+    },
+    "main-little-avx": {
+      "msPerFrame": 0.3473333333333333,
+      "reps": [
+        0.359,
+        0.415,
+        0.3473333333333333
+      ],
+      "bytes": 1624922,
+      "fetchMs": 35,
+      "compileMs": 5,
+      "instantiateMs": 2
+    },
+    "main-little-avx2": {
+      "msPerFrame": 0.3616666666666667,
+      "reps": [
+        0.44366666666666665,
+        0.363,
+        0.3616666666666667
+      ],
+      "bytes": 1625574,
+      "fetchMs": 27,
+      "compileMs": 7,
+      "instantiateMs": 3
+    }
+  },
+  "worklet": [
+    {
+      "variant": "v02-avx",
+      "via": "processorOptions",
+      "contextRate": 44100,
+      "kind": "ready",
+      "instMs": 6,
+      "benchMsPerFrame": 0.37,
+      "sampleRate": 44100,
+      "realtime": {
+        "wallS": 4.01,
+        "framesPerSecond": 92.26932668329178,
+        "expectedFramesPerSecond": 91.875,
+        "quantaPerSecond": 346.1346633416459,
+        "expectedQuantaPerSecond": 344.53125
+      }
+    },
+    {
+      "variant": "v02-avx",
+      "via": "port",
+      "contextRate": 44100,
+      "kind": "ready",
+      "instMs": 4,
+      "benchMsPerFrame": 0.46,
+      "sampleRate": 44100,
+      "realtime": {
+        "wallS": 4.01,
+        "framesPerSecond": 95.76059850374065,
+        "expectedFramesPerSecond": 91.875,
+        "quantaPerSecond": 359.1022443890275,
+        "expectedQuantaPerSecond": 344.53125
+      }
+    },
+    {
+      "variant": "main-avx",
+      "via": "processorOptions",
+      "contextRate": 44100,
+      "kind": "ready",
+      "instMs": 8,
+      "benchMsPerFrame": 0.685,
+      "sampleRate": 44100,
+      "realtime": {
+        "wallS": 4.01,
+        "framesPerSecond": 101.74563591022445,
+        "expectedFramesPerSecond": 91.875,
+        "quantaPerSecond": 381.54613466334166,
+        "expectedQuantaPerSecond": 344.53125
+      }
+    },
+    {
+      "variant": "main-avx",
+      "via": "port",
+      "contextRate": 44100,
+      "kind": "ready",
+      "instMs": 8,
+      "benchMsPerFrame": 0.842,
+      "sampleRate": 44100,
+      "realtime": {
+        "wallS": 4.016,
+        "framesPerSecond": 102.58964143426294,
+        "expectedFramesPerSecond": 91.875,
+        "quantaPerSecond": 384.46215139442234,
+        "expectedQuantaPerSecond": 344.53125
+      }
+    },
+    {
+      "variant": "main-little-avx",
+      "via": "processorOptions",
+      "contextRate": 44100,
+      "kind": "ready",
+      "instMs": 5,
+      "benchMsPerFrame": 0.426,
+      "sampleRate": 44100,
+      "realtime": {
+        "wallS": 4.008,
+        "framesPerSecond": 97.30538922155688,
+        "expectedFramesPerSecond": 91.875,
+        "quantaPerSecond": 365.0199600798403,
+        "expectedQuantaPerSecond": 344.53125
+      }
+    },
+    {
+      "variant": "main-little-avx",
+      "via": "port",
+      "contextRate": 44100,
+      "kind": "ready",
+      "instMs": 5,
+      "benchMsPerFrame": 0.373,
+      "sampleRate": 44100,
+      "realtime": {
+        "wallS": 4.013,
+        "framesPerSecond": 93.44629952653875,
+        "expectedFramesPerSecond": 91.875,
+        "quantaPerSecond": 350.11213555943186,
+        "expectedQuantaPerSecond": 344.53125
+      }
+    },
+    {
+      "variant": "main-avx",
+      "via": "port",
+      "contextRate": 44100,
+      "kind": "ready",
+      "instMs": 10,
+      "benchMsPerFrame": 0.965,
+      "sampleRate": 44100,
+      "realtime": {
+        "wallS": 4.012,
+        "framesPerSecond": 104.68594217347957,
+        "expectedFramesPerSecond": 91.875,
+        "quantaPerSecond": 392.5722831505484,
+        "expectedQuantaPerSecond": 344.53125
+      }
+    },
+    {
+      "variant": "main-avx",
+      "via": "port",
+      "contextRate": 48000,
+      "kind": "ready",
+      "instMs": 7,
+      "benchMsPerFrame": 0.678,
+      "sampleRate": 48000,
+      "realtime": {
+        "wallS": 4.009,
+        "framesPerSecond": 110.00249438762783,
+        "expectedFramesPerSecond": 100,
+        "quantaPerSecond": 413.3200299326515,
+        "expectedQuantaPerSecond": 375
+      }
+    }
+  ],
+  "rates": {
+    "trackSampleRate": 44100,
+    "contexts": [
+      {
+        "requested": 44100,
+        "contextRate": 44100,
+        "mediaStreamSource": "ok",
+        "peak": 0.09999429434537888
+      },
+      {
+        "requested": 48000,
+        "contextRate": 48000,
+        "mediaStreamSource": "ok",
+        "peak": 0.09999679028987885
+      },
+      {
+        "requested": null,
+        "contextRate": 44100,
+        "mediaStreamSource": "ok",
+        "peak": 0.09999429434537888
+      }
+    ]
+  },
+  "constraints": {
+    "openedWithNsOff": {
+      "echoCancellation": true,
+      "sampleRate": 44100
+    },
+    "afterApplyNsOn": {
+      "echoCancellation": true,
+      "sampleRate": 44100
+    },
+    "afterApplyNsOff": {
+      "echoCancellation": true,
+      "sampleRate": 44100
+    }
+  }
+}

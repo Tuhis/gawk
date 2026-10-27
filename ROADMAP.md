@@ -97,6 +97,7 @@ feature set exists).
 | R77 | [PoP telemetry](#r77--pop-telemetry) | 🔧 **designed and implemented 2026-10-24** (PT1–PT6, automated rows green); open: a real party end to end — PoP sessions report like home's without the telemetry key leaving the fleet: home mints a PoP's tokens over its link, scoped to what the PoP serves and rate-limited, marked with the PoP's issuer inside the token's nonce; the PoP's relay-side view reaches the telemetry service through home's ops listener; every join keeps PoP and home apart ([docs/78](docs/78-pop-telemetry.md)) |
 | R78 | [Stop ends the broadcast](#r78--stop-ends-the-broadcast) | 🔧 **implemented 2026-10-24** (BE1–BE6 in one PR, owner decisions OD1–OD5 the same day), the owner's pass on the reference deployment open — a deliberate Stop (web Stop, desktop End, iOS End or stopping the recording) closes the publish session with the new close code **4014**, and the relay ends the broadcast at once instead of holding a frozen frame through the grace; viewers are told 4014 (in-band too), see "Broadcast ended", and keep redialling the code every 5 s so a restart on the same code resumes by itself; LAN-party broadcasts end at home too; desktop Pause, restarts, a closed tab and every failure keep the grace. Measured first: Chrome's close code reaches the relay in 180 of 180 trials, main thread and worker ([docs/79](docs/79-stop-ends-the-broadcast.md)) |
 | R79 | [Room voice through a Mumble bridge](#r79--room-voice-through-a-mumble-bridge) | 🔧 **implemented 2026-10-26** (MV0–MV7; owner decisions OD1–OD33 2026-10-25), **MV8 first pass on the reference deployment 2026-10-26** (a static room in an invite-only channel and a dynamic room's temporary channel, desktop browser ↔ desktop Mumble both ways, cleanup on room end; docs/80 §12.5), open: MV0's owner-device rows and the latency sign-off, then MV8's phones, kicks, mid-call rollout and latency — room participants join a room's voice from the browser and talk with the people in its Mumble channel without Mumble software: the new default-off `gawk-mumble-bridge` gives each gawk user their own Mumble connection (`Alice [web]`) through a first-party Mumble client, passes Opus through untouched over WebTransport with the browser mixing, and shows native Mumble users in the room; static rooms map to existing channels, `?voice=1` dynamic rooms get temporary ones; the relay's home pod mints single-use tickets and stays the authority over the observer and session links. Measured: 10 ms Opus frames work in Chromium, Firefox and WebKit, ~22–26 ms of browser pipeline; one bridge pod delivers everything to 25 users in one channel; an e2e with real murmur covers both directions, Mumble moderation, a pod drain, a temporary channel and a gawk ban ([docs/80](docs/80-mumble-bridge.md) §12) |
+| R80 | [RNNoise noise suppression for room voice](#r80--rnnoise-noise-suppression-for-room-voice) | 🔧 **designed 2026-10-27** after the NS0 measurement spike (owner decisions OD1–OD5 the same day); not started: NS1–NS5 — RNNoise 0.2, built from source to a committed, CI-verified wasm, denoises web voice in the capture AudioWorklet on every browser, on by default; its speech probability with a level floor drives the talk gate (default on 0.90, floor −50 dBFS); an Audio section switches RNNoise · Browser · Off and the threshold mid-call with Hear yourself. Measured: +20 ms, ~0.3 ms CPU per 10 ms frame, 15.5 dB off a keyboard where Chromium's own suppression takes 2.5 dB ([docs/81](docs/81-noise-suppression.md) §12) |
 
 ---
 
@@ -5479,6 +5480,34 @@ channel removed when the room ended. MV0's Safari, Chrome Android and
 echo-cancellation rows need the owner's devices, the owner signs off the
 latency target from docs/80 §12.1, and the rest of MV8 is phones, a kick
 from each side, a bridge rollout mid-call and latency.
+
+---
+
+## R80 — RNNoise noise suppression for room voice
+
+**Goal**: a web participant in room voice is denoised by RNNoise, the
+denoiser Mumble's desktop client offers, before the voice is encoded, and
+the talk gate opens on speech rather than on loudness.
+
+**Why**: the noise that matters in a gaming room is the keyboard under the
+microphone. NS0 measured Chromium's own suppression at 2.5 dB off a
+keyboard, and today's level gate open for 96 % of a minute of typing.
+
+**Design**: [docs/81](docs/81-noise-suppression.md) — the RNNoise 0.2
+release built from pinned source in a pinned Emscripten image to a
+standalone wasm (committed, rebuilt and byte-compared in CI), run inside the
+voice capture AudioWorklet on every browser with a linear resampler to
+48 kHz, the browser's own suppression off; a gate over RNNoise's speech
+probability with hysteresis, a hold and a level floor, its threshold a user
+setting; an Audio section in the voice panel for A/B (RNNoise · Browser ·
+Off, a live meter, Hear yourself); fallbacks to today's behaviour for no
+SIMD, a failed load or a CPU overrun. No server, bridge or wire change.
+
+**Acceptance**: docs/81 §1 and §9.
+
+**Status**: 🔧 designed 2026-10-27 (NS0 done, §12); NS1–NS5 not started.
+The owner-device rows (Safari on macOS and iOS, Chrome on Android, a real
+microphone) are NS5.
 
 ---
 

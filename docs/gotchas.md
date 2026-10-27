@@ -2422,6 +2422,27 @@ entries still describe code `gawk-pubsim` runs (now
   worklet capture node posts PCM out; **Firefox ignores Opus `bitrate`**
   (~57 kbit/s for a 40 kbit/s request). (`docs/assets/80/RESULTS.md`)
 
+**RNNoise in the browser (R80)**
+
+- **The RNNoise 0.2 release tarball does not compile its scalar or NEON
+  path**: `vec.h` and `vec_neon.h` include an `os_support.h` it does not
+  ship (xiph/rnnoise#222, fixed on `main` by `372f7b4`, never released). An
+  x86 build passes because it takes the SSE path, which hides the bug until
+  someone builds for wasm without SIMD or for ARM.
+  ([docs/81](81-noise-suppression.md) §11)
+- **RNNoise takes floats at int16 scale (±32768), not ±1**, and since 0.2
+  it **delays its output by 20 ms** (two frames), not the 10 ms its frame
+  size suggests. At ±1 it sees near-silence and gates everything out.
+  ([docs/81](81-noise-suppression.md) §12.2)
+- **`main`'s model source is 78 MB of C** because it carries float copies
+  of the int8 weights; `-DDISABLE_DEBUG_FLOAT` drops them.
+  ([docs/81](81-noise-suppression.md) §11)
+- **Chromium accepts `applyConstraints({noiseSuppression})` on an audio
+  track and changes nothing** (`getSettings()` keeps the old value, measured
+  on 156); re-open the microphone to switch. **WebKit has no
+  `noiseSuppression` or `autoGainControl` constraint at all.**
+  ([docs/81](81-noise-suppression.md) §12.6)
+
 **CI / deployment**
 
 - **`gawk-relay` ships the `gawk-app` that was current when `gawk-server`
