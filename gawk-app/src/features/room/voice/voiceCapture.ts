@@ -60,6 +60,9 @@ export const VOICE_SEQ_UNIT_US = 10_000;
 // tell them apart (VX0 §12); the gain after the gate (D6) does its job.
 // RNNoise and Off keep one set of constraints, so switching between them
 // stays the worklet's alone.
+// docs/82 D6: the highest peak the gain may lift a block to.
+const GAIN_PEAK_CEILING = 0.98;
+
 export function voiceAudioConstraints(mode: NoiseMode): MediaTrackConstraints {
   return {
     echoCancellation: true,
@@ -670,10 +673,16 @@ export class VoiceCapture implements VoiceCaptureLike {
   handleBlock(pcm: Float32Array, prob: number | null): void {
     if (this.stopped) return;
     const timestampUs = this.blocks * VOICE_BLOCK_MS * 1000;
+    // docs/82 D6: a denoised block is gated as captured (the learned floor is
+    // a captured level), then gained; one that was not denoised (Off, or
+    // RNNoise still loading or fallen back) is gained first, so the level
+    // gate judges what auto gain used to give it (review round 1).
+    const denoised = prob !== null;
+    if (!denoised) this.applyGain(pcm);
     const send = this.gate(blockRms(pcm), prob);
     this.blocks++;
     if (!send) return;
-    this.applyGain(pcm);
+    if (denoised) this.applyGain(pcm);
     let data: VoiceAudioData;
     try {
       data = this.deps.createAudioData(blockAudioDataInit(pcm, VOICE_CAPTURE_RATE, timestampUs));
@@ -685,10 +694,17 @@ export class VoiceCapture implements VoiceCaptureLike {
   }
 
   // docs/82 D6, in place: ramped across the block from the last block's gain
-  // so a change never steps, and clipped to ±1. Never on a Browser track:
-  // the browser's auto gain is on there (D5), and ours on top would clip.
+  // so a change never steps, capped so the block's peak stays under full
+  // scale (never below unity), and clipped to ±1 as a last resort. Never on
+  // a Browser track: the browser's auto gain is on there (D5), and ours on
+  // top would clip.
   private applyGain(pcm: Float32Array): void {
-    const target = this.running === 'browser' ? 1 : 10 ** ((this.cb.gainDb?.() ?? 0) / 20);
+    let target = this.running === 'browser' ? 1 : 10 ** ((this.cb.gainDb?.() ?? 0) / 20);
+    if (target > 1) {
+      let peak = 0;
+      for (let i = 0; i < pcm.length; i++) peak = Math.max(peak, Math.abs(pcm[i]));
+      if (peak > 0) target = Math.max(1, Math.min(target, GAIN_PEAK_CEILING / peak));
+    }
     const from = this.gainLin ?? target;
     this.gainLin = target;
     if (from === 1 && target === 1) return;

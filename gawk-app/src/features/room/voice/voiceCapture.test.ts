@@ -294,13 +294,30 @@ describe('constraints (docs/81 D11, docs/82 D5)', () => {
 });
 
 describe('VoiceCapture, the gain after the gate (docs/82 D6)', () => {
-  it('the gate judges the block as captured; the encoder gets it with the gain, clipped to ±1', async () => {
+  it('a denoised block is gated as captured, then gained', async () => {
     const cb = { ...callbacks(), gainDb: () => 20 * Math.log10(2) };
     const { cap, node } = await started('off', cb);
-    block(node(), 0.1);
-    block(node(), 0.8);
-    expect(cb.gated.map(([rms]) => rms)).toEqual([expect.closeTo(0.1, 6), expect.closeTo(0.8, 6)]);
-    expect(encoders[0].encoded.map((d) => d.level)).toEqual([expect.closeTo(0.2, 6), 1]);
+    block(node(), 0.1, 0.97);
+    expect(cb.gated.map(([rms]) => rms)).toEqual([expect.closeTo(0.1, 6)]);
+    expect(encoders[0].encoded.map((d) => d.level)).toEqual([expect.closeTo(0.2, 6)]);
+    cap.stop();
+  });
+
+  it('a block that was not denoised is gained before the level gate (review round 1: Off lost auto gain)', async () => {
+    const cb = { ...callbacks(), gainDb: () => 20 * Math.log10(4) };
+    const { cap, node } = await started('off', cb);
+    // 0.02 alone is under the fake gate's 0.05; gained ×4 it opens it.
+    block(node(), 0.02);
+    expect(cb.gated.map(([rms]) => rms)).toEqual([expect.closeTo(0.08, 6)]);
+    expect(encoders[0].encoded.map((d) => d.level)).toEqual([expect.closeTo(0.08, 6)]);
+    cap.stop();
+  });
+
+  it('the gain is capped so the block’s peak stays under full scale (review round 1)', async () => {
+    const cb = { ...callbacks(), gainDb: () => 20 * Math.log10(4) };
+    const { cap, node } = await started('off', cb);
+    block(node(), 0.5, 0.97);
+    expect(encoders[0].encoded[0].level).toBeCloseTo(0.98, 6);
     cap.stop();
   });
 
