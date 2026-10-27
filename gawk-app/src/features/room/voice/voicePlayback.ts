@@ -26,6 +26,7 @@ import type { VoiceFrameHeader } from '../../../transport/wire';
 import { AudioSink, type AudioOutput } from '../../viewer/audioSink';
 import { SpeakingTracker } from './speaking';
 import { VOICE_SAMPLE_RATE, VOICE_SEQ_UNIT_US } from './voiceCapture';
+import { MAX_SPEAKER_VOLUME } from './voicePrefs';
 
 export const SPEAKER_IDLE_RELEASE_MS = 10_000;
 export const MAX_VOICE_SPEAKERS = 8;
@@ -125,7 +126,7 @@ export function realPlaybackDeps(output: () => AudioOutput | null): VoicePlaybac
     createSink: () => {
       const out = output();
       if (!out) return null;
-      const sink = new AudioSink({}, VOICE_AUDIO_PROFILE, { output: out });
+      const sink = new AudioSink({}, VOICE_AUDIO_PROFILE, { output: out, maxVolume: MAX_SPEAKER_VOLUME });
       void sink.start(VOICE_SAMPLE_RATE).catch(() => {
         // logged by the sink; this speaker is silent, the rest play
       });

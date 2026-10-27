@@ -8,6 +8,19 @@ function stubWebAudio() {
     destination = { kind: 'destination' };
     audioWorklet = { addModule: vi.fn(() => Promise.resolve()) };
     gains: { gain: { value: number }; connect: ReturnType<typeof vi.fn> }[] = [];
+    compressors: { threshold: { value: number }; knee: { value: number }; ratio: { value: number }; attack: { value: number }; release: { value: number }; connect: ReturnType<typeof vi.fn> }[] = [];
+    createDynamicsCompressor = vi.fn(() => {
+      const c = {
+        threshold: { value: -24 },
+        knee: { value: 30 },
+        ratio: { value: 12 },
+        attack: { value: 0.003 },
+        release: { value: 0.25 },
+        connect: vi.fn(),
+      };
+      this.compressors.push(c);
+      return c;
+    });
     createGain = vi.fn(() => {
       const g = { gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() };
       this.gains.push(g);
@@ -95,7 +108,15 @@ describe('RoomAudioMixer voice bus', () => {
     expect(v.destination).not.toBe(t.destination);
     const bus = contexts[0].gains[1];
     expect(bus.gain.value).toBe(0);
-    expect(bus.connect).toHaveBeenCalledWith(contexts[0].destination);
+    // R81: through a limiter, so a speaker boosted past 100 % cannot clip.
+    // The streams' master does not go through it.
+    const limiter = contexts[0].compressors[0];
+    expect(bus.connect).toHaveBeenCalledWith(limiter);
+    expect(limiter.connect).toHaveBeenCalledWith(contexts[0].destination);
+    expect(limiter.threshold.value).toBe(-3);
+    expect(limiter.ratio.value).toBe(20);
+    expect(limiter.knee.value).toBe(0);
+    expect(contexts[0].gains[0].connect).toHaveBeenCalledWith(contexts[0].destination);
     mixer.setVoiceMuted(false);
     expect(bus.gain.value).toBe(1);
     expect(mixer.voiceOutput()!.destination).toBe(v.destination);

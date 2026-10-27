@@ -6,6 +6,11 @@ import { create } from 'zustand';
 import { INITIAL_VOICE_STATE, type VoiceViewState } from './voiceController';
 import { loadLevelThresholdDb, loadNoiseMode, loadPttKey, loadSpeechThreshold, loadTalkMode } from './voicePrefs';
 
+// In a call, or on the way into one: the dock and the in-call panel show.
+export function inVoice(phase: VoiceViewState['phase']): boolean {
+  return phase === 'connected' || phase === 'joining' || phase === 'rejoining';
+}
+
 export interface VoiceStoreState extends VoiceViewState {
   pttKey: string;
   set: (patch: Partial<VoiceStoreState>) => void;

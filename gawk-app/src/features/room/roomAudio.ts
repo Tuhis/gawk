@@ -44,7 +44,22 @@ export class RoomAudioMixer {
     if (!this.voiceBus) {
       this.voiceBus = ctx.createGain();
       this.voiceBus.gain.value = this.voiceMuted ? 0 : 1;
-      this.voiceBus.connect(ctx.destination);
+      // R81: a limiter between the bus and the speakers. A person boosted
+      // to 200 % (voicePrefs MAX_SPEAKER_VOLUME), or a few people at 100 %
+      // talking at once, can sum past full scale; this holds the bus under
+      // -3 dBFS instead of letting it clip. A hard knee and a 20:1 ratio
+      // make it a limiter rather than a compressor (normal speech, well
+      // below the threshold, passes untouched); the 3 ms attack catches a
+      // syllable's onset, the 100 ms release lets go between words without
+      // pumping. Streams have their own master and never pass through it.
+      const limiter = ctx.createDynamicsCompressor();
+      limiter.threshold.value = -3;
+      limiter.knee.value = 0;
+      limiter.ratio.value = 20;
+      limiter.attack.value = 0.003;
+      limiter.release.value = 0.1;
+      this.voiceBus.connect(limiter);
+      limiter.connect(ctx.destination);
     }
     return { context: ctx, destination: this.voiceBus, ensureWorklet: () => this.ensureWorklet(ctx) };
   }

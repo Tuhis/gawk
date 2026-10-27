@@ -8,6 +8,7 @@ afterEach(cleanup);
 
 interface HarnessProps {
   compact: boolean;
+  max?: number;
   volume?: number;
   muted?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -15,7 +16,7 @@ interface HarnessProps {
 
 // A controlled harness: the control owns no audio state, so the tests hold it
 // the way ViewerScreen and RoomScreen do and assert what the callbacks did.
-function Harness({ compact, volume = 0.64, muted = false, onOpenChange }: HarnessProps) {
+function Harness({ compact, max, volume = 0.64, muted = false, onOpenChange }: HarnessProps) {
   const [v, setV] = useState(volume);
   const [m, setM] = useState(muted);
   return (
@@ -30,6 +31,7 @@ function Harness({ compact, volume = 0.64, muted = false, onOpenChange }: Harnes
         onVolume={setV}
         onMutedChange={setM}
         onOpenChange={onOpenChange}
+        max={max}
       />
       <output data-testid="state">{`${v.toFixed(2)} ${m ? 'muted' : 'on'}`}</output>
       <button type="button">elsewhere</button>
@@ -54,6 +56,24 @@ describe('VolumeControl, wide', () => {
     render(<Harness compact={false} muted />);
     fireEvent.change(screen.getByRole('slider', { name: 'Volume' }), { target: { value: '0.3' } });
     expect(state()).toBe('0.30 on');
+  });
+
+  // R81: a room voice speaker can be boosted past 100 %.
+  it('a max above 1 widens the range and clamps there', () => {
+    render(<Harness compact={false} max={2} />);
+    const slider = screen.getByRole('slider', { name: 'Volume' }) as HTMLInputElement;
+    expect(slider.max).toBe('2');
+    expect(slider.getAttribute('aria-valuetext')).toBe('64%');
+    fireEvent.change(slider, { target: { value: '1.6' } });
+    expect(state()).toBe('1.60 on');
+    fireEvent.change(slider, { target: { value: '3' } });
+    expect(state()).toBe('2.00 on');
+  });
+
+  it('without max it stays a 0..1 control', () => {
+    render(<Harness compact={false} />);
+    fireEvent.change(screen.getByRole('slider', { name: 'Volume' }), { target: { value: '1.6' } });
+    expect(state()).toBe('1.00 on');
   });
 });
 

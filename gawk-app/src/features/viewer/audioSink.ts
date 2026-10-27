@@ -257,14 +257,18 @@ export class AudioSink {
   private lastReanchorAtMs = -Infinity;
   // The shared output, when this sink does not own its context.
   private readonly output: AudioOutput | null;
+  // The highest gain setVolume accepts: 1 for a stream, 2 for a room voice
+  // speaker (R81, a quiet Mumble user boosted behind the voice bus's limiter).
+  private readonly maxVolume: number;
 
   constructor(
     callbacks: AudioSinkCallbacks = {},
     profile?: AudioBufferProfile | (() => AudioBufferProfile),
-    opts: { now?: () => number; output?: AudioOutput } = {},
+    opts: { now?: () => number; output?: AudioOutput; maxVolume?: number } = {},
   ) {
     this.cb = callbacks;
     this.output = opts.output ?? null;
+    this.maxVolume = opts.maxVolume ?? 1;
     const now = opts.now ?? (() => performance.now());
     this.now = now;
     this.buffer = new AudioJitterBuffer((chunk) => this.forward(chunk), profile, {
@@ -584,7 +588,7 @@ export class AudioSink {
   }
 
   setVolume(volume: number): void {
-    this.volume = Math.max(0, Math.min(1, volume));
+    this.volume = Math.max(0, Math.min(this.maxVolume, volume));
     if (this.gain && !this.muted) this.gain.gain.value = this.volume;
   }
 

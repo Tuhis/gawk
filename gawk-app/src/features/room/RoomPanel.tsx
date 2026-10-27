@@ -1,4 +1,4 @@
-import { useState, type MouseEvent } from 'react';
+import { useState, type MouseEvent, type ReactNode } from 'react';
 import styles from './room.module.css';
 import { Button } from '../../ui/Button';
 import { GlassPanel } from '../../ui/GlassPanel';
@@ -14,10 +14,8 @@ import {
 } from '../../transport/wire';
 import { fmtWatching } from '../../lib/format';
 import { buildViewLink } from '../../lib/shareLink';
-import { isDynamicRoom, isRoomCreator, roomHasVoice } from '../../state/roomStore';
+import { isDynamicRoom, isRoomCreator } from '../../state/roomStore';
 import { sanitizeNickname } from './roomPrefs';
-import { VoiceSection } from './voice/VoicePanel';
-import type { VoiceActions } from './voice/useRoomVoice';
 
 interface Props {
   snapshot: RoomState;
@@ -38,9 +36,9 @@ interface Props {
   // …or start it in the desktop app (R67, docs/69 D1): the `gawk://` link
   // and the click that launches it and hops to the broadcaster.
   desktopAction: { href: string; onClick: (e: MouseEvent) => void } | null;
-  // R79: the room voice client's actions. The Voice section renders only when
-  // the room advertises the voice capability.
-  voiceActions?: VoiceActions | null;
+  // The phone sheet's People | Voice tabs (R81), in place of the title. Voice
+  // has its own panel (voice/VoicePanel.tsx) since R81.
+  tabs?: ReactNode;
 }
 
 function kindLabel(kind: number, flags: number): string {
@@ -68,7 +66,7 @@ export function RoomPanel({
   ownBroadcastId,
   onStartStreaming,
   desktopAction,
-  voiceActions = null,
+  tabs,
 }: Props) {
   const creator = isRoomCreator(snapshot);
   const dynamic = isDynamicRoom(snapshot);
@@ -79,7 +77,7 @@ export function RoomPanel({
   return (
     <GlassPanel className={styles.panel} role="complementary" aria-label="People and chat">
       <div className={styles.panelHead}>
-        <span>{snapshot.displayName || 'People'}</span>
+        {tabs ?? <span>{snapshot.displayName || 'People'}</span>}
         <span className={styles.panelHeadActions}>
           <IconButton label="Close panel" onClick={onClose}>
             <CloseIcon />
@@ -194,8 +192,6 @@ export function RoomPanel({
           </form>
         )}
       </section>
-
-      {voiceActions && roomHasVoice(snapshot) && <VoiceSection snapshot={snapshot} actions={voiceActions} />}
 
       {/* Reserved: the chat slot renders only when the room
           advertises the capability — a v1 relay never does. */}

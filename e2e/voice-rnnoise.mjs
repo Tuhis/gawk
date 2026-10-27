@@ -224,18 +224,21 @@ function instrumentPage() {
 
 async function joinVoice(page, name) {
   await page.goto(`${APP_URL}#/room/AB2CD3`);
-  await page.getByRole('button', { name: 'People and chat' }).click();
-  const section = page.getByTestId('voice-section');
+  // R81 (docs/82 D1): voice has its own panel, opened from the header.
+  await page.getByRole('button', { name: /^Voice(:|$)/ }).click();
+  const section = page.getByTestId('voice-panel');
   await section.waitFor({ timeout: 15_000 });
   await section.getByRole('button', { name: 'Join voice' }).click();
   const by = Date.now() + 20_000;
   for (;;) {
     if ((await section.getByText(/Couldn’t/).count()) > 0) fail(`${name}: voice failed: ${await section.innerText()}`);
-    const dock = page.getByTestId('voice-dock');
-    if ((await dock.count()) > 0 && (await dock.innerText()).includes('Voice') && !(await dock.innerText()).includes('Voice…')) break;
+    if ((await section.innerText()).includes('connected')) break;
     if (Date.now() > by) fail(`${name}: never got into voice: ${await section.innerText()}`);
     await sleep(200);
   }
+  // The first join asks how to talk (R81); voice activity, as before.
+  const first = section.getByTestId('voice-first-join');
+  if ((await first.count()) > 0) await first.getByRole('button', { name: 'Done' }).click();
   await openAudio(section);
   return section;
 }
@@ -465,7 +468,7 @@ async function smokePass(name, browser, contextOpts = {}) {
   page.on('console', (m) => consoleLines.push(m.text()));
   const section = await joinVoice(page, name);
   await waitForRnnoise(section, name);
-  const hold = page.getByTestId('voice-dock').getByRole('button', { name: /Hold to talk/ });
+  const hold = page.getByTestId('voice-dock').getByRole('button', { name: /^Hold / });
   await hold.hover();
   await page.mouse.down();
   await sleep(1500);
