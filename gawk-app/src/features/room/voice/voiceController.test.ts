@@ -793,6 +793,17 @@ describe('VoiceController learned level (R81, docs/82 D2–D7)', () => {
     c.dispose();
   });
 
+  it('leaving after a long quiet stretch still stores the level the gain was using (review round 1)', async () => {
+    const c = make();
+    await connected(c);
+    const cap = captures[0].cb;
+    for (let f = 0; f < 400; f++) cap.shouldSend(at(-24), 0.99, f * 10);
+    for (let f = 400; f < 20_000; f++) cap.shouldSend(at(-70), 0.01, f * 10);
+    c.leave();
+    expect(savedLevels).toEqual([-24]);
+    c.dispose();
+  });
+
   it('forgetting the level drops the floor and the gain', async () => {
     const c = make('vad', { speechLevelDb: -35 });
     await connected(c);

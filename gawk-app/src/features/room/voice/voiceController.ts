@@ -631,8 +631,10 @@ export class VoiceController {
     this.capture = null;
     capture?.stop();
     this.stopPlayback();
-    const learned = this.gate.learnedLevelDb();
-    if (capture && learned !== null) this.deps.saveSpeechLevel?.(learned);
+    // The gain's level, not the tracker's: a long listen before leaving
+    // empties the tracker but not what the gain was using (review round 1).
+    const level = this.gate.levelForGain();
+    if (capture && level !== null) this.deps.saveSpeechLevel?.(level);
     this.seq = 0;
     this.seqEpochMs = null;
     this.spurtStarting = true;

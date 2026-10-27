@@ -104,9 +104,10 @@ export class SpeechLevelTracker {
   private mass = 0;
   private readonly decay = 2 ** (-(BLOCK_MS / 1000) / SPEECH_LEVEL_HALF_LIFE_S);
 
-  // `seed`: a level already known, as SPEECH_LEVEL_MIN_BLOCKS of evidence.
+  // `seed`: a level already known, as 1.5 × SPEECH_LEVEL_MIN_BLOCKS of
+  // evidence (enough to outlive a few blocks that teach nothing).
   constructor(seed: number | null = null) {
-    if (seed !== null) this.add(seed, SPEECH_LEVEL_MIN_BLOCKS);
+    if (seed !== null) this.add(seed, 1.5 * SPEECH_LEVEL_MIN_BLOCKS);
   }
 
   private add(db: number, w: number): void {
@@ -315,6 +316,12 @@ export class TalkGate {
   // This session's learned level (what to store for the next one).
   learnedLevelDb(): number | null {
     return this.speech.learnedLevelDb();
+  }
+
+  // The level the gain works from (what to store for the next session):
+  // kept through a silence the learned level does not outlive.
+  levelForGain(): number | null {
+    return this.gainLevelDb;
   }
 
   // docs/82 D6: the gain to apply to sent blocks, dB.

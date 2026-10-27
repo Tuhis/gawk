@@ -233,6 +233,12 @@ describe('SpeechLevelTracker', () => {
     expect(t.level()).toBeNull();
   });
 
+  it('a seed survives the first unconfident block (review round 1)', () => {
+    const d = new SpeechDetector({ learned: -24 });
+    d.update(0.1, dbfsToRms(-70), 0);
+    expect(d.floorDb()).toBe(-36);
+  });
+
   it('a seeded level counts as evidence that new speech overrides', () => {
     const t = new SpeechLevelTracker(-20);
     expect(t.level()).toBe(-20);
