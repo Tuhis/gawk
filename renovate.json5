@@ -22,16 +22,31 @@
   // job turns every Renovate PR red for a reason the bot could have fixed
   // itself.
   //
+  // Before that, tidy the Go modules that build gawk-server through a local
+  // replace. A bump that moves gawk-server/go.mod changes their graph too, and
+  // gomodTidy only tidies the go.mod files Renovate edited, so they were left
+  // stale: CI's tidy job and every build in them went red, and gen-notices.py
+  // died on the same "updates to go.mod needed" (PRs #608, #611, #614 each
+  // needed a hand-made tidy commit). It must run first, since gen-notices.py
+  // lists those modules.
+  //
   // REQUIRES BOT-SIDE CONFIG: postUpgradeTasks is ignored unless the
-  // self-hosted bot's global config allowlists the command via allowedCommands
-  // / RENOVATE_ALLOWED_COMMANDS (allowedPostUpgradeCommands on older
-  // releases). Without it this block is inert — nothing breaks, the notices
-  // simply stay stale and CI says so. See CONTRIBUTING.md.
+  // self-hosted bot's global config allowlists each command via
+  // allowedCommands / RENOVATE_ALLOWED_COMMANDS (allowedPostUpgradeCommands on
+  // older releases). A command missing from it is skipped with an artifact
+  // warning on the PR; the rest still run. See CONTRIBUTING.md.
   postUpgradeTasks: {
-    commands: ["python3 tools/licenses/gen-notices.py"],
+    commands: [
+      "tools/renovate/tidy-go.sh",
+      "python3 tools/licenses/gen-notices.py",
+    ],
     // -*: the desktop's -macos and -linux files too, which the apps embed
     // (docs/74), so a stale one ships inside the binary.
-    fileFilters: ["**/THIRD-PARTY-NOTICES*.md"],
+    fileFilters: [
+      "**/THIRD-PARTY-NOTICES*.md",
+      "*/go.mod",
+      "*/go.sum",
+    ],
     executionMode: "branch",
   },
 
