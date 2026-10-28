@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.59.1](https://github.com/Tuhis/gawk/compare/gawk-app/v0.59.0...gawk-app/v0.59.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* **app:** size each voice speaker's cushion from their packet lateness ([#629](https://github.com/Tuhis/gawk/issues/629)) ([be593cd](https://github.com/Tuhis/gawk/commit/be593cda34fc705be3c6ba04104456be5c2a5b20))
+
 ## [0.59.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.58.0...gawk-app/v0.59.0) (2026-10-28)
 
 
