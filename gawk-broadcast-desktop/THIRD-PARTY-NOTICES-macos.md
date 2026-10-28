@@ -58,7 +58,7 @@ script for what counts as a dependency here and why.
 | `accesskit_winit` | 0.33.2 | `Apache-2.0` | Copyright 2022 The AccessKit Authors. All rights reserved |
 | `adler2` | 2.0.1 | `0BSD OR MIT OR Apache-2.0` | Copyright (C) Jonas Schievink <jonasschievink@gmail.com> |
 | `allocator-api2` | 0.2.21 | `MIT OR Apache-2.0` | — |
-| `arboard` | 3.6.1 | `MIT OR Apache-2.0` | Copyright (c) 2022 The Arboard contributors |
+| `arboard` | 3.7.0 | `MIT OR Apache-2.0` | Copyright (c) 2022 The Arboard contributors |
 | `arrayref` | 0.3.9 | `BSD-2-Clause` | Copyright (c) 2015 David Roundy <roundyd@physics.oregonstate.edu> |
 | `arrayvec` | 0.7.8 | `MIT OR Apache-2.0` | Copyright (c) Ulrik Sverdrup "bluss" 2015-2023 |
 | `asn1-rs` | 0.7.2 | `MIT OR Apache-2.0` | Copyright (c) 2017 Pierre Chifflier |

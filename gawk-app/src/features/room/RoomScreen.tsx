@@ -83,7 +83,10 @@ import { AttachSecretPrompt } from './AttachSecretPrompt';
 import { stashRoomReturn } from './roomReturn';
 import { useRoomSession, type RoomCommands } from './useRoomSession';
 import { useRoomVoice } from './voice/useRoomVoice';
-import { VoiceDock } from './voice/VoicePanel';
+import { VoiceButton, VoiceDock, VoiceInvite, VoicePanel, VoiceThumbBar } from './voice/VoicePanel';
+import { inVoice, useVoiceStore } from './voice/voiceStore';
+import { loadTalkModeChosen, loadVoiceHintSeen, loadVoicePinned, saveVoiceHintSeen, saveVoicePinned } from './voice/voicePrefs';
+import voiceStyles from './voice/voice.module.css';
 
 // The viewer's idle period (ViewerScreen CONTROL_IDLE_MS): the dock fades
 // after the same 3 s.
@@ -121,6 +124,12 @@ export interface RoomHeaderContext {
   watching: number;
   panelOpen: boolean;
   togglePanel: () => void;
+  // Whether a panel holds the right-hand column (the people panel, or the
+  // voice panel pinned or as the phone sheet): the header gives it room.
+  sideOpen: boolean;
+  // R81: the Voice button (with its one-time hint), or null in a room
+  // without voice; the host places it beside its people toggle.
+  voiceButton: ReactNode;
   // The room chip's copy (the room link), and its "Copied" flash.
   copyLink: () => void;
   linkCopied: boolean;
@@ -353,7 +362,49 @@ export function RoomView({
   // The people-and-chat panel: open from the header, and it STAYS open until
   // closed — it is not chrome, it is a thing the participant asked to look
   // at, so it does not fade with the overlays. A bottom sheet on a phone (CSS).
-  const [panelOpen, setPanelOpen] = useState(false);
+  const [panelOpen, setPanelOpenState] = useState(false);
+  // R81 (docs/82): voice has its own panel — a flyout under the header, or
+  // pinned into the same right-hand column. The column holds one panel at a
+  // time, so opening either closes the other (on a phone both are the one
+  // bottom sheet, with People | Voice tabs). Closing it never leaves voice.
+  const [voiceOpen, setVoiceOpenState] = useState(false);
+  const [voicePinned, setVoicePinnedState] = useState(loadVoicePinned);
+  const setPanelOpen = useCallback((open: boolean) => {
+    setPanelOpenState(open);
+    if (open) setVoiceOpenState(false);
+  }, []);
+  const [hintSeen, setHintSeen] = useState(loadVoiceHintSeen);
+  const setVoiceOpen = useCallback((open: boolean) => {
+    setVoiceOpenState(open);
+    if (!open) return;
+    setPanelOpenState(false);
+    // Opening voice is what the hint asked for.
+    saveVoiceHintSeen();
+    setHintSeen(true);
+  }, []);
+  const setVoicePinned = useCallback((pinned: boolean) => {
+    saveVoicePinned(pinned);
+    setVoicePinnedState(pinned);
+  }, []);
+  // The invite chip's ×: this visit only.
+  const [inviteHidden, setInviteHidden] = useState(false);
+  const hasVoice = roomHasVoice(snapshot);
+  const voicePhase = useVoiceStore((s) => s.phase);
+  const voiceRosterLen = useRoomStore((s) => s.voiceRoster?.length ?? null);
+  const voiceAvailable = useRoomStore((s) => s.voiceAvailable);
+  const voiceShown = hasVoice && voiceOpen;
+  // The right-hand column (or the phone sheet) is taken: the stage and the
+  // overlays give it room. An unpinned voice flyout floats over the stage.
+  const sideOpen = panelOpen || (voiceShown && (voicePinned || narrow));
+  // The one-time hint: a voice room where nobody is in voice yet (with
+  // someone there, the invite chip says it instead). It fades with the
+  // header rather than holding the chrome over the video (review round 1).
+  const showVoiceHint =
+    hasVoice && joined && !hintSeen && !voiceOpen && voicePhase === 'idle' && voiceAvailable && voiceRosterLen === 0;
+  const dismissVoiceHint = useCallback(() => {
+    saveVoiceHintSeen();
+    setHintSeen(true);
+  }, []);
   // End room's confirm (RoomPanel). Closing the panel drops it, so it never
   // greets a later open.
   const [confirmingEnd, setConfirmingEnd] = useState(false);
@@ -410,7 +461,11 @@ export function RoomView({
   // The creator guard keeps a help left open by a creator who lost the
   // flag (a reconnect without the token) from pinning the chrome forever.
   const anyOverlayOpen =
-    !!menu || !!presetMenu || masterOpen || editingNick || (creatorHelpOpen && isRoomCreator(snapshot));
+    !!menu ||
+    !!presetMenu ||
+    masterOpen ||
+    editingNick ||
+    (creatorHelpOpen && isRoomCreator(snapshot));
   const stageLive = tilesShown || previewOnly;
   const chromeVisible = useAutoHide(CONTROL_IDLE_MS, stageLive && !anyOverlayOpen);
   const showChrome = chromeVisible || !stageLive || anyOverlayOpen;
@@ -707,8 +762,43 @@ export function RoomView({
   // never covers video.
   const gatedCardShown = gatedOut && effectiveMode !== 'hidden' && attachments.length === 0;
 
+  const voiceButton =
+    hasVoice && snapshot ? (
+      <VoiceButton
+        snapshot={snapshot}
+        open={voiceShown}
+        onToggle={() => setVoiceOpen(!voiceOpen)}
+        hint={showVoiceHint}
+        onHintDone={dismissVoiceHint}
+      />
+    ) : null;
+  // On a phone the two panels are one bottom sheet: People | Voice tabs.
+  const sheetTabs =
+    narrow && hasVoice && snapshot ? (
+      <div className={voiceStyles.tabs} role="tablist" aria-label="Room panel">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={panelOpen}
+          className={voiceStyles.tab}
+          onClick={() => setPanelOpen(true)}
+        >
+          People · {snapshot.participants.length}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={voiceShown}
+          className={voiceStyles.tab}
+          onClick={() => setVoiceOpen(true)}
+        >
+          Voice · {voiceRosterLen ?? 0}
+        </button>
+      </div>
+    ) : undefined;
+
   const card = (title: string, body: string, actions?: ReactNode) => (
-    <div className={styles.center} data-panel={panelOpen ? 'true' : 'false'}>
+    <div className={styles.center} data-panel={sideOpen ? 'true' : 'false'}>
       <GlassPanel className={styles.card}>
         <h2 className={styles.cardTitle}>{title}</h2>
         <p className={styles.cardText}>{body}</p>
@@ -723,6 +813,7 @@ export function RoomView({
       className={[styles.root, isFullscreen && tier === 'pseudo' ? styles.pseudoFullscreen : ''].join(' ')}
       data-mode={effectiveMode}
       data-status={status}
+      data-side={sideOpen ? (panelOpen ? 'people' : 'voice') : undefined}
       onContextMenu={(e) => {
         e.preventDefault();
         setMenu({ x: e.clientX, y: e.clientY });
@@ -731,7 +822,7 @@ export function RoomView({
       <div
         className={styles.stage}
         data-mode={effectiveMode}
-        data-panel={panelOpen ? 'true' : 'false'}
+        data-panel={sideOpen ? 'true' : 'false'}
         style={{ '--cols': cols } as CSSProperties}
       >
         {tiles}
@@ -851,7 +942,25 @@ export function RoomView({
         </button>
       )}
 
-      {roomHasVoice(snapshot) && (joined || status === 'reconnecting') && <VoiceDock actions={voice.actions} />}
+      {hasVoice &&
+        snapshot &&
+        (joined || status === 'reconnecting') &&
+        (narrow ? (
+          <VoiceThumbBar actions={voice.actions} raised={sideOpen} />
+        ) : (
+          <VoiceDock snapshot={snapshot} actions={voice.actions} onOpenPanel={() => setVoiceOpen(true)} />
+        ))}
+      {hasVoice && snapshot && joined && !inviteHidden && !voiceOpen && !sideOpen && !inVoice(voicePhase) && (
+        <VoiceInvite
+          snapshot={snapshot}
+          actions={voice.actions}
+          onHide={() => setInviteHidden(true)}
+          // A first join asks how to talk, in the panel.
+          onJoin={(listenOnly) => {
+            if (!listenOnly && !loadTalkModeChosen()) setVoiceOpen(true);
+          }}
+        />
+      )}
 
       {toast && (
         <Toast className={toast.note ? styles.toastWithNote : undefined}>
@@ -866,14 +975,16 @@ export function RoomView({
           streaming,
           watching,
           panelOpen,
-          togglePanel: () => setPanelOpen((o) => !o),
+          togglePanel: () => setPanelOpen(!panelOpen),
+          sideOpen,
+          voiceButton,
           copyLink,
           linkCopied,
           creatorBadge,
           showChrome,
         })
       ) : (
-      <div className={[styles.header, showChrome ? '' : styles.headerHidden].join(' ')} data-panel={panelOpen ? 'true' : 'false'}>
+      <div className={[styles.header, showChrome ? '' : styles.headerHidden].join(' ')} data-panel={sideOpen ? 'true' : 'false'}>
         <div className={styles.headerLeft}>
           {/* The code chip is the share control, as the stream code chip
               is on a plain stream: click copies the room link (the More
@@ -897,10 +1008,11 @@ export function RoomView({
           </span>
         </div>
         <div className={styles.headerRight}>
+          {voiceButton}
           <IconButton
             label={panelOpen ? 'Hide people and chat' : 'People and chat'}
             aria-pressed={panelOpen}
-            onClick={() => setPanelOpen((o) => !o)}
+            onClick={() => setPanelOpen(!panelOpen)}
           >
             <PeopleIcon />
           </IconButton>
@@ -911,7 +1023,7 @@ export function RoomView({
       </div>
       )}
 
-      <div className={[styles.footer, showChrome ? '' : styles.footerHidden].join(' ')} data-panel={panelOpen ? 'true' : 'false'}>
+      <div className={[styles.footer, showChrome ? '' : styles.footerHidden].join(' ')} data-panel={sideOpen ? 'true' : 'false'}>
         <div className={styles.footerLeft}>
           <div className={styles.segment} role="radiogroup" aria-label="Layout">
             <button
@@ -1024,9 +1136,19 @@ export function RoomView({
             ownBroadcastId={own?.broadcastId ?? null}
             onStartStreaming={canStartStreaming ? startStreaming : null}
             desktopAction={canStartStreaming ? desktopAction : null}
-            voiceActions={voice.actions}
+            tabs={sheetTabs}
           />
         </div>
+      )}
+      {voiceShown && snapshot && (
+        <VoicePanel
+          snapshot={snapshot}
+          actions={voice.actions}
+          layout={narrow ? 'sheet' : voicePinned ? 'pinned' : 'flyout'}
+          onClose={() => setVoiceOpen(false)}
+          onPinnedChange={setVoicePinned}
+          tabs={sheetTabs}
+        />
       )}
 
       {menu && (

@@ -49,7 +49,7 @@ RUN sh /usr/local/bin/build-ffmpeg.sh /opt/ffmpeg /tmp/ffmpeg-build \
 # ── ONNX Runtime ──────────────────────────────────────────────────────────
 # The release tarball, pinned by version AND SHA-256 (GitHub's published asset
 # digest). The version is the one onnxruntime_go's C API headers are written
-# against (its README: "this library uses version 1.29.0 of the onnxruntime C
+# against (its README: "this library uses version 1.31.0 of the onnxruntime C
 # API headers"); bump the two together.
 #
 # The execution provider is a BUILD ARGUMENT (docs/71 §3, Rejected: a GPU image
@@ -57,9 +57,9 @@ RUN sh /usr/local/bin/build-ffmpeg.sh /opt/ffmpeg /tmp/ffmpeg-build \
 # CUDA package and ORT_SHA256 to its digest — and needs a CUDA runtime base
 # instead of distroless, which is why it is not a variant today.
 FROM golang:1.27-trixie AS onnxruntime
-ARG ORT_VERSION=1.29.0
+ARG ORT_VERSION=1.31.0
 ARG ORT_PACKAGE=onnxruntime-linux-x64
-ARG ORT_SHA256=c3fddc4f139a045b0c4902c57410f0694f1c2fdf9b6939fbe38b1aeae7cd14ba
+ARG ORT_SHA256=cc5c72baf5ae5c8238a6841f0897227be2d02826b9cf98eaf02fdefaeeb03a57
 WORKDIR /tmp/ort
 RUN curl -fsSL -o ort.tgz \
       "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_PACKAGE}-${ORT_VERSION}.tgz" \

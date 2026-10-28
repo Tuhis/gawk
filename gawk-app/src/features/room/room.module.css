@@ -62,6 +62,12 @@
   right: var(--panel-w, 340px);
 }
 
+/* R81: the voice panel pinned into the column is narrower than the people
+   panel; the stage and the overlays follow its width. */
+.root[data-side='voice'] {
+  --panel-w: 320px;
+}
+
 /* ── Tile ── */
 .tile {
   position: relative;

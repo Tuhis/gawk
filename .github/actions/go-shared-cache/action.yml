@@ -40,6 +40,18 @@
 #    job (8-25s each), and its own cache restored a tarball into tmpfs paths
 #    this action then abandons. On a hosted runner it still runs, cache and all.
 #
+# It also trims GOCACHE harder than Go does. Go drops an entry once it has
+# gone 5 days unused; on this volume that held every Renovate branch's full
+# rebuild (one go.mod bump recompiles everything above it) on each node for
+# 5 days, and took the 120Gi quota from 61 to 120 GiB in a day (2026-10-27,
+# runs 40460177076, 40459397621, ...). Here an entry goes after TRIM_HOURS
+# unused. At most one job per node every 6 hours runs the pass, in the
+# background so no job waits on it, and appends a line to go/trim.log that
+# the next job prints. It deletes exactly what Go's own trim deletes, just
+# sooner: Go refreshes an entry's mtime on use (at most hourly), and a job
+# that finds an entry gone treats it as a miss and rebuilds it. GOMODCACHE is
+# left alone; trim.log reports its size so that can be decided on numbers.
+#
 # Run it AFTER setup-go wherever setup-go does run: setup-go resolves the
 # cache paths from `go env` when it runs, and this action overrides them
 # through GITHUB_ENV.
@@ -70,6 +82,20 @@ runs:
           echo "GO_SHARED_CACHE=true"
         } >> "$GITHUB_ENV"
         # The subvolume quota is the volume's size, so df reports the cache's
-        # real headroom. Go trims entries unused for 5 days by itself.
+        # real headroom (all nodes' trees together, not just this one).
         echo "Shared Go cache: $root/go (GOFLAGS += -count=1), $(go version)"
         df -h "$root" | sed 's/^/  /'
+        if [ -f "$root/go/trim.log" ]; then
+          echo "  last trim: $(tail -n 1 "$root/go/trim.log")"
+        fi
+
+        # The trim (header). The stamp is touched when a pass finishes, so a
+        # pass cut short by its job ending is simply retried by the next job.
+        TRIM_HOURS=48
+        stamp="$root/go/trim.stamp"
+        if [ -n "$(find "$stamp" -mmin -360 2>/dev/null)" ] || ! command -v flock >/dev/null; then
+          exit 0
+        fi
+        setsid nohup flock -n "$root/go/trim.lock" \
+          "$GITHUB_ACTION_PATH/trim.sh" "$root/go" "$TRIM_HOURS" >/dev/null 2>&1 </dev/null &
+        echo "  trim due: entries unused for ${TRIM_HOURS}h go in the background, unless a trim is already running (go/trim.log)"

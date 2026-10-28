@@ -100,6 +100,7 @@ jobs:
       relay_pack: ${{ steps.filter.outputs.relay_pack }}
       relay_portable: ${{ steps.filter.outputs.relay_portable }}
       icon: ${{ steps.filter.outputs.icon }}
+      rnnoise: ${{ steps.filter.outputs.rnnoise }}
       common_ts: ${{ steps.filter.outputs.common_ts }}
       commonlock_tool: ${{ steps.filter.outputs.commonlock_tool }}
       docker_any: ${{ steps.filter.outputs.docker_any }}
@@ -280,6 +281,10 @@ jobs:
           # either side, because the failure it catches is "edited the SVG
           # and forgot to regenerate" — or the reverse.
           icon=$(decide         icon         '^(assets/icon/|tools/icon/)')
+          # R80 NS1 (docs/81 D2): the committed rnnoise.wasm is rebuilt from
+          # its pinned source and byte-compared. Any edit under the directory
+          # (the wasm, the pins, build.sh) can make the two disagree.
+          rnnoise=$(decide      rnnoise      '^gawk-app/rnnoise/')
           # R53 (docs/55 D10): the common-ts lock files. Wider than the
           # `^common-ts/` the doc names, because a lock goes stale from either
           # end: the package moving, a package.json gaining or dropping a
@@ -2922,11 +2927,20 @@ jobs:
       - name: Run the voice E2E (R79)
         run: node voice.mjs
         working-directory: e2e
+      # R80 NS4 (docs/81 §9): RNNoise in Chromium against the in-page fake
+      # relay and bridge, the microphone played from a generated WAV:
+      # RNNoise by default, a switch to Browser and back (each a re-open),
+      # judged on the frames sent; screens with the Audio section open.
+      - name: Run the RNNoise browser check (R80)
+        run: node voice-rnnoise.mjs
+        working-directory: e2e
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: e2e-voice
-          path: e2e/out/voice
+          path: |
+            e2e/out/voice
+            e2e/out/voice-rnnoise
           if-no-files-found: ignore
 
   e2e:
@@ -3581,6 +3595,21 @@ jobs:
           fi
           echo "${{ matrix.tag }} started and served ${{ matrix.probe_path }}"
 
+      # R80 NS1 (docs/81 D4): the RNNoise module is served as application/wasm
+      # (compileStreaming refuses anything else and the loader would fall
+      # back to the slower byte path) and gzipped (1.47 MB → 1.21 MB).
+      - name: the app image serves rnnoise.wasm as gzipped application/wasm
+        if: matrix.tag == 'gawk-app:ci'
+        run: |
+          set -euo pipefail
+          asset=$(curl -fsS http://127.0.0.1:8080/ | grep -oE '/assets/index-[^"]+\.js' | head -1)
+          wasm=$(curl -fsS "http://127.0.0.1:8080${asset}" | grep -oE 'assets/rnnoise-[A-Za-z0-9_-]+\.wasm' | head -1)
+          [ -n "$wasm" ] || { echo "::error::no rnnoise.wasm reference in ${asset}"; exit 1; }
+          headers=$(curl -fsS -o /dev/null -D - -H 'Accept-Encoding: gzip' "http://127.0.0.1:8080/${wasm}")
+          echo "$headers"
+          grep -qi '^content-type: application/wasm' <<<"$headers" || { echo "::error::/${wasm} is not application/wasm"; exit 1; }
+          grep -qi '^content-encoding: gzip' <<<"$headers" || { echo "::error::/${wasm} is not gzipped"; exit 1; }
+
       # R74 PP4 (docs/76 §11): the shipped binary is built against the
       # vendored, patched quic-go (docs/75 D7) — `go.mod`'s replace — and
       # not the upstream module a stray `go install` would fetch. The image
@@ -4189,6 +4218,40 @@ jobs:
   # R53 (docs/55 D10): the common-ts lock tool's own tests. They build scratch
   # git repositories, so they need nothing from this tree but the tool — and
   # unlike `common-ts-lock` they run on main pushes too.
+  # R80 NS1 (docs/81 D2, D3): gawk-app/rnnoise/rnnoise.wasm is a derivative
+  # committed so that the app build, its Dockerfile, the dev stack and vitest
+  # need no Emscripten (the icon set's shape, docs/53). This proves the
+  # committed bytes are exactly what the pinned RNNoise 0.2 tarball builds to
+  # in the digest-pinned emsdk image; a hand-edited or stale binary fails.
+  rnnoise:
+    needs: changes
+    if: needs.changes.outputs.rnnoise == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rebuild rnnoise.wasm from the pinned source
+        run: bash gawk-app/rnnoise/build.sh "$RUNNER_TEMP/rnnoise"
+      - name: The committed wasm and licence are what the pinned source builds
+        run: |
+          set -euo pipefail
+          for f in rnnoise.wasm COPYING; do
+            cmp "gawk-app/rnnoise/$f" "$RUNNER_TEMP/rnnoise/$f" || {
+              echo "::error file=gawk-app/rnnoise/$f::differs from a rebuild; run bash gawk-app/rnnoise/build.sh and commit the result"
+              exit 1
+            }
+          done
+      # The comparison above is not vacuous: one flipped byte fails it.
+      - name: A one-byte change fails the comparison
+        run: |
+          set -euo pipefail
+          cp gawk-app/rnnoise/rnnoise.wasm "$RUNNER_TEMP/tampered.wasm"
+          python3 -c 'import sys; p = sys.argv[1]; b = bytearray(open(p, "rb").read()); b[4096] ^= 0xFF; open(p, "wb").write(b)' \
+            "$RUNNER_TEMP/tampered.wasm"
+          if cmp -s "$RUNNER_TEMP/tampered.wasm" "$RUNNER_TEMP/rnnoise/rnnoise.wasm"; then
+            echo "::error::a tampered wasm compared equal"; exit 1
+          fi
+
   commonlock-tool:
     needs: changes
     if: needs.changes.outputs.commonlock_tool == 'true'
