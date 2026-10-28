@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.59.2](https://github.com/Tuhis/gawk/compare/gawk-app/v0.59.1...gawk-app/v0.59.2) (2026-10-28)
+
+
+### Bug Fixes
+
+* **app:** re-anchor a voice speaker at each talk spurt instead of flushing ([#631](https://github.com/Tuhis/gawk/issues/631)) ([ede7055](https://github.com/Tuhis/gawk/commit/ede70559e0385734c675eeb23ae3000127d93e62))
+
 ## [0.59.1](https://github.com/Tuhis/gawk/compare/gawk-app/v0.59.0...gawk-app/v0.59.1) (2026-10-28)
 
 
