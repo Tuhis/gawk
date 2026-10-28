@@ -7,6 +7,8 @@ import {
   MAX_VOICE_SPEAKERS,
   SPEAKER_IDLE_RELEASE_MS,
   SPURT_GAP_MS,
+  ArrivalJitter,
+  JITTER_HALF_LIFE_MS,
   VoicePlayback,
   createOpusDecoder,
   realPlaybackDeps,
@@ -27,6 +29,7 @@ interface FakeSink extends SpeakerSink {
   flushes: number;
   volume: number;
   disposed: boolean;
+  targets: { jitterMs: number | null; nowMs: number; afterFlushes: number }[];
 }
 
 let clock = 0;
@@ -58,6 +61,7 @@ function makePlayback(volumeFor: (s: number) => number = () => 1, onSpeaking = v
           flushes: 0,
           volume: -1,
           disposed: false,
+          targets: [],
           push(c) {
             this.pushed.push(c);
           },
@@ -66,6 +70,9 @@ function makePlayback(volumeFor: (s: number) => number = () => 1, onSpeaking = v
           },
           setVolume(v) {
             this.volume = v;
+          },
+          updateTarget(jitterMs, nowMs) {
+            this.targets.push({ jitterMs, nowMs, afterFlushes: this.flushes });
           },
           dispose() {
             this.disposed = true;
@@ -370,5 +377,94 @@ describe('VoicePlayback, Hear yourself (docs/81 D16)', () => {
     expect(decoders[2].closed).toBe(true);
     p.handleSelfFrame({ end: false, seq: 3 }, opus);
     expect(decoders).toHaveLength(3);
+  });
+});
+
+// A native Mumble client on Linux (Flatpak, PipeWire) was measured on the
+// production server sending its 10 ms packets in clumps: median
+// inter-arrival 0.2 ms, p99 83 ms, up to 126 ms late against its own seq
+// clock. The fixed 60 ms cushion ran dry on every long gap: a pop every ~2 s
+// for that speaker only, while web speakers (≤ 15 ms late) were clean.
+describe('ArrivalJitter', () => {
+  it('reads a steady 10 ms cadence as no jitter', () => {
+    const j = new ArrivalJitter();
+    for (let k = 0; k < 100; k++) j.frame(1000 + k, k * 10, k === 0);
+    expect(j.jitterMs(990)).toBe(0);
+  });
+
+  it('measures how late a clumped sender runs against its own seq clock', () => {
+    const j = new ArrivalJitter();
+    // Eight packets at once every 80 ms: the last of each clump is on time,
+    // the first is 70 ms late.
+    for (let k = 0; k < 200; k++) j.frame(k, Math.floor(k / 8) * 80 + 70, k === 0);
+    expect(j.jitterMs(1600 + 70)).toBe(70);
+  });
+
+  it('is relative to each spurt: a seq jump across a pause is not lateness', () => {
+    const j = new ArrivalJitter();
+    for (let k = 0; k < 50; k++) j.frame(k, k * 10, k === 0);
+    // A spurt starting 3 s later at a seq that jumped (or reset) arbitrarily.
+    for (let k = 0; k < 50; k++) j.frame(9000 + k, 3500 + k * 10, k === 0);
+    expect(j.jitterMs(4000)).toBe(0);
+  });
+
+  it('holds the peak past its window, decaying', () => {
+    const k = new ArrivalJitter();
+    k.frame(0, 0, true);
+    k.frame(1, 100, false);
+    expect(k.jitterMs(100)).toBe(90);
+    // Past the window the measurement is gone but the peak is held, decaying
+    // by half each JITTER_HALF_LIFE_MS: a speaker's bursts come back with
+    // their next sentence, and Mumble remembers a user's the same way
+    // (AudioOutputSpeech's per-user fAverageAvailable).
+    expect(k.jitterMs(100 + JITTER_HALF_LIFE_MS)).toBeCloseTo(45, 5);
+  });
+});
+
+describe('VoicePlayback cushion per speaker', () => {
+  it("sizes each speaker's sink by that speaker's measured arrival jitter", () => {
+    const { p } = makePlayback();
+    for (let k = 0; k < 200; k++) {
+      clock = Math.floor(k / 8) * 80 + 70;
+      p.handleFrame(frame(7, k), opus);
+      clock = k * 10;
+      p.handleFrame(frame(8, k), opus);
+    }
+    const last = (s: FakeSink) => s.targets[s.targets.length - 1]?.jitterMs;
+    expect(last(sinks[0])).toBe(70);
+    expect(last(sinks[1])).toBe(0);
+    p.dispose();
+  });
+
+  it('carries the learned cushion into the next spurt, after the re-anchor', () => {
+    const { p } = makePlayback();
+    for (let k = 0; k < 80; k++) {
+      clock = Math.floor(k / 8) * 80 + 70;
+      p.handleFrame(frame(7, k), opus);
+    }
+    p.handleFrame(frame(7, 80, true), new Uint8Array(0));
+    clock += 2000;
+    p.handleFrame(frame(7, 400), opus);
+    const t = sinks[0].targets[sinks[0].targets.length - 1];
+    // Re-anchoring resets the sink's target to its seed: the speaker's
+    // jitter has to reach it after the flush, or every spurt starts on 60 ms.
+    expect(t.afterFlushes).toBe(1);
+    expect(t.jitterMs).toBe(70);
+    p.dispose();
+  });
+
+  it('remembers a speaker across the idle release: the next sentence starts on their cushion', () => {
+    const { p } = makePlayback();
+    for (let k = 0; k < 80; k++) {
+      clock = Math.floor(k / 8) * 80 + 70;
+      p.handleFrame(frame(7, k), opus);
+    }
+    clock += SPEAKER_IDLE_RELEASE_MS;
+    p.sweep();
+    expect(sinks[0].disposed).toBe(true);
+    p.handleFrame(frame(7, 5000), opus);
+    const first = sinks[1].targets[0];
+    expect(first.jitterMs).toBeGreaterThan(50);
+    p.dispose();
   });
 });

@@ -492,3 +492,42 @@ and `docs/gotchas.md`):
   values read; fixed. `autobanAttempts` runs at 200, not 0: well above a
   pod's join rate, and it keeps murmur's per-address throttle on password
   guessing.
+
+### 12.6 Bursty native speakers (2026-10-28)
+
+A listener reported constant popping from one native speaker only: Mumble
+1.5.939 on Linux (KDE Flatpak runtime), while Windows clients on the same
+version were clean. A listen-only diagnostic client recorded each packet's
+arrival time and seq in the reference deployment's channel for 120 s (no
+audio kept):
+
+| | web speaker | the Linux client |
+|---|---|---|
+| Packets | 10 ms, hybrid | 10 ms, CELT, mono |
+| Inter-arrival p50 / p90 / p99 / max | 10 / 11 / 14 / 29 ms | 0.2 / 40 / 83 / 136 ms |
+| Latest packet against its seq clock | ≤ 15 ms | 78–126 ms in every spurt |
+| Long-spurt arrival rate vs seq | 0.99–1.00× | 1.00–1.03× |
+
+Its packets arrive in clumps, with no clock drift. D22's buffer had a fixed
+cushion (40–150 ms profile, seeded at 60 ms and never adapted for voice), so
+every gap longer than about 60 ms underran it. Replaying the recorded
+timings through the real decoder, sink and worklet in Chromium gave 11
+dropouts inside spurts.
+
+The fix: each speaker's cushion follows that speaker's measured lateness
+(`ArrivalJitter` in `voicePlayback.ts`): per spurt, the spread of
+arrival − seq time over 5 s, peak-held and halving every 30 s, kept per
+Mumble session past the 10 s idle release and handed to the sink after each
+re-anchor. Mumble's client does the same per user (`AudioOutputSpeech`'s
+`fAverageAvailable`). Same replay: 3 dropouts, one of them on the very first
+word, before anything has been measured. Web speakers are unchanged.
+
+Not done: Mumble also conceals a miss with Opus PLC and fades in and out
+around it. WebCodecs has no PLC call, so an underrun here is still a hard
+cut to silence.
+
+| Goal | Verified by |
+|---|---|
+| A bursty speaker gets a cushion that covers their lateness | `voicePlayback.test.ts` `ArrivalJitter` and "cushion per speaker" |
+| The cushion survives the re-anchor at every spurt and the idle release | the same file, "carries the learned cushion" and "remembers a speaker" |
+| The measured speaker plays without the pops | the replay above, 11 → 3 dropouts inside spurts |

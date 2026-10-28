@@ -13,6 +13,13 @@
 // re-anchored at the start of every spurt — the cost is the buffer's priming
 // cushion, once per spurt, which is exactly what a jitter buffer is for.
 //
+// The cushion is per speaker, sized by how late that speaker's packets run
+// against their own seq clock (ArrivalJitter). A web speaker's 10 ms packets
+// arrive within ~15 ms of it and keep the 40–60 ms floor; a native Linux
+// client measured on the production server sent its packets in clumps up to
+// 126 ms late, which ran a fixed 60 ms cushion dry — a pop every ~2 s, for
+// that speaker only.
+//
 // Speaking indicators (speaking.ts) are fed from the same frames.
 //
 // Hear yourself (R80, docs/81 D16) is one more speaker: your own packets,
@@ -36,6 +43,9 @@ export const SPURT_GAP_MS = 200;
 // Voice is not lip-synced to anything: the shallow live-edge envelope.
 export const VOICE_AUDIO_PROFILE: AudioBufferProfile = { minMs: 40, maxMs: 150, seedMs: 60 };
 const SWEEP_INTERVAL_MS = 1000;
+// How often a speaker's jitter reaches their sink between re-anchors: the
+// buffer slews toward it anyway, so 100 frames/s of updates buy nothing.
+const TARGET_UPDATE_INTERVAL_MS = 250;
 
 export interface SpeakerDecoder {
   decode(payload: Uint8Array, timestampUs: number): void;
@@ -46,6 +56,8 @@ export interface SpeakerSink {
   push(chunk: AudioChunk): void;
   flush(): void;
   setVolume(volume: number): void;
+  // The adaptive cushion (AudioJitterBuffer.updateTarget): jitter in ms.
+  updateTarget(jitterMs: number | null, nowMs: number): void;
   dispose(): void;
 }
 
@@ -72,6 +84,64 @@ export interface VoicePlaybackLike {
 // The self speaker's key; Mumble sessions are unsigned.
 const SELF = -1;
 
+// How long a speaker's measured jitter takes to halve once it is no longer
+// being measured.
+export const JITTER_HALF_LIFE_MS = 30_000;
+// Speakers whose jitter is remembered after their decoder is released.
+const MAX_REMEMBERED_SPEAKERS = 64;
+
+// How late a speaker's packets arrive against their own seq clock: per spurt
+// (a seq jumps or resets across a pause), the spread of arrival − seq time
+// over the last WINDOW_MS. Max, not a percentile: the latest packet is the
+// one that runs the cushion dry.
+//
+// The peak is held past the window, halving every JITTER_HALF_LIFE_MS: a
+// speaker's bursts come back with their next sentence, and a spurt that
+// starts on the seed cushion pops before the window has learned anything.
+// Mumble's client remembers a user the same way (AudioOutputSpeech's
+// per-user fAverageAvailable).
+export class ArrivalJitter {
+  static readonly WINDOW_MS = 5000;
+  private samples: { atMs: number; offsetMs: number; spurt: number }[] = [];
+  private spurt = 0;
+  private peakMs = 0;
+  private peakAtMs = 0;
+
+  frame(seq: number, nowMs: number, newSpurt: boolean): void {
+    if (newSpurt) this.spurt++;
+    this.samples.push({ atMs: nowMs, offsetMs: nowMs - (seq * VOICE_SEQ_UNIT_US) / 1000, spurt: this.spurt });
+  }
+
+  jitterMs(nowMs: number): number {
+    const from = nowMs - ArrivalJitter.WINDOW_MS;
+    let drop = 0;
+    while (drop < this.samples.length && this.samples[drop].atMs < from) drop++;
+    if (drop > 0) this.samples.splice(0, drop);
+    let worst = 0;
+    let spurt = -1;
+    let min = 0;
+    let max = 0;
+    for (const s of this.samples) {
+      if (s.spurt !== spurt) {
+        worst = Math.max(worst, max - min);
+        spurt = s.spurt;
+        min = max = s.offsetMs;
+      } else {
+        min = Math.min(min, s.offsetMs);
+        max = Math.max(max, s.offsetMs);
+      }
+    }
+    const measured = Math.max(worst, max - min);
+    const held = this.peakMs * 0.5 ** (Math.max(0, nowMs - this.peakAtMs) / JITTER_HALF_LIFE_MS);
+    if (measured >= held) {
+      this.peakMs = measured;
+      this.peakAtMs = nowMs;
+      return measured;
+    }
+    return held;
+  }
+}
+
 interface Speaker {
   session: number;
   decoder: SpeakerDecoder | null;
@@ -79,6 +149,8 @@ interface Speaker {
   lastFrameAtMs: number;
   // The spurt ended (end flag): the next frame re-anchors.
   ended: boolean;
+  jitter: ArrivalJitter;
+  lastTargetAtMs: number;
 }
 
 export function voicePlaybackSupported(): boolean {
@@ -136,12 +208,20 @@ export function realPlaybackDeps(output: () => AudioOutput | null): VoicePlaybac
   };
 }
 
+function newSpeaker(session: number, now: number, jitter: ArrivalJitter): Speaker {
+  // lastTargetAtMs < 0: no frame yet, so the first one starts a spurt
+  // without a flush (the sink is fresh).
+  return { session, decoder: null, sink: null, lastFrameAtMs: now, ended: false, jitter, lastTargetAtMs: -1 };
+}
+
 export class VoicePlayback implements VoicePlaybackLike {
   private readonly deps: VoicePlaybackDeps;
   private readonly cb: VoicePlaybackCallbacks;
   private readonly volumeFor: (session: number) => number;
   private readonly speakers = new Map<number, Speaker>();
   private self: Speaker | null = null;
+  // Each speaker's jitter, kept past their release (docs/80 D22's 10 s idle).
+  private readonly jitters = new Map<number, ArrivalJitter>();
   private readonly speaking = new SpeakingTracker();
   private speakingTimer: ReturnType<typeof setTimeout> | null = null;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
@@ -174,7 +254,7 @@ export class VoicePlayback implements VoicePlaybackLike {
     if (this.disposed) return;
     const now = this.deps.now();
     if (!this.self && !(header.end && payload.length === 0)) {
-      this.self = { session: SELF, decoder: null, sink: null, lastFrameAtMs: now, ended: false };
+      this.self = newSpeaker(SELF, now, this.jitterFor(SELF));
       this.startParts(this.self, 1);
     }
     if (this.self) this.feed(this.self, header, payload, now);
@@ -193,7 +273,15 @@ export class VoicePlayback implements VoicePlaybackLike {
       sp.lastFrameAtMs = now;
       return;
     }
-    if (sp.ended || now - sp.lastFrameAtMs > SPURT_GAP_MS) sp.sink?.flush();
+    const newSpurt = sp.ended || now - sp.lastFrameAtMs > SPURT_GAP_MS || sp.lastTargetAtMs < 0;
+    sp.jitter.frame(header.seq, now, newSpurt);
+    if (newSpurt && sp.lastTargetAtMs >= 0) sp.sink?.flush();
+    // After the flush, which re-seeds the sink's target: a spurt must start
+    // on this speaker's cushion, not on the seed.
+    if (newSpurt || now - sp.lastTargetAtMs >= TARGET_UPDATE_INTERVAL_MS) {
+      sp.sink?.updateTarget(sp.jitter.jitterMs(now), now);
+      sp.lastTargetAtMs = now;
+    }
     sp.ended = header.end;
     sp.lastFrameAtMs = now;
     if (!sp.decoder) return;
@@ -228,6 +316,7 @@ export class VoicePlayback implements VoicePlaybackLike {
     this.speakingTimer = null;
     for (const sp of [...this.speakers.values()]) this.release(sp);
     this.stopSelf();
+    this.jitters.clear();
     this.speaking.clear();
   }
 
@@ -237,10 +326,23 @@ export class VoicePlayback implements VoicePlaybackLike {
       for (const s of this.speakers.values()) if (!oldest || s.lastFrameAtMs < oldest.lastFrameAtMs) oldest = s;
       if (oldest) this.release(oldest);
     }
-    const sp: Speaker = { session, decoder: null, sink: null, lastFrameAtMs: now, ended: false };
+    const sp = newSpeaker(session, now, this.jitterFor(session));
     this.speakers.set(session, sp);
     this.startParts(sp, this.volumeFor(session));
     return sp;
+  }
+
+  private jitterFor(session: number): ArrivalJitter {
+    let j = this.jitters.get(session);
+    if (j) {
+      // Most recently heard last, so the first key is the one to forget.
+      this.jitters.delete(session);
+    } else {
+      j = new ArrivalJitter();
+      if (this.jitters.size >= MAX_REMEMBERED_SPEAKERS) this.jitters.delete(this.jitters.keys().next().value!);
+    }
+    this.jitters.set(session, j);
+    return j;
   }
 
   private startParts(sp: Speaker, volume: number): void {
