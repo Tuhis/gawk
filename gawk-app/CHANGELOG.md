@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.59.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.58.0...gawk-app/v0.59.0) (2026-10-28)
+
+
+### Features
+
+* **r81:** room voice UX and a talk gate that learns the speaker's level ([#621](https://github.com/Tuhis/gawk/issues/621)) ([a9daeb9](https://github.com/Tuhis/gawk/commit/a9daeb90d0335c9ba43d289145821cc07ccbcd0b))
+
 ## [0.58.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.57.0...gawk-app/v0.58.0) (2026-10-27)
 
 
