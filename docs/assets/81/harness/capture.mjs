@@ -1,0 +1,179 @@
+#!/usr/bin/env node
+// R80 NS0 — Chromium's own noise suppression vs RNNoise on the same fake
+// microphone (docs/81 §12). Reads run-browser.mjs's captures:
+//   capture-input.f32  what the fake device played (5 s keyboard, then speech + keyboard at 10 dB)
+//   capture-clean.f32  the speech alone, same timeline
+//   capture-ns-on.f32  Chromium with noiseSuppression: true
+//   capture-ns-off.f32 Chromium with noiseSuppression: false
+//   capture-ns-off-agc-off.f32  the same with autoGainControl: false too
+//                      (the other two have it on, as production does)
+// and compares, after aligning each capture to the input, the noise left in
+// the keyboard-only lead and what the energy gate does with it. No waveform
+// score (SI-SDR): Chromium's processing filters the capture even with noise
+// suppression off (~0 dB against the clean speech), so it measures the
+// filter, not the suppressor; offline.mjs scores quality instead.
+//   chromium-ns    the NS-on capture
+//   rnnoise        RNNoise (v0.2) on the NS-off capture
+//   both           RNNoise on the NS-on capture
+//   none           the NS-off capture
+//   none-agc-off, rnnoise-agc-off  the same two with auto gain off
+// and, if present, capture-kb-{input,agc-on,agc-off}.f32: a minute of
+// keyboard alone, with the default gate run over each after RNNoise.
+//
+//   node docs/assets/81/harness/capture.mjs --wasm DIR --capture DIR [--out FILE]
+
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { f32, FRAME, instantiate, probGate } from './rnnoise.mjs';
+
+const argv = process.argv.slice(2);
+const arg = (n, d) => (argv.includes(`--${n}`) ? argv[argv.indexOf(`--${n}`) + 1] : d);
+const WASM = arg('wasm');
+const CAP = arg('capture');
+const OUT = arg('out', new URL('../results/capture.json', import.meta.url).pathname);
+const VARIANT = arg('variant', 'v02-avx');
+const SR = 48000;
+
+const ld = (n) => f32(readFileSync(join(CAP, `${n}.f32`)));
+const db = (x) => 10 * Math.log10(x + 1e-20);
+const energy = (x, a, b) => { let s = 0; for (let i = a; i < b; i++) s += x[i] * x[i]; return s / (b - a); };
+
+function envelope(x) {
+  const n = Math.floor(x.length / FRAME);
+  const e = new Float64Array(n);
+  for (let f = 0; f < n; f++) e[f] = Math.sqrt(energy(x, f * FRAME, (f + 1) * FRAME));
+  return e;
+}
+
+// Where `ref` starts inside `y` (samples): coarse on 10 ms envelopes, then
+// sample-exact around the coarse answer.
+function align(ref, y) {
+  const er = envelope(ref), ey = envelope(y);
+  let best = -Infinity, lagF = 0;
+  for (let L = -300; L <= 300; L++) {
+    let c = 0;
+    for (let f = 0; f < er.length; f++) { const g = f + L; if (g >= 0 && g < ey.length) c += er[f] * ey[g]; }
+    if (c > best) { best = c; lagF = L; }
+  }
+  best = -Infinity;
+  let lag = lagF * FRAME;
+  for (let L = lagF * FRAME - FRAME; L <= lagF * FRAME + FRAME; L++) {
+    let c = 0;
+    for (let i = 6 * SR; i < 20 * SR; i += 2) { const j = i + L; if (j >= 0 && j < y.length) c += ref[i] * y[j]; }
+    if (c > best) { best = c; lag = L; }
+  }
+  return lag;
+}
+
+function slice(y, lag, n) {
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) { const j = i + lag; if (j >= 0 && j < y.length) out[i] = y[j]; }
+  return out;
+}
+
+function denoise(x) {
+  const d = instantiate(new WebAssembly.Module(readFileSync(join(WASM, `${VARIANT}.wasm`)))).create();
+  const n = Math.floor(x.length / FRAME);
+  const out = new Float32Array(x.length);
+  const prob = new Float32Array(n);
+  const o = new Float32Array(FRAME);
+  for (let f = 0; f < n; f++) { prob[f] = d.process(x.subarray(f * FRAME, (f + 1) * FRAME), o); out.set(o, f * FRAME); }
+  d.destroy();
+  // undo RNNoise's 20 ms; 0.2's probability runs one frame ahead of its
+  // audio (docs/81 §12.2), so it is one frame late, not two
+  return { out: out.subarray(960), prob: prob.subarray(1) };
+}
+
+function energyGateSpurts(x, a, b) {
+  let spurts = 0, open = false, last = -1e9, sent = 0;
+  for (let f = Math.floor(a / FRAME); f < Math.floor(b / FRAME); f++) {
+    if (Math.sqrt(energy(x, f * FRAME, (f + 1) * FRAME)) >= 0.01) last = f;
+    const g = f - last < 30;
+    if (g && !open) spurts++;
+    if (g) sent++;
+    open = g;
+  }
+  return { spurts, sentFraction: sent / (Math.floor(b / FRAME) - Math.floor(a / FRAME)) };
+}
+
+const input = ld('capture-input');
+const N = input.length;
+const nsOnRaw = ld('capture-ns-on');
+const nsOffRaw = ld('capture-ns-off');
+const lagOn = align(input, nsOnRaw);
+const lagOff = align(input, nsOffRaw);
+const nsOffAgcOffRaw = ld('capture-ns-off-agc-off');
+const lagOffAgcOff = align(input, nsOffAgcOffRaw);
+const nsOn = slice(nsOnRaw, lagOn, N);
+const nsOff = slice(nsOffRaw, lagOff, N);
+const nsOffAgcOff = slice(nsOffAgcOffRaw, lagOffAgcOff, N);
+const rn = denoise(nsOff);
+const both = denoise(nsOn);
+const rnAgcOff = denoise(nsOffAgcOff);
+const conds = {
+  none: nsOff,
+  'chromium-ns': nsOn,
+  rnnoise: slice(rn.out, 0, N),
+  both: slice(both.out, 0, N),
+  'none-agc-off': nsOffAgcOff,
+  'rnnoise-agc-off': slice(rnAgcOff.out, 0, N),
+};
+
+// The lead (0.5–4.5 s) is keyboard only; speech runs from 5 s.
+const LEAD = [0.5 * SR, 4.5 * SR];
+const SPEECH = [5 * SR, N - SR];
+const res = { variant: VARIANT, lagSamples: { nsOn: lagOn, nsOff: lagOff, nsOffAgcOff: lagOffAgcOff }, inputLeadDbfs: db(energy(input, ...LEAD)), conditions: {} };
+for (const [k, y] of Object.entries(conds)) {
+  res.conditions[k] = {
+    leadNoiseDbfs: db(energy(y, ...LEAD)),
+    leadAttenuationDb: db(energy(input, ...LEAD)) - db(energy(y, ...LEAD)),
+    speechLevelChangeDb: db(energy(y, ...SPEECH)) - db(energy(input, ...SPEECH)),
+    energyGateLead: energyGateSpurts(y, ...LEAD),
+  };
+}
+res.conditions.input = { energyGateLead: energyGateSpurts(input, ...LEAD) };
+// RNNoise's probability over the lead (keyboard only): frames ≥ 0.5 / 0.9.
+const leadProb = (d) => {
+  const lp = d.prob.subarray(LEAD[0] / FRAME, LEAD[1] / FRAME);
+  return { max: Math.max(...lp), over05: lp.filter((p) => p >= 0.5).length / lp.length, over09: lp.filter((p) => p >= 0.9).length / lp.length };
+};
+res.rnnoiseLeadProb = leadProb(rn);
+res.leadProb = { rnnoise: leadProb(rn), both: leadProb(both), 'rnnoise-agc-off': leadProb(rnAgcOff) };
+// The gate that ships (D9: on 0.90, off 0.70, hold 300 ms, floor -50 dBFS
+// on the denoised frame), run from the start of the capture; the share of
+// lead frames it sends and the spurts it opens there.
+const defaultGateLead = (d) => {
+  const out = d.out.subarray(0, N);
+  const nf = Math.min(d.prob.length, Math.floor(out.length / FRAME));
+  const rms = new Float64Array(nf);
+  for (let f = 0; f < nf; f++) rms[f] = Math.sqrt(energy(out, f * FRAME, (f + 1) * FRAME));
+  const g = probGate(d.prob.subarray(0, nf), 0.9, 0.7, 300, rms, 10 ** (-50 / 20));
+  let sent = 0, spurts = 0;
+  for (let f = LEAD[0] / FRAME; f < LEAD[1] / FRAME; f++) { sent += g[f]; if (g[f] && !g[f - 1]) spurts++; }
+  return { sentFraction: sent / ((LEAD[1] - LEAD[0]) / FRAME), spurts };
+};
+res.defaultGateLead = { rnnoise: defaultGateLead(rn), both: defaultGateLead(both), 'rnnoise-agc-off': defaultGateLead(rnAgcOff) };
+// A minute of keyboard alone (-36 dBFS), nobody talking: the default gate
+// over 1-59 s of each, as offline.mjs's noise-only run does without Chromium.
+if (existsSync(join(CAP, 'capture-kb-agc-on.f32'))) {
+  res.keyboardMinute = {};
+  for (const [k, file] of [['input', 'capture-kb-input'], ['agcOn', 'capture-kb-agc-on'], ['agcOff', 'capture-kb-agc-off']]) {
+    const x = ld(file);
+    const d = denoise(x);
+    const nf = Math.min(d.prob.length, Math.floor(d.out.length / FRAME));
+    const rms = new Float64Array(nf);
+    for (let f = 0; f < nf; f++) rms[f] = Math.sqrt(energy(d.out, f * FRAME, (f + 1) * FRAME));
+    const g = probGate(d.prob.subarray(0, nf), 0.9, 0.7, 300, rms, 10 ** (-50 / 20));
+    const a = 100, b = Math.min(nf, 5900);
+    let sent = 0, spurts = 0;
+    for (let f = a; f < b; f++) { sent += g[f]; if (g[f] && !g[f - 1]) spurts++; }
+    res.keyboardMinute[k] = {
+      inDbfs: db(energy(x, a * FRAME, b * FRAME)),
+      outDbfs: db(energy(d.out, a * FRAME, b * FRAME)),
+      sentFraction: sent / (b - a),
+      spurtsPerMin: spurts / (((b - a) * FRAME) / SR / 60),
+    };
+  }
+}
+writeFileSync(OUT, JSON.stringify(res, null, 2) + '\n');
+console.log(JSON.stringify(res, null, 1));

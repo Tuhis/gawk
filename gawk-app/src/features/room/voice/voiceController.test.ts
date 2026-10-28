@@ -26,8 +26,10 @@ import {
   VoiceController,
   rejoinDelayMs,
   type RoomVoiceReadiness,
+  type VoiceAudioPrefs,
   type VoiceViewState,
 } from './voiceController';
+import type { NoiseMode } from './voicePrefs';
 import { VoiceError, type VoiceSessionCallbacks, type VoiceSessionOptions } from './voiceSession';
 import type { VoiceCaptureCallbacks } from './voiceCapture';
 import type { VoicePlaybackCallbacks } from './voicePlayback';
@@ -70,10 +72,16 @@ class FakeSession {
 
 class FakeCapture {
   cb: VoiceCaptureCallbacks;
+  noise: NoiseMode;
   stopped = 0;
   started = 0;
-  constructor(cb: VoiceCaptureCallbacks) {
+  modes: NoiseMode[] = [];
+  constructor(cb: VoiceCaptureCallbacks, noise: NoiseMode) {
     this.cb = cb;
+    this.noise = noise;
+  }
+  async setNoise(mode: NoiseMode) {
+    this.modes.push(mode);
   }
   async start() {
     this.started++;
@@ -88,6 +96,8 @@ class FakeCapture {
 class FakePlayback {
   cb: VoicePlaybackCallbacks;
   frames: VoiceFrameHeader[] = [];
+  self: [Pick<VoiceFrameHeader, 'end' | 'seq'>, number][] = [];
+  selfStops = 0;
   volumes: [number, number][] = [];
   disposed = 0;
   constructor(cb: VoicePlaybackCallbacks) {
@@ -95,6 +105,12 @@ class FakePlayback {
   }
   handleFrame(h: VoiceFrameHeader) {
     this.frames.push(h);
+  }
+  handleSelfFrame(h: Pick<VoiceFrameHeader, 'end' | 'seq'>, p: Uint8Array) {
+    this.self.push([h, p.length]);
+  }
+  stopSelf() {
+    this.selfStops++;
   }
   setSpeakerVolume(s: number, v: number) {
     this.volumes.push([s, v]);
@@ -117,8 +133,9 @@ let captureHold: Promise<void> | null;
 let busMuted: boolean[];
 let clock: number;
 let states: VoiceViewState[];
+let savedLevels: number[];
 
-function make(mode: 'vad' | 'ptt' = 'vad') {
+function make(mode: 'vad' | 'ptt' = 'vad', audio?: Partial<VoiceAudioPrefs>) {
   return new VoiceController(
     {
       sendVoiceJoin: () => {
@@ -138,8 +155,8 @@ function make(mode: 'vad' | 'ptt' = 'vad') {
         sessions.push(s);
         return s;
       },
-      createCapture: (cb) => {
-        const c = new FakeCapture(cb);
+      createCapture: (cb, noise) => {
+        const c = new FakeCapture(cb, noise);
         captures.push(c);
         return c;
       },
@@ -152,8 +169,10 @@ function make(mode: 'vad' | 'ptt' = 'vad') {
       setVoiceMuted: (m) => busMuted.push(m),
       now: () => clock,
       onChange: (s) => states.push(s),
+      saveSpeechLevel: (db) => savedLevels.push(db),
     },
     mode,
+    audio,
   );
 }
 
@@ -188,6 +207,7 @@ beforeEach(() => {
   busMuted = [];
   clock = 0;
   states = [];
+  savedLevels = [];
 });
 afterEach(() => vi.useRealTimers());
 
@@ -555,7 +575,7 @@ describe('VoiceController frames and controls', () => {
     const s = await connected(c);
     const cap = captures[0].cb;
     clock = 1000;
-    expect(cap.shouldSend(LOUD, clock)).toBe(true);
+    expect(cap.shouldSend(LOUD, null, clock)).toBe(true);
     expect(c.getState().talking).toBe(true);
     cap.onPacket(new Uint8Array([1]), 1);
     cap.onPacket(new Uint8Array([2]), 1);
@@ -584,22 +604,22 @@ describe('VoiceController frames and controls', () => {
     const s = await connected(c);
     const cap = captures[0].cb;
     c.setSelfMuted(true);
-    expect(cap.shouldSend(LOUD, 0)).toBe(false);
+    expect(cap.shouldSend(LOUD, null, 0)).toBe(false);
     expect(s.controls[s.controls.length - 1]).toBe(VOICE_CONTROL_FLAG_SELF_MUTE);
     c.setSelfMuted(false);
     expect(s.controls[s.controls.length - 1]).toBe(0);
     c.setSelfDeafened(true);
     expect(busMuted[busMuted.length - 1]).toBe(true);
     expect(s.controls[s.controls.length - 1]).toBe(VOICE_CONTROL_FLAG_SELF_MUTE | VOICE_CONTROL_FLAG_SELF_DEAF);
-    expect(cap.shouldSend(LOUD, 10)).toBe(false);
+    expect(cap.shouldSend(LOUD, null, 10)).toBe(false);
     c.setSelfDeafened(false);
     s.cb.onState({ flags: VOICE_STATE_FLAG_CONNECTED | VOICE_STATE_FLAG_SERVER_MUTE, session: 42, name: 'x' });
     expect(c.getState().serverMuted).toBe(true);
-    expect(cap.shouldSend(LOUD, 20)).toBe(false);
+    expect(cap.shouldSend(LOUD, null, 20)).toBe(false);
     s.cb.onState({ flags: VOICE_STATE_FLAG_CONNECTED | VOICE_STATE_FLAG_SUPPRESSED, session: 42, name: 'x' });
-    expect(cap.shouldSend(LOUD, 30)).toBe(false);
+    expect(cap.shouldSend(LOUD, null, 30)).toBe(false);
     s.cb.onState({ flags: VOICE_STATE_FLAG_CONNECTED, session: 42, name: 'x' });
-    expect(cap.shouldSend(LOUD, 40)).toBe(true);
+    expect(cap.shouldSend(LOUD, null, 40)).toBe(true);
     c.dispose();
   });
 
@@ -607,15 +627,15 @@ describe('VoiceController frames and controls', () => {
     const c = make('ptt');
     await connected(c);
     const cap = captures[0].cb;
-    expect(cap.shouldSend(LOUD, 0)).toBe(false);
+    expect(cap.shouldSend(LOUD, null, 0)).toBe(false);
     c.setPttHeld(true);
     c.setPttHeld(true);
     expect(c.getState().pttHeld).toBe(true);
-    expect(cap.shouldSend(0, 10)).toBe(true);
+    expect(cap.shouldSend(0, null, 10)).toBe(true);
     c.setPttHeld(false);
-    expect(cap.shouldSend(LOUD, 20)).toBe(false);
+    expect(cap.shouldSend(LOUD, null, 20)).toBe(false);
     c.setTalkMode('vad');
-    expect(cap.shouldSend(LOUD, 30)).toBe(true);
+    expect(cap.shouldSend(LOUD, null, 30)).toBe(true);
     c.dispose();
   });
 
@@ -624,10 +644,10 @@ describe('VoiceController frames and controls', () => {
     void c.join(false);
     await flush();
     const cap = captures[0].cb;
-    expect(cap.shouldSend(LOUD, 0)).toBe(false);
+    expect(cap.shouldSend(LOUD, null, 0)).toBe(false);
     cap.onPacket(new Uint8Array([1]), 1);
     c.leave();
-    expect(cap.shouldSend(LOUD, 0)).toBe(false);
+    expect(cap.shouldSend(LOUD, null, 0)).toBe(false);
     cap.onPacket(new Uint8Array([1]), 1);
     cap.onSpurtEnd();
     cap.onError(new VoiceError('capture', 'late'));
@@ -671,5 +691,152 @@ describe('rejoinDelayMs', () => {
     expect(rejoinDelayMs(2, CLOSE_CODE_SERVER_DRAINING)).toBe(REJOIN_DELAYS_MS[1]);
     expect(rejoinDelayMs(1, null)).toBe(REJOIN_DELAYS_MS[0]);
     expect(rejoinDelayMs(50, null)).toBe(REJOIN_DELAYS_MS[REJOIN_DELAYS_MS.length - 1]);
+  });
+});
+
+describe('VoiceController audio settings (R80, docs/81 D9, D10, D15–D17)', () => {
+  it('starts the capture in the saved noise mode, and a mid-call change reaches it', async () => {
+    const c = make('vad', { noiseMode: 'off' });
+    await connected(c);
+    expect(captures[0].noise).toBe('off');
+    c.setNoiseMode('browser');
+    expect(captures[0].modes).toEqual(['browser']);
+    expect(c.getState().noiseMode).toBe('browser');
+    // What the capture reports is published as is.
+    const status = { requested: 'browser', running: 'off', loading: false, fallback: null, pending: true, offAvailable: true } as const;
+    captures[0].cb.onNoise(status);
+    expect(c.getState().noise).toEqual(status);
+    // The next join starts in the new mode; leaving drops the live status.
+    c.leave();
+    expect(c.getState().noise).toBeNull();
+    expect(c.getState().noiseMode).toBe('browser');
+    await connected(c);
+    expect(captures[1].noise).toBe('browser');
+    c.dispose();
+  });
+
+  it('listen-only builds no capture, so it never downloads RNNoise or opens the microphone', async () => {
+    const c = make();
+    await connected(c, true);
+    expect(captures).toHaveLength(0);
+    c.setNoiseMode('browser');
+    c.dispose();
+  });
+
+  it('the probability drives the gate with the user’s threshold; the level gate without one', async () => {
+    const c = make('vad', { speechThreshold: 0.6, levelThresholdDb: -20 });
+    await connected(c);
+    const cap = captures[0].cb;
+    expect(cap.shouldSend(0.05, 0.65, 0)).toBe(true);
+    expect(c.meter()).toEqual({ prob: 0.65, levelDb: expect.closeTo(-26, 0), open: true, floorDb: -50 });
+    c.setSpeechThreshold(0.9);
+    expect(c.getState().speechThreshold).toBe(0.9);
+    expect(cap.shouldSend(0.05, 0.65, 1000)).toBe(false);
+    // Without RNNoise: the level threshold, -20 dBFS (0.1 RMS).
+    expect(cap.shouldSend(0.05, null, 2000)).toBe(false);
+    c.setLevelThresholdDb(-30);
+    expect(c.getState().levelThresholdDb).toBe(-30);
+    expect(cap.shouldSend(0.05, null, 3000)).toBe(true);
+    expect(c.meter().prob).toBeNull();
+    expect(c.meter().floorDb).toBeNull();
+    c.leave();
+    expect(c.meter()).toEqual({ prob: null, levelDb: -100, open: false, floorDb: null });
+    c.dispose();
+  });
+
+  it('Hear yourself plays your own packets and terminators back, and stops when turned off', async () => {
+    const c = make();
+    await connected(c);
+    const cap = captures[0].cb;
+    cap.shouldSend(LOUD, null, 0);
+    cap.onPacket(new Uint8Array([1]), 1);
+    expect(playbacks[0].self).toEqual([]);
+    c.setHearSelf(true);
+    c.setHearSelf(true);
+    cap.onPacket(new Uint8Array([2, 2]), 1);
+    cap.onSpurtEnd();
+    expect(playbacks[0].self).toEqual([
+      [{ end: false, seq: 1 }, 2],
+      [{ end: true, seq: 2 }, 0],
+    ]);
+    c.setHearSelf(false);
+    expect(playbacks[0].selfStops).toBe(1);
+    // Never kept past the session.
+    c.setHearSelf(true);
+    c.leave();
+    expect(c.getState().hearSelf).toBe(false);
+    c.dispose();
+  });
+});
+
+describe('VoiceController learned level (R81, docs/82 D2–D7)', () => {
+  const at = (db: number) => 10 ** (db / 20);
+
+  it('the stored level sets the capture’s gain from the first block', async () => {
+    const c = make('vad', { speechLevelDb: -35 });
+    await connected(c);
+    expect(captures[0].cb.gainDb?.()).toBe(15);
+    c.dispose();
+  });
+
+  it('learns from the blocks it judges, raises the meter’s floor, and stores the level on leave', async () => {
+    const c = make();
+    await connected(c);
+    const cap = captures[0].cb;
+    for (let f = 0; f < 400; f++) cap.shouldSend(at(-24), 0.99, f * 10);
+    expect(c.meter().floorDb).toBe(-36);
+    expect(cap.gainDb?.()).toBe(4);
+    // A confident hum 16 dB under the speaker is under the floor.
+    expect(cap.shouldSend(at(-40), 0.99, 10_000)).toBe(false);
+    c.leave();
+    expect(savedLevels).toEqual([-24]);
+    c.dispose();
+  });
+
+  it('leaving after a long quiet stretch still stores the level the gain was using (review round 1)', async () => {
+    const c = make();
+    await connected(c);
+    const cap = captures[0].cb;
+    for (let f = 0; f < 400; f++) cap.shouldSend(at(-24), 0.99, f * 10);
+    for (let f = 400; f < 20_000; f++) cap.shouldSend(at(-70), 0.01, f * 10);
+    c.leave();
+    expect(savedLevels).toEqual([-24]);
+    c.dispose();
+  });
+
+  it('a call that learned nothing stores nothing, so it never writes back an old seed (review round 2)', async () => {
+    const c = make('vad', { speechLevelDb: -35 });
+    await connected(c);
+    captures[0].cb.shouldSend(at(-70), 0.01, 0);
+    c.leave();
+    expect(savedLevels).toEqual([]);
+    c.dispose();
+  });
+
+  it('a later call in the same tab that learned nothing stores nothing (review round 3)', async () => {
+    const c = make();
+    await connected(c);
+    for (let f = 0; f < 400; f++) captures[0].cb.shouldSend(at(-24), 0.99, f * 10);
+    c.leave();
+    expect(savedLevels).toEqual([-24]);
+    await connected(c);
+    captures[1].cb.shouldSend(at(-70), 0.01, 0);
+    c.leave();
+    expect(savedLevels).toEqual([-24]);
+    c.dispose();
+  });
+
+  it('forgetting the level drops the floor and the gain', async () => {
+    const c = make('vad', { speechLevelDb: -35 });
+    await connected(c);
+    const cap = captures[0].cb;
+    for (let f = 0; f < 400; f++) cap.shouldSend(at(-24), 0.99, f * 10);
+    c.forgetSpeechLevel();
+    expect(cap.gainDb?.()).toBe(0);
+    cap.shouldSend(at(-24), 0.99, 5000);
+    expect(c.meter().floorDb).toBe(-50);
+    c.leave();
+    expect(savedLevels).toEqual([]);
+    c.dispose();
   });
 });

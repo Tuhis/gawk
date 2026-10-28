@@ -222,8 +222,9 @@ async function newParticipant(browser, nick, certHash) {
 
 async function openRoom(p, code) {
   await p.page.goto(`${APP_URL}#/room/${code}`);
-  await p.page.getByRole('button', { name: 'People and chat' }).click();
-  await p.page.getByTestId('voice-section').waitFor({ timeout: 20_000 });
+  // R81 (docs/82 D1): voice has its own panel, opened from the header.
+  await p.page.getByRole('button', { name: /^Voice(:|$)/ }).click();
+  await p.page.getByTestId('voice-panel').waitFor({ timeout: 20_000 });
 }
 
 // The voice rows as the panel renders them.
@@ -237,7 +238,7 @@ async function voiceRows(p) {
 }
 
 async function sectionText(p) {
-  return p.page.getByTestId('voice-section').innerText();
+  return p.page.getByTestId('voice-panel').innerText();
 }
 
 async function shot(p, name) {
@@ -357,8 +358,8 @@ async function main() {
     const bob = await newParticipant(browser, 'bob', certHash);
     await openRoom(alice, ROOM);
     await openRoom(bob, ROOM);
-    await alice.page.getByTestId('voice-section').getByRole('button', { name: 'Join voice' }).click();
-    await bob.page.getByTestId('voice-section').getByRole('button', { name: /Listen only/ }).click();
+    await alice.page.getByTestId('voice-panel').getByRole('button', { name: 'Join voice' }).click();
+    await bob.page.getByTestId('voice-panel').getByRole('button', { name: /Listen only/ }).click();
     for (const p of [alice, bob]) {
       await pollFor(
         async () => {

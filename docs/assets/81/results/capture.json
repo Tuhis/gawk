@@ -1,0 +1,127 @@
+{
+  "variant": "v02-avx",
+  "lagSamples": {
+    "nsOn": 731,
+    "nsOff": 445,
+    "nsOffAgcOff": 446
+  },
+  "inputLeadDbfs": -38.22134780499728,
+  "conditions": {
+    "none": {
+      "leadNoiseDbfs": -26.97066269643257,
+      "leadAttenuationDb": -11.25068510856471,
+      "speechLevelChangeDb": 2.785878515279908,
+      "energyGateLead": {
+        "spurts": 1,
+        "sentFraction": 0.625
+      }
+    },
+    "chromium-ns": {
+      "leadNoiseDbfs": -25.71699487328136,
+      "leadAttenuationDb": -12.504352931715918,
+      "speechLevelChangeDb": 2.9544502268671806,
+      "energyGateLead": {
+        "spurts": 1,
+        "sentFraction": 0.5525
+      }
+    },
+    "rnnoise": {
+      "leadNoiseDbfs": -48.38068675921819,
+      "leadAttenuationDb": 10.159338954220914,
+      "speechLevelChangeDb": 1.2034575393032902,
+      "energyGateLead": {
+        "spurts": 3,
+        "sentFraction": 0.4025
+      }
+    },
+    "both": {
+      "leadNoiseDbfs": -32.77887104414097,
+      "leadAttenuationDb": -5.442476760856309,
+      "speechLevelChangeDb": 2.451049385445117,
+      "energyGateLead": {
+        "spurts": 2,
+        "sentFraction": 0.54
+      }
+    },
+    "none-agc-off": {
+      "leadNoiseDbfs": -39.464834004350024,
+      "leadAttenuationDb": 1.2434861993527448,
+      "speechLevelChangeDb": -0.5419765829309746,
+      "energyGateLead": {
+        "spurts": 1,
+        "sentFraction": 0.5525
+      }
+    },
+    "rnnoise-agc-off": {
+      "leadNoiseDbfs": -53.74404415021751,
+      "leadAttenuationDb": 15.522696345220233,
+      "speechLevelChangeDb": -1.7987477159984948,
+      "energyGateLead": {
+        "spurts": 1,
+        "sentFraction": 0.0775
+      }
+    },
+    "input": {
+      "energyGateLead": {
+        "spurts": 1,
+        "sentFraction": 0.5525
+      }
+    }
+  },
+  "rnnoiseLeadProb": {
+    "max": 0.9921440482139587,
+    "over05": 0.0325,
+    "over09": 0.015
+  },
+  "leadProb": {
+    "rnnoise": {
+      "max": 0.9921440482139587,
+      "over05": 0.0325,
+      "over09": 0.015
+    },
+    "both": {
+      "max": 0.9999088644981384,
+      "over05": 0.2275,
+      "over09": 0.1125
+    },
+    "rnnoise-agc-off": {
+      "max": 0.9986175298690796,
+      "over05": 0.0325,
+      "over09": 0.0125
+    }
+  },
+  "defaultGateLead": {
+    "rnnoise": {
+      "sentFraction": 0.1175,
+      "spurts": 2
+    },
+    "both": {
+      "sentFraction": 0.33,
+      "spurts": 3
+    },
+    "rnnoise-agc-off": {
+      "sentFraction": 0.0825,
+      "spurts": 1
+    }
+  },
+  "keyboardMinute": {
+    "input": {
+      "inDbfs": -35.9535385878782,
+      "outDbfs": -68.77176195521696,
+      "sentFraction": 0.005172413793103448,
+      "spurtsPerMin": 1.0344827586206897
+    },
+    "agcOn": {
+      "inDbfs": -26.623983354461494,
+      "outDbfs": -56.286607570490574,
+      "sentFraction": 0.022068965517241378,
+      "spurtsPerMin": 4.137931034482759
+    },
+    "agcOff": {
+      "inDbfs": -36.948351429703884,
+      "outDbfs": -65.69681097224552,
+      "sentFraction": 0.031379310344827584,
+      "spurtsPerMin": 6.206896551724138
+    }
+  }
+}

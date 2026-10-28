@@ -89,7 +89,7 @@ test models — **skip** unless they are pointed at the binaries:
 
 ```sh
 GAWK_SAMPLER_FFMPEG=$HOME/.local/gawk-ffmpeg/bin/ffmpeg \
-GAWK_SAMPLER_ONNXRUNTIME_LIB=/path/to/libonnxruntime.so.1.29.0 \
+GAWK_SAMPLER_ONNXRUNTIME_LIB=/path/to/libonnxruntime.so.1.31.0 \
 CGO_ENABLED=1 go test ./...
 ```
 

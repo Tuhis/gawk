@@ -24,7 +24,7 @@ const DRAG_RANGE_PX = 128;
 // Unmuting a level of zero would still be silent; it comes back at this.
 const UNMUTE_LEVEL = 0.25;
 
-const clampLevel = (v: number) => Math.round(Math.min(1, Math.max(0, v)) * 100) / 100;
+const clampLevel = (v: number, max: number) => Math.round(Math.min(max, Math.max(0, v)) * 100) / 100;
 
 // 'focus' opened from a tap or the keyboard (the slider takes focus); 'drag'
 // opened by pressing and dragging on the button (focus stays put).
@@ -45,6 +45,9 @@ interface Props {
   // The callers pin their auto-hiding control bar while the popover is open.
   onOpenChange?: (open: boolean) => void;
   className?: string;
+  // The top of the range, 1 (100 %) unless a caller allows a boost: a room
+  // voice speaker goes to 2 (R81). Above 1 the slider marks where 100 % is.
+  max?: number;
 }
 
 export function VolumeControl({
@@ -58,12 +61,15 @@ export function VolumeControl({
   onMutedChange,
   onOpenChange,
   className,
+  max = 1,
 }: Props) {
   const shown = muted ? 0 : volume;
   const pct = Math.round(shown * 100);
+  // The ring shows the share of the range, which is the level itself at max 1.
+  const ringPct = Math.round((shown / max) * 100);
 
   const setLevel = (v: number) => {
-    const next = clampLevel(v);
+    const next = clampLevel(v, max);
     onVolume(next);
     if (muted && next > 0) onMutedChange(false);
   };
@@ -175,16 +181,33 @@ export function VolumeControl({
         <IconButton label={muted ? unmuteLabel : muteLabel} onClick={toggleMute}>
           {levelIcon}
         </IconButton>
-        <input
-          className={styles.inline}
-          type="range"
-          min={0}
-          max={1}
-          step={0.01}
-          value={shown}
-          aria-label={label}
-          onChange={(e) => setLevel(Number(e.target.value))}
-        />
+        {max > 1 ? (
+          <span className={styles.inlineWrap}>
+            <input
+              className={styles.inline}
+              type="range"
+              min={0}
+              max={max}
+              step={0.01}
+              value={shown}
+              aria-label={label}
+              aria-valuetext={`${pct}%`}
+              onChange={(e) => setLevel(Number(e.target.value))}
+            />
+            <span className={styles.unity} style={{ left: `${100 / max}%` }} aria-hidden="true" />
+          </span>
+        ) : (
+          <input
+            className={styles.inline}
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={shown}
+            aria-label={label}
+            onChange={(e) => setLevel(Number(e.target.value))}
+          />
+        )}
       </span>
     );
   }
@@ -216,14 +239,14 @@ export function VolumeControl({
         {!open && (
           <svg className={styles.ring} viewBox="0 0 40 40" aria-hidden="true">
             <circle className={styles.ringTrack} cx="20" cy="20" r="18.5" />
-            {pct > 0 && (
+            {ringPct > 0 && (
               <circle
                 className={styles.ringLevel}
                 cx="20"
                 cy="20"
                 r="18.5"
                 pathLength={100}
-                strokeDasharray={`${pct} 100`}
+                strokeDasharray={`${ringPct} 100`}
               />
             )}
           </svg>
@@ -239,13 +262,13 @@ export function VolumeControl({
             className={styles.vertical}
             type="range"
             min={0}
-            max={1}
+            max={max}
             step={0.01}
             value={shown}
             aria-label={label}
             aria-valuetext={muted ? 'Muted' : `${pct}%`}
             autoFocus={mode === 'focus'}
-            style={{ '--level': `${pct}%` } as CSSProperties}
+            style={{ '--level': `${ringPct}%` } as CSSProperties}
             onChange={(e) => setLevel(Number(e.target.value))}
             onKeyDown={onSliderKeyDown}
           />
