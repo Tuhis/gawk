@@ -531,3 +531,38 @@ cut to silence.
 | A bursty speaker gets a cushion that covers their lateness | `voicePlayback.test.ts` `ArrivalJitter` and "cushion per speaker" |
 | The cushion survives the re-anchor at every spurt and the idle release | the same file, "carries the learned cushion" and "remembers a speaker" |
 | The measured speaker plays without the pops | the replay above, 11 → 3 dropouts inside spurts |
+
+### 12.7 Flapping transmissions (2026-10-29)
+
+§12.6 shipped in 0.59.1 and the same speaker still "broke up", a little
+less, in Firefox and in Chrome. A second listen-only capture (with
+payloads, deleted after the analysis), a listen-only headless Firefox in
+the real room, and replays of the real packets in both browsers showed:
+
+- His audio decodes clean, in both browsers, as desktop Mumble plays it.
+- During speech his sink held 120–170 ms with no underruns: §12.6 works.
+- His client **ends and restarts its transmission inside sentences**: 18
+  terminators in 30 s of speech, the next packet often 0, 38, 39, 40, 47,
+  51 or 72 ms after it, its seq reset to 0. Its voice activation flaps.
+  The web speaker's pauses were 29 ms at the shortest, and rare.
+
+Every new spurt flushed the sink. That threw away what the worklet still
+held, the end of the last word (with §12.6's cushion, up to ~150 ms), and
+then played silence until the cushion refilled. A new spurt now
+**re-anchors** instead (`AudioJitterBuffer.reanchor`, `AudioSink.reanchor`):
+the buffer forgets the timeline, so the jumped or reset seq is neither a
+hole nor late, keeps the queue playing, and holds the new spurt only while
+queue + pending is under the cushion. `flush()` stays for a timeline that
+is over (a broadcaster restart, a reconnect).
+
+Replaying the captured 30 s of his real packets at their real timing in
+Chromium: 0.59.1 played 29.26 s of his 29.99 s of speech; with the
+re-anchor it plays all 29.99 s. The silences left (10–290 ms) are his own
+pauses between transmissions.
+
+| Goal | Verified by |
+|---|---|
+| A new spurt keeps the end of the last one playing | `audio-buffer.test.ts` "talk-spurt re-anchor", `audioSink.test.ts` "re-anchors a talk spurt without flushing the worklet" |
+| No speaker is flushed at a spurt boundary | `voicePlayback.test.ts` "never flushes the sink at a spurt boundary" |
+| The measured speaker's speech all plays | the replay above, 29.26 → 29.99 s of 29.99 s |
+

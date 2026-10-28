@@ -8,10 +8,14 @@
 // slack, not a limit anyone meets.
 //
 // A talk spurt is its own timeline: a speaker's frames resume after a pause
-// (or after an end flag) with a seq that jumped by the pause, which the
-// jitter buffer would read as a hole to fill with silence. So the sink is
-// re-anchored at the start of every spurt — the cost is the buffer's priming
-// cushion, once per spurt, which is exactly what a jitter buffer is for.
+// (or after an end flag) with a seq that jumped by the pause, or restarted
+// at 0 (Mumble resets it per transmission), which the jitter buffer would
+// read as a hole to fill with silence or as late. So the sink's timeline is
+// re-anchored at the start of every spurt — re-anchored, never flushed: what
+// the worklet still holds is the end of the last spurt. A Mumble client
+// whose voice activation flaps ends and restarts its transmission inside a
+// sentence, often 0–50 ms apart; flushing there cut the end of each word
+// and then played silence until the cushion refilled (docs/80 §12.7).
 //
 // The cushion is per speaker, sized by how late that speaker's packets run
 // against their own seq clock (ArrivalJitter). A web speaker's 10 ms packets
@@ -54,7 +58,8 @@ export interface SpeakerDecoder {
 
 export interface SpeakerSink {
   push(chunk: AudioChunk): void;
-  flush(): void;
+  // A new spurt: forget the timeline, keep the queue (AudioSink.reanchor).
+  reanchor(): void;
   setVolume(volume: number): void;
   // The adaptive cushion (AudioJitterBuffer.updateTarget): jitter in ms.
   updateTarget(jitterMs: number | null, nowMs: number): void;
@@ -210,7 +215,7 @@ export function realPlaybackDeps(output: () => AudioOutput | null): VoicePlaybac
 
 function newSpeaker(session: number, now: number, jitter: ArrivalJitter): Speaker {
   // lastTargetAtMs < 0: no frame yet, so the first one starts a spurt
-  // without a flush (the sink is fresh).
+  // without a re-anchor (the sink is fresh).
   return { session, decoder: null, sink: null, lastFrameAtMs: now, ended: false, jitter, lastTargetAtMs: -1 };
 }
 
@@ -275,9 +280,9 @@ export class VoicePlayback implements VoicePlaybackLike {
     }
     const newSpurt = sp.ended || now - sp.lastFrameAtMs > SPURT_GAP_MS || sp.lastTargetAtMs < 0;
     sp.jitter.frame(header.seq, now, newSpurt);
-    if (newSpurt && sp.lastTargetAtMs >= 0) sp.sink?.flush();
-    // After the flush, which re-seeds the sink's target: a spurt must start
-    // on this speaker's cushion, not on the seed.
+    if (newSpurt && sp.lastTargetAtMs >= 0) sp.sink?.reanchor();
+    // At the re-anchor itself: the spurt's first chunks are held against
+    // this speaker's cushion, not a stale one.
     if (newSpurt || now - sp.lastTargetAtMs >= TARGET_UPDATE_INTERVAL_MS) {
       sp.sink?.updateTarget(sp.jitter.jitterMs(now), now);
       sp.lastTargetAtMs = now;

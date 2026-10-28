@@ -26,10 +26,13 @@ interface FakeDecoder extends SpeakerDecoder {
 }
 interface FakeSink extends SpeakerSink {
   pushed: AudioChunk[];
+  // Not part of SpeakerSink: here only to prove nothing flushes a speaker.
+  flush(): void;
   flushes: number;
+  reanchors: number;
   volume: number;
   disposed: boolean;
-  targets: { jitterMs: number | null; nowMs: number; afterFlushes: number }[];
+  targets: { jitterMs: number | null; nowMs: number; afterReanchors: number }[];
 }
 
 let clock = 0;
@@ -59,6 +62,7 @@ function makePlayback(volumeFor: (s: number) => number = () => 1, onSpeaking = v
         const s: FakeSink = {
           pushed: [],
           flushes: 0,
+          reanchors: 0,
           volume: -1,
           disposed: false,
           targets: [],
@@ -68,11 +72,14 @@ function makePlayback(volumeFor: (s: number) => number = () => 1, onSpeaking = v
           flush() {
             this.flushes++;
           },
+          reanchor() {
+            this.reanchors++;
+          },
           setVolume(v) {
             this.volume = v;
           },
           updateTarget(jitterMs, nowMs) {
-            this.targets.push({ jitterMs, nowMs, afterFlushes: this.flushes });
+            this.targets.push({ jitterMs, nowMs, afterReanchors: this.reanchors });
           },
           dispose() {
             this.disposed = true;
@@ -156,19 +163,39 @@ describe('VoicePlayback decoder lifecycle', () => {
     p.handleFrame(frame(7, 1), opus);
     clock = 10;
     p.handleFrame(frame(7, 2), opus);
-    expect(sinks[0].flushes).toBe(0);
+    expect(sinks[0].reanchors).toBe(0);
     // A bare terminator decodes nothing.
     p.handleFrame(frame(7, 3, true), new Uint8Array(0));
     expect(decoders[0].decoded).toHaveLength(2);
     clock = 20;
     p.handleFrame(frame(7, 50), opus);
-    expect(sinks[0].flushes).toBe(1);
+    expect(sinks[0].reanchors).toBe(1);
     clock = 20 + SPURT_GAP_MS + 1;
     p.handleFrame(frame(7, 90), opus);
-    expect(sinks[0].flushes).toBe(2);
+    expect(sinks[0].reanchors).toBe(2);
     // A last frame that carries the end flag with audio still decodes.
     p.handleFrame(frame(7, 91, true), opus);
     expect(decoders[0].decoded).toHaveLength(5);
+    p.dispose();
+  });
+
+  // A Mumble client whose voice activation flaps ends its transmission and
+  // starts the next within tens of ms (docs/80 §12.7). Flushing there threw
+  // away the end of the last word, still queued in the worklet, and played
+  // silence until the cushion refilled.
+  it('never flushes the sink at a spurt boundary: the end of the last spurt still plays', () => {
+    const { p } = makePlayback();
+    for (let k = 0; k < 20; k++) {
+      clock = k * 10;
+      p.handleFrame(frame(7, k), opus);
+    }
+    p.handleFrame(frame(7, 20, true), new Uint8Array(0));
+    clock += 40;
+    p.handleFrame(frame(7, 0), opus);
+    clock += SPURT_GAP_MS + 1;
+    p.handleFrame(frame(7, 1), opus);
+    expect(sinks[0].reanchors).toBe(2);
+    expect(sinks[0].flushes).toBe(0);
     p.dispose();
   });
 
@@ -352,7 +379,7 @@ describe('VoicePlayback, Hear yourself (docs/81 D16)', () => {
     // A new spurt re-anchors, as anyone's does.
     p.handleSelfFrame({ end: true, seq: 5 }, new Uint8Array(0));
     p.handleSelfFrame({ end: false, seq: 50 }, opus);
-    expect(sinks[0].flushes).toBe(1);
+    expect(sinks[0].reanchors).toBe(1);
     // Others fill the cap without evicting it.
     for (let s = 1; s <= MAX_VOICE_SPEAKERS + 1; s++) p.handleFrame(frame(s, 0), opus);
     expect(decoders[0].closed).toBe(false);
@@ -446,9 +473,9 @@ describe('VoicePlayback cushion per speaker', () => {
     clock += 2000;
     p.handleFrame(frame(7, 400), opus);
     const t = sinks[0].targets[sinks[0].targets.length - 1];
-    // Re-anchoring resets the sink's target to its seed: the speaker's
-    // jitter has to reach it after the flush, or every spurt starts on 60 ms.
-    expect(t.afterFlushes).toBe(1);
+    // The spurt's cushion reaches the sink at the re-anchor itself, before
+    // the spurt's first chunk can be released against a stale target.
+    expect(t.afterReanchors).toBe(1);
     expect(t.jitterMs).toBe(70);
     p.dispose();
   });

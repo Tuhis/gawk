@@ -573,6 +573,12 @@ export class AudioSink {
     }
   }
 
+  // A new talk spurt (room voice): re-anchor the timeline, keep the queue.
+  // The worklet is not told: the end of the last spurt is still playing.
+  reanchor(): void {
+    this.buffer.reanchor();
+  }
+
   // Broadcaster restart / viewer reconnect: drop everything and re-anchor.
   // Without it every packet on the new timeline reads as late forever.
   flush(): void {
