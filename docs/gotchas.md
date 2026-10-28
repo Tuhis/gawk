@@ -2424,6 +2424,16 @@ entries still describe code `gawk-pubsim` runs (now
   **`AudioData` does not exist inside an AudioWorklet** in any engine, so a
   worklet capture node posts PCM out; **Firefox ignores Opus `bitrate`**
   (~57 kbit/s for a 40 kbit/s request). (`docs/assets/80/RESULTS.md`)
+- **A native Mumble client can send its 10 ms packets in clumps.** One on
+  Linux (1.5.939, KDE Flatpak) was measured on the reference server at a
+  0.2 ms median inter-arrival and up to 126 ms late against its own seq
+  clock, against ≤ 15 ms for a web speaker. A fixed 60 ms voice cushion ran
+  dry on every long gap: a pop every ~2 s, for that one speaker only.
+  Native Mumble listeners never hear it (adaptive jitter buffer, Opus PLC).
+  Voice playback sizes the cushion per speaker from the measured lateness and
+  remembers it across pauses. Chromium's `AudioDecoder` output timestamps
+  also ignore input gaps, so the jitter buffer can never see a lost packet
+  from the timestamps. ([docs/80](80-mumble-bridge.md) §12.6)
 
 **RNNoise in the browser (R80)**
 
