@@ -81,7 +81,7 @@ script for what counts as a dependency here and why.
 | `go.yaml.in/yaml/v2` | v2.4.4 | `Apache-2.0 OR MIT` | Copyright (c) 2006 Kirill Simonov<br>Copyright 2011-2016 Canonical Ltd |
 | `go.yaml.in/yaml/v3` | v3.0.5 | `Apache-2.0 OR MIT OR Apache-2.0` | copyright staring in 2011 when the project was ported over:<br>Copyright (c) 2006-2010 Kirill Simonov<br>Copyright (c) 2006-2011 Kirill Simonov<br>Copyright (c) 2011-2019 Canonical Ltd<br>Copyright 2011-2016 Canonical Ltd |
 | `golang.org/x/crypto` | v0.58.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
-| `golang.org/x/net` | v0.60.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
+| `golang.org/x/net` | v0.61.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/oauth2` | v0.36.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/sync` | v0.24.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/sys` | v0.49.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
