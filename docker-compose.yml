@@ -246,7 +246,7 @@ services:
   # volume (no --tls-cert-file given); clients skip verification, which is
   # exactly as much TLS as a loopback dev control plane deserves.
   kube-apiserver:
-    image: registry.k8s.io/kube-apiserver:v1.34.1
+    image: registry.k8s.io/kube-apiserver:v1.37.2
     command:
       - kube-apiserver
       - --etcd-servers=http://kine:2379
