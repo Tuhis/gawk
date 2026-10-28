@@ -219,7 +219,7 @@ services:
   # etcd's API over SQLite — the datastore the apiserver expects, at a
   # fraction of etcd's footprint and none of its fsync churn.
   kine:
-    image: rancher/kine:v0.13.5
+    image: rancher/kine:v0.14.14
     command:
       - "--endpoint=sqlite:///db/state.db?_journal=WAL&cache=shared"
       - "--listen-address=0.0.0.0:2379"
