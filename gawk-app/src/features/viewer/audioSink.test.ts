@@ -225,6 +225,20 @@ describe('AudioSink stall recovery', () => {
     sink.dispose();
   });
 
+  it('re-anchors a talk spurt without flushing the worklet', async () => {
+    const { posts } = stubWebAudioCapturing();
+    const sink = new AudioSink();
+    await sink.start(SAMPLE_RATE);
+    for (let i = 0; i < 3; i++) sink.push(chunk(i * 20_000));
+    posts.length = 0;
+    sink.reanchor();
+    // The worklet's queue is the end of the last spurt, still playing.
+    expect(posts.some((m) => m.type === 'flush')).toBe(false);
+    sink.push(chunk(0));
+    expect(posts.filter((m) => m.type === 'chunk')).toHaveLength(1);
+    sink.dispose();
+  });
+
   it('does not flush while the worklet is reporting normally', async () => {
     let now = 0;
     const { posts, getNode } = stubWebAudioCapturing();

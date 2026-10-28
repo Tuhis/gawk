@@ -578,6 +578,24 @@ export class AudioJitterBuffer {
     // start-time decision and this is the only chance to get it right.
   }
 
+  // A new talk spurt on the same stream (room voice, docs/80 D22): forget the
+  // timeline — the spurt's timestamps jumped by the pause, or restarted — but
+  // keep what the sink still holds, which is the end of the last spurt and
+  // must play out. If that is less than the cushion, hold the new spurt until
+  // queue + pending reach it, so the next arrival burst does not run the
+  // worklet dry. flush() is for a timeline that is over; this is for one
+  // that merely paused, which a Mumble client with flapping voice activation
+  // does several times a second (docs/80 §12.7).
+  reanchor(): void {
+    this.nextExpectedUs = null;
+    this.skipLeadMs = 0;
+    this.shedding = false;
+    if (!this.priming && this.bufferedMs() < this.targetMs) {
+      this.priming = true;
+      this.dueAtMs = null;
+    }
+  }
+
   // Drops everything pending and forgets the timeline: a broadcaster restart or
   // a viewer reconnect. Without this, every packet on the new timeline reads as
   // "older than the playhead" and is late-dropped forever.

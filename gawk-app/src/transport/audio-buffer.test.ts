@@ -203,6 +203,56 @@ describe('AudioJitterBuffer policies', () => {
 // presentation schedule says it is due, because after playback starts the
 // worklet runs at 1x and the alignment can never be changed again by
 // buffering.
+// A Mumble client ends and restarts its transmission inside a sentence when
+// its voice activation flaps: one measured on the reference server sent 18
+// terminators in 30 s of speech, the next packet often 0–50 ms later, with
+// its seq reset to 0. A flush at each of those threw away the ~150 ms still
+// queued in the worklet and then played silence until the cushion refilled
+// — the speech "broke" every second for that speaker only (docs/80 §12.7).
+describe('AudioJitterBuffer talk-spurt re-anchor', () => {
+  it('re-anchors the timeline without dropping what is queued', () => {
+    const { emitted, buffer } = collecting();
+    for (let i = 0; i < 5; i++) buffer.push(chunk(1_000_000 + i * FRAME_US));
+    expect(emitted).toHaveLength(5);
+    buffer.reanchor();
+    // Still queued: nothing was thrown away, and it is not a reset.
+    expect(buffer.getStats().bufferedMs).toBe(100);
+    expect(buffer.getStats().resets).toBe(0);
+    // The new spurt's seq restarted: neither late nor a hole, and with the
+    // cushion still in the worklet it plays straight on.
+    expect(buffer.push(chunk(0))).toBe('accepted');
+    expect(emitted).toHaveLength(6);
+    expect(emitted.some(isSilence)).toBe(false);
+    expect(buffer.getStats().lateDrops).toBe(0);
+  });
+
+  it('a forward seq jump across the pause is not a hole to conceal', () => {
+    const { emitted, buffer } = collecting();
+    for (let i = 0; i < 5; i++) buffer.push(chunk(i * FRAME_US));
+    buffer.reanchor();
+    buffer.push(chunk(2_000_000));
+    expect(emitted.some(isSilence)).toBe(false);
+    expect(buffer.getStats().gapsConcealed).toBe(0);
+    expect(buffer.getStats().gapsSkipped).toBe(0);
+  });
+
+  it('holds the new spurt until queue + pending reach the cushion when the queue is shallow', () => {
+    const { emitted, buffer } = collecting();
+    for (let i = 0; i < 3; i++) buffer.push(chunk(i * FRAME_US));
+    expect(emitted).toHaveLength(3);
+    // The worklet has drained to 20 ms when the new spurt starts.
+    buffer.noteDepth(20);
+    buffer.reanchor();
+    buffer.push(chunk(5_000_000));
+    expect(emitted).toHaveLength(3);
+    buffer.push(chunk(5_000_000 + FRAME_US));
+    // 20 queued + 40 pending = the 60 ms seed target: released, in order.
+    expect(emitted).toHaveLength(5);
+    expect(emitted[3].timestampUs).toBe(5_000_000);
+    expect(emitted.some(isSilence)).toBe(false);
+  });
+});
+
 describe('AudioJitterBuffer alignment', () => {
   function scheduled(dueAt: (timestampUs: number) => number | null) {
     const emitted: AudioChunk[] = [];

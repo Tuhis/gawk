@@ -2434,6 +2434,12 @@ entries still describe code `gawk-pubsim` runs (now
   remembers it across pauses. Chromium's `AudioDecoder` output timestamps
   also ignore input gaps, so the jitter buffer can never see a lost packet
   from the timestamps. ([docs/80](80-mumble-bridge.md) §12.6)
+- **A Mumble transmission end is not the end of the audio.** A client with
+  flapping voice activation sends a terminator and starts the next
+  transmission 0–50 ms later, seq reset to 0, several times a second.
+  Flushing the sink there cut the end of each word and then played silence
+  until the cushion refilled; a new spurt re-anchors the jitter buffer's
+  timeline and keeps the queue. ([docs/80](80-mumble-bridge.md) §12.7)
 
 **RNNoise in the browser (R80)**
 
