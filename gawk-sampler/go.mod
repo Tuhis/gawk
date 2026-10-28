@@ -12,7 +12,7 @@ replace github.com/Tuhis/gawk/gawk-server => ../gawk-server
 require (
 	github.com/Tuhis/gawk/gawk-server v0.0.0-00010101000000-000000000000
 	github.com/prometheus/client_golang v1.25.0
-	github.com/yalue/onnxruntime_go v1.36.0
+	github.com/yalue/onnxruntime_go v1.38.0
 )
 
 require (

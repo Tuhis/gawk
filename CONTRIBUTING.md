@@ -265,9 +265,16 @@ only sees its bindings.
 
 For **Renovate PRs this happens automatically**: `postUpgradeTasks` in
 `renovate.json5` runs the generator on the bump branch, so the notices land in
-the same PR as the version change. That block only takes effect when the
-self-hosted bot's global config allowlists the command; if Renovate PRs start
-failing `licenses-fresh`, that allowlist is what is missing.
+the same PR as the version change. Before it, `tools/renovate/tidy-go.sh`
+tidies the modules that build gawk-server through a local `replace`
+(gawk-admin, gawk-telemetry, gawk-sampler, gawk-mumble-bridge). Renovate only
+tidies the `go.mod` files it edited itself, so without this step a bump that
+moved gawk-server's graph left the other modules stale. Run the same script by
+hand after editing `gawk-server/go.mod` yourself. Both commands only take
+effect when the self-hosted bot's global config allowlists them
+(`RENOVATE_ALLOWED_COMMANDS` in the `Tuhis/ioio` Renovate CronJob). If Renovate
+PRs start failing `licenses-fresh` or the tidy job, that allowlist is what is
+missing.
 
 ## What a good PR looks like
 

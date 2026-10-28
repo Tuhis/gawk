@@ -1,17 +1,8 @@
-/* R79 room voice: the people panel's Voice section and the in-call dock.
-   Built from the room panel's own rows, sections and segmented control
-   (room.module.css); this file holds only what voice adds. */
-
-.notice {
-  margin: 0;
-  font-size: var(--fs-xs);
-  color: var(--muted);
-  line-height: 1.45;
-  padding: 0.5rem 0.65rem;
-  border: 1px solid var(--border-soft);
-  border-radius: var(--r-sm);
-  background: rgba(255, 255, 255, 0.03);
-}
+/* R79/R81 room voice: the header's Voice button, the invite chip, the voice
+   panel (flyout, pinned column, phone sheet), the in-call dock with its
+   Microphone popover, and the phone's thumb bar. Built from the room's own
+   sections, lists and segmented control (room.module.css); this file holds
+   only what voice adds. */
 
 .status {
   margin: 0;
@@ -33,13 +24,6 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 0.4rem;
-}
-
-.controls {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.55rem;
 }
 
 .toggle[data-off='true'] {
@@ -139,14 +123,6 @@
   color: var(--ok);
 }
 
-.rowVolume {
-  flex: none;
-}
-
-.rowVolume input[type='range'] {
-  width: 4.5rem;
-}
-
 /* The in-call dock: bottom left over the stage, above the footer. It does not
    fade with the chrome — it is the visible sign that the mic is live. */
 .dock {
@@ -158,26 +134,12 @@
   align-items: center;
   gap: 0.25rem;
   max-width: calc(100% - 2rem);
-  padding: 0.25rem 0.35rem 0.25rem 0.75rem;
+  padding: 0.2rem;
   background: var(--glass);
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
   border: 1px solid var(--glass-border);
   border-radius: 999px;
-}
-
-.dockState {
-  width: 8px;
-  height: 8px;
-  flex: none;
-  border-radius: 50%;
-  border: 1px solid var(--faint);
-}
-
-.dockState[data-talking='true'] {
-  background: var(--ok);
-  border-color: var(--ok);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent);
 }
 
 .dockLabel {
@@ -202,5 +164,767 @@
   .dockHold {
     min-height: 2.75rem;
     padding: 0.45rem 1.1rem;
+  }
+}
+
+/* R80 (docs/81 D15): the Audio section, collapsed by default. */
+.audio {
+  align-self: stretch;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-sm);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.audioSummary {
+  padding: 0.45rem 0.65rem;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.audioBody {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0 0.65rem 0.65rem;
+}
+
+.audioLabel {
+  display: flex;
+  justify-content: space-between;
+  align-self: stretch;
+  gap: 0.5rem;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.audioValue {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-weight: 400;
+}
+
+.audioNote {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--faint);
+  line-height: 1.4;
+}
+
+.audioReset {
+  font-size: var(--fs-xs);
+}
+
+.audioCheck {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.meterRow {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  gap: 0.5rem;
+}
+
+.meter {
+  position: relative;
+  flex: 1;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.meterFill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: color-mix(in srgb, var(--accent) 70%, transparent);
+  transition: width 50ms linear;
+}
+
+/* R81: green while the block is sent, grey while it is too quiet to count
+   (under the gate's level floor) whatever its height. */
+.meter[data-tone='open'] .meterFill {
+  background: var(--ok);
+}
+
+.meter[data-tone='quiet'] .meterFill {
+  background: var(--faint);
+}
+
+/* The threshold control: the slider laid over its stretch of the meter, its
+   thumb the threshold line. */
+.threshold {
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  gap: 0.35rem;
+}
+
+.track {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  height: 1.5rem;
+}
+
+.thresholdInput {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  margin: 0;
+  background: transparent;
+  cursor: ew-resize;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.thresholdInput::-webkit-slider-runnable-track {
+  height: 100%;
+  background: transparent;
+}
+
+.thresholdInput::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 6px;
+  height: 1.5rem;
+  border-radius: 3px;
+  background: var(--text);
+  border: 1px solid var(--bg);
+}
+
+.thresholdInput::-moz-range-track {
+  background: transparent;
+}
+
+.thresholdInput::-moz-range-thumb {
+  width: 5px;
+  height: 1.35rem;
+  border-radius: 3px;
+  background: var(--text);
+  border: 1px solid var(--bg);
+}
+
+.thresholdInput:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.meterLamp {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 50%;
+  border: 1px solid var(--faint);
+}
+
+.meterLamp[data-open='true'] {
+  background: var(--ok);
+  border-color: var(--ok);
+}
+
+/* A segmented control that fills its row. */
+.fill {
+  display: flex;
+  align-self: stretch;
+}
+
+.fill > button {
+  flex: 1;
+  justify-content: center;
+}
+
+/* ── The panel ── */
+.flyout {
+  position: absolute;
+  top: 3.6rem;
+  right: 1rem;
+  z-index: 30;
+  width: min(320px, calc(100% - 2rem));
+  max-height: calc(100% - 9rem);
+  overflow-y: auto;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  padding: 0.65rem 0.75rem 0.75rem;
+  text-align: left;
+  background: rgba(18, 19, 23, 0.9);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow);
+}
+
+/* Pinned and the phone sheet reuse the people panel's box; voice's own
+   width is the flyout's. */
+.columnPanel {
+  --panel-w: 320px;
+  gap: 0.65rem;
+  padding: 0.65rem 0.75rem;
+}
+
+.panelHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-height: 2rem;
+}
+
+.panelTitle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.connected {
+  font-size: var(--fs-xs);
+  font-weight: 400;
+  color: var(--ok);
+}
+
+.pinned {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.joinRow {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.joinRow > button {
+  justify-content: center;
+}
+
+.joinBtn {
+  flex: 1;
+  background: var(--ok);
+  border-color: var(--ok);
+  color: #0a0b0d;
+}
+
+.noticeLine {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.controlRow {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.boxed {
+  width: 2.25rem;
+  height: 2.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+
+.leaveBtn {
+  color: #ff8e92;
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+}
+
+/* ── The roster ── */
+.rosterSection {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border-soft);
+}
+
+.rosterItem {
+  border-radius: var(--r-sm);
+}
+
+.rosterItem[data-open='true'] {
+  background: var(--surface-2);
+  padding-bottom: 0.4rem;
+}
+
+.rosterRow {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+  min-height: 2.1rem;
+  padding: 0.2rem 0.35rem;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+}
+
+button.rosterRow {
+  cursor: pointer;
+}
+
+button.rosterRow:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.rosterRow > :nth-child(2) {
+  flex: 1;
+  min-width: 0;
+}
+
+.boostMark {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--muted);
+}
+
+.boostMark[data-boost='true'],
+.volumeValue[data-boost='true'] {
+  color: #e5b84a;
+}
+
+.rowVolume {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0 0.4rem;
+}
+
+.rowVolume > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.rowVolume input[type='range'] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.volumeValue {
+  width: 2.75rem;
+  flex: none;
+  padding: 0;
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  text-align: right;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+/* ── Avatars ── */
+.avatar {
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #0a0b0d;
+  background: #86a0ff;
+}
+
+.avatar[data-hue='1'] { background: #e5a36b; }
+.avatar[data-hue='2'] { background: #9be0b8; }
+.avatar[data-hue='3'] { background: #d4b4ff; }
+.avatar[data-hue='4'] { background: #ffd27a; }
+.avatar[data-hue='5'] { background: #8fd3e8; }
+
+.avatar[data-on='true'] {
+  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px var(--ok);
+}
+
+.stack {
+  display: inline-flex;
+}
+
+.stack .avatar {
+  width: 1.4rem;
+  height: 1.4rem;
+  border: 2px solid var(--surface-1);
+}
+
+.stack .avatar + .avatar {
+  margin-left: -0.45rem;
+}
+
+/* ── The first join's card ── */
+.firstJoin {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.65rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.firstJoinTitle {
+  font-size: var(--fs-sm);
+}
+
+.firstJoinFoot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+/* ── The header's Voice button and its hint ── */
+.voiceBtnWrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.voiceBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  height: 2.25rem;
+  padding: 0 0.7rem;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.voiceBtn[aria-expanded='true'] {
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+.voiceBtn[data-live='true'] {
+  background: color-mix(in srgb, var(--ok) 25%, transparent);
+  border-color: color-mix(in srgb, var(--ok) 60%, transparent);
+}
+
+.badge {
+  min-width: 1.1rem;
+  padding: 0 0.35rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1.1rem;
+  text-align: center;
+  color: #0a0b0d;
+  background: var(--ok);
+  border-radius: 999px;
+}
+
+.liveDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.hint {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  z-index: 25;
+  width: 16rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.35rem;
+  padding: 0.6rem 0.75rem;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  text-align: left;
+  color: var(--text);
+  background: rgba(18, 19, 23, 0.92);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow);
+}
+
+.hint > span {
+  align-self: stretch;
+}
+
+/* ── The invite chip: where the dock will sit ── */
+.invite {
+  position: absolute;
+  left: 1rem;
+  bottom: 4.75rem;
+  z-index: 22;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  max-width: calc(100% - 2rem);
+  padding: 0.2rem 0.2rem 0.2rem 0.45rem;
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+}
+
+.inviteText {
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+
+.inviteJoin,
+.inviteListen {
+  height: 1.9rem;
+  padding: 0 0.75rem;
+  font: inherit;
+  font-size: var(--fs-sm);
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.inviteJoin {
+  font-weight: 600;
+  color: #0a0b0d;
+  background: var(--ok);
+}
+
+.inviteListen {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.inviteHide {
+  width: 1.75rem;
+  height: 1.75rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+/* ── The dock's parts ── */
+.summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  height: 2.1rem;
+  padding: 0 0.6rem 0 0.25rem;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: none;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.summary:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.summaryName {
+  color: var(--ok);
+  max-width: 8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.summaryCount {
+  color: var(--muted);
+}
+
+.dockDivider {
+  width: 1px;
+  height: 1.25rem;
+  margin: 0 0.15rem;
+  background: var(--border);
+}
+
+.split {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+}
+
+.split[data-open='true'] {
+  background: var(--accent-soft);
+}
+
+.caret {
+  width: 1.25rem;
+  margin-left: -0.35rem;
+  font-size: 0.7rem;
+}
+
+.popover {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 0.5rem);
+  width: 300px;
+  max-width: calc(100vw - 2rem);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.65rem 0.75rem 0.75rem;
+  text-align: left;
+  background: rgba(18, 19, 23, 0.94);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow);
+}
+
+.popoverTitle {
+  font-size: var(--fs-sm);
+}
+
+.popoverFoot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border-soft);
+}
+
+/* ── The phone's thumb bar ── */
+.thumbBar {
+  position: absolute;
+  left: 0.75rem;
+  right: 0.75rem;
+  bottom: 4.25rem;
+  z-index: 32;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem;
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+}
+
+/* Above the bottom sheet while it is open. */
+.thumbBar[data-raised='true'] {
+  bottom: calc(55vh + 0.5rem);
+}
+
+.thumbRound {
+  width: 3.25rem;
+  height: 3.25rem;
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface-2);
+}
+
+.thumbMain {
+  flex: 1;
+  min-height: 3.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  font: inherit;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.thumbMain[data-off='true'] {
+  color: #ff8e92;
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+}
+
+.thumbMain[data-held='true'] {
+  color: #0a0b0d;
+  background: var(--ok);
+  border-color: var(--ok);
+}
+
+.thumbNote {
+  flex: 1;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+/* ── The phone sheet's People | Voice tabs ── */
+.tabs {
+  display: flex;
+  flex: 1;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+
+.tab {
+  flex: 1;
+  height: 2.25rem;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+
+.tab[aria-selected='true'] {
+  color: var(--text);
+  background: var(--accent-soft);
+}
+
+@media (max-width: 719px) {
+  .invite {
+    left: 0.75rem;
+    bottom: 4.25rem;
+  }
+
+  /* The header is full on a phone: the Voice button keeps its icon (or live
+     dot) and count, the words go (its aria-label still says them). */
+  .voiceBtnText {
+    display: none;
+  }
+
+  .voiceBtn {
+    padding: 0 0.6rem;
   }
 }

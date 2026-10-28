@@ -1009,7 +1009,7 @@ export function BroadcasterScreen({
   const topbar = (room: RoomHeaderContext | null) => (
     <div
       className={[styles.topbar, room && !room.showChrome ? styles.topbarHidden : ''].join(' ')}
-      data-panel={room?.panelOpen ? 'true' : 'false'}
+      data-panel={room?.sideOpen ? 'true' : 'false'}
     >
       <div className={styles.left}>
         <span className={styles.liveBadge}>
@@ -1092,6 +1092,7 @@ export function BroadcasterScreen({
         <IconButton label="Settings" onClick={() => setSettingsOpen((o) => !o)}>
           <GearIcon />
         </IconButton>
+        {room?.voiceButton}
         {room ? (
           <IconButton
             label={room.panelOpen ? 'Hide people and chat' : 'People and chat'}

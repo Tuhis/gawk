@@ -436,6 +436,34 @@ def npm_runtime_entries(lock: dict) -> dict[str, dict]:
     }
 
 
+# Code the app bundle ships that no lockfile knows: built from pinned source
+# and committed (R80, docs/81 D19), so it is listed by hand, as
+# NATIVE_LIBRARIES does for the Rust shells' C libraries. `files` are
+# repository paths; build.sh copies the tarball's own COPYING beside the
+# wasm, and CI checks it against a rebuild.
+VENDORED_APP = [
+    dict(
+        name="RNNoise",
+        version="0.2",
+        spdx="BSD-3-Clause",
+        files=["gawk-app/rnnoise/COPYING"],
+    ),
+]
+
+
+def vendored_app() -> list[Package]:
+    return [
+        Package(
+            v["name"],
+            v["version"],
+            v["spdx"],
+            None,
+            [(Path(f).name, (REPO / f).read_text(encoding="utf-8").strip()) for f in v["files"]],
+        )
+        for v in VENDORED_APP
+    ]
+
+
 def collect_npm(project: str) -> list[Package]:
     cwd = REPO / project
     lock = json.loads((cwd / "package-lock.json").read_text(encoding="utf-8"))
@@ -587,10 +615,12 @@ COMPONENTS = {
         blurb=(
             "The viewer/broadcaster SPA. Only packages that reach the browser are\n"
             "listed: the build toolchain (Vite, TypeScript, oxlint, lightningcss)\n"
-            "runs on the build machine and ships nothing into the bundle."
+            "runs on the build machine and ships nothing into the bundle. RNNoise\n"
+            "is compiled from source to WebAssembly in `gawk-app/rnnoise/` and\n"
+            "served beside the bundle for room voice."
         ),
-        sources="`package-lock.json` entries without `dev: true`.",
-        collect=lambda: collect_npm("gawk-app"),
+        sources="`package-lock.json` entries without `dev: true`, plus `gawk-app/rnnoise/`.",
+        collect=lambda: sorted(collect_npm("gawk-app") + vendored_app(), key=lambda p: p.name.lower()),
     ),
     "telemetry": dict(
         path="gawk-telemetry",

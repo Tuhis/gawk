@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.58.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.57.0...gawk-app/v0.58.0) (2026-10-27)
+
+
+### Features
+
+* **r80:** RNNoise noise suppression for room voice ([#618](https://github.com/Tuhis/gawk/issues/618)) ([b01f08b](https://github.com/Tuhis/gawk/commit/b01f08bc8f3f0e97e7ba3111bea0488b69ddec15))
+
 ## [0.57.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.56.0...gawk-app/v0.57.0) (2026-10-26)
 
 

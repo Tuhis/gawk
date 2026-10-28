@@ -97,6 +97,8 @@ feature set exists).
 | R77 | [PoP telemetry](#r77--pop-telemetry) | 🔧 **designed and implemented 2026-10-24** (PT1–PT6, automated rows green); open: a real party end to end — PoP sessions report like home's without the telemetry key leaving the fleet: home mints a PoP's tokens over its link, scoped to what the PoP serves and rate-limited, marked with the PoP's issuer inside the token's nonce; the PoP's relay-side view reaches the telemetry service through home's ops listener; every join keeps PoP and home apart ([docs/78](docs/78-pop-telemetry.md)) |
 | R78 | [Stop ends the broadcast](#r78--stop-ends-the-broadcast) | 🔧 **implemented 2026-10-24** (BE1–BE6 in one PR, owner decisions OD1–OD5 the same day), the owner's pass on the reference deployment open — a deliberate Stop (web Stop, desktop End, iOS End or stopping the recording) closes the publish session with the new close code **4014**, and the relay ends the broadcast at once instead of holding a frozen frame through the grace; viewers are told 4014 (in-band too), see "Broadcast ended", and keep redialling the code every 5 s so a restart on the same code resumes by itself; LAN-party broadcasts end at home too; desktop Pause, restarts, a closed tab and every failure keep the grace. Measured first: Chrome's close code reaches the relay in 180 of 180 trials, main thread and worker ([docs/79](docs/79-stop-ends-the-broadcast.md)) |
 | R79 | [Room voice through a Mumble bridge](#r79--room-voice-through-a-mumble-bridge) | 🔧 **implemented 2026-10-26** (MV0–MV7; owner decisions OD1–OD33 2026-10-25), **MV8 first pass on the reference deployment 2026-10-26** (a static room in an invite-only channel and a dynamic room's temporary channel, desktop browser ↔ desktop Mumble both ways, cleanup on room end; docs/80 §12.5), open: MV0's owner-device rows and the latency sign-off, then MV8's phones, kicks, mid-call rollout and latency — room participants join a room's voice from the browser and talk with the people in its Mumble channel without Mumble software: the new default-off `gawk-mumble-bridge` gives each gawk user their own Mumble connection (`Alice [web]`) through a first-party Mumble client, passes Opus through untouched over WebTransport with the browser mixing, and shows native Mumble users in the room; static rooms map to existing channels, `?voice=1` dynamic rooms get temporary ones; the relay's home pod mints single-use tickets and stays the authority over the observer and session links. Measured: 10 ms Opus frames work in Chromium, Firefox and WebKit, ~22–26 ms of browser pipeline; one bridge pod delivers everything to 25 users in one channel; an e2e with real murmur covers both directions, Mumble moderation, a pod drain, a temporary channel and a gawk ban ([docs/80](docs/80-mumble-bridge.md) §12) |
+| R80 | [RNNoise noise suppression for room voice](#r80--rnnoise-noise-suppression-for-room-voice) | 🔧 **implemented 2026-10-27** (NS1–NS4, after the NS0 measurement spike and owner decisions OD1–OD5 the same day); open: NS5's owner pass on five platforms with real microphones — RNNoise 0.2, built from source to a committed, CI-verified wasm, denoises web voice in the capture AudioWorklet on every browser, on by default; its speech probability with a level floor drives the talk gate (default on 0.90, floor −50 dBFS); an Audio section switches RNNoise · Browser · Off and the threshold mid-call with Hear yourself. Measured: +20 ms, ~0.3 ms CPU per 10 ms frame; with nobody talking, a keyboard ends 10 dB below its input where Chromium as opened today (auto gain on) sends it 11–13 dB louder; NS4 replaced the designed linear 44.1→48 kHz resampler with a windowed sinc after measuring it send a third more keyboard ([docs/81](docs/81-noise-suppression.md) §12) |
+| R81 | [Room voice UX and a learned talk gate](#r81--room-voice-ux-and-a-learned-talk-gate) | 🔧 **implemented 2026-10-28** (VX0–VX3, owner decisions OD1–OD5 the same day); open: VX4, the owner's pass with real microphones — voice gets its own panel (a header Voice button with the count, a flyout that pins beside the stage, People and Voice as tabs on a phone), an invite chip or a one-time hint so new users find it, a first-join talk-mode card, a Microphone popover on the dock, and per-person volume to 200 % behind a limiter; RNNoise's gate floor follows the speaker's learned level, auto gain is off under RNNoise with our own gain after the gate. Measured first: Chromium's auto gain lifts a hum in a pause to the speaker's own level, so no floor worked with it on; with it off, a person humming 15 dB below the speaker went from 91 % sent to 40 %, a background voice from 90 % to 20 % ([docs/82](docs/82-voice-ux-and-learned-gate.md) §12) |
 
 ---
 
@@ -5481,6 +5483,69 @@ latency target from docs/80 §12.1, and the rest of MV8 is phones, a kick
 from each side, a bridge rollout mid-call and latency.
 
 ---
+
+## R80 — RNNoise noise suppression for room voice
+
+**Goal**: a web participant in room voice is denoised by RNNoise, the
+denoiser Mumble's desktop client offers, before the voice is encoded, and
+the talk gate opens on speech rather than on loudness.
+
+**Why**: the noise that matters in a gaming room is the keyboard under the
+microphone. NS0 measured Chromium, as gawk opens the microphone today,
+sending a keyboard 11–13 dB louder than it came in while nobody talks
+(auto gain lifts it, suppression does not reduce it), and today's level
+gate open for 96 % of a
+minute of typing on the raw signal and 55 % after Chromium's own
+processing.
+
+**Design**: [docs/81](docs/81-noise-suppression.md) — the RNNoise 0.2
+release built from pinned source in an Emscripten image pinned by digest to a
+standalone wasm (committed, rebuilt and byte-compared in CI), run inside the
+voice capture AudioWorklet on every browser with a linear resampler to
+48 kHz, the browser's own suppression off; a gate over RNNoise's speech
+probability with hysteresis, a hold and a level floor, its threshold a user
+setting; an Audio section in the voice panel for A/B (RNNoise · Browser ·
+Off, a live meter, Hear yourself); fallbacks to today's behaviour for no
+SIMD, a failed load or a CPU overrun. No server, bridge or wire change.
+
+**Acceptance**: docs/81 §1 and §9.
+
+**Status**: 🔧 implemented 2026-10-27 (NS0–NS4; results in docs/81
+§12.7). Open: NS5, the owner-device rows (Safari on macOS and iOS, Chrome
+on Android, a real microphone), where the default threshold is confirmed:
+through headless Chromium a minute of keyboard sent 1.1–3.4 % against §1's
+≤ 3 %.
+
+---
+
+## R81 — Room voice UX and a learned talk gate
+
+**Goal**: new users find room voice and can use it without the people panel,
+and RNNoise's talk gate stops sending hums and background voices.
+
+**Why**: voice was the third section of a panel behind a people icon, and
+the dock appeared only after joining, so new users did not find it. Quiet
+hums got through with RNNoise on: VX0 measured why — RNNoise's probability
+says *voice*, not *this speaker*, and Chromium's auto gain lifts a hum in a
+pause to the speaker's own level, so docs/81's fixed −50 dBFS floor (or any
+floor) could not tell them apart.
+
+**Design**: [docs/82](docs/82-voice-ux-and-learned-gate.md) — a header
+Voice button opening a voice flyout that pins into a column; an invite chip
+or a one-time hint; a first-join talk-mode card; the threshold laid over the
+live meter, hidden in push to talk; a Microphone popover on the dock; phone
+tabs and a thumb bar; per-person volume 0–200 % with a limiter. The gate's
+floor is the speaker's learned level (0.85 quantile of confident speech,
+15 s half-life) minus a margin from the same slider (12 dB by default),
+clamped to −50..−30 dBFS; auto gain off under RNNoise and Off, with a gain
+after the gate from the learned level. Web app only: no relay, bridge or
+wire change.
+
+**Acceptance**: docs/82 §1 and §9.
+
+**Status**: 🔧 implemented 2026-10-28 (VX0–VX3; results in docs/82 §12).
+Open: VX4 — real microphones on five platforms, a real hum and TV, leaning
+back mid-call, D6's gain on a quiet microphone, Firefox and WebKit e2e.
 
 ## Explicitly out of scope (unchanged from CLAUDE.md)
 

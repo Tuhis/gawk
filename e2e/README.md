@@ -330,3 +330,22 @@ latency and CPU per N appended to `docs/assets/80/load/results.jsonl`.
 
 `e2e/voice-panel.mjs` is MV6's: the voice panel against an in-page fake relay
 and bridge, with screenshots at phone and desktop widths.
+
+## RNNoise in room voice (R80, docs/81 NS4)
+
+```sh
+node e2e/voice-rnnoise.mjs                       # Chromium; CI runs this in e2e-voice
+node e2e/voice-rnnoise.mjs --corpus DIR          # + §1's keyboard-minute row
+node e2e/voice-rnnoise.mjs --browsers firefox,webkit
+```
+
+The same in-page fake relay and bridge as `voice-panel.mjs`
+(`voice-fake.mjs`), with Chromium's microphone played from a WAV the script
+generates (keyboard, then speech over it): RNNoise on by default, a switch
+to Browser and back that re-opens the microphone, each judged on the
+frames sent, and screens with the Audio section open. `--corpus` takes the
+directory `docs/assets/81/harness/fetch-corpus.sh` fills (downloaded at run
+time, never committed) and plays NS0's minute of real keyboard. Firefox and
+WebKit need their host libraries and a sound server; where those are
+missing, run the script in `mcr.microsoft.com/playwright` with a PulseAudio
+null sink, as `docs/assets/81/harness/run-all.sh` does.

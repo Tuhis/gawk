@@ -41,8 +41,14 @@ import {
   type VoiceFrameHeader,
   type VoiceStateMessage,
 } from '../../../transport/wire';
-import { TalkGate } from './talkGate';
-import type { TalkMode } from './voicePrefs';
+import { TalkGate, rmsToDbfs } from './talkGate';
+import {
+  DEFAULT_LEVEL_THRESHOLD_DB,
+  DEFAULT_NOISE_MODE,
+  DEFAULT_SPEECH_THRESHOLD,
+  type NoiseMode,
+  type TalkMode,
+} from './voicePrefs';
 import {
   VoiceError,
   type VoiceCloseInfo,
@@ -51,7 +57,7 @@ import {
   type VoiceSessionLike,
   type VoiceSessionOptions,
 } from './voiceSession';
-import type { CaptureContext, VoiceCaptureCallbacks, VoiceCaptureLike } from './voiceCapture';
+import type { CaptureContext, NoiseStatus, VoiceCaptureCallbacks, VoiceCaptureLike } from './voiceCapture';
 import type { VoicePlaybackCallbacks, VoicePlaybackLike } from './voicePlayback';
 
 export type VoicePhase =
@@ -86,6 +92,37 @@ export interface VoiceViewState {
   suppressed: boolean;
   // Mumble sessions heard speaking (speaking.ts).
   speaking: number[];
+  // R80 (docs/81 D15, D17): the noise suppression chosen, and what the
+  // running capture does with it (null without one).
+  noiseMode: NoiseMode;
+  noise: NoiseStatus | null;
+  speechThreshold: number;
+  levelThresholdDb: number;
+  // Hear yourself (D16): this session only, never saved.
+  hearSelf: boolean;
+}
+
+// The Audio section's live meter (docs/81 D15), read on animation frames
+// rather than published per block.
+export interface VoiceMeter {
+  // RNNoise's speech probability for the last block, or null when it was
+  // not denoised.
+  prob: number | null;
+  levelDb: number;
+  // The gate sent the block.
+  open: boolean;
+  // The level floor the block had to meet while RNNoise ran, dBFS, else
+  // null (docs/82 D7: the meter greys a block under it).
+  floorDb: number | null;
+}
+
+export interface VoiceAudioPrefs {
+  noiseMode: NoiseMode;
+  speechThreshold: number;
+  levelThresholdDb: number;
+  // docs/82 D6: the level learned in an earlier session, for the gain's
+  // first blocks.
+  speechLevelDb: number | null;
 }
 
 export const INITIAL_VOICE_STATE: VoiceViewState = {
@@ -105,6 +142,11 @@ export const INITIAL_VOICE_STATE: VoiceViewState = {
   serverDeafened: false,
   suppressed: false,
   speaking: [],
+  noiseMode: DEFAULT_NOISE_MODE,
+  noise: null,
+  speechThreshold: DEFAULT_SPEECH_THRESHOLD,
+  levelThresholdDb: DEFAULT_LEVEL_THRESHOLD_DB,
+  hearSelf: false,
 };
 
 // Whether the room session can carry a VoiceJoin right now: 'ready' (joined,
@@ -118,13 +160,15 @@ export interface VoiceControllerDeps {
   subscribeRoom: (onChange: () => void) => () => void;
   webTransportInit: () => WebTransportOptions;
   createSession: (opts: VoiceSessionOptions, cb: VoiceSessionCallbacks) => VoiceSessionLike;
-  createCapture: (cb: VoiceCaptureCallbacks) => VoiceCaptureLike;
+  createCapture: (cb: VoiceCaptureCallbacks, noise: NoiseMode) => VoiceCaptureLike;
   captureContext: () => CaptureContext | null;
   createPlayback: (cb: VoicePlaybackCallbacks) => VoicePlaybackLike;
   // Deafen mutes the voice bus (roomAudio.ts).
   setVoiceMuted: (muted: boolean) => void;
   now: () => number;
   onChange: (state: VoiceViewState) => void;
+  // docs/82 D6: the learned level outlives the session (voicePrefs).
+  saveSpeechLevel?: (db: number) => void;
 }
 
 // No ticket this long after VoiceJoin: the relay is not answering.
@@ -177,19 +221,45 @@ export class VoiceController {
   private seq = 0;
   private seqEpochMs: number | null = null;
   private spurtStarting = true;
+  private lastMeter: VoiceMeter = { prob: null, levelDb: -100, open: false, floorDb: null };
   private readonly unsubscribe: () => void;
   private disposed = false;
 
-  constructor(deps: VoiceControllerDeps, talkMode: TalkMode) {
+  constructor(deps: VoiceControllerDeps, talkMode: TalkMode, audio?: Partial<VoiceAudioPrefs>) {
     this.deps = deps;
-    this.state = { ...INITIAL_VOICE_STATE, talkMode };
-    this.gate = new TalkGate(talkMode);
+    this.state = {
+      ...INITIAL_VOICE_STATE,
+      talkMode,
+      noiseMode: audio?.noiseMode ?? DEFAULT_NOISE_MODE,
+      speechThreshold: audio?.speechThreshold ?? DEFAULT_SPEECH_THRESHOLD,
+      levelThresholdDb: audio?.levelThresholdDb ?? DEFAULT_LEVEL_THRESHOLD_DB,
+    };
+    this.gate = new TalkGate(talkMode, undefined, undefined, audio?.speechLevelDb ?? null);
+    this.gate.setSpeechThreshold(this.state.speechThreshold);
+    this.gate.setLevelThresholdDb(this.state.levelThresholdDb);
     this.gate.setBlocked(true);
     this.unsubscribe = deps.subscribeRoom(() => this.onRoomChange());
   }
 
   getState(): VoiceViewState {
     return this.state;
+  }
+
+  // The last block's probability, level and gate decision (docs/81 D15).
+  meter(): VoiceMeter {
+    return this.lastMeter;
+  }
+
+  // The settings that outlive a voice session: what join() and leave() keep.
+  private kept(): Partial<VoiceViewState> {
+    const s = this.state;
+    return {
+      talkMode: s.talkMode,
+      selfMuted: s.selfMuted,
+      noiseMode: s.noiseMode,
+      speechThreshold: s.speechThreshold,
+      levelThresholdDb: s.levelThresholdDb,
+    };
   }
 
   // ---- User actions ----------------------------------------------------------
@@ -205,13 +275,12 @@ export class VoiceController {
     this.everConnected = false;
     this.update({
       ...INITIAL_VOICE_STATE,
+      ...this.kept(),
       phase: 'joining',
       listenOnly,
-      talkMode: this.state.talkMode,
-      selfMuted: this.state.selfMuted,
     });
     if (!listenOnly) {
-      const capture = this.deps.createCapture(this.captureCallbacks(gen));
+      const capture = this.deps.createCapture(this.captureCallbacks(gen), this.state.noiseMode);
       this.capture = capture;
       try {
         await capture.start(this.deps.captureContext);
@@ -236,7 +305,7 @@ export class VoiceController {
     this.teardown();
     this.gen++;
     this.deps.setVoiceMuted(false);
-    this.update({ ...INITIAL_VOICE_STATE, talkMode: this.state.talkMode, selfMuted: this.state.selfMuted });
+    this.update({ ...INITIAL_VOICE_STATE, ...this.kept() });
   }
 
   dispose(): void {
@@ -270,6 +339,38 @@ export class VoiceController {
 
   setSpeakerVolume(session: number, volume: number): void {
     this.playback?.setSpeakerVolume(session, volume);
+  }
+
+  // ---- Audio settings (R80, docs/81 D15) ------------------------------------
+
+  // Applies to the running capture (a switch, a re-open, or the next join
+  // when it would prompt) and to every later join.
+  setNoiseMode(mode: NoiseMode): void {
+    this.update({ noiseMode: mode });
+    void this.capture?.setNoise(mode);
+  }
+
+  setSpeechThreshold(on: number): void {
+    this.gate.setSpeechThreshold(on);
+    this.update({ speechThreshold: on });
+  }
+
+  setLevelThresholdDb(db: number): void {
+    this.gate.setLevelThresholdDb(db);
+    this.update({ levelThresholdDb: db });
+  }
+
+  // Reset to defaults (docs/82 D6): the learned level goes too.
+  forgetSpeechLevel(): void {
+    this.gate.forgetLevel();
+  }
+
+  // Hear yourself (D16): your own packets, after the gate, through the same
+  // decoder, jitter buffer and voice bus as everyone else's.
+  setHearSelf(on: boolean): void {
+    if (on === this.state.hearSelf) return;
+    if (!on) this.playback?.stopSelf();
+    this.update({ hearSelf: on });
   }
 
   // ---- Room session events ---------------------------------------------------
@@ -453,9 +554,10 @@ export class VoiceController {
 
   private captureCallbacks(gen: number): VoiceCaptureCallbacks {
     return {
-      shouldSend: (rms, nowMs) => {
+      shouldSend: (rms, prob, nowMs) => {
         if (gen !== this.gen) return false;
-        const send = this.gate.update(rms, nowMs);
+        const send = this.gate.update(rms, prob, nowMs);
+        this.lastMeter = { prob, levelDb: rmsToDbfs(rms), open: send, floorDb: this.gate.floorDb() };
         const talking = send && this.state.phase === 'connected';
         if (talking !== this.state.talking) this.update({ talking });
         return send;
@@ -470,14 +572,21 @@ export class VoiceController {
           this.seq = Math.max(this.seq, Math.floor((now - this.seqEpochMs) / 10)) >>> 0;
         }
         session.sendFrame({ end: false, target: 0, speaker: 0, seq: this.seq }, payload);
+        if (this.state.hearSelf) this.playback?.handleSelfFrame({ end: false, seq: this.seq }, payload);
         this.seq = (this.seq + units) >>> 0;
       },
       onSpurtEnd: () => {
         if (gen !== this.gen) return;
         const wasSending = !this.spurtStarting;
         this.spurtStarting = true;
-        if (wasSending) this.session?.sendFrame({ end: true, target: 0, speaker: 0, seq: this.seq }, new Uint8Array(0));
+        if (!wasSending) return;
+        this.session?.sendFrame({ end: true, target: 0, speaker: 0, seq: this.seq }, new Uint8Array(0));
+        if (this.state.hearSelf) this.playback?.handleSelfFrame({ end: true, seq: this.seq }, new Uint8Array(0));
       },
+      onNoise: (noise) => {
+        if (gen === this.gen) this.update({ noise });
+      },
+      gainDb: () => this.gate.gainDb(),
       onError: (err) => {
         if (gen !== this.gen) return;
         this.capture = null;
@@ -522,13 +631,21 @@ export class VoiceController {
     this.capture = null;
     capture?.stop();
     this.stopPlayback();
+    // The gain's level, not the tracker's: a long listen before leaving
+    // empties the tracker but not what the gain was using (review round 1).
+    const level = this.gate.levelToStore();
+    if (capture && level !== null) {
+      this.deps.saveSpeechLevel?.(level);
+      this.gate.markStored();
+    }
     this.seq = 0;
     this.seqEpochMs = null;
     this.spurtStarting = true;
     this.gate.setPttHeld(false);
     this.gate.setBlocked(true);
-    if (this.state.talking || this.state.speaking.length > 0 || this.state.pttHeld) {
-      this.update({ talking: false, speaking: [], pttHeld: false });
+    this.lastMeter = { prob: null, levelDb: -100, open: false, floorDb: null };
+    if (this.state.talking || this.state.speaking.length > 0 || this.state.pttHeld || this.state.noise) {
+      this.update({ talking: false, speaking: [], pttHeld: false, noise: null });
     }
   }
 

@@ -238,7 +238,10 @@ Add to it when a new gotcha lands in `docs/`.
   answer `go test` with `(cached)` even when the real input changed — the broadcast relay
   integration test shells out to `go build`, whose inputs Go cannot see — so
   the action adds `-count=1` to GOFLAGS. Builds stay cached; test results
-  never are.
+  never are. Go's own 5-day trim is far too slow for this volume (a Renovate
+  wave of one-line go.mod bumps recompiles everything above each, per node,
+  and filled 120Gi in a day), so the action also deletes GOCACHE entries
+  unused for 48h, in the background, once per node every 6h (`trim.sh`).
 - **A CI staging directory named after one the checkout already has is a
   release with no binaries** — and it fails *after* the release exists, so the
   tag is already published. Both attach jobs staged their assets in `assets/`
@@ -2422,6 +2425,64 @@ entries still describe code `gawk-pubsim` runs (now
   worklet capture node posts PCM out; **Firefox ignores Opus `bitrate`**
   (~57 kbit/s for a 40 kbit/s request). (`docs/assets/80/RESULTS.md`)
 
+**RNNoise in the browser (R80)**
+
+- **The RNNoise 0.2 release tarball does not compile its scalar or NEON
+  path**: `vec.h` and `vec_neon.h` include an `os_support.h` it does not
+  ship (xiph/rnnoise#222, fixed on `main` by `372f7b4`, never released). An
+  x86 build passes because it takes the SSE path, which hides the bug until
+  someone builds for wasm without SIMD or for ARM.
+  ([docs/81](81-noise-suppression.md) §11)
+- **RNNoise takes floats at int16 scale (±32768), not ±1**, and since 0.2
+  it **delays its output by 20 ms** (two frames), not the 10 ms its frame
+  size suggests. At ±1 it sees near-silence and gates everything out.
+  ([docs/81](81-noise-suppression.md) §12.2)
+- **`main`'s model source is 78 MB of C** because it carries float copies
+  of the int8 weights; `-DDISABLE_DEBUG_FLOAT` drops them.
+  ([docs/81](81-noise-suppression.md) §11)
+- **Chromium accepts `applyConstraints({noiseSuppression})` on an audio
+  track and changes nothing**: `getSettings()` keeps the old value and so
+  does the audio (on 156, a keyboard's level after a mid-recording switch
+  matched a run without one to 0.01 dB, both ways); re-open the microphone
+  to switch. **WebKit has no
+  `noiseSuppression` or `autoGainControl` constraint at all.**
+  ([docs/81](81-noise-suppression.md) §12.6)
+- **Chromium's auto gain lifts a keyboard with nobody talking**: with
+  echo cancellation, suppression and auto gain on (gawk's voice
+  constraints since R79), a −38 dBFS keyboard alone comes out 11–13 dB
+  louder in the first seconds (over speech the gain adds ~3 dB), and
+  suppression does not reduce it at all. Measure a denoiser or gate on
+  what the track delivers, with the constraints production uses.
+  ([docs/81](81-noise-suppression.md) §12.4)
+- **A second Chromium track on an already open microphone gets the first
+  track's processing**, whatever it asked for: opened with
+  `noiseSuppression: true` beside a suppression-off track, its
+  `getSettings()` says off and its audio equals the first's. To change
+  processing, stop the old track before `getUserMedia` (measured: the
+  immediate re-open then gets the new processing).
+  ([docs/81](81-noise-suppression.md) §12.6, D11)
+- **Linear interpolation from 44.1 to 48 kHz is not transparent to
+  RNNoise's gate.** It rolls the highs off (−6.6 dB at 20 kHz), and RNNoise
+  then calls more keyboard clicks speech: offline, a −26 dBFS keyboard
+  minute went from 1.57 % sent to 2.08 %, and through headless Chromium
+  3.5–4.1 % against 2.3 % at 48 kHz. A 64-tap windowed-sinc resampler is
+  indistinguishable from the direct run (1.63 %). NS0's 44.1 kHz check
+  looked at speech decisions at probability 0.6 and missed it. **Headless
+  Chromium's AudioContext runs at 44.1 kHz** by default, so this path is
+  the one an e2e takes. ([docs/81](81-noise-suppression.md) §12.7, D6)
+- **Chromium ≤ 154 cannot post a `WebAssembly.Module` to an AudioWorklet
+  port**: the processor gets a `messageerror` and nothing else, so code
+  waiting for the module waits forever (156 delivers it). Pass it in the
+  node's `processorOptions`, which works on 151 and 156, and handle
+  `messageerror` in the processor. ([docs/81](81-noise-suppression.md)
+  D5, §12.7)
+- **Headless Firefox (and WebKit) in a container with no sound server
+  leave an AudioContext `suspended`**: nothing renders, so an AudioWorklet
+  capture posts no audio while everything else looks connected. Give the
+  browser a PulseAudio null sink (`PULSE_SERVER`), as
+  `docs/assets/81/harness/run-all.sh` does.
+  ([docs/81](81-noise-suppression.md) §12.7)
+
 **CI / deployment**
 
 - **`gawk-relay` ships the `gawk-app` that was current when `gawk-server`
@@ -2631,3 +2692,13 @@ entries still describe code `gawk-pubsim` runs (now
   and pinned to the version the crate builds) and `LICENSE_TEXT_FALLBACK`.
   A new `-sys` crate that compiles C in needs an entry.
   ([docs/74](74-open-source-licences-in-app.md) D1)
+- **Chromium's auto gain makes a hum as loud as the speaker.** Between
+  words it raises the gain, so a person humming 15 dB below the speaker
+  reaches the encoder ~20 dB louder, at the speaker's own level (−21 against
+  −22 dBFS after RNNoise), and a background voice 15 dB below ends 7 dB
+  below. RNNoise calls both voice, so after auto gain no level rule can
+  separate them: every gate VX0 tried still sent 87–94 % of the hum. Voice
+  now opens the microphone without auto gain under RNNoise and Off and
+  applies its own gain after the gate. A level measured "after the browser"
+  is not the level in the room. ([docs/82](82-voice-ux-and-learned-gate.md)
+  D5, §12.2)

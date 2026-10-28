@@ -1,0 +1,483 @@
+{
+  "browser": "chromium",
+  "version": "156.0.8078.4",
+  "playwright": "1.64.1",
+  "date": "2026-10-27T06:56:28.251Z",
+  "caps": {
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+    "wasmSimd": true,
+    "audioWorklet": true,
+    "mstpOnWindow": true,
+    "supportedConstraints": [
+      "aspectRatio",
+      "autoGainControl",
+      "brightness",
+      "channelCount",
+      "colorTemperature",
+      "contrast",
+      "deviceId",
+      "displaySurface",
+      "echoCancellation",
+      "exposureCompensation",
+      "exposureMode",
+      "exposureTime",
+      "facingMode",
+      "focusDistance",
+      "focusMode",
+      "frameRate",
+      "groupId",
+      "height",
+      "iso",
+      "latency",
+      "noiseSuppression",
+      "pan",
+      "pointsOfInterest",
+      "resizeMode",
+      "restrictOwnAudio",
+      "sampleRate",
+      "sampleSize",
+      "saturation",
+      "sharpness",
+      "suppressLocalAudioPlayback",
+      "tilt",
+      "torch",
+      "voiceIsolation",
+      "whiteBalanceMode",
+      "width",
+      "zoom"
+    ],
+    "defaultContextRate": 44100
+  },
+  "cpuMain": {
+    "v02-avx": {
+      "msPerFrame": 0.2867999999920527,
+      "reps": [
+        0.29676666667064033,
+        0.30416666666666664,
+        0.2867999999920527
+      ],
+      "bytes": 1470665,
+      "fetchMs": 24,
+      "compileMs": 3.300000011920929,
+      "instantiateMs": 2.599999964237213
+    },
+    "v02-avx2": {
+      "msPerFrame": 0.2933000000119209,
+      "reps": [
+        0.3233333333333333,
+        0.2942999999920527,
+        0.2933000000119209
+      ],
+      "bytes": 1471317,
+      "fetchMs": 19,
+      "compileMs": 1.800000011920929,
+      "instantiateMs": 2
+    },
+    "main-scalar": {
+      "msPerFrame": 1.5711666666666666,
+      "reps": [
+        1.5711666666666666,
+        1.6099333333174388,
+        1.9332666666706404
+      ],
+      "bytes": 3594493,
+      "fetchMs": 42.89999997615814,
+      "compileMs": 3.5,
+      "instantiateMs": 4.699999988079071
+    },
+    "main-avx": {
+      "msPerFrame": 0.6146666666666667,
+      "reps": [
+        0.6146666666666667,
+        0.6254666666785876,
+        0.6994666666587194
+      ],
+      "bytes": 3615580,
+      "fetchMs": 52.89999997615814,
+      "compileMs": 5.400000035762787,
+      "instantiateMs": 6.799999952316284
+    },
+    "main-avx2": {
+      "msPerFrame": 0.6748333333333333,
+      "reps": [
+        0.7035333333412807,
+        0.6786666666666666,
+        0.6748333333333333
+      ],
+      "bytes": 3616232,
+      "fetchMs": 63.80000001192093,
+      "compileMs": 4.899999976158142,
+      "instantiateMs": 6
+    },
+    "main-little-scalar": {
+      "msPerFrame": 0.8442333333293597,
+      "reps": [
+        0.8442333333293597,
+        0.8965,
+        0.8830333333412806
+      ],
+      "bytes": 1603835,
+      "fetchMs": 24.30000001192093,
+      "compileMs": 1.800000011920929,
+      "instantiateMs": 2.299999952316284
+    },
+    "main-little-avx": {
+      "msPerFrame": 0.320066666662693,
+      "reps": [
+        0.320066666662693,
+        0.3212666666706403,
+        0.3575333333214124
+      ],
+      "bytes": 1624922,
+      "fetchMs": 22.69999998807907,
+      "compileMs": 1.699999988079071,
+      "instantiateMs": 2
+    },
+    "main-little-avx2": {
+      "msPerFrame": 0.3087333333293597,
+      "reps": [
+        0.3087333333293597,
+        0.31630000001192093,
+        0.3148666666547457
+      ],
+      "bytes": 1625574,
+      "fetchMs": 21.100000023841858,
+      "compileMs": 2.099999964237213,
+      "instantiateMs": 2.100000023841858
+    }
+  },
+  "worklet": [
+    {
+      "variant": "v02-avx",
+      "via": "processorOptions",
+      "contextRate": 44100,
+      "kind": "ready",
+      "instMs": 4,
+      "benchMsPerFrame": 0.297,
+      "sampleRate": 44100,
+      "realtime": {
+        "workletWindowMs": 6001,
+        "renderRateHz": 44088.65189135144,
+        "contextRateHz": 44100,
+        "renderRatio": 0.9997426732732753,
+        "framesPerSecond": 91.81803032827862,
+        "expectedFramesPerSecond": 91.875
+      }
+    },
+    {
+      "variant": "v02-avx",
+      "via": "port",
+      "contextRate": 44100,
+      "kind": "ready",
+      "instMs": 3,
+      "benchMsPerFrame": 0.381,
+      "sampleRate": 44100,
+      "realtime": {
+        "workletWindowMs": 6000,
+        "renderRateHz": 44096,
+        "contextRateHz": 44100,
+        "renderRatio": 0.9999092970521541,
+        "framesPerSecond": 91.83333333333334,
+        "expectedFramesPerSecond": 91.875
+      }
+    },
+    {
+      "variant": "main-avx",
+      "via": "processorOptions",
+      "contextRate": 44100,
+      "kind": "ready",
+      "instMs": 4,
+      "benchMsPerFrame": 0.59,
+      "sampleRate": 44100,
+      "realtime": {
+        "workletWindowMs": 6001,
+        "renderRateHz": 44088.65189135144,
+        "contextRateHz": 44100,
+        "renderRatio": 0.9997426732732753,
+        "framesPerSecond": 91.98466922179637,
+        "expectedFramesPerSecond": 91.875
+      }
+    },
+    {
+      "variant": "main-avx",
+      "via": "port",
+      "contextRate": 44100,
+      "kind": "ready",
+      "instMs": 5,
+      "benchMsPerFrame": 0.586,
+      "sampleRate": 44100,
+      "realtime": {
+        "workletWindowMs": 6000,
+        "renderRateHz": 44096,
+        "contextRateHz": 44100,
+        "renderRatio": 0.9999092970521541,
+        "framesPerSecond": 91.83333333333334,
+        "expectedFramesPerSecond": 91.875
+      }
+    },
+    {
+      "variant": "main-little-avx",
+      "via": "processorOptions",
+      "contextRate": 44100,
+      "kind": "ready",
+      "instMs": 3,
+      "benchMsPerFrame": 0.339,
+      "sampleRate": 44100,
+      "realtime": {
+        "workletWindowMs": 6000,
+        "renderRateHz": 44096,
+        "contextRateHz": 44100,
+        "renderRatio": 0.9999092970521541,
+        "framesPerSecond": 91.83333333333334,
+        "expectedFramesPerSecond": 91.875
+      }
+    },
+    {
+      "variant": "main-little-avx",
+      "via": "port",
+      "contextRate": 44100,
+      "kind": "ready",
+      "instMs": 3,
+      "benchMsPerFrame": 0.376,
+      "sampleRate": 44100,
+      "realtime": {
+        "workletWindowMs": 6001,
+        "renderRateHz": 44088.65189135144,
+        "contextRateHz": 44100,
+        "renderRatio": 0.9997426732732753,
+        "framesPerSecond": 91.81803032827862,
+        "expectedFramesPerSecond": 91.875
+      }
+    },
+    {
+      "variant": "v02-avx",
+      "via": "port",
+      "contextRate": 44100,
+      "kind": "ready",
+      "instMs": 2,
+      "benchMsPerFrame": 0.295,
+      "sampleRate": 44100,
+      "realtime": {
+        "workletWindowMs": 6002,
+        "renderRateHz": 44081.30623125625,
+        "contextRateHz": 44100,
+        "renderRatio": 0.9995761050171484,
+        "framesPerSecond": 91.80273242252582,
+        "expectedFramesPerSecond": 91.875
+      }
+    },
+    {
+      "variant": "v02-avx",
+      "via": "port",
+      "contextRate": 48000,
+      "kind": "ready",
+      "instMs": 2,
+      "benchMsPerFrame": 0.33,
+      "sampleRate": 48000,
+      "realtime": {
+        "workletWindowMs": 6001,
+        "renderRateHz": 48013.33111148142,
+        "contextRateHz": 48000,
+        "renderRatio": 1.0002777314891962,
+        "framesPerSecond": 99.98333611064822,
+        "expectedFramesPerSecond": 100
+      }
+    }
+  ],
+  "rates": {
+    "trackSampleRate": 48000,
+    "contexts": [
+      {
+        "requested": 44100,
+        "contextRate": 44100,
+        "mediaStreamSource": "ok",
+        "peak": 0.07343482971191406
+      },
+      {
+        "requested": 48000,
+        "contextRate": 48000,
+        "mediaStreamSource": "ok",
+        "peak": 0.0000018478594938642345
+      },
+      {
+        "requested": null,
+        "contextRate": 44100,
+        "mediaStreamSource": "ok",
+        "peak": 0.0000012692466953012627
+      }
+    ]
+  },
+  "constraints": {
+    "openedWithNsOff": {
+      "noiseSuppression": false,
+      "echoCancellation": true,
+      "autoGainControl": true,
+      "voiceIsolation": false,
+      "sampleRate": 48000
+    },
+    "afterApplyNsOn": {
+      "noiseSuppression": false,
+      "echoCancellation": true,
+      "autoGainControl": true,
+      "voiceIsolation": false,
+      "sampleRate": 48000
+    },
+    "afterApplyNsOff": {
+      "noiseSuppression": false,
+      "echoCancellation": true,
+      "autoGainControl": true,
+      "voiceIsolation": false,
+      "sampleRate": 48000
+    }
+  },
+  "record": {
+    "nsOn": {
+      "sampleRate": 48000,
+      "settings": {
+        "noiseSuppression": true,
+        "echoCancellation": true,
+        "autoGainControl": true
+      },
+      "samples": 1440480,
+      "applied": null
+    },
+    "nsOff": {
+      "sampleRate": 48000,
+      "settings": {
+        "noiseSuppression": false,
+        "echoCancellation": true,
+        "autoGainControl": true
+      },
+      "samples": 1440480,
+      "applied": null
+    },
+    "nsOffAgcOff": {
+      "sampleRate": 48000,
+      "settings": {
+        "noiseSuppression": false,
+        "echoCancellation": true,
+        "autoGainControl": false
+      },
+      "samples": 1440480,
+      "applied": null
+    }
+  },
+  "applyConstraints": {
+    "offThenOn": {
+      "sampleRate": 48000,
+      "settings": {
+        "noiseSuppression": false,
+        "echoCancellation": true,
+        "autoGainControl": true
+      },
+      "samples": 960480,
+      "applied": {
+        "atSample": 480480,
+        "settingsAfter": false
+      },
+      "firstDbfs": -25.01117891165173,
+      "secondDbfs": -25.44059388758768
+    },
+    "onThenOff": {
+      "sampleRate": 48000,
+      "settings": {
+        "noiseSuppression": true,
+        "echoCancellation": true,
+        "autoGainControl": true
+      },
+      "samples": 960480,
+      "applied": {
+        "atSample": 480960,
+        "settingsAfter": true
+      },
+      "firstDbfs": -25.251176136689992,
+      "secondDbfs": -24.38113084383484
+    },
+    "offNoSwitch": {
+      "sampleRate": 48000,
+      "settings": {
+        "noiseSuppression": false,
+        "echoCancellation": true,
+        "autoGainControl": true
+      },
+      "samples": 960480,
+      "applied": null,
+      "firstDbfs": -25.01117891165173,
+      "secondDbfs": -25.44059388758768
+    },
+    "onNoSwitch": {
+      "sampleRate": 48000,
+      "settings": {
+        "noiseSuppression": true,
+        "echoCancellation": true,
+        "autoGainControl": true
+      },
+      "samples": 960960,
+      "applied": null,
+      "firstDbfs": -25.251176136689992,
+      "secondDbfs": -24.38113084383484
+    }
+  },
+  "recordDate": "2026-10-27T10:56:54.226Z",
+  "twoTracks": {
+    "first": {
+      "samples": 960960,
+      "settings": {
+        "noiseSuppression": false,
+        "autoGainControl": true
+      },
+      "firstDbfs": -25.01117891165173,
+      "secondDbfs": -25.44059388758768
+    },
+    "second": {
+      "samples": 960960,
+      "settings": {
+        "noiseSuppression": false,
+        "autoGainControl": true
+      },
+      "firstDbfs": -25.01117891165173,
+      "secondDbfs": -25.44059388758768
+    }
+  },
+  "reopen": {
+    "first": {
+      "samples": 384480,
+      "settings": {
+        "noiseSuppression": false,
+        "autoGainControl": true
+      }
+    },
+    "second": {
+      "samples": 960000,
+      "settings": {
+        "noiseSuppression": true,
+        "autoGainControl": true
+      },
+      "firstDbfs": -25.251176136689992,
+      "secondDbfs": -24.38113084383484
+    },
+    "reopenMs": 14.5
+  },
+  "keyboardMinute": {
+    "agcOn": {
+      "sampleRate": 48000,
+      "settings": {
+        "noiseSuppression": false,
+        "echoCancellation": true,
+        "autoGainControl": true
+      },
+      "samples": 2976960,
+      "applied": null
+    },
+    "agcOff": {
+      "sampleRate": 48000,
+      "settings": {
+        "noiseSuppression": false,
+        "echoCancellation": true,
+        "autoGainControl": false
+      },
+      "samples": 2976960,
+      "applied": null
+    }
+  }
+}
