@@ -26,7 +26,7 @@
     },
     "gawk-broadcast-desktop": {
       "component": "gawk-broadcast-desktop",
-      "covered": 24183,
+      "covered": 24188,
       "label": "broadcast-desktop",
       "pct": 86.8,
       "total": 27875,
