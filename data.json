@@ -34,7 +34,7 @@
     },
     "gawk-mumble-bridge": {
       "component": "gawk-mumble-bridge",
-      "covered": 1815,
+      "covered": 1814,
       "label": "voice bridge",
       "pct": 86.3,
       "total": 2103,
@@ -42,7 +42,7 @@
     },
     "gawk-server": {
       "component": "gawk-server",
-      "covered": 17353,
+      "covered": 17348,
       "label": "relay",
       "pct": 85.6,
       "total": 20274,
