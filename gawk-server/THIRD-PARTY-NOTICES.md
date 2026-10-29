@@ -35,7 +35,7 @@ script for what counts as a dependency here and why.
 | `github.com/dunglas/httpsfv` | v1.1.1 | `BSD-3-Clause` | Copyright (c) 2020 Kévin Dunglas. All rights reserved |
 | `github.com/emicklei/go-restful/v3` | v3.13.0 | `MIT` | Copyright (c) 2012,2013 Ernest Micklei |
 | `github.com/fxamacker/cbor/v2` | v2.9.1 | `MIT` | Copyright (c) 2019-present Faye Amacker |
-| `github.com/go-jose/go-jose/v4` | v4.1.4 | `Apache-2.0` | Copyright 2014 Square Inc |
+| `github.com/go-jose/go-jose/v4` | v4.1.6 | `Apache-2.0` | Copyright 2014 Square Inc |
 | `github.com/go-logr/logr` | v1.4.3 | `Apache-2.0` | — |
 | `github.com/go-openapi/jsonpointer` | v1.0.0 | `Apache-2.0` | Copyright 2015-2025 go-swagger maintainers<br>Copyright 2013 sigu-399 ( https://github.com/sigu-399 ) |
 | `github.com/go-openapi/jsonreference` | v1.0.0 | `Apache-2.0` | Copyright 2015-2025 go-swagger maintainers<br>Copyright 2013 sigu-399 ( https://github.com/sigu-399 ) |

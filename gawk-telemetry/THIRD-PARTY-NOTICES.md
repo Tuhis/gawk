@@ -27,7 +27,7 @@ script for what counts as a dependency here and why.
 |---|---|---|---|
 | `github.com/coreos/go-oidc/v3` | v3.21.0 | `Apache-2.0 OR UNKNOWN` | Copyright 2014 CoreOS, Inc |
 | `github.com/duckdb/duckdb-go-bindings/linux-amd64` | v0.1.21 | `MIT` | Copyright 2018-2025 Stichting DuckDB Foundation |
-| `github.com/go-jose/go-jose/v4` | v4.1.4 | `Apache-2.0` | Copyright 2014 Square Inc |
+| `github.com/go-jose/go-jose/v4` | v4.1.6 | `Apache-2.0` | Copyright 2014 Square Inc |
 | `github.com/go-viper/mapstructure/v2` | v2.4.0 | `MIT` | Copyright (c) 2013 Mitchell Hashimoto |
 | `github.com/google/uuid` | v1.6.0 | `BSD-3-Clause` | Copyright (c) 2009,2014 Google Inc. All rights reserved |
 | `github.com/marcboeker/go-duckdb/mapping` | v0.0.21 | `MIT` | Copyright 2019 Marc Boeker |
