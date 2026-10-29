@@ -388,6 +388,29 @@ describe('VoiceCapture, the worklet path', () => {
     expect(n.port.onmessage).toBeNull();
   });
 
+  // Mumble's client resets its encoder at the start of every transmission
+  // and Mumble listeners decode each one on fresh state (docs/80 §12.8):
+  // a spurt encoded on the last spurt's state reaches them garbled.
+  it('encodes every spurt on a fresh encoder, after the last one drained and its terminator went', async () => {
+    const { cap, cb, node } = await started('off');
+    const n = node();
+    block(n, 0.5);
+    block(n, 0);
+    // The next spurt starts before the drain is done: held, not encoded on
+    // the old encoder (it would carry its state) nor on a new one yet (its
+    // packets could overtake the terminator).
+    block(n, 0.5);
+    expect(encoders).toHaveLength(1);
+    expect(encoders[0].encoded).toHaveLength(1);
+    await flush();
+    expect(cb.ends).toBe(1);
+    expect(encoders[0].closed).toBe(1);
+    expect(encoders).toHaveLength(2);
+    expect(encoders[1].encoded.map((d) => d.timestamp)).toEqual([20_000]);
+    cap.stop();
+    expect(encoders[1].closed).toBe(1);
+  });
+
   it('uses 20 ms frames where 10 ms is refused', async () => {
     supported = [VOICE_FALLBACK_FRAME_US];
     const { cap, cb, node } = await started('off');

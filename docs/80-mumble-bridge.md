@@ -566,3 +566,65 @@ pauses between transmissions.
 | No speaker is flushed at a spurt boundary | `voicePlayback.test.ts` "never flushes the sink at a spurt boundary" |
 | The measured speaker's speech all plays | the replay above, 29.26 → 29.99 s of 29.99 s |
 
+### 12.8 A fresh decoder per transmission, as Mumble does (2026-10-29)
+
+After §12.7 (0.59.2) the same speaker no longer broke up in Chrome but
+sounded "mumbled", and Firefox still cracked. Reading Mumble's client
+(`src/mumble/AudioInput.cpp`, `AudioOutput.cpp`, `AudioOutputSpeech.cpp`)
+for what it does at a transmission boundary turned up three things gawk
+did not do:
+
+- **The sender resets its encoder** whenever a transmission starts
+  (`if (bIsSpeech && !bPreviousVoice) bResetEncoder = true;` →
+  `OPUS_RESET_STATE`).
+- **The listener decodes each transmission on a fresh decoder.** A user's
+  `AudioOutputSpeech`, which owns the `opus_decoder`, is deleted once its
+  stream has played out, and the next transmission gets a new one. gawk
+  kept one decoder per speaker for up to 10 s of silence.
+- **It fades** a transmission's first frame in and its last frame out
+  (`fFadeIn` / `fFadeOut`, `sin(i·π/2N)` over one frame).
+
+A reset encoder's first packets decoded on the last transmission's state
+come out garbled. Real speech in transmissions of 0.3–1.6 s, each on a
+fresh 10 ms low-delay encoder at 72 kbit/s (TOC 240, the measured
+client's), measured over each transmission's 10–30 ms:
+
+| | Chromium onset SNR, median / worst | Firefox onset SNR, median / worst | Onsets under 10 dB |
+|---|---|---|---|
+| 0.59.2 (one decoder per speaker) | 7.4 / −4.7 dB | 8.3 / −2.1 dB | 16 / 13 of 24 |
+| A fresh decoder per transmission | 50.9 / 30.1 dB | 55.9 / 26.7 dB | 0 of 24 |
+
+Both runs went through the real `VoicePlayback`, `AudioSink` and worklet,
+with 0–500 ms pauses between transmissions, seq reset to 0, the end flag on
+each transmission's last packet, and in-order arrival in clumps. The
+reference is each transmission decoded alone; the context was 48 kHz so
+the comparison is sample-exact. In the body of each transmission the old
+code measured 44.9 / 47.3 dB: the damage is all at the onsets, one per
+restart, which is why it was this speaker's.
+
+The fix, matching Mumble at both ends:
+
+- `createOpusDecoder().restart()`: the old codec flushes, so the end of the
+  last word still plays, then a boundary callback runs, then a fresh
+  `AudioDecoder` takes the frames that arrived meanwhile.
+- The sink is re-anchored in that boundary callback, not when the new
+  transmission's first packet arrives. Re-anchoring on the packet raced
+  the old codec's last outputs: in Firefox, which keeps input timestamps,
+  they put the old timeline in front of the new transmission's reset seq,
+  the next chunk read as more than 1 s backwards, and the buffer flushed
+  anyway.
+- Mumble's fades on the first frame of each transmission and on its
+  end-flagged last frame.
+- `VoiceCapture` encodes every spurt on a fresh encoder, as Mumble's client
+  does, so Mumble listeners, who decode each transmission fresh, get
+  clean onsets from gawk speakers too. A spurt that starts while the last
+  encoder drains is held until that spurt's terminator is out.
+
+| Goal | Verified by |
+|---|---|
+| Every transmission after the first decodes on a fresh codec, after the old one drained | `voicePlayback.test.ts` "restarts the decoder at every new transmission", "createOpusDecoder restart" |
+| The re-anchor follows the old codec's last output | "re-anchors the sink only once the last transmission is out of the decoder" |
+| Mumble's fades, on the right frames | "marks a transmission's first frame…", "fades those frames as Mumble does", "applyFade" |
+| Every spurt is encoded on a fresh encoder, behind the terminator | `voiceCapture.test.ts` "encodes every spurt on a fresh encoder…" |
+| Clean onsets in both browsers | the table above |
+

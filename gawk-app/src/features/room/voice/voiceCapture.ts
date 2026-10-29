@@ -299,6 +299,10 @@ export class VoiceCapture implements VoiceCaptureLike {
   private stream: MediaStream | null = null;
   private track: MediaStreamTrack | null = null;
   private encoder: VoiceEncoderLike | null = null;
+  // The last spurt's encoder is draining (endSpurt); blocks of the next
+  // spurt wait in `held` for a fresh one.
+  private draining = false;
+  private held: VoiceAudioData[] = [];
   private frameUs = VOICE_FRAME_US;
   private context: AudioContext | null = null;
   private source: AudioNode | null = null;
@@ -734,9 +738,15 @@ export class VoiceCapture implements VoiceCaptureLike {
   }
 
   private encode(data: VoiceAudioData): void {
+    if (this.draining) {
+      // The last spurt's encoder is still draining: this spurt waits for a
+      // fresh one, behind the terminator (endSpurt).
+      this.held.push(data);
+      return;
+    }
     try {
-      // Configured from the first block in hand: always 48 kHz mono now
-      // (docs/81 D6), and never reconfigured.
+      // A fresh encoder per spurt (endSpurt), configured from its first
+      // block: always 48 kHz mono now (docs/81 D6).
       this.encoder ??= this.deps.createEncoder(
         voiceEncoderConfig(data.sampleRate, data.numberOfChannels, this.frameUs),
         {
@@ -755,22 +765,46 @@ export class VoiceCapture implements VoiceCaptureLike {
   }
 
   // The spurt is over: drain the encoder so its last packets go out before
-  // the terminator. A new spurt's encodes queue behind the flush, so they
+  // the terminator, then close it. Every spurt is encoded on a fresh
+  // encoder, as Mumble's client resets its encoder whenever a transmission
+  // starts (AudioInput: bResetEncoder → OPUS_RESET_STATE): Mumble listeners
+  // decode each transmission on fresh state, and a spurt encoded on the
+  // last one's reaches them garbled (docs/80 §12.8). A new spurt that starts
+  // during the drain is held until the terminator is out, so its packets
   // cannot overtake it.
   private endSpurt(): void {
     const enc = this.encoder;
+    this.encoder = null;
     if (!enc) {
       this.cb.onSpurtEnd();
       return;
     }
+    this.draining = true;
     enc.flush().then(
       () => {
         if (!this.stopped) this.cb.onSpurtEnd();
+        this.closeEncoder(enc);
+        this.draining = false;
+        const held = this.held;
+        this.held = [];
+        for (const d of held) {
+          if (this.stopped) d.close();
+          else this.encode(d);
+        }
       },
       () => {
         // a closed encoder: stop() or fail() already said everything
+        this.draining = false;
       },
     );
+  }
+
+  private closeEncoder(enc: VoiceEncoderLike): void {
+    try {
+      enc.close();
+    } catch {
+      // already closed
+    }
   }
 
   private fail(err: VoiceError): void {
@@ -835,5 +869,7 @@ export class VoiceCapture implements VoiceCaptureLike {
     } catch {
       // already closed
     }
+    for (const d of this.held) d.close();
+    this.held = [];
   }
 }

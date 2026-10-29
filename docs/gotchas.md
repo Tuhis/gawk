@@ -2440,6 +2440,14 @@ entries still describe code `gawk-pubsim` runs (now
   Flushing the sink there cut the end of each word and then played silence
   until the cushion refilled; a new spurt re-anchors the jitter buffer's
   timeline and keeps the queue. ([docs/80](80-mumble-bridge.md) §12.7)
+- **Decode every Mumble transmission on a fresh Opus decoder.** Mumble's
+  client resets its encoder at each transmission start
+  (`OPUS_RESET_STATE`) and its listeners start each one on a new
+  `AudioOutputSpeech`. Keeping one decoder per speaker garbled every
+  restart's first ~20 ms (onset SNR ~7 dB against ~51 dB fresh), heard as
+  "mumbled" or crackling from a speaker who restarts often. Restart in the
+  decoder's output order, after the old codec drained, or its last outputs
+  land on the new timeline. ([docs/80](80-mumble-bridge.md) §12.8)
 
 **RNNoise in the browser (R80)**
 
