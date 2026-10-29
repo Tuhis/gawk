@@ -6,9 +6,9 @@ Two entries deserve a second look. **Slint** and its `i-slint-*` crates
 are tri-licensed; gawk uses them under the **Slint Royalty-free License
 version 2.0**, whose attribution condition is met by the "Made with
 Slint" badge on the project README and release pages. **libopus** is
-compiled in statically through `audiopus_sys`; the ISC license below
-covers the Rust bindings, and Xiph's BSD-3-Clause license, listed as
-`libopus`, covers the C library itself.
+compiled in statically through `opusic-sys`; its own BSD-3-Clause
+license covers the Rust bindings, and Xiph's BSD-3-Clause license,
+listed as `libopus`, covers the C library itself.
 
 The MSVC C runtime the binary links against is Microsoft's and is
 governed by the Visual Studio license terms, not by anything here.
@@ -19,7 +19,7 @@ script for what counts as a dependency here and why.
 
 **Scope:** `cargo tree -e normal --target x86_64-pc-windows-msvc` — build- and dev-dependencies (proc macros, test harnesses) are excluded because they are not part of the shipped executable.
 
-## Summary — 269 packages
+## Summary — 270 packages
 
 | License (as declared) | Packages |
 |---|---:|
@@ -31,7 +31,7 @@ script for what counts as a dependency here and why.
 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 7 |
 | `MIT OR Apache-2.0 OR Zlib` | 7 |
 | `Apache-2.0` | 6 |
-| `BSD-3-Clause` | 4 |
+| `BSD-3-Clause` | 5 |
 | `ISC` | 3 |
 | `Apache-2.0 OR ISC OR MIT` | 2 |
 | `BSD-2-Clause` | 2 |
@@ -163,6 +163,7 @@ script for what counts as a dependency here and why.
 | `libc` | 0.2.191 | `MIT OR Apache-2.0` | Copyright (c) The Rust Project Developers |
 | `libloading` | 0.8.9 | `ISC` | Copyright © 2015, Simonas Kazlauskas |
 | `libm` | 0.2.16 | `MIT` | Copyright (c) 2018 Jorge Aparicio<br>Copyright © 2005-2020 Rich Felker, et al<br>Copyright © 1993,2004 Sun Microsystems or<br>Copyright © 2003-2011 David Schultz or<br>Copyright © 2003-2009 Steven G. Kargl or<br>Copyright © 2003-2009 Bruce D. Evans or<br>Copyright © 2008 Stephen L. Moshier or<br>Copyright © 2017-2018 Arm Limited |
+| `libopus` | 1.6.1 | `BSD-3-Clause` | Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, |
 | `linebender_resource_handle` | 0.1.1 | `Apache-2.0 OR MIT` | Copyright 2024 the Raw Resource Handle Authors |
 | `litemap` | 0.8.2 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `log` | 0.4.34 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
@@ -4182,88 +4183,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ### 28. BSD-3-Clause — 2 packages
 
-Applies to: `tiny-skia`, `tiny-skia-path`
-
-```
-Copyright (c) 2011 Google Inc. All rights reserved.
-Copyright (c) 2020 Yevhenii Reizner All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-  * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-
-  * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-
-  * Neither the name of the copyright holder nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-```
-
-### 29. BSD-3-Clause — 1 package
-
-Applies to: `minimal-lexical`
-
-```
-Minimal-lexical is dual licensed under the Apache 2.0 license as well as the MIT
-license. See the LICENCE-MIT and the LICENCE-APACHE files for the licenses.
-
----
-
-`src/bellerophon.rs` is loosely based off the Golang implementation,
-found [here](https://github.com/golang/go/blob/b10849fbb97a2244c086991b4623ae9f32c212d0/src/strconv/extfloat.go).
-That code (used if the `compact` feature is enabled) is subject to a
-[3-clause BSD license](https://github.com/golang/go/blob/b10849fbb97a2244c086991b4623ae9f32c212d0/LICENSE):
-
-Copyright (c) 2009 The Go Authors. All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-   * Redistributions of source code must retain the above copyright
-notice, this list of conditions and the following disclaimer.
-   * Redistributions in binary form must reproduce the above
-copyright notice, this list of conditions and the following disclaimer
-in the documentation and/or other materials provided with the
-distribution.
-   * Neither the name of Google Inc. nor the names of its
-contributors may be used to endorse or promote products derived from
-this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-```
-
-### 30. BSD-3-Clause — 1 package
-
-Applies to: `opusic-sys`
+Applies to: `libopus`, `opusic-sys`
 
 ```
 Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic,
@@ -4310,6 +4230,87 @@ https://datatracker.ietf.org/ipr/1914/
 
 Broadcom Corporation:
 https://datatracker.ietf.org/ipr/1526/
+```
+
+### 29. BSD-3-Clause — 2 packages
+
+Applies to: `tiny-skia`, `tiny-skia-path`
+
+```
+Copyright (c) 2011 Google Inc. All rights reserved.
+Copyright (c) 2020 Yevhenii Reizner All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+  * Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+
+  * Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in
+    the documentation and/or other materials provided with the
+    distribution.
+
+  * Neither the name of the copyright holder nor the names of its
+    contributors may be used to endorse or promote products derived
+    from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+### 30. BSD-3-Clause — 1 package
+
+Applies to: `minimal-lexical`
+
+```
+Minimal-lexical is dual licensed under the Apache 2.0 license as well as the MIT
+license. See the LICENCE-MIT and the LICENCE-APACHE files for the licenses.
+
+---
+
+`src/bellerophon.rs` is loosely based off the Golang implementation,
+found [here](https://github.com/golang/go/blob/b10849fbb97a2244c086991b4623ae9f32c212d0/src/strconv/extfloat.go).
+That code (used if the `compact` feature is enabled) is subject to a
+[3-clause BSD license](https://github.com/golang/go/blob/b10849fbb97a2244c086991b4623ae9f32c212d0/LICENSE):
+
+Copyright (c) 2009 The Go Authors. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+   * Neither the name of Google Inc. nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
 ### 31. GPL — 7 packages

@@ -2708,13 +2708,18 @@ entries still describe code `gawk-pubsim` runs (now
   ([docs/51](51-relay-event-bus.md) EB4)
 - **A `-sys` crate's C library is invisible to the notices generator, and a
   crate can declare a licence without shipping its text.** `cargo tree`
-  lists the bindings, so libopus (built by `audiopus_sys`) and libvpx
+  lists the bindings, so libopus (built by `opusic-sys`, `audiopus_sys`
+  before opus 0.4) and libvpx
   (cloned at build time by `shiguredo_libvpx`) were attributed only by the
   bindings' licence, and the uniffi crates declare `MPL-2.0` with no LICENSE
   file in any of them. Both are handled in `gen-notices.py`:
   `NATIVE_LIBRARIES` (libvpx's text vendored under `tools/licenses/native/`
   and pinned to the version the crate builds) and `LICENSE_TEXT_FALLBACK`.
-  A new `-sys` crate that compiles C in needs an entry.
+  A new `-sys` crate that compiles C in needs an entry — **and so does a
+  bindings crate swapping its `-sys` crate**: entries are keyed by the
+  `-sys` crate's name, so opus 0.4 (audiopus_sys → opusic-sys) silently
+  dropped libopus from every notices file until the key moved; only the
+  committed-notices tests in `gawk-engine`/`gawk-core` caught it.
   ([docs/74](74-open-source-licences-in-app.md) D1)
 - **Chromium's auto gain makes a hum as loud as the speaker.** Between
   words it raises the gain, so a person humming 15 dB below the speaker

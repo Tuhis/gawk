@@ -98,11 +98,13 @@ was only partly covered:
   change that renames a section or reshapes a table breaks the page. The
   committed-file tests make that a red build in the desktop workspace,
   which `licenses-fresh` regenerates into on the same PR.
-- **libopus's version is not pinned by metadata.** `audiopus_sys` ships
-  opus 1.3 in its crate and declares no version key, so the `1.3` in
-  `NATIVE_LIBRARIES` is read from its README. The text itself is read from
-  the crate on every run, so a bump changes the text automatically, not the
-  label.
-- **Linux may link the system libopus.** `audiopus_sys` uses pkg-config
-  when it finds opus. Listing Xiph's notice anyway over-attributes; it never
-  under-attributes.
+- **libopus's version is pinned by a file, not metadata.** Since opus 0.4
+  the library comes from `opusic-sys`, which declares no version key; its
+  `NATIVE_LIBRARIES` entry carries a `pin_file` (`opus/package_version` in
+  the crate) and the generator exits if a bump moves libopus without the
+  label. (Under `audiopus_sys` the `1.3` label was read from its README by
+  hand, and the entry was keyed by that crate, so the opus 0.4 bump dropped
+  libopus from every notices file until the key moved.)
+- **The system libopus is never linked.** `opusic-sys`'s default
+  `bundled` feature always builds the vendored tree with CMake;
+  `audiopus_sys` used pkg-config on Linux when it found opus.
