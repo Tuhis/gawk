@@ -83,9 +83,9 @@ script for what counts as a dependency here and why.
 | `google.golang.org/protobuf` | v1.36.12 | `BSD-3-Clause` | Copyright (c) 2018 The Go Authors. All rights reserved |
 | `gopkg.in/evanphx/json-patch.v4` | v4.13.0 | `BSD-3-Clause` | Copyright (c) 2014, Evan Phoenix |
 | `gopkg.in/inf.v0` | v0.9.1 | `BSD-3-Clause` | Copyright (c) 2012 Péter Surányi. Portions Copyright (c) 2009 The Go |
-| `k8s.io/api` | v0.37.1 | `Apache-2.0` | Copyright 2021 The Kubernetes Authors |
-| `k8s.io/apimachinery` | v0.37.1 | `Apache-2.0` | Copyright 2021 The Kubernetes Authors |
-| `k8s.io/client-go` | v0.37.1 | `Apache-2.0` | Copyright 2021 The Kubernetes Authors |
+| `k8s.io/api` | v0.37.2 | `Apache-2.0` | Copyright 2021 The Kubernetes Authors |
+| `k8s.io/apimachinery` | v0.37.2 | `Apache-2.0` | Copyright 2021 The Kubernetes Authors |
+| `k8s.io/client-go` | v0.37.2 | `Apache-2.0` | Copyright 2021 The Kubernetes Authors |
 | `k8s.io/klog/v2` | v2.140.0 | `Apache-2.0` | — |
 | `k8s.io/kube-openapi` | v0.0.0-20260721132016-d427ff9ee9ad | `Apache-2.0` | — |
 | `k8s.io/utils` | v0.0.0-20260626114624-be93311217bd | `Apache-2.0` | — |
