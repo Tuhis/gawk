@@ -300,9 +300,10 @@ export class VoiceCapture implements VoiceCaptureLike {
   private track: MediaStreamTrack | null = null;
   private encoder: VoiceEncoderLike | null = null;
   // The last spurt's encoder is draining (endSpurt); blocks of the next
-  // spurt wait in `held` for a fresh one.
+  // spurt wait in `held` for a fresh one, and so does that spurt's own end
+  // (null) if it comes before the drain is done.
   private draining = false;
-  private held: VoiceAudioData[] = [];
+  private held: (VoiceAudioData | null)[] = [];
   private frameUs = VOICE_FRAME_US;
   private context: AudioContext | null = null;
   private source: AudioNode | null = null;
@@ -773,6 +774,13 @@ export class VoiceCapture implements VoiceCaptureLike {
   // during the drain is held until the terminator is out, so its packets
   // cannot overtake it.
   private endSpurt(): void {
+    if (this.draining) {
+      // A spurt that started and ended inside the last one's drain: its end
+      // waits behind its blocks, so it is encoded, drained and terminated
+      // in order, after the last spurt's terminator (review round 1).
+      this.held.push(null);
+      return;
+    }
     const enc = this.encoder;
     this.encoder = null;
     if (!enc) {
@@ -785,10 +793,14 @@ export class VoiceCapture implements VoiceCaptureLike {
         if (!this.stopped) this.cb.onSpurtEnd();
         this.closeEncoder(enc);
         this.draining = false;
+        // Replayed in order. A replayed end starts the next drain, and
+        // everything after it is held again behind that one.
         const held = this.held;
         this.held = [];
         for (const d of held) {
-          if (this.stopped) d.close();
+          if (d === null) {
+            if (!this.stopped) this.endSpurt();
+          } else if (this.stopped) d.close();
           else this.encode(d);
         }
       },
@@ -869,7 +881,7 @@ export class VoiceCapture implements VoiceCaptureLike {
     } catch {
       // already closed
     }
-    for (const d of this.held) d.close();
+    for (const d of this.held) d?.close();
     this.held = [];
   }
 }
