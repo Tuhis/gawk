@@ -13,7 +13,7 @@ gawk-engine = { path = "../engine", default-features = false }
 # Vendored static libopus (docs/38 D8: fits the single-EXE story). Its
 # bundled CMakeLists predates CMake 3.5, so builds need
 # CMAKE_POLICY_VERSION_MINIMUM=3.5 in the environment (set in CI).
-opus = "0.3"
+opus = "0.4"
 # The portable pwgraph controller reports refused links (and the Linux
 # modules narrate into debug.log) through the facade.
 log = "0.4"
