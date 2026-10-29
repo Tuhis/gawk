@@ -34,7 +34,7 @@ script for what counts as a dependency here and why.
 | `github.com/quic-go/quic-go` | v0.62.0 | `MIT` | Copyright (c) 2016 the quic-go authors & Google, Inc |
 | `github.com/quic-go/webtransport-go` | v0.13.0 | `MIT` | Copyright 2022 Marten Seemann |
 | `golang.org/x/crypto` | v0.58.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
-| `golang.org/x/net` | v0.61.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
+| `golang.org/x/net` | v0.62.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/sys` | v0.49.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/text` | v0.43.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `google.golang.org/protobuf` | v1.36.12 | `BSD-3-Clause` | Copyright (c) 2018 The Go Authors. All rights reserved |
