@@ -46,4 +46,4 @@ serde_json = "1"
 # Slint's headless testing backend, so the platform's card logic runs
 # against a real MainWindow with no display. Pinned to the slint version,
 # as its internal crates require. Test-only: never in the shipped graph.
-i-slint-backend-testing = "=1.17.1"
+i-slint-backend-testing = "=1.18.1"
