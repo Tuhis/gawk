@@ -17,6 +17,19 @@
 // sentence, often 0–50 ms apart; flushing there cut the end of each word
 // and then played silence until the cushion refilled (docs/80 §12.7).
 //
+// A transmission starts on a fresh decoder, as Mumble plays it. Mumble's
+// client resets its Opus encoder whenever a transmission starts (AudioInput:
+// bResetEncoder → OPUS_RESET_STATE), and our capture does the same; its
+// listeners decode each transmission on a fresh AudioOutputSpeech. A reset
+// encoder's first packets decoded on the last transmission's state come out
+// garbled: −0.9 dB SNR over the first 20 ms against 22.6 dB fresh (docs/80
+// §12.8). The old codec drains first, so the end of the last word still
+// plays, and only then is the sink re-anchored: a re-anchor at the new
+// transmission's first *packet* raced the old codec's last outputs, which
+// then carried the old timeline into the new one. Mumble also fades a
+// transmission's first frame in and its last (end-flagged) frame out; so do
+// we, with its sin(i·π/2N) window.
+//
 // The cushion is per speaker, sized by how late that speaker's packets run
 // against their own seq clock (ArrivalJitter). A web speaker's 10 ms packets
 // arrive within ~15 ms of it and keep the 40–60 ms floor; a native Linux
@@ -51,8 +64,17 @@ const SWEEP_INTERVAL_MS = 1000;
 // buffer slews toward it anyway, so 100 frames/s of updates buy nothing.
 const TARGET_UPDATE_INTERVAL_MS = 250;
 
+// Where a frame sits in its transmission, for Mumble's fades.
+export interface FrameMeta {
+  first: boolean;
+  last: boolean;
+}
+
 export interface SpeakerDecoder {
-  decode(payload: Uint8Array, timestampUs: number): void;
+  decode(payload: Uint8Array, timestampUs: number, meta: FrameMeta): void;
+  // A new transmission: everything decoded so far comes out, then
+  // onBoundary runs, then the next frames decode on a fresh codec.
+  restart(onBoundary: () => void): void;
   close(): void;
 }
 
@@ -67,7 +89,7 @@ export interface SpeakerSink {
 }
 
 export interface VoicePlaybackDeps {
-  createDecoder: (onChunk: (chunk: AudioChunk) => void, onError: (e: Error) => void) => SpeakerDecoder;
+  createDecoder: (onChunk: (chunk: AudioChunk, meta: FrameMeta) => void, onError: (e: Error) => void) => SpeakerDecoder;
   createSink: () => SpeakerSink | null;
   now: () => number;
 }
@@ -167,31 +189,100 @@ export function voicePlaybackSupported(): boolean {
   );
 }
 
+// Mumble's fade (AudioOutputSpeech fFadeIn / fFadeOut): sin(i·π/2N) across
+// one frame, in place, on every channel.
+export function applyFade(chunk: AudioChunk, kind: 'in' | 'out'): void {
+  const n = chunk.frameCount;
+  const mul = Math.PI / (2 * n);
+  for (const ch of chunk.channels) {
+    for (let i = 0; i < n; i++) ch[i] *= Math.sin((kind === 'in' ? i : n - 1 - i) * mul);
+  }
+}
+
 // The real decoder: Opus, 48 kHz mono (what Mumble sends), planar PCM out.
-export function createOpusDecoder(onChunk: (chunk: AudioChunk) => void, onError: (e: Error) => void): SpeakerDecoder {
-  const decoder = new AudioDecoder({
-    output: (data) => {
-      try {
-        const channels: Float32Array[] = [];
-        for (let i = 0; i < data.numberOfChannels; i++) {
-          const plane = new Float32Array(data.numberOfFrames);
-          data.copyTo(plane, { planeIndex: i, format: 'f32-planar' });
-          channels.push(plane);
+// One AudioDecoder per transmission. A restart queues behind the frames
+// already given: the old codec flushes (all its outputs out, in order), the
+// boundary runs, and a fresh one takes the frames that arrived meanwhile.
+export function createOpusDecoder(
+  onChunk: (chunk: AudioChunk, meta: FrameMeta) => void,
+  onError: (e: Error) => void,
+): SpeakerDecoder {
+  let closed = false;
+  // Outputs come one per frame, in order, so each output takes the oldest meta.
+  const metas: FrameMeta[] = [];
+  const open = (): AudioDecoder => {
+    const d = new AudioDecoder({
+      output: (data) => {
+        const meta = metas.shift() ?? { first: false, last: false };
+        try {
+          const channels: Float32Array[] = [];
+          for (let i = 0; i < data.numberOfChannels; i++) {
+            const plane = new Float32Array(data.numberOfFrames);
+            data.copyTo(plane, { planeIndex: i, format: 'f32-planar' });
+            channels.push(plane);
+          }
+          onChunk({ timestampUs: data.timestamp, sampleRate: data.sampleRate, channels, frameCount: data.numberOfFrames }, meta);
+        } catch (e) {
+          log.warn('voice copyTo failed; dropping a frame:', e);
+        } finally {
+          data.close();
         }
-        onChunk({ timestampUs: data.timestamp, sampleRate: data.sampleRate, channels, frameCount: data.numberOfFrames });
-      } catch (e) {
-        log.warn('voice copyTo failed; dropping a frame:', e);
-      } finally {
-        data.close();
+      },
+      error: (e) => onError(e instanceof Error ? e : new Error(String(e))),
+    });
+    d.configure({ codec: 'opus', sampleRate: VOICE_SAMPLE_RATE, numberOfChannels: 1 });
+    return d;
+  };
+  let decoder = open();
+  // Frames and restarts waiting on a draining codec, in arrival order.
+  type Step = { frame: [Uint8Array, number, FrameMeta] } | { boundary: () => void };
+  const waiting: Step[] = [];
+  let draining = false;
+  const submit = (payload: Uint8Array, timestampUs: number, meta: FrameMeta) => {
+    metas.push(meta);
+    decoder.decode(new EncodedAudioChunk({ type: 'key', timestamp: timestampUs, data: payload }));
+  };
+  const pump = (): void => {
+    while (!draining && !closed && waiting.length > 0) {
+      const step = waiting.shift()!;
+      if ('frame' in step) {
+        submit(...step.frame);
+        continue;
       }
-    },
-    error: (e) => onError(e instanceof Error ? e : new Error(String(e))),
-  });
-  decoder.configure({ codec: 'opus', sampleRate: VOICE_SAMPLE_RATE, numberOfChannels: 1 });
+      draining = true;
+      const old = decoder;
+      const done = () => {
+        if (closed) return;
+        if (old.state !== 'closed') old.close();
+        metas.length = 0;
+        step.boundary();
+        decoder = open();
+        draining = false;
+        pump();
+      };
+      old.flush().then(done, (e: unknown) => {
+        // A codec that failed or closed under the flush has nothing left to
+        // give; the next transmission still gets a fresh one.
+        if (!closed) log.warn('voice decoder flush failed; restarting anyway:', e);
+        done();
+      });
+    }
+  };
   return {
-    decode: (payload, timestampUs) =>
-      decoder.decode(new EncodedAudioChunk({ type: 'key', timestamp: timestampUs, data: payload })),
+    decode: (payload, timestampUs, meta) => {
+      if (draining || waiting.length > 0) {
+        waiting.push({ frame: [payload, timestampUs, meta] });
+        return;
+      }
+      submit(payload, timestampUs, meta);
+    },
+    restart: (onBoundary) => {
+      waiting.push({ boundary: onBoundary });
+      pump();
+    },
     close: () => {
+      closed = true;
+      waiting.length = 0;
       if (decoder.state !== 'closed') decoder.close();
     },
   };
@@ -280,9 +371,14 @@ export class VoicePlayback implements VoicePlaybackLike {
     }
     const newSpurt = sp.ended || now - sp.lastFrameAtMs > SPURT_GAP_MS || sp.lastTargetAtMs < 0;
     sp.jitter.frame(header.seq, now, newSpurt);
-    if (newSpurt && sp.lastTargetAtMs >= 0) sp.sink?.reanchor();
-    // At the re-anchor itself: the spurt's first chunks are held against
-    // this speaker's cushion, not a stale one.
+    if (newSpurt && sp.lastTargetAtMs >= 0) {
+      // Re-anchor at the boundary in the decoder's output, not here: the
+      // last transmission's final chunks are still to come out of it.
+      const sink = sp.sink;
+      sp.decoder?.restart(() => sink?.reanchor());
+    }
+    // Before the spurt's first chunks: they are held against this speaker's
+    // cushion, not a stale one.
     if (newSpurt || now - sp.lastTargetAtMs >= TARGET_UPDATE_INTERVAL_MS) {
       sp.sink?.updateTarget(sp.jitter.jitterMs(now), now);
       sp.lastTargetAtMs = now;
@@ -291,7 +387,7 @@ export class VoicePlayback implements VoicePlaybackLike {
     sp.lastFrameAtMs = now;
     if (!sp.decoder) return;
     try {
-      sp.decoder.decode(payload, header.seq * VOICE_SEQ_UNIT_US);
+      sp.decoder.decode(payload, header.seq * VOICE_SEQ_UNIT_US, { first: newSpurt, last: header.end });
     } catch (e) {
       log.warn(`voice decode failed for speaker ${sp.session}; releasing it:`, e);
       this.release(sp);
@@ -356,7 +452,11 @@ export class VoicePlayback implements VoicePlaybackLike {
       sp.sink?.setVolume(volume);
       const sink = sp.sink;
       sp.decoder = this.deps.createDecoder(
-        (chunk) => sink?.push(chunk),
+        (chunk, meta) => {
+          if (meta.first) applyFade(chunk, 'in');
+          if (meta.last) applyFade(chunk, 'out');
+          sink?.push(chunk);
+        },
         (e) => {
           log.warn(`voice decoder for speaker ${sp.session} failed:`, e);
           this.release(sp);

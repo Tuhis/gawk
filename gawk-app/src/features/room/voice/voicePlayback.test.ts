@@ -8,6 +8,8 @@ import {
   SPEAKER_IDLE_RELEASE_MS,
   SPURT_GAP_MS,
   ArrivalJitter,
+  applyFade,
+  type FrameMeta,
   JITTER_HALF_LIFE_MS,
   VoicePlayback,
   createOpusDecoder,
@@ -19,9 +21,13 @@ import {
 import { SPEAKING_HOLD_MS } from './speaking';
 
 interface FakeDecoder extends SpeakerDecoder {
-  decoded: { payload: Uint8Array; ts: number }[];
+  decoded: { payload: Uint8Array; ts: number; meta: FrameMeta }[];
   closed: boolean;
-  emit: (chunk: AudioChunk) => void;
+  restarts: number;
+  // A restart's boundary callback, held until the test releases it (the old
+  // codec still draining) when `holdRestarts` is set.
+  heldBoundaries: (() => void)[];
+  emit: (chunk: AudioChunk, meta?: FrameMeta) => void;
   fail: (e: Error) => void;
 }
 interface FakeSink extends SpeakerSink {
@@ -36,6 +42,7 @@ interface FakeSink extends SpeakerSink {
 }
 
 let clock = 0;
+let holdRestarts = false;
 let decoders: FakeDecoder[];
 let sinks: FakeSink[];
 
@@ -46,13 +53,20 @@ function makePlayback(volumeFor: (s: number) => number = () => 1, onSpeaking = v
         const d: FakeDecoder = {
           decoded: [],
           closed: false,
-          decode(payload, ts) {
-            this.decoded.push({ payload, ts });
+          restarts: 0,
+          heldBoundaries: [],
+          decode(payload, ts, meta) {
+            this.decoded.push({ payload, ts, meta });
+          },
+          restart(onBoundary) {
+            this.restarts++;
+            if (holdRestarts) this.heldBoundaries.push(onBoundary);
+            else onBoundary();
           },
           close() {
             this.closed = true;
           },
-          emit: onChunk,
+          emit: (chunk, meta = { first: false, last: false }) => onChunk(chunk, meta),
           fail: onError,
         };
         decoders.push(d);
@@ -102,6 +116,7 @@ const opus = new Uint8Array([0xfc, 0xff]);
 beforeEach(() => {
   vi.useFakeTimers();
   clock = 0;
+  holdRestarts = false;
   decoders = [];
   sinks = [];
 });
@@ -331,7 +346,7 @@ describe('createOpusDecoder', () => {
     const errors: Error[] = [];
     const d = createOpusDecoder((c) => chunks.push(c), (e) => errors.push(e));
     expect(made[0].config).toEqual({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1 });
-    d.decode(new Uint8Array([1]), 20_000);
+    d.decode(new Uint8Array([1]), 20_000, { first: true, last: false });
     expect(made[0].decoded[0].timestamp).toBe(20_000);
     let closed = 0;
     made[0].output({
@@ -493,5 +508,151 @@ describe('VoicePlayback cushion per speaker', () => {
     const first = sinks[1].targets[0];
     expect(first.jitterMs).toBeGreaterThan(50);
     p.dispose();
+  });
+});
+
+// Mumble's client resets its Opus encoder at the start of every transmission
+// (AudioInput: bResetEncoder → OPUS_RESET_STATE) and its listeners decode
+// each transmission on a fresh AudioOutputSpeech, fading the first frame in
+// and the last one out. Decoding a reset encoder's first packets on a
+// decoder that kept the last transmission's state garbles them: 10 ms CELT
+// at 72 kbit/s measured −0.9 dB SNR over each transmission's first 20 ms
+// against 22.6 dB on a fresh decoder (docs/80 §12.8).
+describe('VoicePlayback transmissions, as Mumble plays them', () => {
+  it('restarts the decoder at every new transmission, never the first', () => {
+    const { p } = makePlayback();
+    p.handleFrame(frame(7, 0), opus);
+    p.handleFrame(frame(7, 1, true), opus);
+    expect(decoders[0].restarts).toBe(0);
+    clock = 40;
+    p.handleFrame(frame(7, 0), opus);
+    expect(decoders[0].restarts).toBe(1);
+    clock = 40 + SPURT_GAP_MS + 1;
+    p.handleFrame(frame(7, 1), opus);
+    expect(decoders[0].restarts).toBe(2);
+    p.dispose();
+  });
+
+  it('re-anchors the sink only once the last transmission is out of the decoder', () => {
+    holdRestarts = true;
+    const { p } = makePlayback();
+    p.handleFrame(frame(7, 900), opus);
+    p.handleFrame(frame(7, 901, true), opus);
+    clock = 30;
+    p.handleFrame(frame(7, 0), opus);
+    // The old codec is still draining: its last chunks would land after a
+    // re-anchor made now, carrying the old timeline's timestamps.
+    expect(sinks[0].reanchors).toBe(0);
+    decoders[0].heldBoundaries.shift()!();
+    expect(sinks[0].reanchors).toBe(1);
+    p.dispose();
+  });
+
+  it("marks a transmission's first frame and its end-flagged last frame", () => {
+    const { p } = makePlayback();
+    p.handleFrame(frame(7, 0), opus);
+    p.handleFrame(frame(7, 1), opus);
+    p.handleFrame(frame(7, 2, true), opus);
+    expect(decoders[0].decoded.map((d) => d.meta)).toEqual([
+      { first: true, last: false },
+      { first: false, last: false },
+      { first: false, last: true },
+    ]);
+    clock = 30;
+    p.handleFrame(frame(7, 0), opus);
+    expect(decoders[0].decoded[3].meta).toEqual({ first: true, last: false });
+    p.dispose();
+  });
+
+  it('fades those frames as Mumble does: sin(i·π/2N) in, its mirror out', () => {
+    const { p } = makePlayback();
+    p.handleFrame(frame(7, 0), opus);
+    const pcm = () => ({ timestampUs: 0, sampleRate: 48000, frameCount: 4, channels: [new Float32Array(4).fill(1)] });
+    decoders[0].emit(pcm(), { first: true, last: false });
+    decoders[0].emit(pcm(), { first: false, last: false });
+    decoders[0].emit(pcm(), { first: false, last: true });
+    const w = (i: number) => Math.sin((i * Math.PI) / 8);
+    expect(Array.from(sinks[0].pushed[0].channels[0])).toEqual([0, 1, 2, 3].map((i) => Math.fround(w(i))));
+    expect(Array.from(sinks[0].pushed[1].channels[0])).toEqual([1, 1, 1, 1]);
+    expect(Array.from(sinks[0].pushed[2].channels[0])).toEqual([3, 2, 1, 0].map((i) => Math.fround(w(i))));
+    p.dispose();
+  });
+
+  it('applyFade shapes every channel of a chunk', () => {
+    const c = { timestampUs: 0, sampleRate: 48000, frameCount: 2, channels: [new Float32Array([1, 1]), new Float32Array([2, 2])] };
+    applyFade(c, 'in');
+    expect(Array.from(c.channels[1])).toEqual([0, Math.fround(2 * Math.sin(Math.PI / 4))]);
+  });
+});
+
+describe('createOpusDecoder restart', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('drains the old codec, runs the boundary, then decodes the next transmission on a fresh one', async () => {
+    const made: { decoded: number[]; closed: number; flushes: number; release: (() => void)[]; output: (d: unknown) => void }[] = [];
+    vi.stubGlobal(
+      'AudioDecoder',
+      class {
+        state = 'configured';
+        rec: (typeof made)[number];
+        constructor(init: { output: (d: unknown) => void }) {
+          this.rec = { decoded: [], closed: 0, flushes: 0, release: [], output: init.output };
+          made.push(this.rec);
+        }
+        configure() {}
+        decode(chunk: { timestamp: number }) {
+          this.rec.decoded.push(chunk.timestamp);
+        }
+        flush() {
+          this.rec.flushes++;
+          return new Promise<void>((r) => this.rec.release.push(r));
+        }
+        close() {
+          this.rec.closed++;
+          this.state = 'closed';
+        }
+      },
+    );
+    vi.stubGlobal(
+      'EncodedAudioChunk',
+      class {
+        timestamp: number;
+        constructor(init: { timestamp: number }) {
+          this.timestamp = init.timestamp;
+        }
+      },
+    );
+    const metas: FrameMeta[] = [];
+    const order: string[] = [];
+    const d = createOpusDecoder(
+      (_c, meta) => metas.push(meta),
+      () => {},
+    );
+    const out = (rec: (typeof made)[number]) =>
+      rec.output({ numberOfChannels: 1, numberOfFrames: 1, sampleRate: 48000, timestamp: 0, copyTo: () => {}, close: () => {} });
+    d.decode(new Uint8Array([1]), 10_000, { first: true, last: false });
+    d.decode(new Uint8Array([1]), 20_000, { first: false, last: true });
+    d.restart(() => order.push('boundary'));
+    // Frames of the next transmission wait for the old codec to drain.
+    d.decode(new Uint8Array([1]), 0, { first: true, last: false });
+    expect(made).toHaveLength(1);
+    expect(made[0].decoded).toEqual([10_000, 20_000]);
+    out(made[0]);
+    out(made[0]);
+    made[0].release.shift()!();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(order).toEqual(['boundary']);
+    expect(made[0].closed).toBe(1);
+    expect(made).toHaveLength(2);
+    expect(made[1].decoded).toEqual([0]);
+    out(made[1]);
+    expect(metas).toEqual([
+      { first: true, last: false },
+      { first: false, last: true },
+      { first: true, last: false },
+    ]);
+    d.close();
+    expect(made[1].closed).toBe(1);
   });
 });
