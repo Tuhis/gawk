@@ -18,7 +18,7 @@ log = "0.4"
 [target.'cfg(windows)'.dependencies]
 # The Async::join() blocking wait for WinRT IAsyncOperation (the F-11
 # borderless grant); the windows crate does not re-export the trait.
-windows-future = "0.3"
+windows-future = "0.100"
 windows = { version = "0.62", features = [
     "Foundation",
     "Foundation_Metadata",
