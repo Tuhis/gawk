@@ -358,7 +358,7 @@ script for what counts as a dependency here and why.
 | `tinystr` | 0.8.3 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `tinyvec` | 1.12.0 | `Zlib OR Apache-2.0 OR MIT` | Copyright (c) 2019 Daniel "Lokathor" Gee |
 | `tinyvec_macros` | 0.1.1 | `MIT OR Apache-2.0 OR Zlib` | Copyright 2020 Tomasz "Soveu" Marx<br>Copyright (c) 2020 Soveu |
-| `tokio` | 1.53.1 | `MIT` | Copyright (c) Tokio Contributors |
+| `tokio` | 1.54.1 | `MIT` | Copyright (c) Tokio Contributors |
 | `tracing` | 0.1.44 | `MIT` | Copyright (c) 2019 Tokio Contributors |
 | `tracing-core` | 0.1.36 | `MIT` | Copyright (c) 2019 Tokio Contributors |
 | `tree_magic_mini` | 3.2.2 | `MIT` | Copyright (c) 2017 Aaron Hancock |

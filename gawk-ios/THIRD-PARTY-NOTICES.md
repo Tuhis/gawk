@@ -172,7 +172,7 @@ script for what counts as a dependency here and why.
 | `time-core` | 0.1.9 | `MIT OR Apache-2.0` | Copyright (c) Jacob Pratt et al |
 | `tinystr` | 0.8.4 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `tinyvec` | 1.13.3 | `Zlib OR Apache-2.0 OR MIT` | Copyright (c) 2019 Daniel "Lokathor" Gee |
-| `tokio` | 1.53.2 | `MIT` | Copyright (c) Tokio Contributors |
+| `tokio` | 1.54.1 | `MIT` | Copyright (c) Tokio Contributors |
 | `tracing` | 0.1.44 | `MIT` | Copyright (c) 2019 Tokio Contributors |
 | `tracing-core` | 0.1.36 | `MIT` | Copyright (c) 2019 Tokio Contributors |
 | `typenum` | 1.20.1 | `MIT OR Apache-2.0` | Copyright 2014 Paho Lurie-Gregg<br>Copyright (c) 2014 Paho Lurie-Gregg |
