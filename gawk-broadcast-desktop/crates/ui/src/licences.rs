@@ -86,7 +86,7 @@ mod tests {
         assert!(count(SOURCE) > 0, "the iOS file has the uniffi sources");
         let opus = rows
             .iter()
-            .find(|r| r.kind == PACKAGE && r.title == "libopus 1.3")
+            .find(|r| r.kind == PACKAGE && r.title == "libopus 1.6.1")
             .expect("libopus");
         assert_eq!(opus.sub, "BSD-3-Clause");
         assert!(opus.body.contains("Xiph.Org"));

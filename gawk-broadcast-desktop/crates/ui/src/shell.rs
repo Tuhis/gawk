@@ -7335,7 +7335,10 @@ mod tests {
         ui.invoke_open_licences();
         assert_eq!(ui.get_page(), 5);
         let rows = ui.get_licences();
-        assert!(rows.iter().any(|r| r.kind == 2 && r.title == "libopus 1.3"));
+        assert!(
+            rows.iter()
+                .any(|r| r.kind == 2 && r.title == "libopus 1.6.1")
+        );
         assert!(rows.iter().filter(|r| r.kind == 3).count() > 10);
     }
 

@@ -72,8 +72,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # The vendored libopus (gawk-audio → opus → audiopus_sys) carries a
-  # CMakeLists older than CMake 4's floor; this is CMake's own escape hatch.
+  # Kept for the vendored libopus: audiopus_sys's CMakeLists predated CMake
+  # 4's floor. opusic-sys (opus 0.4+) needs only CMake 3.16, so this is now
+  # harmless belt-and-braces (gawk-audio's Cargo.toml).
   CMAKE_POLICY_VERSION_MINIMUM: "3.5"
   # docs/67 D24: a pinned Xcode, never the image default, which can lag a
   # major version behind the iOS 27 SDK the app builds against (OD6).
