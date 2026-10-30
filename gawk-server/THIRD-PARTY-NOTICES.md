@@ -35,7 +35,7 @@ script for what counts as a dependency here and why.
 | `github.com/dunglas/httpsfv` | v1.1.1 | `BSD-3-Clause` | Copyright (c) 2020 Kévin Dunglas. All rights reserved |
 | `github.com/emicklei/go-restful/v3` | v3.13.0 | `MIT` | Copyright (c) 2012,2013 Ernest Micklei |
 | `github.com/fxamacker/cbor/v2` | v2.9.1 | `MIT` | Copyright (c) 2019-present Faye Amacker |
-| `github.com/go-jose/go-jose/v4` | v4.1.4 | `Apache-2.0` | Copyright 2014 Square Inc |
+| `github.com/go-jose/go-jose/v4` | v4.1.6 | `Apache-2.0` | Copyright 2014 Square Inc |
 | `github.com/go-logr/logr` | v1.4.3 | `Apache-2.0` | — |
 | `github.com/go-openapi/jsonpointer` | v1.0.0 | `Apache-2.0` | Copyright 2015-2025 go-swagger maintainers<br>Copyright 2013 sigu-399 ( https://github.com/sigu-399 ) |
 | `github.com/go-openapi/jsonreference` | v1.0.0 | `Apache-2.0` | Copyright 2015-2025 go-swagger maintainers<br>Copyright 2013 sigu-399 ( https://github.com/sigu-399 ) |
@@ -74,7 +74,7 @@ script for what counts as a dependency here and why.
 | `go.yaml.in/yaml/v2` | v2.4.4 | `Apache-2.0 OR MIT` | Copyright (c) 2006 Kirill Simonov<br>Copyright 2011-2016 Canonical Ltd |
 | `go.yaml.in/yaml/v3` | v3.0.5 | `Apache-2.0 OR MIT OR Apache-2.0` | copyright staring in 2011 when the project was ported over:<br>Copyright (c) 2006-2010 Kirill Simonov<br>Copyright (c) 2006-2011 Kirill Simonov<br>Copyright (c) 2011-2019 Canonical Ltd<br>Copyright 2011-2016 Canonical Ltd |
 | `golang.org/x/crypto` | v0.58.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
-| `golang.org/x/net` | v0.61.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
+| `golang.org/x/net` | v0.62.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/oauth2` | v0.37.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/sys` | v0.49.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/term` | v0.47.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
@@ -83,9 +83,9 @@ script for what counts as a dependency here and why.
 | `google.golang.org/protobuf` | v1.36.12 | `BSD-3-Clause` | Copyright (c) 2018 The Go Authors. All rights reserved |
 | `gopkg.in/evanphx/json-patch.v4` | v4.13.0 | `BSD-3-Clause` | Copyright (c) 2014, Evan Phoenix |
 | `gopkg.in/inf.v0` | v0.9.1 | `BSD-3-Clause` | Copyright (c) 2012 Péter Surányi. Portions Copyright (c) 2009 The Go |
-| `k8s.io/api` | v0.37.1 | `Apache-2.0` | Copyright 2021 The Kubernetes Authors |
-| `k8s.io/apimachinery` | v0.37.1 | `Apache-2.0` | Copyright 2021 The Kubernetes Authors |
-| `k8s.io/client-go` | v0.37.1 | `Apache-2.0` | Copyright 2021 The Kubernetes Authors |
+| `k8s.io/api` | v0.37.2 | `Apache-2.0` | Copyright 2021 The Kubernetes Authors |
+| `k8s.io/apimachinery` | v0.37.2 | `Apache-2.0` | Copyright 2021 The Kubernetes Authors |
+| `k8s.io/client-go` | v0.37.2 | `Apache-2.0` | Copyright 2021 The Kubernetes Authors |
 | `k8s.io/klog/v2` | v2.140.0 | `Apache-2.0` | — |
 | `k8s.io/kube-openapi` | v0.0.0-20260721132016-d427ff9ee9ad | `Apache-2.0` | — |
 | `k8s.io/utils` | v0.0.0-20260626114624-be93311217bd | `Apache-2.0` | — |

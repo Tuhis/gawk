@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.59.3](https://github.com/Tuhis/gawk/compare/gawk-app/v0.59.2...gawk-app/v0.59.3) (2026-10-29)
+
+
+### Bug Fixes
+
+* **app:** decode each voice transmission on a fresh Opus decoder, as Mumble does ([#633](https://github.com/Tuhis/gawk/issues/633)) ([1cfd220](https://github.com/Tuhis/gawk/commit/1cfd220bb105749ac4e68f09a98f7c35abf48e9e))
+
 ## [0.59.2](https://github.com/Tuhis/gawk/compare/gawk-app/v0.59.1...gawk-app/v0.59.2) (2026-10-28)
 
 
