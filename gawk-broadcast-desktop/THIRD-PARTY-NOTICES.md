@@ -19,11 +19,11 @@ script for what counts as a dependency here and why.
 
 **Scope:** `cargo tree -e normal --target x86_64-pc-windows-msvc` — build- and dev-dependencies (proc macros, test harnesses) are excluded because they are not part of the shipped executable.
 
-## Summary — 256 packages
+## Summary — 255 packages
 
 | License (as declared) | Packages |
 |---|---:|
-| `MIT OR Apache-2.0` | 121 |
+| `MIT OR Apache-2.0` | 120 |
 | `MIT` | 32 |
 | `Apache-2.0 OR MIT` | 24 |
 | `Unicode-3.0` | 22 |
@@ -63,7 +63,6 @@ script for what counts as a dependency here and why.
 | `arrayvec` | 0.7.8 | `MIT OR Apache-2.0` | Copyright (c) Ulrik Sverdrup "bluss" 2015-2023 |
 | `asn1-rs` | 0.7.2 | `MIT OR Apache-2.0` | Copyright (c) 2017 Pierre Chifflier |
 | `audiopus_sys` | 0.2.2 | `ISC` | Copyright (c) 2019, Lakelezz |
-| `base64` | 0.22.1 | `MIT OR Apache-2.0` | Copyright (c) 2015 Alice Maz |
 | `base64` | 0.23.1 | `MIT OR Apache-2.0` | Copyright (c) 2025 Alice Maz, Marshall Pierce |
 | `bitflags` | 2.13.1 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
 | `block-buffer` | 0.12.1 | `MIT OR Apache-2.0` | Copyright (c) 2018-2025 The RustCrypto Project Developers |
@@ -217,10 +216,10 @@ script for what counts as a dependency here and why.
 | `roxmltree` | 0.21.1 | `MIT OR Apache-2.0` | Copyright (c) 2018 Yevhenii Reizner |
 | `rustc-hash` | 2.1.3 | `Apache-2.0 OR MIT` | — |
 | `rusticata-macros` | 4.1.0 | `MIT/Apache-2.0` | Copyright (c) 2017 Pierre Chifflier |
-| `rustls` | 0.23.43 | `Apache-2.0 OR ISC OR MIT` | Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com><br>Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com> |
+| `rustls` | 0.23.46 | `Apache-2.0 OR ISC OR MIT` | Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com><br>Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com> |
 | `rustls-native-certs` | 0.8.4 | `Apache-2.0 OR ISC OR MIT` | Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com><br>Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com> |
 | `rustls-pki-types` | 1.15.1 | `MIT OR Apache-2.0` | Copyright 2023 Dirkjan Ochtman<br>Copyright (c) 2023 Dirkjan Ochtman <dirkjan@ochtman.nl> |
-| `rustls-webpki` | 0.103.13 | `ISC` | Copyright 2015 Brian Smith |
+| `rustls-webpki` | 0.103.16 | `ISC` | Copyright 2015 Brian Smith |
 | `schannel` | 0.1.29 | `MIT` | Copyright (c) 2015 steffengy |
 | `scoped-tls-hkt` | 0.1.5 | `MIT/Apache-2.0` | Copyright (c) 2020 Diggory Blake |
 | `scopeguard` | 1.2.0 | `MIT OR Apache-2.0` | Copyright (c) 2016-2019 Ulrik Sverdrup "bluss" and scopeguard developers |
@@ -267,8 +266,8 @@ script for what counts as a dependency here and why.
 | `unicode-segmentation` | 1.13.3 | `MIT OR Apache-2.0` | Copyright (c) 2015 The Rust Project Developers |
 | `unicode-vo` | 0.1.0 | `MIT/Apache-2.0` | Copyright (c) 2018 Reizner Evgeniy |
 | `untrusted` | 0.9.0 | `ISC` | Copyright 2015-2021 Brian Smith |
-| `ureq` | 3.3.0 | `MIT OR Apache-2.0` | Copyright (c) 2019 Martin Algesten |
-| `ureq-proto` | 0.6.0 | `MIT OR Apache-2.0` | Copyright 2022 Martin Algesten |
+| `ureq` | 3.5.0 | `MIT OR Apache-2.0` | Copyright (c) 2019 Martin Algesten |
+| `ureq-proto` | 0.6.5 | `MIT OR Apache-2.0` | Copyright 2022 Martin Algesten |
 | `url` | 2.5.8 | `MIT OR Apache-2.0` | Copyright (c) 2013-2025 The rust-url developers |
 | `usvg` | 0.48.1 | `Apache-2.0 OR MIT` | Copyright 2017 the Resvg Authors |
 | `utf8-zero` | 0.8.1 | `MIT OR Apache-2.0` | — |
@@ -276,7 +275,7 @@ script for what counts as a dependency here and why.
 | `uuid` | 1.24.0 | `Apache-2.0 OR MIT` | Copyright (c) 2014 The Rust Project Developers<br>Copyright (c) 2018 Ashley Mannix, Christopher Armstrong, Dylan DPC, Hunar Roop Kahlon |
 | `vtable` | 0.5.0 | `MIT OR Apache-2.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
 | `webbrowser` | 1.2.2 | `MIT OR Apache-2.0` | Copyright (c) 2015-2022 Amod Malviya |
-| `webpki-roots` | 1.0.9 | `CDLA-Permissive-2.0` | — |
+| `webpki-roots` | 1.0.11 | `CDLA-Permissive-2.0` | — |
 | `weezl` | 0.1.12 | `MIT OR Apache-2.0` | Copyright (c) HeroicKatora 2020 |
 | `windows` | 0.62.2 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
 | `windows-collections` | 0.3.2 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
@@ -555,9 +554,9 @@ You should also get your employer (if you work as a programmer) or school, if an
 The GNU General Public License does not permit incorporating your program into proprietary programs. If your program is a subroutine library, you may consider it more useful to permit linking proprietary applications with the library. If this is what you want to do, use the GNU Lesser General Public License instead of this License. But first, please read <http://www.gnu.org/philosophy/why-not-lgpl.html>.
 ```
 
-### 2. Apache-2.0 — 112 packages
+### 2. Apache-2.0 — 113 packages
 
-Applies to: `arrayvec`, `asn1-rs`, `base64`, `bitflags`, `block-buffer`, `cfg-if`, `chacha20`, `const-oid`, `cpufeatures`, `critical-section`, `crossbeam-channel`, `crossbeam-utils` — and 100 more
+Applies to: `arrayvec`, `asn1-rs`, `base64`, `bitflags`, `block-buffer`, `cfg-if`, `chacha20`, `const-oid`, `cpufeatures`, `critical-section`, `crossbeam-channel`, `crossbeam-utils` — and 101 more
 
 ```
 Apache License
