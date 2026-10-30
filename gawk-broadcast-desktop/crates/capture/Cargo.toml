@@ -16,9 +16,11 @@ log = "0.4"
 # Windows-only: the crate compiles empty elsewhere so the workspace builds
 # and the portable halves (picker filter, fps gate) test on any host.
 [target.'cfg(windows)'.dependencies]
-# The Async::join() blocking wait for WinRT IAsyncOperation (the F-11
-# borderless grant); the windows crate does not re-export the trait.
-windows-future = "0.100"
+# No direct windows-future dependency: `windows` 0.62 builds on
+# windows-future 0.3 without re-exporting it, so naming its types here pins
+# a second copy that must move in lockstep with `windows` (a lone 0.100 bump
+# split the graph and broke the build, PR #649). wgc.rs reaches
+# IAsyncOperation through inherent methods instead.
 windows = { version = "0.62", features = [
     "Foundation",
     "Foundation_Metadata",
