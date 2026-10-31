@@ -64,6 +64,7 @@ relay.broadcast.subscriberDetails[].queueDepth number
 relay.broadcast.subscriberDetails[].reliable boolean
 relay.broadcast.subscriberDetails[].sendErrors number
 relay.broadcast.subscriberDetails[].sessionId string
+relay.broadcast.subscriberDetails[].stripeLeg boolean
 relay.broadcast.subscribers number
 relay.broadcast.viewersGlobal number
 relay.broadcastKey string
@@ -91,6 +92,7 @@ relay.subscriber.queueDepth number
 relay.subscriber.reliable boolean
 relay.subscriber.sendErrors number
 relay.subscriber.sessionId string
+relay.subscriber.stripeLeg boolean
 rollups.appVersion string
 rollups.broadcastKey string
 rollups.browser string
