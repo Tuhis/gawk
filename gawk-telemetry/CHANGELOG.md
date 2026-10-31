@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.2](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.14.1...gawk-telemetry/v1.14.2) (2026-10-31)
+
+
+### Bug Fixes
+
+* **telemetry:** stop counting R30 stripe legs as viewers ([#657](https://github.com/Tuhis/gawk/issues/657)) ([4e42204](https://github.com/Tuhis/gawk/commit/4e42204d608474a036e19e23c60e8651963355a6))
+
 ## [1.14.1](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.14.0...gawk-telemetry/v1.14.1) (2026-10-26)
 
 
