@@ -304,18 +304,25 @@ LICENSE_TEXT_FALLBACK = {
 # crate that builds it and listed whenever that crate is in the graph.
 #
 #   files    (where, path): "crate" for a file inside the crate's own
-#            source (audiopus_sys ships the opus tree), "repo" for one
+#            source (opusic-sys ships the opus tree), "repo" for one
 #            committed under tools/licenses/native/ (shiguredo_libvpx clones
 #            libvpx at build time, so there is nothing in the crate to read).
 #   pin      a key in the crate's [package.metadata] that names the library
 #            version it builds; the run fails if it disagrees with `version`,
 #            so a bump that moves the library can't leave a stale notice.
+#   pin_file (path, regex) for a crate with no such key: a file inside the
+#            crate's source whose first match names the version it builds.
+#            opusic-sys moves libopus in patch releases, which Renovate lands
+#            as lockfile-only bumps, so the label must be checked, not trusted.
 NATIVE_LIBRARIES = {
-    "audiopus_sys": dict(
+    # opus 0.4 replaced audiopus_sys with opusic-sys (BSD-3-Clause bindings,
+    # bundled libopus built by CMake). Keyed by the name `cargo tree` prints.
+    "opusic-sys": dict(
         name="libopus",
-        version="1.3",
+        version="1.6.1",
         spdx="BSD-3-Clause",
         files=[("crate", "opus/COPYING")],
+        pin_file=("opus/package_version", r'PACKAGE_VERSION="([^"]+)"'),
     ),
     "shiguredo_libvpx": dict(
         name="libvpx",
@@ -341,6 +348,16 @@ def native_library(crate: dict, root: Path) -> Package:
                 f"! {crate['name']} {crate['version']} builds {spec['name']} {pinned}, "
                 f"but NATIVE_LIBRARIES says {spec['version']}: refresh its licence "
                 "files and the version in tools/licenses/gen-notices.py"
+            )
+    if "pin_file" in spec:
+        rel, pattern = spec["pin_file"]
+        found = re.search(pattern, (root / rel).read_text(encoding="utf-8"))
+        pinned = found.group(1) if found else None
+        if pinned != spec["version"]:
+            sys.exit(
+                f"! {crate['name']} {crate['version']} builds {spec['name']} {pinned}, "
+                f"but NATIVE_LIBRARIES says {spec['version']}: refresh the version "
+                "in tools/licenses/gen-notices.py"
             )
     files = []
     for where, rel in spec["files"]:
@@ -712,9 +729,9 @@ COMPONENTS = {
             "are tri-licensed; gawk uses them under the **Slint Royalty-free License\n"
             "version 2.0**, whose attribution condition is met by the \"Made with\n"
             "Slint\" badge on the project README and release pages. **libopus** is\n"
-            "compiled in statically through `audiopus_sys`; the ISC license below\n"
-            "covers the Rust bindings, and Xiph's BSD-3-Clause license, listed as\n"
-            "`libopus`, covers the C library itself.\n"
+            "compiled in statically through `opusic-sys`; its own BSD-3-Clause\n"
+            "license covers the Rust bindings, and Xiph's BSD-3-Clause license,\n"
+            "listed as `libopus`, covers the C library itself.\n"
             "\n"
             "The MSVC C runtime the binary links against is Microsoft's and is\n"
             "governed by the Visual Studio license terms, not by anything here."
@@ -741,8 +758,8 @@ COMPONENTS = {
             "under the **Slint Royalty-free License version 2.0**, whose attribution\n"
             "condition is met by the \"Made with Slint\" badge on the project README\n"
             "and release pages, and **libopus** is compiled in statically through\n"
-            "`audiopus_sys` (ISC for the bindings, Xiph's BSD-3-Clause for the C\n"
-            "library, listed as `libopus`). The Apple frameworks it links — ScreenCaptureKit,\n"
+            "`opusic-sys` (BSD-3-Clause for the bindings, Xiph's BSD-3-Clause for\n"
+            "the C library, listed as `libopus`). The Apple frameworks it links — ScreenCaptureKit,\n"
             "VideoToolbox, CoreMedia and the rest — are part of macOS and are\n"
             "governed by Apple's terms, not by anything here."
         ),
@@ -768,7 +785,7 @@ COMPONENTS = {
             "crates are used under the **Slint Royalty-free License version 2.0**,\n"
             "whose attribution condition is met by the \"Made with Slint\" badge on\n"
             "the project README and release pages, and **libopus** is compiled in\n"
-            "statically through `audiopus_sys` (ISC for the bindings, Xiph's\n"
+            "statically through `opusic-sys` (BSD-3-Clause for the bindings, Xiph's\n"
             "BSD-3-Clause for the C library, listed as `libopus`).\n"
             "\n"
             "The binary **dynamically links** libraries it does not ship, which the\n"
@@ -797,9 +814,9 @@ COMPONENTS = {
             "(`gawk-core`), the one static library the app links; the app and its\n"
             "Live Activity add no third-party code of their own.\n"
             "\n"
-            "**libopus** is compiled in statically through `audiopus_sys` (ISC for\n"
-            "the bindings, Xiph's BSD-3-Clause for the C library, listed as\n"
-            "`libopus`), and **libvpx** through `shiguredo_libvpx`, which builds it\n"
+            "**libopus** is compiled in statically through `opusic-sys`\n"
+            "(BSD-3-Clause for the bindings, Xiph's BSD-3-Clause for the C library,\n"
+            "listed as `libopus`), and **libvpx** through `shiguredo_libvpx`, which builds it\n"
             "from upstream source (Apache-2.0 for the bindings, the WebM Project's\n"
             "BSD-3-Clause and patent grant for the library, listed as `libvpx`).\n"
             "The **uniffi** crates are under the Mozilla Public License 2.0; where\n"

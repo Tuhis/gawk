@@ -10,10 +10,12 @@ license.workspace = true
 # No default features: the shells pick `self-update`, and the iOS app
 # (docs/67 D4) must be able to leave it off through this crate.
 gawk-engine = { path = "../engine", default-features = false }
-# Vendored static libopus (docs/38 D8: fits the single-EXE story). Its
-# bundled CMakeLists predates CMake 3.5, so builds need
-# CMAKE_POLICY_VERSION_MINIMUM=3.5 in the environment (set in CI).
-opus = "0.3"
+# Vendored static libopus (docs/38 D8: fits the single-EXE story), built
+# by `opusic-sys` (libopus 1.6.x) since opus 0.4. Its CMakeLists needs CMake
+# 3.16+; the CMAKE_POLICY_VERSION_MINIMUM=3.5 CI still sets was for the old
+# `audiopus_sys` tree and is harmless now. The notices generator pins the
+# libopus version it builds (tools/licenses/gen-notices.py).
+opus = "0.4"
 # The portable pwgraph controller reports refused links (and the Linux
 # modules narrate into debug.log) through the facade.
 log = "0.4"

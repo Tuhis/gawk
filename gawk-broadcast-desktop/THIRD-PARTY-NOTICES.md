@@ -6,9 +6,9 @@ Two entries deserve a second look. **Slint** and its `i-slint-*` crates
 are tri-licensed; gawk uses them under the **Slint Royalty-free License
 version 2.0**, whose attribution condition is met by the "Made with
 Slint" badge on the project README and release pages. **libopus** is
-compiled in statically through `audiopus_sys`; the ISC license below
-covers the Rust bindings, and Xiph's BSD-3-Clause license, listed as
-`libopus`, covers the C library itself.
+compiled in statically through `opusic-sys`; its own BSD-3-Clause
+license covers the Rust bindings, and Xiph's BSD-3-Clause license,
+listed as `libopus`, covers the C library itself.
 
 The MSVC C runtime the binary links against is Microsoft's and is
 governed by the Visual Studio license terms, not by anything here.
@@ -31,8 +31,8 @@ script for what counts as a dependency here and why.
 | `MIT OR Apache-2.0 OR Zlib` | 7 |
 | `MIT/Apache-2.0` | 7 |
 | `Apache-2.0` | 6 |
-| `BSD-3-Clause` | 4 |
-| `ISC` | 4 |
+| `BSD-3-Clause` | 5 |
+| `ISC` | 3 |
 | `Apache-2.0 OR ISC OR MIT` | 2 |
 | `BSD-2-Clause` | 2 |
 | `BSD-3-Clause OR Apache-2.0` | 2 |
@@ -62,7 +62,6 @@ script for what counts as a dependency here and why.
 | `arrayref` | 0.3.9 | `BSD-2-Clause` | Copyright (c) 2015 David Roundy <roundyd@physics.oregonstate.edu> |
 | `arrayvec` | 0.7.8 | `MIT OR Apache-2.0` | Copyright (c) Ulrik Sverdrup "bluss" 2015-2023 |
 | `asn1-rs` | 0.7.2 | `MIT OR Apache-2.0` | Copyright (c) 2017 Pierre Chifflier |
-| `audiopus_sys` | 0.2.2 | `ISC` | Copyright (c) 2019, Lakelezz |
 | `base64` | 0.23.1 | `MIT OR Apache-2.0` | Copyright (c) 2025 Alice Maz, Marshall Pierce |
 | `bitflags` | 2.13.1 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
 | `block-buffer` | 0.12.1 | `MIT OR Apache-2.0` | Copyright (c) 2018-2025 The RustCrypto Project Developers |
@@ -156,7 +155,7 @@ script for what counts as a dependency here and why.
 | `libc` | 0.2.191 | `MIT OR Apache-2.0` | Copyright (c) The Rust Project Developers |
 | `libloading` | 0.8.9 | `ISC` | Copyright © 2015, Simonas Kazlauskas |
 | `libm` | 0.2.16 | `MIT` | Copyright (c) 2018 Jorge Aparicio<br>Copyright © 2005-2020 Rich Felker, et al<br>Copyright © 1993,2004 Sun Microsystems or<br>Copyright © 2003-2011 David Schultz or<br>Copyright © 2003-2009 Steven G. Kargl or<br>Copyright © 2003-2009 Bruce D. Evans or<br>Copyright © 2008 Stephen L. Moshier or<br>Copyright © 2017-2018 Arm Limited |
-| `libopus` | 1.3 | `BSD-3-Clause` | Copyright 2001-2011 Xiph.Org, Skype Limited, Octasic, |
+| `libopus` | 1.6.1 | `BSD-3-Clause` | Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, |
 | `linebender_resource_handle` | 0.1.1 | `Apache-2.0 OR MIT` | Copyright 2024 the Raw Resource Handle Authors |
 | `litemap` | 0.8.2 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `log` | 0.4.35 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
@@ -183,7 +182,8 @@ script for what counts as a dependency here and why.
 | `octets` | 0.3.6 | `BSD-2-Clause` | Copyright (C) 2018-2019, Cloudflare, Inc |
 | `oid-registry` | 0.8.1 | `MIT OR Apache-2.0` | Copyright (c) 2017 Pierre Chifflier |
 | `once_cell` | 1.21.4 | `MIT OR Apache-2.0` | — |
-| `opus` | 0.3.1 | `MIT/Apache-2.0` | Copyright (c) 2016 Tad Hardesty |
+| `opus` | 0.4.0 | `MIT/Apache-2.0` | Copyright (c) 2016 Tad Hardesty |
+| `opusic-sys` | 0.7.6 | `BSD-3-Clause` | Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, |
 | `parlance` | 0.1.0 | `Apache-2.0 OR MIT` | Copyright 2020 the Parley Authors |
 | `parley` | 0.11.1 | `Apache-2.0 OR MIT` | Copyright 2020 the Parley Authors |
 | `parley_data` | 0.11.1 | `Apache-2.0 OR MIT` | Copyright 2020 the Parley Authors |
@@ -4166,50 +4166,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ### 28. BSD-3-Clause — 2 packages
 
-Applies to: `tiny-skia`, `tiny-skia-path`
+Applies to: `libopus`, `opusic-sys`
 
 ```
-Copyright (c) 2011 Google Inc. All rights reserved.
-Copyright (c) 2020 Yevhenii Reizner All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-  * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-
-  * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-
-  * Neither the name of the copyright holder nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-```
-
-### 29. BSD-3-Clause — 1 package
-
-Applies to: `libopus`
-
-```
-Copyright 2001-2011 Xiph.Org, Skype Limited, Octasic,
+Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic,
                     Jean-Marc Valin, Timothy B. Terriberry,
                     CSIRO, Gregory Maxwell, Mark Borgerding,
-                    Erik de Castro Lopo
+                    Erik de Castro Lopo, Mozilla, Amazon
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions
@@ -4250,6 +4213,43 @@ https://datatracker.ietf.org/ipr/1914/
 
 Broadcom Corporation:
 https://datatracker.ietf.org/ipr/1526/
+```
+
+### 29. BSD-3-Clause — 2 packages
+
+Applies to: `tiny-skia`, `tiny-skia-path`
+
+```
+Copyright (c) 2011 Google Inc. All rights reserved.
+Copyright (c) 2020 Yevhenii Reizner All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+  * Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+
+  * Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in
+    the documentation and/or other materials provided with the
+    distribution.
+
+  * Neither the name of the copyright holder nor the names of its
+    contributors may be used to endorse or promote products derived
+    from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
 ### 30. BSD-3-Clause — 1 package
@@ -4513,28 +4513,6 @@ OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ### 35. ISC — 1 package
 
-Applies to: `audiopus_sys`
-
-```
-ISC License
-
-Copyright (c) 2019, Lakelezz
-
-Permission to use, copy, modify, and/or distribute this software for any
-purpose with or without fee is hereby granted, provided that the above
-copyright notice and this permission notice appear in all copies.
-
-THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
-WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
-MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
-ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
-WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
-ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
-OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
-```
-
-### 36. ISC — 1 package
-
 Applies to: `libloading`
 
 ```
@@ -4552,7 +4530,7 @@ NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE US
 THIS SOFTWARE.
 ```
 
-### 37. ISC — 1 package
+### 36. ISC — 1 package
 
 Applies to: `ring`
 
@@ -4572,7 +4550,7 @@ OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### 38. ISC — 1 package
+### 37. ISC — 1 package
 
 Applies to: `rustls-webpki`
 
@@ -4598,7 +4576,7 @@ The files under third-party/chromium are licensed as described in
 third-party/chromium/LICENSE.
 ```
 
-### 39. ISC — 1 package
+### 38. ISC — 1 package
 
 Applies to: `untrusted`
 
@@ -4618,7 +4596,7 @@ Applies to: `untrusted`
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### 40. MIT — 121 packages
+### 39. MIT — 121 packages
 
 Applies to: `adler2`, `allocator-api2`, `arrayvec`, `asn1-rs`, `bitflags`, `block-buffer`, `bytes`, `cfg-if`, `chacha20`, `clru`, `const-oid`, `cpufeatures` — and 109 more
 
@@ -4648,7 +4626,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 41. MIT — 26 packages
+### 40. MIT — 26 packages
 
 Applies to: `arboard`, `const-field-offset`, `crc32fast`, `fdeflate`, `field-offset`, `image`, `image-webp`, `imagesize`, `linebender_resource_handle`, `miniz_oxide`, `muda`, `raw-window-handle` — and 14 more
 
@@ -4680,7 +4658,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 42. MIT — 22 packages
+### 41. MIT — 22 packages
 
 Applies to: `fixed_decimal`, `icu_collections`, `icu_decimal`, `icu_decimal_data`, `icu_locale`, `icu_locale_core`, `icu_locale_data`, `icu_normalizer`, `icu_normalizer_data`, `icu_properties`, `icu_properties_data`, `icu_provider` — and 10 more
 
@@ -4733,7 +4711,7 @@ Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
 ```
 
-### 43. MIT — 20 packages
+### 42. MIT — 20 packages
 
 Applies to: `base64`, `byteorder-lite`, `color_quant`, `crossbeam-channel`, `crossbeam-utils`, `data-encoding`, `derive_more`, `fontdb`, `gif`, `harfrust`, `htmlparser`, `memchr` — and 8 more
 
@@ -4761,7 +4739,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 44. MIT — 12 packages
+### 43. MIT — 12 packages
 
 Applies to: `windows`, `windows-collections`, `windows-core`, `windows-future`, `windows-link`, `windows-numerics`, `windows-result`, `windows-strings`, `windows-sys`, `windows-targets`, `windows-threading`, `windows_x86_64_msvc`
 
@@ -4789,7 +4767,7 @@ MIT License
     SOFTWARE
 ```
 
-### 45. MIT — 1 package
+### 44. MIT — 1 package
 
 Applies to: `bytemuck`
 
@@ -4805,7 +4783,7 @@ The above copyright notice and this permission notice (including the next paragr
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 46. MIT — 1 package
+### 45. MIT — 1 package
 
 Applies to: `dpi`
 
@@ -4863,7 +4841,7 @@ have been licensed under extremely permissive terms.
 ------------------------------------------------------------------------------
 ```
 
-### 47. MIT — 1 package
+### 46. MIT — 1 package
 
 Applies to: `glutin-winit`
 
@@ -4889,7 +4867,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 48. MIT — 1 package
+### 47. MIT — 1 package
 
 Applies to: `minisign-verify`
 
@@ -4955,7 +4933,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 49. MIT — 1 package
+### 48. MIT — 1 package
 
 Applies to: `pulldown-cmark`
 
@@ -4983,7 +4961,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 50. MIT OR BSL-1.0 — 1 package
+### 49. MIT OR BSL-1.0 — 1 package
 
 Applies to: `error-code`
 
@@ -5013,7 +4991,7 @@ ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 51. UNKNOWN — 1 package
+### 50. UNKNOWN — 1 package
 
 Applies to: `imgref`
 
@@ -5141,7 +5119,7 @@ express Statement of Purpose.
     this CC0 or use of the Work.
 ```
 
-### 52. UNKNOWN — 1 package
+### 51. UNKNOWN — 1 package
 
 Applies to: `memchr`
 
@@ -5151,7 +5129,7 @@ This project is dual-licensed under the Unlicense and MIT licenses.
 You may use this code under the terms of either license.
 ```
 
-### 53. UNKNOWN — 1 package
+### 52. UNKNOWN — 1 package
 
 Applies to: `muda`
 
@@ -5177,7 +5155,7 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/muda.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-### 54. UNKNOWN — 1 package
+### 53. UNKNOWN — 1 package
 
 Applies to: `ring`
 
@@ -5193,7 +5171,7 @@ See src/polyfill/once_cell/LICENSE-APACHE and src/polyfill/once_cell/LICENSE-MIT
 for the license to code that was sourced from the once_cell project.
 ```
 
-### 55. UNKNOWN — 1 package
+### 54. UNKNOWN — 1 package
 
 Applies to: `typenum`
 
@@ -5201,7 +5179,7 @@ Applies to: `typenum`
 MIT OR Apache-2.0
 ```
 
-### 56. UNKNOWN — 1 package
+### 55. UNKNOWN — 1 package
 
 Applies to: `webpki-roots`
 
@@ -5269,7 +5247,7 @@ of Data, including for example machine learning models and models'
 insights.
 ```
 
-### 57. Unlicense — 2 packages
+### 56. Unlicense — 2 packages
 
 Applies to: `byteorder-lite`, `memchr`
 
@@ -5300,7 +5278,7 @@ OTHER DEALINGS IN THE SOFTWARE.
 For more information, please refer to <http://unlicense.org/>
 ```
 
-### 58. Zlib — 9 packages
+### 57. Zlib — 9 packages
 
 Applies to: `bytemuck`, `cursor-icon`, `foldhash`, `glow`, `lru-slab`, `miniz_oxide`, `raw-window-handle`, `slotmap`, `tinyvec`
 
@@ -5322,7 +5300,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### 59. Zlib — 2 packages
+### 58. Zlib — 2 packages
 
 Applies to: `zune-core`, `zune-jpeg`
 
@@ -5348,7 +5326,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### 60. Zlib — 1 package
+### 59. Zlib — 1 package
 
 Applies to: `tinyvec_macros`
 

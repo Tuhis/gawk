@@ -4,9 +4,9 @@ The gawk iOS app. Everything listed here is in its Rust core
 (`gawk-core`), the one static library the app links; the app and its
 Live Activity add no third-party code of their own.
 
-**libopus** is compiled in statically through `audiopus_sys` (ISC for
-the bindings, Xiph's BSD-3-Clause for the C library, listed as
-`libopus`), and **libvpx** through `shiguredo_libvpx`, which builds it
+**libopus** is compiled in statically through `opusic-sys`
+(BSD-3-Clause for the bindings, Xiph's BSD-3-Clause for the C library,
+listed as `libopus`), and **libvpx** through `shiguredo_libvpx`, which builds it
 from upstream source (Apache-2.0 for the bindings, the WebM Project's
 BSD-3-Clause and patent grant for the library, listed as `libvpx`).
 The **uniffi** crates are under the Mozilla Public License 2.0; where
@@ -30,11 +30,11 @@ script for what counts as a dependency here and why.
 | `Unicode-3.0` | 15 |
 | `Zlib OR Apache-2.0 OR MIT` | 10 |
 | `Apache-2.0 OR MIT` | 9 |
-| `BSD-3-Clause` | 3 |
-| `ISC` | 3 |
+| `BSD-3-Clause` | 4 |
 | `MIT/Apache-2.0` | 3 |
 | `MPL-2.0` | 3 |
 | `Apache-2.0 OR ISC OR MIT` | 2 |
+| `ISC` | 2 |
 | `0BSD OR MIT OR Apache-2.0` | 1 |
 | `Apache-2.0` | 1 |
 | `Apache-2.0 AND ISC` | 1 |
@@ -52,7 +52,6 @@ script for what counts as a dependency here and why.
 | `adler2` | 2.0.1 | `0BSD OR MIT OR Apache-2.0` | Copyright (C) Jonas Schievink <jonasschievink@gmail.com> |
 | `anyhow` | 1.0.104 | `MIT OR Apache-2.0` | — |
 | `asn1-rs` | 0.7.2 | `MIT OR Apache-2.0` | Copyright (c) 2017 Pierre Chifflier |
-| `audiopus_sys` | 0.2.2 | `ISC` | Copyright (c) 2019, Lakelezz |
 | `base64` | 0.23.1 | `MIT OR Apache-2.0` | Copyright (c) 2025 Alice Maz, Marshall Pierce |
 | `bitflags` | 2.13.2 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
 | `block-buffer` | 0.12.1 | `MIT OR Apache-2.0` | Copyright (c) 2018-2025 The RustCrypto Project Developers |
@@ -100,7 +99,7 @@ script for what counts as a dependency here and why.
 | `itoa` | 1.0.18 | `MIT OR Apache-2.0` | — |
 | `lazy_static` | 1.5.1 | `MIT OR Apache-2.0` | Copyright 2016 lazy-static.rs Developers |
 | `libc` | 0.2.190 | `MIT OR Apache-2.0` | Copyright (c) The Rust Project Developers |
-| `libopus` | 1.3 | `BSD-3-Clause` | Copyright 2001-2011 Xiph.Org, Skype Limited, Octasic, |
+| `libopus` | 1.6.1 | `BSD-3-Clause` | Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, |
 | `libvpx` | v1.17.0 | `BSD-3-Clause` | Copyright (c) 2010, The WebM Project authors. All rights reserved |
 | `litemap` | 0.8.3 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `log` | 0.4.35 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
@@ -129,7 +128,8 @@ script for what counts as a dependency here and why.
 | `oid-registry` | 0.8.1 | `MIT OR Apache-2.0` | Copyright (c) 2017 Pierre Chifflier |
 | `once_cell` | 1.21.4 | `MIT OR Apache-2.0` | — |
 | `openssl-probe` | 0.2.1 | `MIT OR Apache-2.0` | Copyright (c) 2014 Alex Crichton |
-| `opus` | 0.3.1 | `MIT/Apache-2.0` | Copyright (c) 2016 Tad Hardesty |
+| `opus` | 0.4.0 | `MIT/Apache-2.0` | Copyright (c) 2016 Tad Hardesty |
+| `opusic-sys` | 0.7.6 | `BSD-3-Clause` | Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, |
 | `pem` | 4.0.0 | `MIT` | Copyright (c) 2016 Jonathan Creekmore |
 | `percent-encoding` | 2.3.2 | `MIT OR Apache-2.0` | Copyright (c) 2013-2025 The rust-url developers |
 | `pin-project-lite` | 0.2.17 | `Apache-2.0 OR MIT` | — |
@@ -2498,15 +2498,15 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### 17. BSD-3-Clause — 1 package
+### 17. BSD-3-Clause — 2 packages
 
-Applies to: `libopus`
+Applies to: `libopus`, `opusic-sys`
 
 ```
-Copyright 2001-2011 Xiph.Org, Skype Limited, Octasic,
+Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic,
                     Jean-Marc Valin, Timothy B. Terriberry,
                     CSIRO, Gregory Maxwell, Mark Borgerding,
-                    Erik de Castro Lopo
+                    Erik de Castro Lopo, Mozilla, Amazon
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions
@@ -3089,28 +3089,6 @@ OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ### 24. ISC — 1 package
 
-Applies to: `audiopus_sys`
-
-```
-ISC License
-
-Copyright (c) 2019, Lakelezz
-
-Permission to use, copy, modify, and/or distribute this software for any
-purpose with or without fee is hereby granted, provided that the above
-copyright notice and this permission notice appear in all copies.
-
-THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
-WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
-MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
-ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
-WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
-ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
-OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
-```
-
-### 25. ISC — 1 package
-
 Applies to: `ring`
 
 ```
@@ -3129,7 +3107,7 @@ OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### 26. ISC — 1 package
+### 25. ISC — 1 package
 
 Applies to: `rustls-webpki`
 
@@ -3155,7 +3133,7 @@ The files under third-party/chromium are licensed as described in
 third-party/chromium/LICENSE.
 ```
 
-### 27. ISC — 1 package
+### 26. ISC — 1 package
 
 Applies to: `untrusted`
 
@@ -3175,7 +3153,7 @@ Applies to: `untrusted`
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### 28. MIT — 88 packages
+### 27. MIT — 88 packages
 
 Applies to: `adler2`, `anyhow`, `asn1-rs`, `bitflags`, `block-buffer`, `bytes`, `camino`, `cargo-platform`, `cargo_metadata`, `cfg-if`, `chacha20`, `const-oid` — and 76 more
 
@@ -3205,7 +3183,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 29. MIT — 15 packages
+### 28. MIT — 15 packages
 
 Applies to: `icu_collections`, `icu_locale_core`, `icu_normalizer`, `icu_normalizer_data`, `icu_properties`, `icu_properties_data`, `icu_provider`, `litemap`, `potential_utf`, `tinystr`, `writeable`, `yoke` — and 3 more
 
@@ -3258,7 +3236,7 @@ Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
 ```
 
-### 30. MIT — 9 packages
+### 29. MIT — 9 packages
 
 Applies to: `crc32fast`, `miniz_oxide`, `rustls-platform-verifier`, `simd-adler32`, `static_assertions`, `tokio`, `ureq`, `wtransport`, `wtransport-proto`
 
@@ -3286,7 +3264,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 31. MIT — 5 packages
+### 30. MIT — 5 packages
 
 Applies to: `base64`, `data-encoding`, `memchr`, `pem`, `typenum`
 
@@ -3314,7 +3292,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 32. MIT — 2 packages
+### 31. MIT — 2 packages
 
 Applies to: `security-framework`, `security-framework-sys`
 
@@ -3341,7 +3319,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 33. UNKNOWN — 1 package
+### 32. UNKNOWN — 1 package
 
 Applies to: `libvpx`
 
@@ -3371,7 +3349,7 @@ for these implementations of WebM shall terminate as of the date such
 litigation is filed.
 ```
 
-### 34. UNKNOWN — 1 package
+### 33. UNKNOWN — 1 package
 
 Applies to: `memchr`
 
@@ -3381,7 +3359,7 @@ This project is dual-licensed under the Unlicense and MIT licenses.
 You may use this code under the terms of either license.
 ```
 
-### 35. UNKNOWN — 1 package
+### 34. UNKNOWN — 1 package
 
 Applies to: `ring`
 
@@ -3397,7 +3375,7 @@ See src/polyfill/once_cell/LICENSE-APACHE and src/polyfill/once_cell/LICENSE-MIT
 for the license to code that was sourced from the once_cell project.
 ```
 
-### 36. UNKNOWN — 1 package
+### 35. UNKNOWN — 1 package
 
 Applies to: `typenum`
 
@@ -3405,7 +3383,7 @@ Applies to: `typenum`
 MIT OR Apache-2.0
 ```
 
-### 37. UNKNOWN — 1 package
+### 36. UNKNOWN — 1 package
 
 Applies to: `webpki-roots`
 
@@ -3473,7 +3451,7 @@ of Data, including for example machine learning models and models'
 insights.
 ```
 
-### 38. Unlicense — 1 package
+### 37. Unlicense — 1 package
 
 Applies to: `memchr`
 
@@ -3504,7 +3482,7 @@ OTHER DEALINGS IN THE SOFTWARE.
 For more information, please refer to <http://unlicense.org/>
 ```
 
-### 39. Zlib — 3 packages
+### 38. Zlib — 3 packages
 
 Applies to: `lru-slab`, `miniz_oxide`, `tinyvec`
 
