@@ -661,66 +661,6 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   auto-resume, or routing publishers differently from viewers. Do not change
   the LB shape speculatively — docs/22 finding 10 chose etp=Local deliberately.
 
-## Viewer latency metrics emit session-age values — the fleet's `capToRenderMs` p95 reads 48 minutes
-
-- **Found**: 2026-08-20, diagnosing the previous evening's demo-recording
-  streams (broadcasts `b9b42c60ab14`, `aa67099035bb`, `e970addda9f9`) through
-  the telemetry read API. Not introduced by that session's changes and not new:
-  the poisoned aggregate goes back to at least 2026-08-12, the earliest bucket
-  `/v1/trends` still covers.
-- **Impact**: `capToRenderMs` is the headline metric — "the number this project
-  exists to keep small", per its own field description — and its fleet p95 is
-  meaningless. `/v1/trends?metric=capToRenderMs&stat=p95` reads **2 903 675 ms
-  (48 minutes)** for the 08-16 bucket, 682 017 ms for 08-12 and 358 569 ms for
-  08-19; `liveEdgeDriftMs` p95 is wrong by the same amounts. The median stat is
-  unaffected (156–485 ms), so the damage is confined to max/p95 — but rollups
-  are **permanent**, so every poisoned bucket is permanent too, and any
-  latency-regression question asked of history is currently unanswerable
-  above the median.
-- **Confirmed shape** (8 bad samples across 8 viewer sessions — 4 in
-  `13585b24…`, 3 in `b393325e…`, 1 in `532e65f7…`; every other sample in those
-  same sessions reads a healthy 52–70 ms):
-  - each bad value equals wall-clock *now* minus a **fixed instant**, growing
-    exactly 1:1 with elapsed session time (one session gained 43 674 ms of
-    value across 43 499 ms of wall time, another 39 013 across 39 004);
-  - that instant is the **same** ≈`1787175899400` (2026-08-19 23:44:59 local)
-    in all three broadcasts and all eight viewer sessions, including sessions
-    that started five minutes later;
-  - it is also exactly what `videoScheduleBaseEpochMs` reports in **every**
-    session — that field never moves off ≈`1787175899.3–900.0` all evening;
-  - `liveEdgeDriftMs` carries the same number minus ~50 ms, so both metrics
-    come from one bad term, not two.
-- **Hypothesis, not a diagnosis**: the constant is a `timeOrigin`, and the two
-  metrics are mixing clocks across contexts. `videoScheduleBaseEpochMs()`
-  (`gawk-app/src/transport/viewer.ts:1143`) is
-  `arrivalBaselineMs() + getPlayoutOffsetMs() + timeOriginMs()` — if the
-  baseline is measured in one context and `timeOriginMs()` belongs to another
-  (a viewer page open across several broadcasts, or a transport worker
-  respawned mid-view), the sum lands on the older context's origin instead of
-  the anchor instant, which is precisely the reading observed.
-  `observeCapToRender` (`viewer.ts:1151`) has a guard for exactly this hazard —
-  the rebasing onto `sync.timeOriginMs` at `viewer.ts:1155-1161`, added because
-  a nested transport worker's `timeOrigin` is "minutes after this worker's" —
-  and a second guard that returns early while `broadcastClockOffsetUs` is null.
-  Neither covers whatever produces these samples, and the shared constant says
-  the surviving hole is upstream of both metrics rather than in the clock
-  mapping alone.
-- **Not a telemetry defect**: the service stores what it is sent by design
-  (D15's tolerant reader — `gawk-telemetry/internal/ingest/ingest.go:11`,
-  and the deferred stats decode at `:58` exists so one absurd value cannot
-  reject a batch). The numbers are wrong before they leave the browser.
-- **Fix would start**: in `viewer.ts`, test-first per CODE-REVIEW.md. Reproduce
-  by driving `videoScheduleBaseEpochMs()`/`observeCapToRender()` with an
-  `arrivalBaselineMs()` and a `timeOriginMs()` from deliberately different
-  contexts and asserting the epoch lands on the anchor, not the older origin —
-  the red test is the deliverable, because the arithmetic is what is in doubt.
-  Consider also a plausibility clamp at the *source*: a `capToRenderMs` larger
-  than, say, the DVR ring is not a latency reading and should be dropped rather
-  than published, so a future recurrence cannot poison permanent rollups again.
-  The already-stored buckets need a separate decision — rollups are permanent
-  by design, so either they stay poisoned with this entry as the explanation,
-  or a one-off rewrite drops the outliers.
-
 ## Telemetry counts R30 stripe legs as viewers — `viewer-count-gap` fires on every striped viewer
 
 - **Found**: 2026-09-23, same session as the entry above. Every recent
@@ -828,42 +768,11 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   or outage takes more of a frame than parity covers.
 - **Impact**: under bursts and outages on a datagram uplink, these presets
   freeze where the carrier uplink would show them 94–100 % (F14).
-- **Fix would start**: docs/75 RU3 (the carrier uplink).
-
-## The relay drops high-rung publisher datagrams that QUIC already acknowledged
-
-- **Found**: 2026-10-17, in docs/75's lab (F7), then on the real relay
-  (§11 tables G and N). A 1440p60 publisher (deltas of 52–84 datagrams) on
-  a clean path, 10 ms RTT and a 300 Mbps bottleneck, with 2 `gawk-loadgen`
-  viewers and the lab's measuring viewer on a relay with CPU to spare: the relay's
-  `gawk_relay_ingress_chunks_lost_total` read 1 871–2 251 in 60 s (≈ 1 % of
-  chunks; 182 with no viewers) while the publisher's quinn counted **0 lost
-  packets** and the path dropped nothing, and a viewer could not decode
-  39–47 % of frames. At 1080p the same runs lost nothing. (The first figure
-  here, 4 252 with 15 viewers, came from a relay already past its fan-out
-  capacity on the lab host; corrected 2026-10-18.)
-- **Cause (measured)**: quic-go's HTTP/3 layer keeps at most
-  `streamDatagramQueueLen = 32` datagrams per WebTransport session and drops
-  new ones silently (`http3/state_tracking_stream.go`, quic-go 0.62.0).
-  Raising it to 128 in a test build took the loss to 0 in every run, and
-  512 or 4096 to 0–21;
-  raising the connection-level queue (128) did nothing, and a relay
-  goroutine that only drains the queue did not help, with CPU to spare or
-  without (1 810 against 2 120 with 2 viewers) — its own channel never
-  overflowed, so the datagrams were lost in quic-go's 32 before any reader
-  took them. The edge's
-  pull session reads origin → edge datagrams through the same queue.
-- **Impact**: high-rung datagram publishers lose the tails of their largest
-  frames — parity included — at the relay, for every viewer, and the loss
-  is booked as leg-A loss. The signature (chunks lost, no whole frames) is
-  the one a 2026-09-27 incident recorded; whether that incident was this is
-  not known (its rung is not on record). R73's carrier is immune. Since
-  docs/75 RU0 telemetry's `relay-intake-drops` rule names it when a native
-  broadcaster's QUIC reports no matching packet loss.
-- **Fix would start**: docs/75 RU2 — red first with a burst of 200
-  datagrams against a relay loop blocked for 20 ms, then a 512-deep queue
-  (docs/75 D7, F16: deeper only adds delay on a busy relay), upstream or as
-  a pinned quic-go fork.
+- **Fix would start**: docs/75 RU3 (the carrier uplink) has shipped in the
+  native broadcasters behind the *Reliable* delivery setting (2026-10-21);
+  this entry closes when RU7's hardware pass makes it the default. The
+  browser broadcaster has no carrier until its own Reliable milestone
+  (docs/75 OD5).
 
 ## Desktop broadcaster: every stream reset mid-`finish()` leaks a quinn waiter
 
@@ -889,6 +798,13 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   engine cannot reach that map. Waiting on acknowledgement some other way is
   not possible either, because `stopped()` is quinn's only ack signal
   (`docs/gotchas.md`, "quinn cannot tell you which bytes …").
+
+(The "Viewer latency metrics emit session-age values" entry was resolved
+2026-09-25 by #376: a frame whose parity arrived before its data kept
+timestamp 0, so the metrics measured from the broadcaster tab's time origin.
+The "relay drops high-rung publisher datagrams" entry was resolved
+2026-10-21/22 by docs/75 RU2, #536 and #550: a 512-deep queue in the
+vendored quic-go.)
 
 (The "Telemetry SQL console: the `rollups` view rots after boot, and any
 unpruned `sessions` query OOMs" entry was resolved 2026-09-22: views

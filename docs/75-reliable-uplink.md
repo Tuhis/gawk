@@ -4,8 +4,10 @@
 2026-10-18 with the relay's queue by depth, a shared uplink and the browser
 broadcaster on Chrome's own stack (F16–F18).
 Owner decisions OD1–OD4 and OD6 taken 2026-10-18, OD5 2026-10-19 (§3);
-chunks **RU0–RU9** not started, in §8's order (`RU` = Reliable
-Uplink). **Split out of R55** ([docs/57](57-wifi-uplink.md)) on
+chunks **RU0–RU6, RU8 and RU9 implemented** in §8's order and merged
+2026-10-21/22 (`RU` = Reliable Uplink); BBR is the engine default since
+2026-10-21 (owner decision, §5 D5), Reliable delivery is not yet. Open:
+RU7, the hardware pass, and the default flip that follows it. **Split out of R55** ([docs/57](57-wifi-uplink.md)) on
 2026-10-17 by owner direction: how deltas cross the broadcaster → relay leg
 is not a Wi-Fi feature. docs/57 keeps the Mac's Wi-Fi status line (WU3,
 built), Improve (WU4, deferred), QoS marking (WU5) and the Wi-Fi hardware pass
