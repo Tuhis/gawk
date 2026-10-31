@@ -674,21 +674,6 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   once, so this needs the tile body keyed on an attempt counter (a new
   canvas per attempt), not a re-run of the connection effect.
 
-## Desktop broadcaster counts audio twice in its upload rate and summary
-
-- **Found**: 2026-10-06, building R68's upload row for the iOS core
-  (`docs/70` K4), which reads the same engine counters.
-- **Impact**: the engine's `Sender` adds every audio datagram to both
-  `audio_bytes_sent` and `bytes_sent` (`engine/src/sender.rs`), and the
-  desktop shell sums the two: Live's upload line and the summary card's
-  average upload (`ui/src/shell.rs`, `let bytes = st.bytes_sent +
-  st.audio_bytes_sent` and the `summary_rows` call in the end path). Both
-  read high by the audio stream's own rate. The iOS core reads
-  `bytes_sent + parity_bytes_sent` and is not affected.
-- **Fix would start**: test-first in `ui/src/shell.rs`: stats with known
-  audio and video bytes must give the video-plus-audio rate once; then drop
-  the `+ st.audio_bytes_sent` in both places.
-
 ## Smoother and Most stable viewers freeze on uplink loss that Balanced viewers never see
 
 - **Found**: 2026-10-17, docs/75 F14, by replaying lab traces through the
