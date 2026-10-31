@@ -163,7 +163,24 @@ type Subscriber struct {
 	DVRLagMs              int64  `json:"dvrLagMs"`
 	DVRGopSeq             int64  `json:"dvrGopSeq"`
 	DVRResyncs            uint64 `json:"dvrResyncs"`
+	// StripeLeg marks one of a striped viewer's extra R30 leg sessions
+	// (docs/35 §5.8; the relay's SubscriberStats.StripeLeg). A leg is
+	// plumbing like an edge session but is NOT marked Internal, which the
+	// relay reserves for R17 edges. Stored lines carry it from this field's
+	// introduction on; older ones have no marker and cannot be corrected.
+	StripeLeg bool `json:"stripeLeg,omitempty"`
 }
+
+// IsAudience reports whether a /statusz subscriber entry is a viewer rather
+// than relay plumbing: an R17 edge session (internal) or an R30 stripe leg.
+// The relay's own viewersGlobal excludes both (docs/35 ST3), so every
+// "subscribers" count this service derives must too, or one striped viewer
+// reads as five and viewer-count-gap fires on every broadcast. It is the one
+// predicate for every such loop, so they cannot drift apart again.
+func IsAudience(internal, stripeLeg bool) bool { return !internal && !stripeLeg }
+
+// Audience is IsAudience for a decoded Subscriber.
+func (s Subscriber) Audience() bool { return IsAudience(s.Internal, s.StripeLeg) }
 
 // Observation is one stored relay-side record. Written per broadcast and per
 // subscriber, so a session's two views join on `sessionId` with no index.
@@ -424,10 +441,13 @@ func observations(bs map[string]Broadcast, pod, rolePrefix, popName string, atMs
 		})
 		for i := range b.SubscriberDetails {
 			sub := b.SubscriberDetails[i]
-			// Edge sessions are excluded from the per-viewer store entirely:
-			// they are fan-out plumbing, never an audience member, and they
-			// are never issued a telemetry identity in the first place.
-			if sub.Internal {
+			// Edge sessions and stripe legs are excluded from the per-viewer
+			// store entirely: they are fan-out plumbing, never an audience
+			// member. An edge has no telemetry identity at all; a leg is
+			// dialled from its viewer's URL and carries the viewer's
+			// sessionId, so storing it would also overwrite the viewer's own
+			// relay-side figures with a leg's.
+			if !sub.Audience() {
 				continue
 			}
 			out = append(out, Observation{

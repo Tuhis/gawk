@@ -598,22 +598,5 @@ func setBroadcastRelayFacts(f *rules.Facts, lines [][]byte, key string) {
 	f.SetRelay("datagramsDropped", float64(bc.DatagramsDropped))
 	f.SetRelay("bandwidthDroppedDatagrams", float64(bc.BandwidthDroppedDatagrams))
 	f.SetRelay("keyframeStreamsIn", float64(bc.KeyframeStreamsIn))
-	var drops []float64
-	dropping := 0
-	for _, sub := range bc.SubscriberDetails {
-		if sub.Internal {
-			continue
-		}
-		drops = append(drops, float64(sub.Dropped))
-		if sub.Dropped > 0 {
-			dropping++
-		}
-	}
-	f.SetRelay("subscribers", float64(len(drops)))
-	f.SetRelay("subscribersFleetTotal", float64(len(drops)))
-	f.SetRelay("subscribersDropping", float64(dropping))
-	if len(drops) > 0 {
-		sort.Float64s(drops)
-		f.SetRelay("peerMedianDropped", drops[len(drops)/2])
-	}
+	setAudienceFacts(f, bc)
 }

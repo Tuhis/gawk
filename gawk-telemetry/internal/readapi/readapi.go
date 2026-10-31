@@ -773,24 +773,7 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 		f.SetRelay("bandwidthDroppedDatagrams", float64(bc.BandwidthDroppedDatagrams))
 		f.SetRelay("keyframeStreamsIn", float64(bc.KeyframeStreamsIn))
 
-		var drops []float64
-		dropping := 0
-		for _, sub := range bc.SubscriberDetails {
-			if sub.Internal {
-				continue
-			}
-			drops = append(drops, float64(sub.Dropped))
-			if sub.Dropped > 0 {
-				dropping++
-			}
-		}
-		f.SetRelay("subscribers", float64(len(drops)))
-		f.SetRelay("subscribersFleetTotal", float64(len(drops)))
-		f.SetRelay("subscribersDropping", float64(dropping))
-		if len(drops) > 0 {
-			sort.Float64s(drops)
-			f.SetRelay("peerMedianDropped", drops[len(drops)/2])
-		}
+		setAudienceFacts(f, bc)
 	}
 	if first != nil && last != nil && last.AtMs > first.AtMs &&
 		last.Broadcast.FramesRelayed >= first.Broadcast.FramesRelayed {
@@ -850,23 +833,52 @@ func setEpisodeFacts(f *rules.Facts, episodes map[string]*rollup.Episodes, role 
 // relayBroadcast is the slice of a stored broadcast observation the read
 // path reads.
 type relayBroadcast struct {
-	PublisherActive           bool   `json:"publisherActive"`
-	PublisherKind             string `json:"publisherKind"`
-	FramesRelayed             uint64 `json:"framesRelayed"`
-	IngressFramesLost         uint64 `json:"ingressFramesLost"`
-	IngressChunksLost         uint64 `json:"ingressChunksLost"`
-	IngressFramesDamaged      uint64 `json:"ingressFramesDamaged"`
-	IngressFramesExpected     uint64 `json:"ingressFramesExpected"`
-	IngressChunksExpected     uint64 `json:"ingressChunksExpected"`
-	ViewersGlobal             uint32 `json:"viewersGlobal"`
-	DatagramsDropped          uint64 `json:"datagramsDropped"`
-	BandwidthDroppedDatagrams uint64 `json:"bandwidthDroppedDatagrams"`
-	KeyframeStreamsIn         uint64 `json:"keyframeStreamsIn"`
-	SubscriberDetails         []struct {
-		SessionID string `json:"sessionId"`
-		Dropped   uint64 `json:"dropped"`
-		Internal  bool   `json:"internal"`
-	} `json:"subscriberDetails"`
+	PublisherActive           bool              `json:"publisherActive"`
+	PublisherKind             string            `json:"publisherKind"`
+	FramesRelayed             uint64            `json:"framesRelayed"`
+	IngressFramesLost         uint64            `json:"ingressFramesLost"`
+	IngressChunksLost         uint64            `json:"ingressChunksLost"`
+	IngressFramesDamaged      uint64            `json:"ingressFramesDamaged"`
+	IngressFramesExpected     uint64            `json:"ingressFramesExpected"`
+	IngressChunksExpected     uint64            `json:"ingressChunksExpected"`
+	ViewersGlobal             uint32            `json:"viewersGlobal"`
+	DatagramsDropped          uint64            `json:"datagramsDropped"`
+	BandwidthDroppedDatagrams uint64            `json:"bandwidthDroppedDatagrams"`
+	KeyframeStreamsIn         uint64            `json:"keyframeStreamsIn"`
+	SubscriberDetails         []relaySubscriber `json:"subscriberDetails"`
+}
+
+// relaySubscriber is the slice of a stored subscriberDetails entry the read
+// path reads.
+type relaySubscriber struct {
+	SessionID string `json:"sessionId"`
+	Dropped   uint64 `json:"dropped"`
+	Internal  bool   `json:"internal"`
+	StripeLeg bool   `json:"stripeLeg"`
+}
+
+// setAudienceFacts publishes the subscriber counts of one stored broadcast
+// observation, for the session and the broadcast diagnose alike: the live
+// path's names, judged by the live path's relayscrape.IsAudience.
+func setAudienceFacts(f *rules.Facts, bc *relayBroadcast) {
+	var drops []float64
+	dropping := 0
+	for _, sub := range bc.SubscriberDetails {
+		if !relayscrape.IsAudience(sub.Internal, sub.StripeLeg) {
+			continue
+		}
+		drops = append(drops, float64(sub.Dropped))
+		if sub.Dropped > 0 {
+			dropping++
+		}
+	}
+	f.SetRelay("subscribers", float64(len(drops)))
+	f.SetRelay("subscribersFleetTotal", float64(len(drops)))
+	f.SetRelay("subscribersDropping", float64(dropping))
+	if len(drops) > 0 {
+		sort.Float64s(drops)
+		f.SetRelay("peerMedianDropped", drops[len(drops)/2])
+	}
 }
 
 func (b *relayBroadcast) ingressLoss() relayscrape.IngressLoss {

@@ -694,9 +694,10 @@ func (p *Projection) dropEndedLocked(key string) {
 //     than having none.
 //   - EGRESS is per pod and therefore additive: each pod sends to its own
 //     subscribers and drops its own datagrams.
-//   - The AUDIENCE is the sum of each pod's real subscribers. Edge sessions are
-//     already excluded by the scraper — an edge is plumbing, never an audience
-//     member, or every hop would manufacture a viewer nobody is.
+//   - The AUDIENCE is the sum of each pod's real subscribers. Edge sessions and
+//     R30 stripe legs are excluded (relayscrape.IsAudience): both are plumbing,
+//     never an audience member, or every hop would manufacture a viewer nobody
+//     is and every striped viewer would count five times.
 func (b *broadcastState) aggregateLocked() {
 	f := map[string]float64{}
 	origin := b.originLocked()
@@ -715,11 +716,16 @@ func (b *broadcastState) aggregateLocked() {
 		// of this discriminator eventually accuses every healthy fleet.
 		was := map[string]uint64{}
 		for _, sub := range pv.prev.SubscriberDetails {
+			// A stripe leg carries its viewer's sessionId, so letting it in
+			// here would key the viewer's baseline to a leg's counter.
+			if !sub.Audience() {
+				continue
+			}
 			was[subKey(sub)] = sub.Dropped
 		}
 		n := 0
 		for _, sub := range pv.cur.SubscriberDetails {
-			if sub.Internal {
+			if !sub.Audience() {
 				continue
 			}
 			realSubs++
