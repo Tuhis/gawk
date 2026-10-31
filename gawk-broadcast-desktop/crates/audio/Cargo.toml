@@ -29,7 +29,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Variant",
     "Win32_UI_Shell_PropertiesSystem",
 ] }
-windows-core = "0.62"
+windows-core = "0.100"
 
 # Linux (R56, docs/58 D7/D8): the system-audio cascade in GStreamer, into the
 # shared libopus lane, and the docs/39 app-audio tee on an in-process
