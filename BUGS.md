@@ -765,24 +765,6 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   edges). One shared "is audience" predicate for the three loops would stop
   them drifting apart again.
 
-## Web broadcaster: a stream stopped inside the room view still reads LIVE
-
-- **Found**: 2026-09-25, gawk-app code review. Reproduced with a
-  BroadcasterScreen test: go live, create a room, then stop.
-- **What happens**: when a broadcast ends normally while the room view is
-  showing (the topbar Stop, the browser's "Stop sharing" bar, or the
-  hidden-tab watchdog), `roomTarget` stays set, so the page keeps the room
-  view: the topbar still says LIVE, the background-stop note is never shown,
-  there is no Start button, and the broadcaster's own tile becomes a viewer of
-  its own ended broadcast. Leaving the room is the only way back.
-- **Related**: PR #375 (R57) makes the *error* path leave the room view
-  (`onError` → `setRoomTarget(null)`); the normal-end path shares the same
-  callbacks and was left to that change to avoid two conflicting edits.
-- **Fix would start**: in `BroadcasterScreen`'s `onEnded`, leave the room view
-  the same way (or turn the room into a pending room so Start rejoins it), and
-  gate the topbar's LIVE badge on `status`. Test-first in
-  `BroadcasterScreen.room.test.tsx`.
-
 ## Room tile stays "offline" after its viewer session gives up
 
 - **Found**: 2026-09-25, gawk-app code review (traced, not probed).

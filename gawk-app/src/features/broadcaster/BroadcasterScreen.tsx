@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import styles from './broadcaster.module.css';
 import { LadderPicker } from '../stream/LadderPicker';
 import { EncoderSettingsPanel } from '../stream/EncoderSettingsPanel';
@@ -56,6 +56,8 @@ import { HOME } from '../../routing';
 import { log } from '../../lib/logger';
 import { RoomView, type RoomHeaderContext } from '../room/RoomScreen';
 import type { RoomTarget } from '../../transport/room-session';
+import { bytesToHex } from '../../transport/connection';
+import { useRoomStore } from '../../state/roomStore';
 import { parseGrant, readGrant, type RoomGrant } from '../room/grantHandoff';
 import { takeRoomReturn } from '../room/roomReturn';
 import { BACKGROUND_STOP_NOTE, BackgroundWatchdog } from './backgroundWatchdog';
@@ -228,6 +230,37 @@ export function BroadcasterScreen({
   const nameBeforeEditRef = useRef('');
   const [roomTarget, setRoomTarget] = useState<RoomTarget | null>(null);
   const [roomGrant, setRoomGrant] = useState<RoomGrant | null>(null);
+  // The room view as the publish callbacks see it: they are made once per
+  // start, so they read the current room through refs, and leaving updates
+  // the ref at once (an onError and the onEnded after it land in one tick).
+  const roomTargetRef = useRef<RoomTarget | null>(null);
+  const roomGrantRef = useRef<RoomGrant | null>(null);
+  useLayoutEffect(() => {
+    roomTargetRef.current = roomTarget;
+    roomGrantRef.current = roomGrant;
+  }, [roomTarget, roomGrant]);
+  // The page's room exists only for a live broadcast, so any end of the
+  // broadcast takes the page out of the room view (the room session, and
+  // any voice call in it, close with the view). A normal end keeps the room
+  // as the pending room, so Start rejoins it — the desktop's stop-then-resume
+  // shape (docs/64 D9) — as its creator when the room handed us the token.
+  // A failure only leaves: its card says what happened.
+  const leaveRoomWithBroadcast = useCallback((keepPending: boolean) => {
+    const target = roomTargetRef.current;
+    if (!target) return;
+    roomTargetRef.current = null;
+    setRoomTarget(null);
+    if (!keepPending) return;
+    const snap = useRoomStore.getState().snapshot;
+    const code = target.kind === 'join' ? target.code : (snap?.code ?? '');
+    if (code === '') return; // a mint that never got its code: nothing to rejoin
+    const sameRoom = snap !== null && snap.code.toLowerCase() === code.toLowerCase();
+    const grant: RoomGrant | null =
+      sameRoom && snap.creatorToken.length > 0
+        ? { kind: 'creator', tokenHex: bytesToHex(snap.creatorToken) }
+        : roomGrantRef.current;
+    setPendingRoom({ kind: 'join', code, grant, nickname: undefined });
+  }, []);
   // A link's name prefills the field over the remembered one; while it is
   // still the name in the field, the room view asks before using it.
   const [linkNick] = useState(linkNickname);
@@ -438,7 +471,7 @@ export function BroadcasterScreen({
         // The page's room exists only for a live broadcast: a failure takes
         // the page out of it, so the card saying what happened is what the
         // broadcaster sees — not a room view still reading LIVE.
-        setRoomTarget(null);
+        leaveRoomWithBroadcast(false);
       },
       onEnded: () => {
         liveRef.current = false;
@@ -449,6 +482,9 @@ export function BroadcasterScreen({
         setSourceStream(null);
         pipelineRef.current = null;
         setStatus((prev) => (prev === 'error' ? prev : 'idle'));
+        // Stop, the browser's "Stop sharing", the hidden-tab watchdog: back
+        // to the card (its Start, its note), with the room pending.
+        leaveRoomWithBroadcast(true);
       },
       // This session's telemetry identity. A transport auto-resume delivers a
       // new one, which begins a new telemetry session — the relay session it
@@ -578,7 +614,7 @@ export function BroadcasterScreen({
       setError(err.message);
       setStatus('error');
     }
-  }, [broadcastId, telemetry]);
+  }, [broadcastId, telemetry, leaveRoomWithBroadcast]);
 
   const handleStop = useCallback(async () => {
     if (!pipelineRef.current) return;
@@ -1012,10 +1048,14 @@ export function BroadcasterScreen({
       data-panel={room?.sideOpen ? 'true' : 'false'}
     >
       <div className={styles.left}>
-        <span className={styles.liveBadge}>
-          <span className={styles.liveDot} aria-hidden="true" />
-          LIVE
-        </span>
+        {/* What the broadcast is, not what the page shows: a stop in flight
+            (the preview still up) is no longer live. */}
+        {live && (
+          <span className={styles.liveBadge}>
+            <span className={styles.liveDot} aria-hidden="true" />
+            LIVE
+          </span>
+        )}
         {broadcastId && (
           <span className={styles.code}>
             <code>{broadcastId}</code>

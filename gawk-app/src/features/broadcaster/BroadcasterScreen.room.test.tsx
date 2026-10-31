@@ -89,6 +89,7 @@ vi.mock('../../transport/room-session', async (importActual) => ({
 }));
 
 import { BroadcasterScreen } from './BroadcasterScreen';
+import { VoiceController } from '../room/voice/voiceController';
 import { BroadcastStartError } from '../../transport/broadcaster';
 import { acceptCurrentTerms } from '../terms/acceptance';
 import { useRoomStore } from '../../state/roomStore';
@@ -276,6 +277,79 @@ describe('BroadcasterScreen Room panel (RM5)', () => {
     expect(screen.getByRole('heading', { name: 'Your broadcast stopped' })).toBeTruthy();
     expect(screen.getByText('This broadcast was terminated by the server operator.')).toBeTruthy();
     expect(screen.queryByText('Couldn’t start')).toBeNull();
+  });
+
+  // A broadcast that ENDS normally under the room (the topbar's Stop, the
+  // browser's "Stop sharing", the hidden-tab watchdog) leaves the room view
+  // the way a failure does, but the room is kept as the pending room: the
+  // pre-start card shows it, and Start rejoins it (as the desktop's stop plus
+  // resume does, docs/64 D9). It used to leave the room view up reading LIVE,
+  // with no Start and the own tile watching its own ended broadcast.
+  it('Stop inside the room leaves the room view, keeps the room pending, and Start rejoins it', async () => {
+    await goLive();
+    fireEvent.click(screen.getByRole('button', { name: 'Room' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create a new room' }));
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    const room = roomSessions[0];
+    act(() => room.cbs.onState({ ...mintedState(), creatorToken: new Uint8Array(16).fill(0xab) }));
+    expect(screen.getByTestId('room-tile')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /stop broadcast/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /start a stream/i })).toBeTruthy());
+    expect(screen.queryByText('LIVE')).toBeNull();
+    expect(screen.queryByTestId('room-tile')).toBeNull();
+    expect(screen.queryByTestId('room-pill')).toBeNull();
+    expect(room.stopped).toBe(true);
+    expect(screen.getByTestId('pending-room').textContent).toContain('RM2CD3');
+
+    // Start rejoins the room it minted, still as its creator.
+    scripts.push(async (cbs) => {
+      cbs.onBroadcastId?.('AB2CD3');
+      cbs.onResumeToken?.(TOKEN);
+      cbs.onSourceStream(fakeStream);
+    });
+    fireEvent.click(screen.getByRole('button', { name: /start a stream/i }));
+    await waitFor(() => expect(roomSessions).toHaveLength(2));
+    expect(roomSessions[1].opts.target).toEqual({ kind: 'join', code: 'RM2CD3' });
+    expect(roomSessions[1].opts.grant).toEqual({ kind: 'creator', tokenHex: 'ab'.repeat(16) });
+    expect(roomSessions[1].opts.clientKind).toBe(ROOM_CLIENT_WEB_BROADCASTER);
+    expect(screen.queryByTestId('pending-room')).toBeNull();
+  });
+
+  it('the browser ending the capture inside a joined room does the same, and leaves the room’s voice', async () => {
+    const dispose = vi.spyOn(VoiceController.prototype, 'dispose');
+    await goLive();
+    fireEvent.click(screen.getByRole('button', { name: 'Room' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Room code or link' }), {
+      target: { value: 'TuhisRoom' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Join' }));
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    const room = roomSessions[0];
+    act(() => room.cbs.onState({ ...mintedState(), code: 'TuhisRoom', flags: ROOM_STATE_FLAG_ATTACH_OK }));
+    expect(screen.getByTestId('room-pill')).toBeTruthy();
+    dispose.mockClear();
+
+    // "Stop sharing": the pipeline ends on its own, no Stop pressed.
+    act(() => created[0].callbacks.onEnded());
+    await waitFor(() => expect(screen.getByRole('button', { name: /start a stream/i })).toBeTruthy());
+    expect(screen.queryByText('LIVE')).toBeNull();
+    expect(screen.queryByTestId('room-pill')).toBeNull();
+    expect(room.stopped).toBe(true);
+    // The room view's voice goes with it (the mic is released), as on Leave.
+    expect(dispose).toHaveBeenCalled();
+    expect(screen.getByTestId('pending-room').textContent).toContain('TuhisRoom');
+    dispose.mockRestore();
+  });
+
+  // The topbar's LIVE reads the broadcast's status: while a Stop is in
+  // flight (the preview still up), it is not live any more.
+  it('the topbar drops LIVE while the stop is in flight', async () => {
+    await goLive();
+    created[0].stop = () => new Promise<void>(() => {});
+    fireEvent.click(screen.getByRole('button', { name: /stop broadcast/i }));
+    await waitFor(() => expect(screen.queryByText('LIVE')).toBeNull());
+    expect(screen.getByRole('button', { name: /stop broadcast/i })).toBeTruthy();
   });
 
   it('one field takes a bare code; there is no attach-secret field (the room view asks for it)', async () => {

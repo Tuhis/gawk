@@ -518,6 +518,19 @@ The canvas itself is the reference for RM4/RM5 and is linked from §12.
   view up, still reading LIVE. Verified by `RoomScreen.test.tsx` ("RoomView
   with an own broadcast"), `BroadcasterScreen.room.test.tsx` and
   headless-Chrome runs against a local relay (docs/59 §8).
+- *(Revision 2026-10-31.)* **The broadcast ending normally** (the topbar's
+  Stop, the browser's "Stop sharing", the hidden-tab watchdog) also takes
+  the page out of the room, back to the pre-start card with its Start and
+  any background-stop note, and **the room becomes the pending room**
+  ("Joins room `CODE` when live"), so Start rejoins it — as its creator
+  when the room handed the page a creator token. This is the desktop's
+  stop-then-resume shape (docs/64 D9). A voice call in the room ends with
+  the room view, as it does on Leave; the rejoined room offers Voice again.
+  The topbar's LIVE badge reads the broadcast's status, so a stop in flight
+  no longer says LIVE. It used to keep the room view up reading LIVE, with
+  no Start and the own tile watching its own ended broadcast. Verified by
+  `BroadcasterScreen.room.test.tsx` (Stop in a minted room, "Stop sharing"
+  in a joined one with its voice controller disposed, LIVE during a stop).
 - *(Revision 2026-10-02.)* **Leaving a room by choice takes your stream
   out of it.** The footer's leave button and More → Leave room send
   `Detach` for the own broadcast, then close the control session once the
