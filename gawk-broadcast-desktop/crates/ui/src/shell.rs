@@ -5397,16 +5397,17 @@ fn merged_stats(sh: &Shell) -> gawk_engine::stats::Stats {
     st
 }
 
-/// The health line's memory clause (docs/77 D7): footprint, heap and GPU in
-/// MiB, then each component that reports.
 /// The bytes the upload line and the summary's average upload count. The
 /// sender adds audio (and keyframe-stream) bytes to `bytes_sent` as well
-/// as to their own counters, so they are not added again — the iOS core's
-/// `media_bytes` reads the same counters the same way.
+/// as to their own counters, so they are not added again; parity is the one
+/// kind it counts only in `parity_bytes_sent`, so it is added. This is the
+/// iOS core's `media_bytes` sum.
 fn upload_bytes(st: &gawk_engine::stats::Stats) -> u64 {
-    st.bytes_sent
+    st.bytes_sent + st.parity_bytes_sent
 }
 
+/// The health line's memory clause (docs/77 D7): footprint, heap and GPU in
+/// MiB, then each component that reports.
 fn memory_summary(st: &gawk_engine::stats::Stats) -> String {
     use gawk_engine::memory::mib;
     if !st.mem_available {
@@ -8135,16 +8136,18 @@ mod tests {
     /// summary's average upload count audio once.
     #[test]
     fn upload_counts_audio_once() {
-        // 7.5 MB in all over 60 s: 7.0 MB video (keyframes included) and
-        // 0.5 MB audio, the audio already inside `bytes_sent`.
+        // 7.5 MB in all over 60 s: 6.0 MB video (keyframes included) and
+        // 0.5 MB audio, both inside `bytes_sent`, plus 1.0 MB of parity,
+        // which the sender counts only in `parity_bytes_sent`.
         let st = gawk_engine::stats::Stats {
-            bytes_sent: 7_500_000,
+            bytes_sent: 6_500_000,
             keyframe_bytes_sent: 2_000_000,
             audio_bytes_sent: 500_000,
+            parity_bytes_sent: 1_000_000,
             ..Default::default()
         };
         assert_eq!(upload_bytes(&st), 7_500_000);
-        // 7.5 MB * 8 / 60 s = 1.0 Mbps, not 1.1.
+        // 7.5 MB * 8 / 60 s = 1.0 Mbps: audio once, parity in.
         let rows = summary_rows(1, upload_bytes(&st), 60, 1080, 60);
         assert_eq!(rows[2].value, "1.0 Mbps");
         assert_eq!(fmt_mbps(12_000_000), "12");
