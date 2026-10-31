@@ -84,6 +84,13 @@
       enabled: false,
     },
     {
+      description: "windows-rs ships windows, windows-core and windows-future as one release train, and they only build together: the `#[implement]` macro from `windows` expands to absolute `::windows_core::…` paths, so the windows-core the audio crate names must be the one `windows` builds on, and a lone windows-core/windows-future bump fails to compile (PRs #648, #649). minimumGroupSize keeps the group from opening a PR for one member alone, which is what a release that bumps windows-core before `windows` would otherwise produce; a real windows-rs release moves `windows` and windows-core together, so it still lands as a single PR.",
+      matchManagers: ["cargo"],
+      matchPackageNames: ["windows", "windows-core", "windows-future"],
+      groupName: "windows-rs",
+      minimumGroupSize: 2,
+    },
+    {
       description: "The Prometheus client libraries (client_golang + client_model) share a release cadence and transitive graph — land them together.",
       matchManagers: ["gomod"],
       matchPackageNames: ["github.com/prometheus/**"],
