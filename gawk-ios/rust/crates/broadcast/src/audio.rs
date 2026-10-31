@@ -170,9 +170,9 @@ impl Resampler {
             out.extend_from_slice(input);
             return;
         }
-        for frame in input.chunks_exact(2) {
+        for &frame in input.as_chunks::<2>().0 {
             self.history.rotate_left(1);
-            self.history[TAPS - 1] = [frame[0], frame[1]];
+            self.history[TAPS - 1] = frame;
             // Every input frame advances the upsampled clock by `up`; emit
             // an output each time it passes a multiple of `down`.
             while self.phase < self.up {
@@ -267,7 +267,7 @@ mod tests {
 
     /// A tone's frequency from its zero crossings over the settled middle.
     fn frequency(samples: &[f32], rate: f64) -> f64 {
-        let left: Vec<f32> = samples.chunks_exact(2).map(|f| f[0]).collect();
+        let left: Vec<f32> = samples.as_chunks::<2>().0.iter().map(|f| f[0]).collect();
         let mid = &left[left.len() / 4..left.len() * 3 / 4];
         let crossings = mid.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
         crossings as f64 * rate / mid.len() as f64
