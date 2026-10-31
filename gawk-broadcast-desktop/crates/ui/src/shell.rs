@@ -4641,13 +4641,7 @@ fn end_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, error: Option<Stri
             sh.paused_since.map(|p| p.elapsed()),
         );
         let (_, h, fps) = sh.last_sent.unwrap_or((st.width, st.height, st.fps));
-        summary_rows(
-            sh.peak_viewers,
-            st.bytes_sent + st.audio_bytes_sent,
-            secs,
-            h,
-            fps,
-        )
+        summary_rows(sh.peak_viewers, upload_bytes(&st), secs, h, fps)
     });
     sh.live_since = None;
     sh.paused_since = None;
@@ -5324,7 +5318,7 @@ fn tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         let secs = live_secs(since.elapsed(), sh.paused_total, None);
         ui.set_live_elapsed(format_elapsed(secs).into());
     }
-    let bytes = st.bytes_sent + st.audio_bytes_sent;
+    let bytes = upload_bytes(&st);
     let rate_bps = bytes.saturating_sub(sh.last_bytes) * 8;
     ui.set_connection_line(format!("{:.1} Mbps", rate_bps as f64 / 1e6).into());
     ui.set_connection_ok(!sh.uplink_warned && sh.loss_notice == Notice::None);
@@ -5405,6 +5399,14 @@ fn merged_stats(sh: &Shell) -> gawk_engine::stats::Stats {
 
 /// The health line's memory clause (docs/77 D7): footprint, heap and GPU in
 /// MiB, then each component that reports.
+/// The bytes the upload line and the summary's average upload count. The
+/// sender adds audio (and keyframe-stream) bytes to `bytes_sent` as well
+/// as to their own counters, so they are not added again — the iOS core's
+/// `media_bytes` reads the same counters the same way.
+fn upload_bytes(st: &gawk_engine::stats::Stats) -> u64 {
+    st.bytes_sent
+}
+
 fn memory_summary(st: &gawk_engine::stats::Stats) -> String {
     use gawk_engine::memory::mib;
     if !st.mem_available {
@@ -8126,6 +8128,25 @@ mod tests {
             ]
         );
         assert_eq!(summary_rows(0, 5, 0, 1, 1)[2].value, "n/a");
+    }
+
+    /// `bytes_sent` already holds the audio datagrams (the sender counts
+    /// them there and in `audio_bytes_sent`), so the upload line and the
+    /// summary's average upload count audio once.
+    #[test]
+    fn upload_counts_audio_once() {
+        // 7.5 MB in all over 60 s: 7.0 MB video (keyframes included) and
+        // 0.5 MB audio, the audio already inside `bytes_sent`.
+        let st = gawk_engine::stats::Stats {
+            bytes_sent: 7_500_000,
+            keyframe_bytes_sent: 2_000_000,
+            audio_bytes_sent: 500_000,
+            ..Default::default()
+        };
+        assert_eq!(upload_bytes(&st), 7_500_000);
+        // 7.5 MB * 8 / 60 s = 1.0 Mbps, not 1.1.
+        let rows = summary_rows(1, upload_bytes(&st), 60, 1080, 60);
+        assert_eq!(rows[2].value, "1.0 Mbps");
         assert_eq!(fmt_mbps(12_000_000), "12");
     }
 
