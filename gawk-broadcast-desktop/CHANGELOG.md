@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.13.1](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.13.0...gawk-broadcast-desktop/v2.13.1) (2026-10-31)
+
+
+### Bug Fixes
+
+* **broadcast-desktop:** count audio once and parity in the upload rate and summary ([#658](https://github.com/Tuhis/gawk/issues/658)) ([12100c7](https://github.com/Tuhis/gawk/commit/12100c7a95192d4b1292a066e057931c839f1853))
+
 ## [2.13.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.12.0...gawk-broadcast-desktop/v2.13.0) (2026-10-26)
 
 
