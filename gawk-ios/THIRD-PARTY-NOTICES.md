@@ -103,7 +103,7 @@ script for what counts as a dependency here and why.
 | `libopus` | 1.3 | `BSD-3-Clause` | Copyright 2001-2011 Xiph.Org, Skype Limited, Octasic, |
 | `libvpx` | v1.17.0 | `BSD-3-Clause` | Copyright (c) 2010, The WebM Project authors. All rights reserved |
 | `litemap` | 0.8.3 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
-| `log` | 0.4.34 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
+| `log` | 0.4.35 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
 | `lru-slab` | 0.1.3 | `MIT OR Apache-2.0 OR Zlib` | Copyright (c) 2024 The lru-slab Developers |
 | `memchr` | 2.8.3 | `Unlicense OR MIT` | Copyright (c) 2015 Andrew Gallant |
 | `minimal-lexical` | 0.2.1 | `MIT/Apache-2.0` | Copyright (c) 2009 The Go Authors. All rights reserved |
