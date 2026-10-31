@@ -429,7 +429,7 @@ impl Capture {
                 match GraphicsCaptureAccess::RequestAccessAsync(
                     GraphicsCaptureAccessKind::Borderless,
                 )
-                .and_then(|op| await_operation(&op))
+                .and_then(|op| await_operation(|| op.Status().map(|s| s.0), || op.GetResults()))
                 {
                     Ok(status) => log::debug!("borderless capture access: {status:?}"),
                     Err(e) => log::debug!("borderless capture access request failed: {e}"),
@@ -457,15 +457,24 @@ impl Drop for Capture {
     }
 }
 
-/// A bounded blocking wait on a WinRT async op — windows-future 0.3 keeps
-/// its `Async::join` trait private, so this is that wait, with a deadline:
-/// a stuck access grant must not hang capture start (the border matters
-/// less than broadcasting).
-fn await_operation<T: windows::core::RuntimeType>(
-    op: &windows_future::IAsyncOperation<T>,
+/// `AsyncStatus::Started`, the one status [`await_operation`] waits on. The
+/// type lives in windows-future, which `windows` uses but does not
+/// re-export; depending on it directly pins a second copy that must match
+/// `windows` exactly (PR #649), so the ABI value is spelled here instead.
+const ASYNC_STATUS_STARTED: i32 = 0;
+
+/// A bounded blocking wait on a WinRT async op — windows-future keeps its
+/// `Async::join` trait private (and `join` has no deadline), so this is that
+/// wait, with a deadline: a stuck access grant must not hang capture start
+/// (the border matters less than broadcasting). It takes the op's `Status`
+/// (as its raw value) and `GetResults` as closures so this crate never names
+/// the windows-future types.
+fn await_operation<T>(
+    status: impl Fn() -> Result<i32>,
+    results: impl FnOnce() -> Result<T>,
 ) -> Result<T> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while op.Status()? == windows_future::AsyncStatus::Started {
+    while status()? == ASYNC_STATUS_STARTED {
         if std::time::Instant::now() >= deadline {
             return Err(windows::core::Error::new(
                 // E_PENDING; the named constant lives in an unrelated
@@ -476,7 +485,7 @@ fn await_operation<T: windows::core::RuntimeType>(
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    op.GetResults()
+    results()
 }
 
 fn api_present(type_name: &str, property: &str) -> bool {
