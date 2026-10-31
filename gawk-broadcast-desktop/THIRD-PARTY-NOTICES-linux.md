@@ -21,12 +21,12 @@ script for what counts as a dependency here and why.
 
 **Scope:** `cargo tree -e normal --target x86_64-unknown-linux-gnu` — build- and dev-dependencies (proc macros, bindgen, test harnesses) are excluded because they are not part of the shipped executable.
 
-## Summary — 366 packages
+## Summary — 367 packages
 
 | License (as declared) | Packages |
 |---|---:|
 | `MIT OR Apache-2.0` | 148 |
-| `MIT` | 76 |
+| `MIT` | 77 |
 | `Apache-2.0 OR MIT` | 45 |
 | `Unicode-3.0` | 22 |
 | `MIT/Apache-2.0` | 11 |
@@ -340,7 +340,7 @@ script for what counts as a dependency here and why.
 | `subtle` | 2.6.1 | `BSD-3-Clause` | Copyright (c) 2016-2017 Isis Agora Lovecruft, Henry de Valence. All rights reserved<br>Copyright (c) 2016-2024 Isis Agora Lovecruft. All rights reserved |
 | `svgtypes` | 0.16.1 | `Apache-2.0 OR MIT` | Copyright (c) 2018 Yevhenii Reizner |
 | `swash` | 0.2.10 | `Apache-2.0 OR MIT` | Copyright (c) 2020 Chad Brokaw |
-| `syn` | 2.0.119 | `MIT OR Apache-2.0` | — |
+| `syn` | 3.0.3 | `MIT OR Apache-2.0` | — |
 | `sys-locale` | 0.3.2 | `MIT OR Apache-2.0` | Copyright (c) 2021 1Password |
 | `taffy` | 0.10.1 | `MIT` | — |
 | `tar` | 0.4.46 | `MIT OR Apache-2.0` | Copyright (c) The tar-rs Project Contributors |
@@ -408,10 +408,11 @@ script for what counts as a dependency here and why.
 | `yazi` | 0.2.1 | `Apache-2.0 OR MIT` | Copyright (c) 2020 Chad Brokaw |
 | `yeslogic-fontconfig-sys` | 6.0.1 | `MIT` | Copyright 2019 YesLogic Pty. Ltd<br>Copyright 2016 Manuel Reinhardt<br>Copyright 2014 Austin Bonander<br>Copyright 2013 The Servo Project Developers |
 | `yoke` | 0.8.3 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
-| `zbus` | 5.18.0 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
+| `zbus` | 5.19.0 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
 | `zbus-lockstep` | 0.5.2 | `MIT` | — |
 | `zbus_names` | 4.3.4 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
 | `zbus_xml` | 5.2.1 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
+| `zcheapstr` | 1.2.0 | `MIT` | Copyright (c) 2026 Zeeshan Ali Khan & zcheapstr contributors |
 | `zeno` | 0.3.3 | `Apache-2.0 OR MIT` | Copyright (c) 2020 Chad Brokaw |
 | `zerocopy` | 0.8.55 | `BSD-2-Clause OR Apache-2.0 OR MIT` | Copyright 2023 The Fuchsia Authors<br>Copyright 2019 The Fuchsia Authors |
 | `zerofrom` | 0.1.8 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
@@ -421,8 +422,8 @@ script for what counts as a dependency here and why.
 | `zmij` | 1.0.23 | `MIT` | — |
 | `zune-core` | 0.5.1 | `MIT OR Apache-2.0 OR Zlib` | Copyright (c) zune-image developers |
 | `zune-jpeg` | 0.5.15 | `MIT OR Apache-2.0 OR Zlib` | Copyright (c) zune-image developers |
-| `zvariant` | 5.13.1 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
-| `zvariant_utils` | 3.5.0 | `MIT` | — |
+| `zvariant` | 5.15.1 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
+| `zvariant_utils` | 4.2.0 | `MIT` | — |
 
 ## License texts
 
@@ -4597,9 +4598,9 @@ Applies to: `untrusted`
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### 48. MIT — 215 packages
+### 48. MIT — 216 packages
 
-Applies to: `adler2`, `ahash`, `allocator-api2`, `arrayvec`, `as-raw-xcb-connection`, `asn1-rs`, `async-channel`, `async-executor`, `async-io`, `async-lock`, `async-process`, `async-signal` — and 203 more
+Applies to: `adler2`, `ahash`, `allocator-api2`, `arrayvec`, `as-raw-xcb-connection`, `asn1-rs`, `async-channel`, `async-executor`, `async-io`, `async-lock`, `async-process`, `async-signal` — and 204 more
 
 ```
 Permission is hereby granted, free of charge, to any
