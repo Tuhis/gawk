@@ -282,8 +282,8 @@ fn the_app_sink_monitor_delivers_the_apps_samples() {
             &src,
             move |pcm| {
                 let mut p = peak.lock().unwrap();
-                for s in pcm.bytes.chunks_exact(4) {
-                    p.0 = p.0.max(f32::from_le_bytes([s[0], s[1], s[2], s[3]]).abs());
+                for &s in pcm.bytes.as_chunks::<4>().0 {
+                    p.0 = p.0.max(f32::from_le_bytes(s).abs());
                 }
                 p.1 += pcm.frames;
                 p.2 = pcm.capture_ns.or(p.2);

@@ -4,6 +4,6 @@
 # `llvm-tools` is the viewer's: shiguredo_libvpx's source build prefixes
 # every libvpx symbol with the host's llvm-nm and llvm-objcopy (OD12).
 [toolchain]
-channel = "1.97.1"
+channel = "1.99.1"
 components = ["rustfmt", "clippy", "llvm-tools"]
 targets = ["aarch64-apple-ios", "aarch64-apple-ios-sim"]

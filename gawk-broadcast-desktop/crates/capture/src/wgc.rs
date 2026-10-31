@@ -212,9 +212,10 @@ fn bitmap_rgba(hbm: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<IconRgba> 
         }
         // BGRA → RGBA; icons without an alpha channel read back all-zero
         // alpha and would render invisible, so promote those to opaque.
-        let any_alpha = bgra.chunks_exact(4).any(|p| p[3] != 0);
+        let pixels = bgra.as_chunks::<4>().0;
+        let any_alpha = pixels.iter().any(|p| p[3] != 0);
         let mut rgba = Vec::with_capacity(bgra.len());
-        for p in bgra.chunks_exact(4) {
+        for p in pixels {
             rgba.extend_from_slice(&[p[2], p[1], p[0], if any_alpha { p[3] } else { 0xff }]);
         }
         Some(IconRgba {

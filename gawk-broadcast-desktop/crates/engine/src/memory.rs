@@ -173,8 +173,8 @@ pub fn add(c: Component, bytes: u64) {
 /// Takes back what [`add`] gave, saturating at zero: for a queue, at the pop
 /// or the shed.
 pub fn sub(c: Component, bytes: u64) {
-    let _ = GAUGES[c.index()].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-        Some(v.saturating_sub(bytes))
+    GAUGES[c.index()].update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+        v.saturating_sub(bytes)
     });
 }
 
