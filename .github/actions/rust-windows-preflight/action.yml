@@ -9,8 +9,13 @@
 # This action exists so that a missing or stale image fails in two seconds with
 # a sentence naming the fix, instead of thirty minutes later inside a build
 # script. It is also the coupling's only documentation at this end: bumping
-# rust-toolchain.toml still works without touching the image (rustup fetches
-# what it pins), it just costs the download.
+# rust-toolchain.toml still works without touching the image, it just costs
+# the download. rustup fetches what the file pins — the compiler, rustfmt and
+# clippy — but NOT the msvc target, which only the image's baked toolchain
+# carries; so the step below adds the target when the pinned toolchain lacks
+# it (the 1.97.1 -> 1.99.1 bump, PR #654, failed here before it did). The
+# target is added here rather than listed in rust-toolchain.toml so that dev
+# machines and the macOS/Linux jobs do not all download a Windows std.
 #
 # It is one action rather than a block copied into each job on purpose. The
 # three jobs use overlapping-but-different subsets of the toolchain, and three
@@ -57,6 +62,14 @@ runs:
           command -v "$t" >/dev/null 2>&1 || { echo "::error::$t not found"; missing=1; }
         done
         pkg-config --exists fontconfig || { echo "::error::fontconfig .pc not found"; missing=1; }
+        if command -v rustup >/dev/null 2>&1; then
+          # Explicit, because rustup's implicit auto-install is deprecated.
+          rustup toolchain install
+          if ! rustup target list --installed | grep -qx "$WINDOWS_TARGET"; then
+            echo "::notice::pinned toolchain $(rustup show active-toolchain | cut -d' ' -f1) is not the runner image's; adding $WINDOWS_TARGET (bump the image's toolchain to skip this download)"
+            rustup target add "$WINDOWS_TARGET"
+          fi
+        fi
         rustup target list --installed | grep -qx "$WINDOWS_TARGET" \
           || { echo "::error::rust target $WINDOWS_TARGET not installed"; missing=1; }
         if [ "$missing" != 0 ]; then
