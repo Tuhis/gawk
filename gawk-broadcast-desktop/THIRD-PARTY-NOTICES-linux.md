@@ -230,7 +230,7 @@ script for what counts as a dependency here and why.
 | `linux-raw-sys` | 0.4.15 | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | — |
 | `litemap` | 0.8.2 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `lock_api` | 0.4.14 | `MIT OR Apache-2.0` | Copyright (c) 2016 The Rust Project Developers |
-| `log` | 0.4.34 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
+| `log` | 0.4.35 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
 | `lru-slab` | 0.1.2 | `MIT OR Apache-2.0 OR Zlib` | Copyright (c) 2024 The lru-slab Developers |
 | `lyon_algorithms` | 1.0.20 | `MIT OR Apache-2.0` | — |
 | `lyon_extra` | 1.1.0 | `MIT OR Apache-2.0` | — |
