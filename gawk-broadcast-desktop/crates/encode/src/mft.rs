@@ -584,7 +584,7 @@ impl Pump {
             // trial gate): release the caller's in-flight slot.
             let _ = self
                 .in_flight
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| v.checked_sub(1));
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |v| v.checked_sub(1));
             let time_us = unsafe { sample.GetSampleTime()? } as u64 / 10;
             let data = unsafe {
                 let contiguous = sample.ConvertToContiguousBuffer()?;
