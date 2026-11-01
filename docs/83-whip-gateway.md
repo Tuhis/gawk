@@ -481,10 +481,9 @@ re-checks it against the OBS release it tests.
   costs nothing for frames that arrive whole, and the 150 ms cap keeps a bad
   path from stalling playback.
 - **One replica** (the first draft's D10). The owner chose to scale out from
-  the start (OD7). A shared state store or pod-to-pod forwarding was not
-  needed: hashing on the key at the Ingress puts a key's requests and
-  per-key state on one pod in the steady state, and the peer lookup (D10)
-  covers a session that has moved.
+  the start (OD7). A shared state store was not needed: hashing on the key at
+  the Ingress puts a key's requests and per-key state on one pod in the steady
+  state, and the peer lookup (D10) covers a session that has moved.
 
 - **WHIP inside `gawk-server`** (the 2026-07-29 sketch). See D1.
 - **An OBS output plugin** (idea #19 in the mumisija ideas list): a native
@@ -569,11 +568,12 @@ a broadcast whose publisher is the gateway.
   `media.basePort + ordinal`), a headless Service for D10's peer lookup, a
   NetworkPolicy (egress to the relay's UDP port and to the other gateway
   pods' internal port; ingress from the Ingress, the media LBs and the other
-  gateway pods on the internal port only), a ServiceMonitor and a PDB. `values.yaml` holds
-  `relay.url`, `relay.publishSecret` (existing secret ref),
+  gateway pods on the internal port only), a ServiceMonitor and a PDB.
+  `values.yaml` holds `relay.url`, `relay.publishSecret` (existing secret
+  ref),
   `relay.publishProxyToken` (D4), `publicAddress`, `replicas`,
-  `media.basePort` and `internalToken` (an existing secret ref) (D10), `allowedOrigins`
-  (D9 CORS), `trustedProxyCidrs` (D4, default `[]`), `maxSessions` (D10)
+  `media.basePort` and `internalToken` (an existing secret ref) (D10),
+  `allowedOrigins` (D9 CORS), `trustedProxyCidrs` (D4, default `[]`), `maxSessions` (D10)
   and the D6/D7 knobs. Every value has a flag and a `GAWK_WHIP_*` env (the
   `registryOptions` rule, applied to the gateway's own config). The chart's
   notes carry D4's requirements: `trustedProxyCidrs` lists only the
