@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { Link, useLocation } from 'react-router';
+import { Link, useLocation, useNavigate } from 'react-router';
 
 import {
   CONSOLE_DOCUMENT_URL,
@@ -134,6 +134,19 @@ export function ApiConsole({
     if (id && id !== selectedRef.current) select(id, opsRef.current);
   }, [pathname, select]);
 
+  // The operator picked an operation in the drawer: take the reference to it
+  // too, as a sidebar click would — a router navigation, which Redoc scrolls
+  // to and Back undoes. Only here: opening the drawer, or following the docs,
+  // must not move the page under the reader. The navigation comes back
+  // through the follow effect above as the operation already open, which
+  // leaves the freshly reset fields alone.
+  const navigate = useNavigate();
+  const pick = (id: string) => {
+    select(id, ops);
+    const next = ops.find((o) => o.id === id);
+    if (next) navigate(docsRouteForOperation(next));
+  };
+
   // Escape closes, unless a request is in flight — the same rule Dialog has,
   // for the same reason: the keyboard must not bypass a disabled state.
   const closeRef = useRef(onClose);
@@ -262,7 +275,7 @@ export function ApiConsole({
           ref={selectRef}
           value={selectedId ?? ''}
           disabled={busy || ops.length === 0}
-          onChange={(e) => select(e.target.value, ops)}
+          onChange={(e) => pick(e.target.value)}
         >
           {tags.map((tag) => (
             <optgroup key={tag} label={tag}>

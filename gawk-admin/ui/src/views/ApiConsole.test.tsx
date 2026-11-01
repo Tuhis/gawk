@@ -130,6 +130,19 @@ describe('the API console (docs/49 D5, revised 2026-09-21)', () => {
     expect((screen.getByLabelText(/Body/) as HTMLTextAreaElement).value).toBe('{"reason":"typed"}');
   });
 
+  // Picking an operation in the drawer moves the reference to it, as a
+  // sidebar click does: a router navigation, which Redoc scrolls to and the
+  // Back button can undo. Opening the drawer does NOT move the reader.
+  it('scrolls the docs to the operation picked in the console', async () => {
+    window.history.replaceState(null, '', '#/api/bans');
+    mount();
+    await waitFor(() => expect(operationSelect().options.length).toBeGreaterThan(1));
+    expect(window.location.hash).toBe('#/api/bans');
+    fireEvent.change(operationSelect(), { target: { value: 'testWebhook' } });
+    await waitFor(() => expect(window.location.hash).toBe('#/api/webhooks/testwebhook'));
+    expect(operationSelect().value).toBe('testWebhook');
+  });
+
   it('links back to the operation in the docs, inside the portal hash', async () => {
     mount();
     await choose('createBan');
