@@ -126,6 +126,7 @@ Reading all of them is not the point. Three give you the shape of the system:
 | [`81`](81-noise-suppression.md) | R80 — RNNoise noise suppression for room voice: RNNoise 0.2 built from source to wasm, run in the capture worklet, its speech probability driving the talk gate |
 | [`82`](82-voice-ux-and-learned-gate.md) | R81 — Room voice UX (its own panel, invite chip, Microphone popover, volume to 200 %) and a talk gate whose floor learns the speaker's level, auto gain off under RNNoise |
 | [`83`](83-whip-gateway.md) | R33 — WHIP ingest for OBS through `gawk-whip-gateway`: a separate deployable republishes OBS's WHIP as an ordinary publisher; the stream key is the broadcast ID + resume token, minted in the web app; the GOP is set in OBS and bounded by the gateway because OBS ignores PLI |
+| [`84`](84-telemetry-ask-in-english.md) | R82 — Ask in English: a model drafts SQL for the telemetry console from a question, checked with `EXPLAIN`, never seeing a row (data mode B); Anthropic or any OpenAI-compatible server; the NQ0 spike's twenty graded questions |
 
 ## Testing, telemetry, operations
 

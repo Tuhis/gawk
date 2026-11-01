@@ -102,6 +102,14 @@ Add to it when a new gotcha lands in `docs/`.
   `learn_test.go`. A one-column `columns=` list also needs `records='true'`,
   or the record type is auto-detected — by sniffing.
   ([docs/36](36-telemetry-ui-history.md) §TH10)
+- **A `sessions` sample's time is `tMs`, milliseconds since the session
+  started, never `receivedAtMs` or `startedAtMs`.** `receivedAtMs` is when
+  the sample's batch arrived: one session's 2,821 samples shared 644 values,
+  so a chart over it stacks samples on a few hundred x positions.
+  `startedAtMs` is set only on `kind = 'meta'` lines, so adding it to `tMs`
+  gives null on every sample. `tMs` itself is not an epoch: through
+  `to_timestamp` it draws a 1970 axis. In the NQ0 spike, all three Claude
+  models made one of these mistakes in at least one run. ([docs/84](84-telemetry-ask-in-english.md) §12.3)
 - **A stored telemetry field never changes type and is never renamed.** The
   SQL views union partitions by name, so a field that is a number in old
   rows and a string in new ones turns the column into JSON for every query
