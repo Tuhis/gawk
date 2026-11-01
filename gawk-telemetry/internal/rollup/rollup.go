@@ -127,6 +127,13 @@ type Row struct {
 	// "has this got better since the R15 fix?" a single query over rollups
 	// instead of a re-analysis of raw windows that no longer exist.
 	Verdict json.RawMessage `json:"verdict,omitempty"`
+
+	// --- Provenance ---
+	// Repairs names each one-time history rewrite that changed this row after
+	// it was written (internal/repair, docs/33 §4.17), by a stable id. Absent
+	// on every row written whole, which is every row since the repair shipped:
+	// a reader that sees an id knows which fields were removed and why.
+	Repairs []string `json:"repairs,omitempty"`
 }
 
 // StallThresholdMs is when a gap in frames becomes a stall. Two GOPs at the
