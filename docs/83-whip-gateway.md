@@ -314,7 +314,8 @@ re-checks it against the OBS release it tests.
     start can't produce at a GOP the bounds allow. The 4.5 s threshold can't
     come down without breaking that safeguard. While the same key reconnects
     within 10 minutes it answers `POST`s with `422` and that reason, so OBS's
-    auto-reconnect doesn't loop viewers through freezes. The thresholds are gateway knobs.
+    auto-reconnect doesn't loop viewers through freezes. The thresholds are
+    gateway knobs.
   - **The gateway sends PLI anyway, on two events only**: on session start
     and after the engine resumes on another relay pod. Both are moments when
     the relay's cache is empty, not moments of loss.
@@ -356,7 +357,8 @@ re-checks it against the OBS release it tests.
   last session. A `POST` refused before any session exists (`503` at
   `maxSessions`, `400 client_ip_unknown`, `422 gop_too_long`, relay refusals)
   is recorded against its key for 10 minutes and reported as `lastError`, so
-  the panel can show the reason OBS can't. The OBS panel (§5) polls it every 2 s while open. The status
+  the panel can show the reason OBS can't. The OBS panel (§5) polls it every
+  2 s while open. The status
   holds no IPs and no frame data.
 
 - **D10 — ICE: ICE-lite on one UDP port, one replica.** pion runs ICE-lite
@@ -376,7 +378,8 @@ re-checks it against the OBS release it tests.
   the cap**, so a full gateway never refuses a broadcaster's own reconnect.
   WG0 measures CPU and memory per 1080p60 session, and WG4 sizes the default
   and the pod's resource requests from that number. A restart is an ICE
-  failure, so OBS reconnects and the key reclaims the same ID. Scaling past one pod
+  failure, so OBS reconnects and the key reclaims the same ID. Scaling past
+  one pod
   (a port per pod, or a TURN front) is out of scope until a deployment needs
   it.
 
