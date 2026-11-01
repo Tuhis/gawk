@@ -270,11 +270,28 @@ tidies the modules that build gawk-server through a local `replace`
 (gawk-admin, gawk-telemetry, gawk-sampler, gawk-mumble-bridge). Renovate only
 tidies the `go.mod` files it edited itself, so without this step a bump that
 moved gawk-server's graph left the other modules stale. Run the same script by
-hand after editing `gawk-server/go.mod` yourself. Both commands only take
-effect when the self-hosted bot's global config allowlists them
-(`RENOVATE_ALLOWED_COMMANDS` in the `Tuhis/ioio` Renovate CronJob). If Renovate
-PRs start failing `licenses-fresh` or the tidy job, that allowlist is what is
-missing.
+hand after editing `gawk-server/go.mod` yourself. Then
+`tools/renovate/relock-ios.sh` re-locks `gawk-ios/rust/Cargo.lock`: the iOS
+workspace builds the desktop's shared crates by path, but Renovate only
+refreshes `gawk-broadcast-desktop/Cargo.lock`, so a bump in one of those
+crates left the iOS lock stale and the xcode jobs failing at
+`cargo fetch --locked`. It is a no-op on a clean tree; run it by hand after
+changing a shared crate's dependencies yourself.
+
+All three commands only take effect when the self-hosted bot's global config
+allowlists them (`RENOVATE_ALLOWED_COMMANDS` in the `Tuhis/ioio` Renovate
+CronJob), each as the exact string in `renovate.json5`:
+
+```
+tools/renovate/tidy-go.sh
+tools/renovate/relock-ios.sh
+python3 tools/licenses/gen-notices.py
+```
+
+Add a new one there in the same change that adds it to `renovate.json5`; a
+command missing from the allowlist is skipped with an artifact warning on the
+PR. If Renovate PRs start failing `licenses-fresh`, the tidy job, or the ios
+workflow's `cargo fetch --locked`, that allowlist is what is missing.
 
 ## What a good PR looks like
 

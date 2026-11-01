@@ -30,6 +30,13 @@
   // needed a hand-made tidy commit). It must run first, since gen-notices.py
   // lists those modules.
   //
+  // Then re-lock the iOS Rust workspace. It uses the desktop workspace's wire,
+  // engine, capture, encode and audio crates by path, so a bump in one of
+  // their Cargo.toml files changes its graph too, but Renovate only refreshes
+  // gawk-broadcast-desktop/Cargo.lock: the ios workflow's xcode jobs then
+  // failed at `cargo fetch --locked` (PR #648; #642 and #649 needed a
+  // hand-made lock commit). Also before gen-notices.py, which reads that graph.
+  //
   // REQUIRES BOT-SIDE CONFIG: postUpgradeTasks is ignored unless the
   // self-hosted bot's global config allowlists each command via
   // allowedCommands / RENOVATE_ALLOWED_COMMANDS (allowedPostUpgradeCommands on
@@ -38,6 +45,7 @@
   postUpgradeTasks: {
     commands: [
       "tools/renovate/tidy-go.sh",
+      "tools/renovate/relock-ios.sh",
       "python3 tools/licenses/gen-notices.py",
     ],
     // -*: the desktop's -macos and -linux files too, which the apps embed
@@ -46,6 +54,7 @@
       "**/THIRD-PARTY-NOTICES*.md",
       "*/go.mod",
       "*/go.sum",
+      "gawk-ios/rust/Cargo.lock",
     ],
     executionMode: "branch",
   },
