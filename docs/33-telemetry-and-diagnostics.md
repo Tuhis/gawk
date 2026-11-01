@@ -1468,6 +1468,115 @@ statement that the hub is gone (§4.8.2). The projection was right that the
 broadcast ended; it was wrong that the tombstone still described a key that had
 since come back.
 
+### 4.17 History repair: two corruptions rewritten (2026-11-01)
+
+**Owner decision, 2026-11-01:** two known corruptions in stored history are
+rewritten in place, despite D4's "the rollup row is permanent". D4 still
+holds for everything else. This is a one-time repair with a recorded scope,
+not a precedent for editing history when a number looks odd.
+
+**What was corrupt.**
+
+1. **#376's latency.** From about 2026-07-28 until the client fix (#376,
+   2026-09-25), viewers published the broadcaster tab's *age* (seconds to
+   48 minutes) as `capToRenderMs` and `liveEdgeDriftMs`. Those samples
+   went into the rollup row's `Series` Stat. The raw samples are past the
+   retention window, so a poisoned Stat cannot be recomputed.
+2. **R30 stripe legs.** A striped viewer holds one primary and up to four
+   leg relay sessions, all carrying its sessionId (docs/35 §5.8). Before
+   #657 the scraper stored legs as if they were viewers, with no marker,
+   and `JoinRelay` took the row's subscriber facts (`relay.dropped`,
+   `keyframesDropped`, `carrierQueueOverflow`, `carrierRecordsDropped`,
+   `dvrResyncs`) from whichever observation came **last**, which could be
+   a leg on another pod. The session diagnose (`factsFor`) and the dip
+   movers had the same read. It was still live on `main` after #657 for
+   any relay line already on disk.
+
+**The bound.** `rollup.MaxPlausibleLatencyMs = 30 000`: ten times the
+relay's default DVR window (`DefaultDVRWindow`, 3 s), the most delay any
+playout mode is built to absorb. A larger value is a clock fault. gawk-app's
+source guard uses the same bound.
+
+**What changes going forward.**
+
+- `rollup.Compute` leaves latency samples above the bound out of the Stat,
+  and the series is absent if none are left. The live projection drops such
+  a reading from the row (and clears the previous one, so a stale value is
+  not left showing as "now"). No rule reads either series today; the live
+  row's cap→render column is where a bogus value would mislead. Raw lines
+  keep the value: ingest stays tolerant (D15).
+- `JoinRelay`, `factsFor` and `relayMovers` use one predicate,
+  `relayObservation.viewerOf`, judged by `relayscrape.IsAudience`. An edge
+  session or a stripe leg never feeds a session's own relay facts, pod or
+  role.
+
+**What the repair rewrites** (`internal/repair`, run once at startup):
+
+- **Rollups, every date.** A `capToRenderMs` or `liveEdgeDriftMs` entry
+  whose `max` exceeds the bound is **deleted**. It is not clamped or
+  re-derived: absent means "could not be computed" (D15). On a viewer row
+  that striped (`counters.stripeLegDials > 0`, or `series.stripeActive.max
+  > 0`), the five subscriber-derived `relay` keys are deleted, because they
+  may be a leg's. `ingressFramesLost` and `framesRelayed` come from the
+  broadcast and stay. Each changed row lists what was done in the new
+  additive `repairs` field: `latency-implausible-2026-11`,
+  `stripe-leg-relay-2026-11`.
+- **Raw relay files, every date still present (plain and `.gz`).** One
+  scrape round stamps every pod's observations with the same `atMs`
+  (`ScrapeOnce` reads the clock once), and a leg can land on any pod behind
+  the UDP load balancer. So a group is `atMs + broadcastKey + sessionId`
+  across all pod files of a date. Stored subscriber lines and the
+  broadcast lines' `subscriberDetails` are grouped separately under the same
+  rule. In a group with more than one audience entry and no `stripeLeg`
+  marker, all but one are marked `stripeLeg: true`. The one kept is the
+  entry with the most keyframes, because legs never receive keyframes
+  (docs/35 §5.1). On a tie (no member has a keyframe yet) the first in file
+  order is kept, which is arbitrary. Counts are then right. On a tie day a
+  session's own drop figure may be a leg's. That data expires with the raw
+  window anyway.
+
+**What it cannot do.** It cannot restore a deleted Stat, or a striped
+viewer's real relay counters on a row whose raw relay lines are already
+pruned. Those fields are now absent rather than wrong. `relayPod` and
+`relayRole` on a striped row are left as written, and may name a leg's pod.
+Rows finalized before #376 from non-striped viewers whose latency stayed
+under the bound are untouched, even if some of their samples were
+inflated: the bound only removes values that cannot be latencies.
+
+**How it runs.** On the first start of a release that carries it, `run()`
+calls `repair.Run` before the store, the scraper or any listener exists, so
+nothing appends while files are rewritten. Rows are rewritten through
+`map[string]json.RawMessage`, so fields a newer release wrote survive
+(docs/gotchas.md). Lines that do not parse, and lines with nothing to fix,
+are kept byte for byte. Unchanged files are not rewritten. A changed file
+goes through a temp file in the same directory, `fsync` and `rename`, and
+stays gzip if it was. Leftover temp files from an interrupted run are
+removed first. On completion it writes `<data>/repairs/2026-11-history.done`
+with a JSON summary of what changed, and logs the same summary as one
+`history repair applied` line. A failure is logged and retried at the next
+start rather than being fatal, so public ingest never crashloops on it.
+Repaired data is a fixed point, so a re-run after a crash before the
+marker changes nothing already fixed. `-repair-history=false`
+(`GAWK_TELEMETRY_REPAIR_HISTORY`, chart `config.repairHistory`) skips it.
+
+The pod's liveness probe allows about 90 s before the first `/healthz`, and
+the repair runs before that listener. At the reference deployment's volume
+(the raw window is about 160 MB) it takes seconds. A much larger store
+would make each restart redo the relay scan, but each restart's completed
+rewrites are kept.
+
+| Goal | Verified by |
+|---|---|
+| A leg (or edge) observation after the primary does not set the row's relay counters, pod or role; legs alone give coverage `none` | `readapi.TestJoinRelayIgnoresStripeLegsAndEdges` |
+| Session diagnose and dip movers ignore legs | `readapi.TestSessionRelayReadersIgnoreStripeLegs` |
+| Latency samples above the bound are out of the Stat; at the bound they stay; all-bogus gives an absent series | `rollup.TestImplausibleLatencySamplesAreExcluded`, `rollup.TestAllImplausibleLatencyLeavesSeriesAbsent` |
+| The live row drops an implausible latency and clears the stale one | `live.TestLiveRowDropsImplausibleLatency` |
+| Rollup repair: poisoned series and leg-derived relay keys deleted, broadcast keys kept, `repairs` recorded (appended to an existing list), unknown fields and series preserved, unparsable lines verbatim, unchanged rows and files untouched | `repair.TestRollupRepair` |
+| Relay repair: one audience entry per session per round across pod files, the keyframe holder kept, already-marked rounds left alone, `.gz` stays gzip, unknown fields preserved, quiet dates untouched | `repair.TestRelayRepair` |
+| Runs once (marker with summary); a re-run without the marker changes nothing; crash residue removed; an empty data dir completes and is marked | `repair.TestRunOnceAndIdempotent`, `repair.TestRunOnEmptyDataDir` |
+| Flag, env and default; startup wiring runs before the store and logs one summary line; disabled touches nothing | `main.TestRepairHistoryFlag`, `main.TestRepairHistoryRunsOnceBeforeTheStore`, `helm template` with `config.repairHistory` default and `false` |
+| `repairs` is an additive stored field | `storedshape` golden (`rollups.repairs`) |
+
 ## 4.10 Dip episodes (D16)
 
 The detector, its facts and its two rules. Named constants throughout, shared
