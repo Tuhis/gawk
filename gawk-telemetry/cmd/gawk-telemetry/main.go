@@ -33,6 +33,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -76,8 +77,15 @@ func run() error {
 	}
 	log := newLogger(cfg)
 
-	// Before the store, the scraper and any listener exist: nothing may
-	// append while history is being rewritten.
+	// The ingest listener comes up FIRST, behind a gate that answers
+	// /healthz and 503s everything else, so a long history repair cannot
+	// fail the liveness probe (no startupProbe, ~90 s budget) and crash-loop
+	// the pod. The repair still runs before the store, the scraper and the
+	// real ingest handler exist: nothing appends while history is rewritten.
+	errCh := make(chan error, 3)
+	gate := newStartGate()
+	ingestSrv := &http.Server{Addr: cfg.ingestAddr, Handler: gate, ReadHeaderTimeout: 10 * time.Second}
+	go func() { errCh <- serve(ingestSrv, "ingest", log) }()
 	repairHistory(cfg, log)
 
 	st, err := store.New(store.Options{Root: cfg.dataDir})
@@ -283,11 +291,9 @@ func run() error {
 	}
 	readHandler := newReadHandler(cfg, routes, verifier)
 
-	ingestSrv := &http.Server{Addr: cfg.ingestAddr, Handler: ingestMux, ReadHeaderTimeout: 10 * time.Second}
 	readSrv := &http.Server{Addr: cfg.readAddr, Handler: readHandler, ReadHeaderTimeout: 10 * time.Second}
 
-	errCh := make(chan error, 3)
-	go func() { errCh <- serve(ingestSrv, "ingest", log) }()
+	gate.open(ingestMux)
 	go func() { errCh <- serve(readSrv, "read", log) }()
 
 	// --- metrics listener: ClusterIP only, no auth, no identifiers --------
@@ -321,11 +327,40 @@ func run() error {
 	return nil
 }
 
+// startGate is the ingest listener's handler from bind until the service is
+// ready: /healthz answers 200 (the process is alive, and the liveness probe
+// must not kill it mid-repair), everything else 503 with Retry-After, so no
+// batch reaches a store that is not open yet. open installs the real handler.
+type startGate struct {
+	h atomic.Pointer[http.Handler]
+}
+
+func newStartGate() *startGate { return &startGate{} }
+
+func (g *startGate) open(h http.Handler) { g.h.Store(&h) }
+
+func (g *startGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h := g.h.Load(); h != nil {
+		(*h).ServeHTTP(w, r)
+		return
+	}
+	if r.URL.Path == "/healthz" {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok (starting)\n"))
+		return
+	}
+	// Wildcard CORS like the real ingest handler (docs/40 D17), so a
+	// browser client sees the 503 rather than an opaque network error.
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Retry-After", "30")
+	http.Error(w, "starting: history repair in progress", http.StatusServiceUnavailable)
+}
+
 // repairHistory runs the owner-decided 2026-11 rewrite of stored history
 // (docs/33 §4.17) unless it is disabled or its marker says it already ran.
 // A failure is logged, never fatal: telemetry is optional, and a crashloop
-// would take public ingest down with it. Without a marker the next start
-// tries again, and every step is idempotent.
+// would take public ingest down with it. One attempt only (repair.Run): a
+// later boot that finds the attempt unfinished warns and boots normally.
 func repairHistory(cfg config, log *slog.Logger) {
 	if !cfg.repairHistory {
 		log.Info("history repair disabled", "repair", repair.ID)
@@ -334,9 +369,16 @@ func repairHistory(cfg config, log *slog.Logger) {
 	start := time.Now()
 	sum, ran, err := repair.Run(cfg.dataDir)
 	switch {
+	case errors.Is(err, repair.ErrPreviousAttempt):
+		log.Warn("history repair NOT run: a previous attempt started and never completed "+
+			"(killed, OOM, or failed); the data is consistent but may be partly repaired. "+
+			"To re-run it, delete the in-progress marker and restart",
+			"repair", repair.ID, "marker", repair.StartedPath(cfg.dataDir))
 	case err != nil:
-		log.Error("history repair failed; it will be retried at the next start",
-			"repair", repair.ID, "err", err, "rollups", sum.Rollups, "relay", sum.Relay)
+		log.Error("history repair failed; it will NOT be retried automatically. "+
+			"To re-run it, delete the in-progress marker and restart",
+			"repair", repair.ID, "err", err, "marker", repair.StartedPath(cfg.dataDir),
+			"rollups", sum.Rollups, "relay", sum.Relay)
 	case !ran:
 		log.Info("history repair already applied", "repair", repair.ID, "marker", repair.MarkerPath(cfg.dataDir))
 	default:

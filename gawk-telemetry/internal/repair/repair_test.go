@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -384,10 +385,12 @@ func TestRunOnceAndIdempotent(t *testing.T) {
 		t.Errorf("second Run: ran=%v err=%v, want skipped", ran, err)
 	}
 
-	// A crash after the rewrites but before the marker re-runs everything:
-	// the repaired data must be a fixed point.
-	if err := os.Remove(MarkerPath(root)); err != nil {
-		t.Fatal(err)
+	// An operator re-run after a partial attempt (both markers removed)
+	// covers everything again: the repaired data must be a fixed point.
+	for _, p := range []string{MarkerPath(root), StartedPath(root)} {
+		if err := os.Remove(p); err != nil {
+			t.Fatal(err)
+		}
 	}
 	relayAfterFirst := read(t, relayFile)
 	again := run(t, root)
@@ -424,6 +427,64 @@ func TestUnreadableRelayFileIsSkippedNotFatal(t *testing.T) {
 	}
 	if _, err := os.Stat(MarkerPath(root)); err != nil {
 		t.Errorf("an unreadable relay file blocked the marker: %v", err)
+	}
+}
+
+// One attempt, ever. A boot that finds the in-progress marker without the
+// done marker knows a previous attempt died (OOM, liveness kill) or failed,
+// and must not try again: that is the crash loop. It changes nothing and
+// says so with ErrPreviousAttempt.
+func TestAPreviousAttemptIsNeverRetried(t *testing.T) {
+	root := t.TempDir()
+	day := filepath.Join(root, "rollups", "2026-09-20.ndjson")
+	write(t, day, []byte(rowPoisoned+"\n"))
+	write(t, StartedPath(root), []byte("{}\n"))
+
+	_, ran, err := Run(root)
+	if ran || !errors.Is(err, ErrPreviousAttempt) {
+		t.Fatalf("Run with a stale in-progress marker: ran=%v err=%v, want ErrPreviousAttempt", ran, err)
+	}
+	if string(read(t, day)) != rowPoisoned+"\n" {
+		t.Error("an abandoned repair ran again")
+	}
+	if _, err := os.Stat(MarkerPath(root)); !os.IsNotExist(err) {
+		t.Error("an abandoned repair was marked done")
+	}
+
+	// Deleting the in-progress marker is how an operator asks for a re-run.
+	if err := os.Remove(StartedPath(root)); err != nil {
+		t.Fatal(err)
+	}
+	if s := run(t, root); s.Rollups.RowsChanged != 1 {
+		t.Errorf("re-run after deleting the marker: %+v", s.Rollups)
+	}
+	if _, err := os.Stat(StartedPath(root)); err != nil {
+		t.Errorf("in-progress marker gone after a completed run: %v (it records the attempt)", err)
+	}
+}
+
+// The in-progress marker is on disk BEFORE any file is touched, so a death
+// at any point after the first rewrite is recognised at the next boot.
+func TestInProgressMarkerPrecedesTheFirstRewrite(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "rollups", "2026-09-20.ndjson"), []byte(rowPoisoned+"\n"))
+	sawMarker, rewrites := true, 0
+	testHookBeforeRewrite = func(path string) {
+		if path == StartedPath(root) || path == MarkerPath(root) {
+			return
+		}
+		rewrites++
+		if _, err := os.Stat(StartedPath(root)); err != nil {
+			sawMarker = false
+		}
+	}
+	t.Cleanup(func() { testHookBeforeRewrite = nil })
+	run(t, root)
+	if rewrites == 0 {
+		t.Fatal("nothing was rewritten; the test proves nothing")
+	}
+	if !sawMarker {
+		t.Error("a file was rewritten before the in-progress marker existed")
 	}
 }
 

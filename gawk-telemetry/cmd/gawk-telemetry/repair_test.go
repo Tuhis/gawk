@@ -87,4 +87,23 @@ func TestRepairHistoryRunsOnceBeforeTheStore(t *testing.T) {
 			t.Errorf("second start did not report the marker: %s", logs.String())
 		}
 	})
+
+	t.Run("previous attempt died", func(t *testing.T) {
+		dir, path := setup(t)
+		if err := os.MkdirAll(filepath.Dir(repair.StartedPath(dir)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(repair.StartedPath(dir), []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var logs bytes.Buffer
+		repairHistory(config{dataDir: dir, repairHistory: true}, slog.New(slog.NewJSONHandler(&logs, nil)))
+		if b, _ := os.ReadFile(path); string(b) != poisoned {
+			t.Error("a dead attempt was retried")
+		}
+		out := logs.String()
+		if !strings.Contains(out, `"level":"WARN"`) || !strings.Contains(out, repair.StartedPath(dir)) {
+			t.Errorf("want a WARN naming the marker to delete, got: %s", out)
+		}
+	})
 }

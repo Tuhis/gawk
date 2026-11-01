@@ -103,15 +103,50 @@ type RelaySummary struct {
 // MarkerPath is where a completed run is recorded.
 func MarkerPath(root string) string { return filepath.Join(root, "repairs", ID+".done") }
 
-// Run repairs the data dir at root unless its marker says it already has.
-// ran is false when the marker was present and nothing was read. An error
-// leaves no marker, so the next start runs it again — safely, since every
-// rewrite is atomic and repaired data is a fixed point.
+// StartedPath is the in-progress marker, written before the first file is
+// touched. Present without MarkerPath, it means an attempt died or failed;
+// deleting it is how an operator asks for one more attempt.
+func StartedPath(root string) string { return filepath.Join(root, "repairs", ID+".started") }
+
+// ErrPreviousAttempt is returned, with nothing read or changed, when an
+// earlier attempt started and never completed.
+var ErrPreviousAttempt = errors.New("a previous history repair attempt did not complete; not retrying")
+
+// testHookBeforeRewrite, when set, runs before each file is replaced.
+var testHookBeforeRewrite func(path string)
+
+// Run repairs the data dir at root unless its markers say it already has, or
+// already tried. ran is false when nothing was read.
+//
+// One attempt, ever: the in-progress marker goes down before any file is
+// touched and stays, so a boot after an OOM kill, a liveness kill or a
+// returned error finds it without the done marker and returns
+// ErrPreviousAttempt instead of trying again. A returned error is treated
+// like a death on purpose: the failures this can hit (a full volume, an
+// unreadable directory) recur, and retrying would turn each boot into the
+// same multi-minute ingest outage. Every rewrite is atomic and repaired data
+// is a fixed point, so a partial run leaves consistent data and an operator
+// re-run (delete the in-progress marker) finishes the job.
 func Run(root string) (s Summary, ran bool, err error) {
 	s.ID = ID
 	if _, err := os.Stat(MarkerPath(root)); err == nil {
 		return s, false, nil
 	} else if !os.IsNotExist(err) {
+		return s, false, err
+	}
+	if _, err := os.Stat(StartedPath(root)); err == nil {
+		return s, false, ErrPreviousAttempt
+	} else if !os.IsNotExist(err) {
+		return s, false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(StartedPath(root)), 0o755); err != nil {
+		return s, false, err
+	}
+	started := fmt.Sprintf("{\"id\":%q,\"startedAt\":%q}\n", ID, time.Now().UTC().Format(time.RFC3339))
+	if err := atomicWrite(StartedPath(root), false, func(w io.Writer) error {
+		_, err := io.WriteString(w, started)
+		return err
+	}); err != nil {
 		return s, false, err
 	}
 	if s.Rollups, err = repairRollups(filepath.Join(root, "rollups")); err != nil {
@@ -123,9 +158,6 @@ func Run(root string) (s Summary, ran bool, err error) {
 	s.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
-		return s, true, err
-	}
-	if err := os.MkdirAll(filepath.Dir(MarkerPath(root)), 0o755); err != nil {
 		return s, true, err
 	}
 	err = atomicWrite(MarkerPath(root), false, func(w io.Writer) error {
@@ -693,6 +725,9 @@ func atomicWrite(path string, gz bool, fill func(io.Writer) error) (err error) {
 	}
 	if err = f.Close(); err != nil {
 		return err
+	}
+	if testHookBeforeRewrite != nil {
+		testHookBeforeRewrite(path)
 	}
 	if err = os.Rename(tmp, path); err != nil {
 		return err
