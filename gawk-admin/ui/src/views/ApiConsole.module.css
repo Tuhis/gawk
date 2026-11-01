@@ -108,8 +108,8 @@
   gap: 0;
 }
 
-/* The body editor is code and looks like it: the same dark panel Redoc's
-   samples use, in both schemes, for the same reason (global.css `--code-*`). */
+/* The body editor is code and looks like it: a dark panel in both schemes
+   (global.css `--code-*`). */
 .body {
   font-family: var(--mono);
   font-size: var(--fs-sm);

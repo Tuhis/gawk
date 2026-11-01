@@ -1,19 +1,22 @@
 import { useState, useSyncExternalStore } from 'react';
+import { HashRouter } from 'react-router';
 import { RedocStandalone } from 'redoc';
 
 import { ApiConsole } from './ApiConsole.tsx';
-import { ASYNCAPI_URL, OPENAPI_URL, readPalette, redocOptions } from './apiDocs.ts';
+import { ASYNCAPI_URL, DOCS_BASE_PATH, OPENAPI_URL, legacyDocsRoute, redocOptions } from './apiDocs.ts';
 import ui from '../styles/ui.module.css';
 import './ApiView.css';
 
 /**
- * Re-render when the OS colour scheme changes.
+ * Remount Redoc when the OS colour scheme changes.
  *
- * Redoc resolves its theme once, from the options it is handed, so a page
- * themed at mount stays that way when the operator's laptop flips to light at
- * sunset — dark text on a light panel, or worse. The rest of the portal needs
- * none of this: it is CSS variables all the way down and the browser does the
- * work. This is the cost of theming a component that does not read them.
+ * Redoc 3 decides light or dark ONCE, from `prefers-color-scheme`, when it
+ * mounts, and paints its own palette for that mode. `ApiView.css` points the
+ * surfaces and text at the portal's variables, which follow the OS live — but
+ * everything it does not reach (code tokens, status chips, admonitions) stays
+ * on the mode Redoc picked, so a laptop flipping to light at sunset would
+ * leave a page half in each. Remounting re-reads the scheme. The rest of the
+ * portal needs none of this: it is CSS variables all the way down.
  */
 const schemeQuery = '(prefers-color-scheme: light)';
 
@@ -39,26 +42,35 @@ function logRenderError(error?: Error) {
 }
 
 /**
- * Redoc, themed once per mount.
+ * Redoc, configured once per mount.
  *
- * The options are built in a `useState` INITIALISER, not on every render, and
- * that is load-bearing rather than tidy. Redoc's `StoreBuilder` memoises
- * `new AppStore(spec, specUrl, options)` on `[resolvedSpec, specUrl, options]`
- * BY REFERENCE, so a fresh options object re-normalises the whole document and
- * hands Redoc a new store: expanded responses collapse, the sidebar selection
- * resets, the page jumps. A child cannot promise its parent will not re-render
- * — `Portal` re-renders on every hash change and every session transition, and
- * renders `<ApiView />` fresh each time — so the options have to be pinned
- * here, where nothing above can reach them.
- *
- * `ApiView` remounts this with `key={scheme}`, which is what re-reads the
- * palette when the OS flips between light and dark.
+ * The options are built in a `useState` initialiser, not on every render.
+ * Redoc 3 reads them once — its loading effect depends on the document and
+ * the base path only — so a fresh object per render would be ignored, not
+ * applied; pinning it says so. `ApiView` remounts this with `key={scheme}`.
  */
 function ThemedRedoc() {
-  const [options] = useState(() => redocOptions(readPalette()));
+  const [options] = useState(redocOptions);
   return (
-    <RedocStandalone specUrl={OPENAPI_URL} options={options} onLoaded={logRenderError} />
+    <RedocStandalone
+      specUrl={OPENAPI_URL}
+      basePath={DOCS_BASE_PATH}
+      options={options}
+      onLoaded={logRenderError}
+    />
   );
+}
+
+/**
+ * Rewrite a Redoc 2 fragment in the address bar to the Redoc 3 route it means
+ * (`legacyDocsRoute`), so a bookmark from before the upgrade still lands on
+ * its operation. `replaceState`, not an assignment: the old URL is not a
+ * page the Back button should return to.
+ */
+function upgradeLegacyHash() {
+  if (typeof window === 'undefined') return;
+  const route = legacyDocsRoute(window.location.hash);
+  if (route) window.history.replaceState(window.history.state, '', `#${route}`);
 }
 
 /**
@@ -77,13 +89,19 @@ function ThemedRedoc() {
  * is still handed no token; the console sends through the session's own
  * `authorizedFetch`, exactly as a view does.
  *
+ * **Redoc 3 runs inside a `HashRouter`** (docs/49 D5, revised 2026-11-01).
+ * It is a react-router application, and without a router of ours it mounts a
+ * `BrowserRouter` that rewrites `location.pathname`. Ours keeps every docs
+ * route in the hash, under `#/api` (`apiDocs.ts`, `DOCS_BASE_PATH`), and the
+ * Console drawer renders inside the same router so it can follow it.
+ *
  * **Everything here is served by this binary.** The bundle is built into the
  * SPA, not loaded from a CDN — the portal's CSP is `default-src 'self'` and
  * the no-external-assets test enforces it as a build property — and no
  * user-supplied document is ever loaded.
  *
  * **This module is the whole reason the view is lazily imported.** Redoc is
- * ~1 MB of JavaScript; the moderation views must not pay for a page they may
+ * ~2 MB of JavaScript; the moderation views must not pay for a page they may
  * never open, so `App.tsx` imports this with `React.lazy` and it lands in its
  * own chunk that the entry chunk does not reference.
  */
@@ -93,44 +111,49 @@ export default function ApiView() {
   // a mode, and a page that reopens it would put a form over the reference
   // for the operator who came to read.
   const [consoleOpen, setConsoleOpen] = useState(false);
+  // Before the router below reads the location — so a useState initialiser,
+  // the one hook that runs ahead of the first render's children. Idempotent,
+  // so StrictMode's double call is harmless.
+  useState(upgradeLegacyHash);
 
   return (
-    <section>
-      <div className={ui.head}>
-        <h1>API</h1>
-        <span className={ui.sub}>
-          the contract this deployment serves —{' '}
-          <a href={OPENAPI_URL} target="_blank" rel="noreferrer">
-            openapi.json
-          </a>
-          ; its events —{' '}
-          <a href={ASYNCAPI_URL} target="_blank" rel="noreferrer">
-            asyncapi.json
-          </a>
-        </span>
-      </div>
-      {/* The toggle FLOATS rather than sitting in the head strip: the reference
-          is long, and the moment an operator wants to send the call they are
-          reading about is exactly when the strip has scrolled away. It is
-          hidden while the drawer is open — the drawer has its own close, and
-          the drawer covers where the pill sits anyway. */}
-      {consoleOpen ? (
-        <ApiConsole onClose={() => setConsoleOpen(false)} />
-      ) : (
-        <button type="button" className="gawk-console-toggle" onClick={() => setConsoleOpen(true)}>
-          Console
-        </button>
-      )}
-      {/* The wrapper scopes ApiView.css: those overrides reach into Redoc's
-          own DOM, and must not leak into the portal's views. `withConsole`
-          narrows it while the drawer is open so Redoc reflows beside the
-          drawer instead of under it. */}
-      <div className={consoleOpen ? 'gawk-redoc withConsole' : 'gawk-redoc'}>
-        {/* Remounting on a scheme change is deliberate: Redoc resolves its
-            theme when it initialises, so handing the same instance new options
-            would leave half the page on the old palette. */}
-        <ThemedRedoc key={scheme} />
-      </div>
-    </section>
+    <HashRouter>
+      <section>
+        <div className={ui.head}>
+          <h1>API</h1>
+          <span className={ui.sub}>
+            the contract this deployment serves —{' '}
+            <a href={OPENAPI_URL} target="_blank" rel="noreferrer">
+              openapi.json
+            </a>
+            ; its events —{' '}
+            <a href={ASYNCAPI_URL} target="_blank" rel="noreferrer">
+              asyncapi.json
+            </a>
+          </span>
+        </div>
+        {/* The toggle FLOATS rather than sitting in the head strip: the reference
+            is long, and the moment an operator wants to send the call they are
+            reading about is exactly when the strip has scrolled away. It is
+            hidden while the drawer is open — the drawer has its own close, and
+            the drawer covers where the pill sits anyway. */}
+        {consoleOpen ? (
+          <ApiConsole onClose={() => setConsoleOpen(false)} />
+        ) : (
+          <button type="button" className="gawk-console-toggle" onClick={() => setConsoleOpen(true)}>
+            Console
+          </button>
+        )}
+        {/* The wrapper scopes ApiView.css: those overrides reach into Redoc's
+            own DOM (and, via :has(), the root it themes from), and must not
+            leak into the portal's views. `withConsole` hides Redoc's samples
+            column while the drawer sits over it. */}
+        <div className={consoleOpen ? 'gawk-redoc withConsole' : 'gawk-redoc'}>
+          {/* Remounting on a scheme change is deliberate: Redoc picks light or
+              dark when it mounts (see subscribeToScheme). */}
+          <ThemedRedoc key={scheme} />
+        </div>
+      </section>
+    </HashRouter>
   );
 }

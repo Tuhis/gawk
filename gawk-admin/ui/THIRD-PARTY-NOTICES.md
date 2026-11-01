@@ -11,13 +11,13 @@ script for what counts as a dependency here and why.
 
 **Scope:** `package-lock.json` entries without `dev: true`.
 
-## Summary — 34 packages
+## Summary — 33 packages
 
 | License (as declared) | Packages |
 |---|---:|
 | `MIT` | 20 |
 | `Apache-2.0` | 12 |
-| `ISC` | 2 |
+| `ISC` | 1 |
 
 ## Packages
 
@@ -56,7 +56,6 @@ script for what counts as a dependency here and why.
 | `styled-components` | 6.5.3 | `MIT` | Copyright (c) 2016-present Glen Maddern and Maximilian Stoiber |
 | `stylis` | 4.3.6 | `MIT` | Copyright (c) 2016-present Sultan Tarimo |
 | `ulid` | 3.0.2 | `MIT` | Copyright (c) 2017 Alizain Feerasta |
-| `yaml` | 2.9.1 | `ISC` | — |
 
 ## License texts
 
@@ -295,27 +294,7 @@ ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### 3. ISC — 1 package
-
-Applies to: `yaml`
-
-```
-Copyright Eemeli Aro <eemeli@gmail.com>
-
-Permission to use, copy, modify, and/or distribute this software for any purpose
-with or without fee is hereby granted, provided that the above copyright notice
-and this permission notice appear in all copies.
-
-THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
-REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
-FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
-INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS
-OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
-TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
-THIS SOFTWARE.
-```
-
-### 4. MIT — 10 packages
+### 3. MIT — 10 packages
 
 Applies to: `@emotion/is-prop-valid`, `@emotion/memoize`, `@remix-run/route-pattern`, `css-to-react-native`, `react`, `react-dom`, `react-router`, `scheduler`, `styled-components`, `stylis`
 
@@ -343,7 +322,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5. MIT — 3 packages
+### 4. MIT — 3 packages
 
 Applies to: `@redocly/config`, `csstype`, `postcss-value-parser`
 
@@ -357,7 +336,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 6. MIT — 2 packages
+### 5. MIT — 2 packages
 
 Applies to: `@types/react`, `@types/react-dom`
 
@@ -385,7 +364,7 @@ MIT License
     SOFTWARE
 ```
 
-### 7. MIT — 2 packages
+### 6. MIT — 2 packages
 
 Applies to: `redoc`, `ulid`
 
@@ -413,7 +392,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 8. MIT — 1 package
+### 7. MIT — 1 package
 
 Applies to: `camelize`
 
@@ -438,7 +417,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 9. MIT — 1 package
+### 8. MIT — 1 package
 
 Applies to: `cookie-es`
 
@@ -473,7 +452,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 10. UNKNOWN — 1 package
+### 9. UNKNOWN — 1 package
 
 Applies to: `@redocly/redoc-opentelemetry`
 

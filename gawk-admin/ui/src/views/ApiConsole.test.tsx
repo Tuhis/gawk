@@ -2,38 +2,49 @@
 import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// The console lives in the Redoc chunk and subscribes to Redoc's history
-// service so a sidebar click selects the operation. The service is a tiny
-// emitter; this stands in for it and lets a test fire it.
-const listeners = new Set<() => void>();
-vi.mock('redoc', () => ({
-  history: {
-    subscribe: (cb: () => void) => {
-      listeners.add(cb);
-      return () => listeners.delete(cb);
-    },
-  },
-}));
+import { act, useEffect, useState } from 'react';
+import { HashRouter, useNavigate, type NavigateFunction } from 'react-router';
 
 import { ApiConsole } from './ApiConsole.tsx';
 import { json, renderWithSession, stubSession, type ApiHandler } from '../testing/harness.tsx';
 import { DOC } from '../testing/openapiFixture.ts';
 
+// The console renders inside ApiView's HashRouter, the one Redoc 3 navigates
+// when the reader clicks the sidebar. This stands in for Redoc: it hands the
+// test the router's navigate, which is exactly what a sidebar click calls.
+let navigate: NavigateFunction | null = null;
+function Sidebar() {
+  const nav = useNavigate();
+  useEffect(() => {
+    navigate = nav;
+  });
+  return null;
+}
+
 afterEach(() => {
   cleanup();
-  listeners.clear();
-  window.location.hash = '';
+  navigate = null;
+  window.history.replaceState(null, '', '/');
 });
 
 beforeEach(() => {
-  window.location.hash = '';
+  window.history.replaceState(null, '', '/');
 });
 
 const fetchDocument = () => Promise.resolve(DOC);
 
+function inRouter(node: React.ReactNode) {
+  return (
+    <HashRouter>
+      <Sidebar />
+      {node}
+    </HashRouter>
+  );
+}
+
 function mount(handler: ApiHandler = () => json({ ok: true }), onClose = () => undefined) {
   const session = stubSession(handler);
-  renderWithSession(<ApiConsole onClose={onClose} fetchDocument={fetchDocument} />, session);
+  renderWithSession(inRouter(<ApiConsole onClose={onClose} fetchDocument={fetchDocument} />), session);
   return session;
 }
 
@@ -57,19 +68,73 @@ describe('the API console (docs/49 D5, revised 2026-09-21)', () => {
     expect(screen.getByText('role: operator')).toBeTruthy();
   });
 
-  it('opens on the operation the Redoc hash names', async () => {
-    window.location.hash = '#tag/bans/operation/createBan';
+  it('opens on the operation the docs route names', async () => {
+    window.history.replaceState(null, '', '#/api/bans/createban');
     mount();
     await waitFor(() => expect(operationSelect().value).toBe('createBan'));
     expect((screen.getByLabelText(/Body/) as HTMLTextAreaElement).value).toContain('"ABC234"');
   });
 
+  // Redoc's scroll spy rewrites the address bar as the reader scrolls, with
+  // replaceState and without telling the router. That rewritten address is
+  // what the reader is looking at, so it is what the drawer opens on.
+  it('opens on the address bar, which the scroll spy rewrites behind the router', async () => {
+    // The page is up on one route; the reader scrolls, and the scroll spy
+    // rewrites the address bar without the router seeing it; THEN they open
+    // the drawer — the order it happens in ApiView.
+    window.history.replaceState(null, '', '#/api/bans');
+    function Page() {
+      const [open, setOpen] = useState(false);
+      return inRouter(
+        open ? (
+          <ApiConsole onClose={() => undefined} fetchDocument={fetchDocument} />
+        ) : (
+          <button type="button" onClick={() => setOpen(true)}>
+            Console
+          </button>
+        ),
+      );
+    }
+    renderWithSession(<Page />, stubSession(() => json({})));
+    act(() => window.history.replaceState(null, '', '#/api/webhooks/testwebhook'));
+    fireEvent.click(screen.getByRole('button', { name: 'Console' }));
+    await waitFor(() => expect(operationSelect().value).toBe('testWebhook'));
+  });
+
   it('follows a sidebar click in Redoc', async () => {
     mount();
     await choose('getMe');
-    window.location.hash = '#tag/bans/operation/listBans';
-    for (const l of listeners) l();
+    act(() => navigate!('/api/bans/listbans'));
     await waitFor(() => expect(operationSelect().value).toBe('listBans'));
+  });
+
+  // The scroll spy's silent rewrite must NOT drag the drawer along: a
+  // half-typed request should not change under the operator because they
+  // scrolled to check a field.
+  it('does not follow the scroll spy', async () => {
+    mount();
+    await choose('createBan');
+    act(() => window.history.replaceState(null, '', '#/api/bans/listbans'));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(operationSelect().value).toBe('createBan');
+  });
+
+  // The drawer's own "docs" link lands the router on the operation already
+  // open; that is following the reader's own click back, not a new choice.
+  it('keeps what was typed when the docs land on the operation already open', async () => {
+    mount();
+    await choose('createBan');
+    fireEvent.change(screen.getByLabelText(/Body/), { target: { value: '{"reason":"typed"}' } });
+    act(() => navigate!('/api/bans/createban'));
+    await new Promise((r) => setTimeout(r, 20));
+    expect((screen.getByLabelText(/Body/) as HTMLTextAreaElement).value).toBe('{"reason":"typed"}');
+  });
+
+  it('links back to the operation in the docs, inside the portal hash', async () => {
+    mount();
+    await choose('createBan');
+    const link = screen.getByRole('link', { name: /docs/ });
+    expect(link.getAttribute('href')).toBe('#/api/bans/createban');
   });
 
   // The property the whole design rests on: the request leaves through the
@@ -212,7 +277,9 @@ describe('the API console (docs/49 D5, revised 2026-09-21)', () => {
   it('reports a contract that could not be loaded', async () => {
     const session = stubSession(() => json({}));
     renderWithSession(
-      <ApiConsole onClose={() => undefined} fetchDocument={() => Promise.reject(new Error('HTTP 503'))} />,
+      inRouter(
+        <ApiConsole onClose={() => undefined} fetchDocument={() => Promise.reject(new Error('HTTP 503'))} />,
+      ),
       session,
     );
     expect(await screen.findByText(/could not be loaded: HTTP 503/)).toBeTruthy();

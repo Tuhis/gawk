@@ -1,16 +1,23 @@
 // The Redoc configuration, separated from the view that mounts it (R48,
-// docs/49 D5, revised 2026-09-17).
+// docs/49 D5, revised 2026-09-17 and, for Redoc 3, 2026-11-01).
 //
-// It is its own module because the two things worth testing here — that the
-// page reads this deployment's own document, and that the renderer is handed
-// no credential — are properties of this object, not of React. Asserting them
-// against a 1.1 MB third-party bundle rendered in jsdom would test the bundle.
+// It is its own module because the things worth testing here — that the page
+// reads this deployment's own document, that the renderer is handed no
+// credential, and that it phones nobody — are properties of plain values, not
+// of React. Asserting them against a 2 MB third-party bundle rendered in jsdom
+// would test the bundle.
 //
-// **There is no token here, and that is the point of the change.** Swagger UI
-// executed requests, so it had to be handed the operator's access token
-// through a `requestInterceptor`, with a same-origin guard so a misconfigured
+// **There is no token here, and that is the point.** Swagger UI executed
+// requests, so it had to be handed the operator's access token through a
+// `requestInterceptor`, with a same-origin guard so a misconfigured
 // `-external-url` could not leak it. Redoc renders and does not execute, so
 // the token never reaches the third-party bundle at all.
+//
+// **There is no theme here either, since Redoc 3.** Redoc 2 took a theme
+// object, which this module built from the portal's live CSS variables. Redoc
+// 3 dropped that API and themes through CSS custom properties instead, so the
+// portal's palette now reaches it the way it reaches every other view: in CSS
+// (`ApiView.css`).
 
 /**
  * Where the contract is served.
@@ -26,211 +33,101 @@ export const OPENAPI_URL = 'api/v1/openapi.json';
 /**
  * Where the event contract is served (R51, docs/52 D3): the AsyncAPI
  * catalogue of every event this deployment emits. Relative for the same
- * reason as OPENAPI_URL. The page only links to it — the AsyncAPI renderer
- * is a large bundle for a page that already embeds Redoc, and the document
- * reads fine raw (docs/52 §2, Rejected).
+ * reason as OPENAPI_URL. The page only links to it — rendering it too would
+ * put a second large renderer on a page that already embeds Redoc, and the
+ * document reads fine raw (docs/52 §2, Rejected).
  */
 export const ASYNCAPI_URL = 'api/v1/asyncapi.json';
 
 /**
- * The portal's palette, as the page is actually painting it.
+ * Redoc's routing base on this page, inside the portal's hash.
  *
- * READ FROM THE LIVE CSS VARIABLES rather than restated here, because
- * `global.css` is the one place the portal's colours are decided and this page
- * has to follow both of its schemes. The variables are redefined under
- * `prefers-color-scheme: light`, so reading them at render time is also what
- * makes light mode work without a second table to keep in step.
+ * Redoc 3 is a react-router application: every page of the reference — an
+ * operation, a tag, a section — is a ROUTE, `<base>/<tag>/<operationid>`.
+ * Left to itself it mounts a `BrowserRouter` and writes those routes into
+ * `location.pathname`, which the portal cannot have: the portal is hash-routed
+ * (router.ts says why), and a pathname rewrite would break a reload under an
+ * Ingress sub-path and the OIDC redirect URI with it. So `ApiView` hands Redoc
+ * a `HashRouter`, and with this base every docs URL is `#/api/...` — a route
+ * `parseHash` already resolves to this page, so reloads, bookmarks, the Back
+ * button and a shared link all land on the operation they name.
  */
-export interface Palette {
-  bg: string;
-  surface1: string;
-  surface2: string;
-  border: string;
-  borderSoft: string;
-  text: string;
-  muted: string;
-  faint: string;
-  accent: string;
-  accentHover: string;
-  danger: string;
-  warning: string;
-  ok: string;
-  mono: string;
-  sans: string;
-  /** Dark in BOTH schemes — see `--code-bg` in global.css. */
-  codeBg: string;
-  codeSurface: string;
-  codeText: string;
-  codeMuted: string;
-}
+export const DOCS_BASE_PATH = '/api';
 
-/** The values `global.css` falls back to, for a test with no stylesheet. */
-const FALLBACK: Palette = {
-  bg: '#0a0b0d',
-  surface1: '#121317',
-  surface2: '#171920',
-  border: '#262a33',
-  borderSoft: '#1c2028',
-  text: '#e8eaed',
-  muted: '#9aa1ad',
-  faint: '#626873',
-  accent: '#6b8afe',
-  accentHover: '#86a0ff',
-  danger: '#e5484d',
-  warning: '#d0a215',
-  ok: '#30a46c',
-  mono: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-  sans: 'system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif',
-  codeBg: '#0a0b0d',
-  codeSurface: '#171920',
-  codeText: '#e8eaed',
-  codeMuted: '#9aa1ad',
-};
-
-const VARIABLES: Record<keyof Palette, string> = {
-  bg: '--bg',
-  surface1: '--surface-1',
-  surface2: '--surface-2',
-  border: '--border',
-  borderSoft: '--border-soft',
-  text: '--text',
-  muted: '--muted',
-  faint: '--faint',
-  accent: '--accent',
-  accentHover: '--accent-hover',
-  danger: '--danger',
-  warning: '--warning',
-  ok: '--ok',
-  mono: '--mono',
-  sans: '--sans',
-  codeBg: '--code-bg',
-  codeSurface: '--code-surface',
-  codeText: '--code-text',
-  codeMuted: '--code-muted',
-};
-
-/** Reads the portal's palette off the document, falling back per-token. */
-export function readPalette(element?: Element | null): Palette {
-  const target =
-    element ?? (typeof document === 'undefined' ? null : document.documentElement);
-  if (!target || typeof getComputedStyle !== 'function') return { ...FALLBACK };
-  const computed = getComputedStyle(target);
-  const out = { ...FALLBACK };
-  for (const [key, variable] of Object.entries(VARIABLES) as [keyof Palette, string][]) {
-    const value = computed.getPropertyValue(variable).trim();
-    if (value) out[key] = value;
-  }
-  return out;
+/**
+ * Redoc's slug for a name in a docs route: lower case, whitespace to `-`.
+ *
+ * Restated rather than imported — Redoc exports no slug helper — and narrow
+ * on purpose: it is only ever applied to this document's tags (single lower
+ * case words) and operation IDs (camelCase identifiers), which is the whole
+ * input it has to agree with Redoc on. A browser pass checked every
+ * operation's route against the links Redoc renders.
+ */
+export function docsSlug(name: string): string {
+  return name.toLowerCase().trim().replace(/\s+/g, '-');
 }
 
 /**
- * The options handed to Redoc, themed from the portal's own palette.
+ * The Redoc 3 route for a Redoc 2 fragment, or null if `hash` is not one.
  *
- * **Redoc ships a light theme and paints no background on its middle panel**,
- * so out of the box it rendered its default `#333` prose straight onto the
- * portal's near-black canvas: legible in light mode, barely readable in dark,
- * with a white sidebar slab and a dead grey sample panel beside it. Every
- * colour below exists to fix that, and every one of them comes from the same
- * CSS variables the rest of the portal uses — so the page follows the portal
- * into either scheme instead of carrying a second palette that drifts.
+ * Redoc 2 wrote `#tag/<tag>/operation/<id>`, `#operation/<id>` and
+ * `#section/<Name>` into the address bar, and operators bookmarked and shared
+ * them (`router.ts` still resolves those roots to this page for that reason).
+ * Redoc 3 does not understand them, so `ApiView` rewrites one to the route it
+ * means before Redoc reads the location. `#operation/<id>` names no tag, so
+ * it lands on the top of the reference rather than guessing one.
+ */
+export function legacyDocsRoute(hash: string): string | null {
+  const raw = hash.replace(/^#/, '');
+  if (raw.startsWith('/')) return null;
+  const segments = raw.split('?')[0].split('/').filter(Boolean).map(decodeSegment);
+  switch (segments[0]) {
+    case 'tag':
+      if (!segments[1]) return DOCS_BASE_PATH;
+      if (segments[2] === 'operation' && segments[3]) {
+        return `${DOCS_BASE_PATH}/${docsSlug(segments[1])}/${docsSlug(segments[3])}`;
+      }
+      return `${DOCS_BASE_PATH}/${docsSlug(segments[1])}`;
+    case 'section':
+      return segments[1]
+        ? `${DOCS_BASE_PATH}/section/${docsSlug(segments[1].replace(/-/g, ' '))}`
+        : DOCS_BASE_PATH;
+    case 'operation':
+      return DOCS_BASE_PATH;
+    default:
+      return null;
+  }
+}
+
+function decodeSegment(s: string): string {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+}
+
+/**
+ * The options handed to Redoc.
  *
- * The non-colour options:
- *
- *   - `hideDownloadButton` is FALSE. Fetching the raw document is exactly what
- *     a bot author came to do, and the served copy is the one carrying this
- *     deployment's base URL and role names.
- *   - `expandResponses: '200,201'` puts the success shape on screen without a
- *     click, which is the shape somebody is reading for.
- *   - `nativeScrollbars` avoids Redoc's custom scrollbar, which fights the
- *     portal's own scrolling on a phone — and the portal is read from one
- *     (docs/42 §10).
+ *   - `disableTelemetry` is TRUE. Redoc 3 reports usage to Redocly's
+ *     collector by default. The portal's CSP would refuse the request — its
+ *     `connect-src` is this origin and the IdP — but a moderation console
+ *     does not attempt to phone a vendor and rely on being stopped.
+ *     `vite.config.ts` also strips the collector URL from the bundle, so the
+ *     option is not the only thing standing between the page and the vendor.
+ *   - `hideDownloadButtons` is FALSE. Fetching the raw document is exactly
+ *     what a bot author came to do, and the served copy is the one carrying
+ *     this deployment's base URL and role names.
  *   - `showExtensions` keeps `x-gawk-roles`, `x-gawk-requires` and
  *     `x-gawk-sensitive` on the page: they are what a consumer most needs.
+ *
+ * Every value is plain data: no callback that could close over a session.
  */
-export function redocOptions(palette: Palette = readPalette()): Record<string, unknown> {
-  const response = (accent: string) => ({
-    color: accent,
-    backgroundColor: palette.surface1,
-    tabTextColor: accent,
-  });
-
+export function redocOptions(): Record<string, unknown> {
   return {
-    // OFF, and not by preference: Redoc builds its search index in a worker
-    // created from a `blob:` URL, and the portal's CSP is `default-src
-    // 'self'` with no `worker-src`, so the browser refuses it and logs a
-    // violation on every visit. The alternative is widening the CSP of the
-    // page that holds an operator's access token to get search on a
-    // documentation page (docs/42 §4.8 treats that CSP as load-bearing), and
-    // that is the wrong way round. The sidebar lists every operation, and
-    // the browser's own find-in-page works on the rendered document.
-    disableSearch: true,
-    hideDownloadButton: false,
-    expandResponses: '200,201',
-    nativeScrollbars: true,
+    disableTelemetry: true,
+    hideDownloadButtons: false,
     showExtensions: true,
-    theme: {
-      colors: {
-        primary: { main: palette.accent },
-        success: { main: palette.ok },
-        warning: { main: palette.warning },
-        error: { main: palette.danger },
-        // Redoc uses these for the panel fills it draws itself; pointing them
-        // at the portal's surfaces is what stops the white slabs.
-        gray: { 50: palette.surface2, 100: palette.surface1 },
-        border: { light: palette.borderSoft, dark: palette.border },
-        text: { primary: palette.text, secondary: palette.muted },
-        responses: {
-          success: response(palette.ok),
-          error: response(palette.danger),
-          redirect: response(palette.warning),
-          info: response(palette.accent),
-        },
-      },
-      schema: {
-        linesColor: palette.border,
-        typeNameColor: palette.muted,
-        typeTitleColor: palette.text,
-        requireLabelColor: palette.danger,
-        nestedBackground: palette.surface1,
-        arrow: { color: palette.muted },
-      },
-      typography: {
-        fontSize: '15px',
-        fontFamily: palette.sans,
-        headings: { fontFamily: palette.sans },
-        links: {
-          color: palette.accent,
-          visited: palette.accent,
-          hover: palette.accentHover,
-        },
-        code: {
-          fontFamily: palette.mono,
-          color: palette.text,
-          backgroundColor: palette.surface2,
-          wrap: true,
-        },
-      },
-      sidebar: {
-        width: '15rem',
-        backgroundColor: palette.surface1,
-        textColor: palette.muted,
-        activeTextColor: palette.text,
-        groupItems: { activeBackgroundColor: palette.surface2 },
-        level1Items: { activeBackgroundColor: palette.surface2 },
-        arrow: { color: palette.faint },
-      },
-      // The sample panel, DARK IN BOTH SCHEMES. Redoc syntax-highlights the
-      // JSON samples with token colours chosen against a dark panel — on a
-      // light one the light tokens vanish, which is exactly what happened
-      // when this followed the portal's surfaces: 102 elements of white-on-
-      // white in light mode. `--code-*` are the portal's scheme-independent
-      // code surfaces for this reason.
-      rightPanel: {
-        backgroundColor: palette.codeSurface,
-        textColor: palette.codeText,
-      },
-      codeBlock: { backgroundColor: palette.codeBg },
-      fab: { backgroundColor: palette.codeSurface, color: palette.codeText },
-    },
   };
 }

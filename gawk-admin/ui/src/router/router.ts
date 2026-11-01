@@ -62,20 +62,16 @@ const VIEWS: readonly ViewName[] = [
 ];
 
 /**
- * Fragment roots Redoc writes on the API page (R48).
+ * Fragment roots Redoc 2 wrote on the API page (R48).
  *
- * Redoc owns `location.hash` while it is mounted: its scroll spy
- * `replaceState`s the fragment to `#tag/<tag>/operation/<id>` as the reader
- * scrolls, and a sidebar click `pushState`s the same shape. Neither fires
- * `hashchange`, so the view does not vanish underneath — but the address bar
- * has left `#/api`, and without this the next thing to READ the hash (a
- * reload, a bookmark, a pasted link, the Back button) would resolve it to
- * `not-found`.
- *
- * Redoc offers no way to turn that off — nothing in its options touches the
- * hash — so the router recognises the shapes instead. That also makes a
- * shared `#tag/…` link work as a link: Redoc reads `location.hash` itself on
- * mount and scrolls to the operation.
+ * Redoc 2 owned `location.hash` while it was mounted: its scroll spy and
+ * sidebar wrote `#tag/<tag>/operation/<id>`, `#operation/<id>` and
+ * `#section/<Name>`, so operators bookmarked and shared those. Redoc 3
+ * (2026-11-01) runs inside the API view's own router and keeps every docs
+ * route under `#/api/...`, which resolves through `VIEWS` like any other
+ * route — but the old links are still out there, so these roots still land
+ * on the API page, and `ApiView` rewrites one to the route it means
+ * (`apiDocs.ts`, `legacyDocsRoute`).
  */
 const REDOC_FRAGMENTS: readonly string[] = ['tag', 'operation', 'section'];
 

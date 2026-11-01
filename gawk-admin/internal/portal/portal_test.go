@@ -143,9 +143,17 @@ func TestNoExternalAssetReferences(t *testing.T) {
 			// R48: Redoc's "API docs by Redocly" badge draws its logo from
 			// this CDN. The CSP blocks it, so nothing leaked — but it was a
 			// real off-origin request from the portal, found only because a
-			// browser pass read the console. views/ApiView.css removes it;
-			// this is what keeps a Redoc upgrade from bringing it back.
+			// browser pass read the console. ui/vite.config.ts strips it at
+			// build time; this is what keeps a Redoc upgrade from bringing it
+			// back.
 			"cdn.redoc.ly",
+			// Redoc 3's telemetry collector (docs/49 D5, revised 2026-11-01).
+			// Off by option (apiDocs.ts) AND stripped by ui/vite.config.ts;
+			// this asserts the second, so the option is never the only lock.
+			"otel.cloud.redocly.com",
+			// Redoc 3's icon sets, fetched only for icons a document names
+			// (ours names none); stripped by ui/vite.config.ts like the rest.
+			"cdn.redocly.com",
 		} {
 			if strings.Contains(string(body), forbidden) {
 				t.Errorf("%s references %q", p, forbidden)

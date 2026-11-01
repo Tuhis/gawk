@@ -15,7 +15,7 @@
 // `x-gawk-roles`, and `x-gawk-sensitive` on the responses. Anything else in
 // the document is Redoc's to render.
 
-import { OPENAPI_URL } from './apiDocs.ts';
+import { DOCS_BASE_PATH, OPENAPI_URL, docsSlug } from './apiDocs.ts';
 
 export type Method = 'GET' | 'POST' | 'PUT' | 'DELETE';
 
@@ -226,19 +226,38 @@ function shellQuote(s: string): string {
 }
 
 /**
- * The operation a Redoc fragment names — `#tag/bans/operation/createBan` —
- * or null. Redoc owns `location.hash` while the page is mounted
- * (`router.ts`), so this is how the console learns which operation the
- * reader is looking at.
+ * The operation a docs location names, or null.
+ *
+ * Redoc 3 routes the reference through the portal's hash (`ApiView`'s
+ * `HashRouter`, base `DOCS_BASE_PATH`): an operation's page is
+ * `/api/<tag>/<operationid>`, slugged lower case. `location` may be that
+ * router path or the raw `location.hash` — `#/api/bans/createban`, possibly
+ * followed by a second `#…` anchor into the operation, which Redoc writes for
+ * a deep link to one field. Redoc's slug is lossy (lower case), so the ID is
+ * recovered by matching against the document's own operations.
  */
-export function operationFromHash(hash: string): string | null {
-  const m = /(?:^|\/)operation\/([^/?]+)/.exec(decodeURIComponent(hash.replace(/^#/, '')));
-  return m ? m[1] : null;
+export function operationFromDocsLocation(
+  location: string,
+  ops: readonly Operation[],
+): string | null {
+  const path = location.replace(/^#/, '').split(/[#?]/)[0];
+  const base = DOCS_BASE_PATH.split('/').filter(Boolean);
+  const segments = path.split('/').filter(Boolean);
+  if (segments.length !== base.length + 2 || base.some((b, i) => segments[i] !== b)) return null;
+  const [tag, id] = segments.slice(base.length).map((s) => {
+    try {
+      return decodeURIComponent(s);
+    } catch {
+      return s;
+    }
+  });
+  const op = ops.find((o) => docsSlug(o.tag) === tag && docsSlug(o.id) === id);
+  return op ? op.id : null;
 }
 
-/** The Redoc fragment for an operation — a link the console can offer back to the docs. */
-export function hashForOperation(op: Operation): string {
-  return `#tag/${encodeURIComponent(op.tag)}/operation/${encodeURIComponent(op.id)}`;
+/** The docs route for an operation — the console's link back to the reference. */
+export function docsRouteForOperation(op: Operation): string {
+  return `${DOCS_BASE_PATH}/${encodeURIComponent(docsSlug(op.tag))}/${encodeURIComponent(docsSlug(op.id))}`;
 }
 
 /** Where the console reads the contract from: the same relative document Redoc renders. */

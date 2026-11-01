@@ -869,8 +869,8 @@ ALLOWED_LICENSES = {
 # that simply forgot the field is indistinguishable from one with no license at
 # all. The renderer has no such gap — Package classifies from the text when
 # nothing is declared — but collect_npm applies this table too, so the two
-# halves agree by construction: `decko` renders as `MIT` in the "as declared"
-# column because that is what its LICENSE says, rather than as whatever the
+# halves agree by construction: an overridden package renders in the "as
+# declared" column as what its LICENSE says, rather than as whatever the
 # classifier made of the text. Without that, the gate and the notices file
 # could disagree about the same package.
 #
@@ -878,20 +878,12 @@ ALLOWED_LICENSES = {
 # comment says what it said. That is the whole bar: this table must never
 # become a way to wave a dependency through. Anything not listed here still
 # fails the gate, which is the behaviour that catches a real copyleft arrival.
-# Prefer fixing it upstream; these three are long-dormant packages.
-NPM_LICENSE_OVERRIDES = {
-    # LICENSE: "The MIT License (MIT) / Copyright (c) 2017 Jason Miller".
-    # package.json omits the `license` field entirely.
-    "decko": "MIT",
-    # LICENSE: "The MIT License (MIT) / Copyright (c) 2014 Oleg Korsunsky /
-    # Copyright (c) 2014 Automattic Inc." Same omission; the copy webpack
-    # inlines into Redoc's bundle carries the same notice in its banner.
-    "stickyfill": "MIT",
-    # Declares the non-SPDX string "BSD". The text is the three-clause form —
-    # it carries "The name of the author may not be used to endorse or promote
-    # products derived from this software".
-    "url-template": "BSD-3-Clause",
-}
+# Prefer fixing it upstream.
+#
+# Empty since Redoc 3 (2026-11-01, docs/49 OA6): the three entries R48 needed
+# — `decko`, `stickyfill` and `url-template`, all Redoc 2 dependencies — left
+# the tree with it. The mechanism stays for the next package that needs it.
+NPM_LICENSE_OVERRIDES: dict[str, str] = {}
 
 
 def split_expression(expression: str) -> list[list[str]]:

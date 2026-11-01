@@ -2050,7 +2050,22 @@ entries still describe code `gawk-pubsim` runs (now
   prints once. `ADBLOCK=1`, `DISABLE_OPENCOLLECTIVE=1` or a quiet
   `npm_config_loglevel` silence it. Benign, and the notices generator installs
   with `--ignore-scripts` regardless. Read the script; do not infer from the
-  package's reputation. ([docs/49](49-admin-openapi.md))
+  package's reputation. (Redoc 3 dropped `core-js`; the 2026-11-01 lockfile
+  diff added no install script.) ([docs/49](49-admin-openapi.md))
+- **Redoc 3 brings its own `BrowserRouter` unless it finds a router above
+  it.** It is a react-router application, and on its own it writes every
+  docs route into `location.pathname` — fatal in the hash-routed portal (a
+  reload under an Ingress sub-path 404s, and the OIDC redirect URI is
+  `origin + pathname`). The API view wraps it in a `HashRouter` with
+  `basePath="/api"`, and `react-router` is a direct dependency so the two
+  share one module instance: a second copy would not count as "a router
+  above it". ([docs/49](49-admin-openapi.md) OA6)
+- **A CSS custom property derived on `:root` does not follow an override
+  on a descendant.** `var()` resolves where the property is declared, so
+  Redoc's `--sidebar-bg-color: var(--bg-color)` on `:root` keeps Redoc's
+  value however `--bg-color` is overridden on a wrapper below it. Override
+  the base tokens on the root itself — `ApiView.css` scopes that to the API
+  page with `html:root:has(.gawk-redoc)`. ([docs/49](49-admin-openapi.md) OA6)
 - **The served `openapi.json` has no path order.** `sigs.k8s.io/yaml` converts
   the YAML through Go maps, so `paths` (and every other object) comes out
   sorted alphabetically; `/api/v1/bans` leads, and `/api/v1/me` is buried. The
