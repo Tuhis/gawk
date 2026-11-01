@@ -213,10 +213,12 @@ re-checks it against the OBS release it tests.
   bucket, the IP ban and the admin portal's publisher-IP fields. Otherwise the
   gateway, a pod inside the `trustedCidrs` the relay chart tells operators to
   set, would skip the rate limit entirely. The relay canonicalises the header
-  the way `remoteIP()` does (`moderation.CanonicalAddr`), and refuses an
-  unparsable one with `400`. The same token exempts the gateway from the
-  Origin allow-list. The publisher IP still
-  never leaves through events or webhooks (CLAUDE.md). The gateway also
+  the way `remoteIP()` does (`moderation.CanonicalAddr`). With a valid token
+  it refuses an unparsable **or missing** header with `400`, and never falls
+  back to the peer address, which would bring the `trustedCidrs` bypass back
+  for a buggy or older gateway. The same token exempts the gateway from the
+  Origin allow-list. The publisher IP still never leaves through events or
+  webhooks (CLAUDE.md). The gateway also
   rate-limits `POST /whip` per client IP itself, before dialing the relay.
 
   **Where the gateway gets the client IP.** `POST /whip` arrives through the
@@ -229,10 +231,14 @@ re-checks it against the OBS release it tests.
   `X-Forwarded-For` **only when `RemoteAddr` is inside `trustedProxyCidrs`**,
   by these rules:
   - `trustedProxyCidrs` lists **only the addresses of the proxy that writes
-    the header**: the ingress controller's pods, or its nodes only when it
-    runs `hostNetwork`. **Never** node CIDRs that sit in front of it as a
-    kube-proxy SNAT hop. In append mode (`compute-full-forwarded-for`) a
+    the header**: the ingress controller's pod range, or, when it runs
+    `hostNetwork`, the exact node addresses (`/32`, `/128`), never a subnet
+    that clients share. On a homelab the node subnet is usually the LAN the
+    broadcaster sits on. **Never** node CIDRs that sit in front of the proxy
+    as a kube-proxy SNAT hop: in append mode (`compute-full-forwarded-for`) a
     trusted SNAT hop would make the walk skip past it to a forged entry.
+    Dual-stack clusters list both address families. The chart default is
+    `[]`.
   - The ingress controller must see real client IPs (its Service on
     `externalTrafficPolicy: Local`, or PROXY protocol). Otherwise the header's
     last entry is a node IP and every user shares a few buckets. §6's chart
@@ -247,14 +253,23 @@ re-checks it against the OBS release it tests.
   - The walk goes from the right and takes the first entry not in
     `trustedProxyCidrs`. If it hits an unparsable entry it **stops** rather
     than skipping it, since skipping would let an attacker shift the walk with
-    junk. If it stops, or finds no untrusted entry, or the header is missing,
-    the `POST` gets `400` (`client_ip_unknown`) and a metric counts it: a
-    misconfigured Ingress fails loudly instead of collapsing into one shared
-    bucket.
+    junk. If **every** entry is trusted, it takes the **left-most** entry. A
+    client outside the trusted range can't produce an all-trusted chain,
+    because the proxy appends the real address it saw, so only a client
+    inside the range can choose a value, and only another in-range one. This
+    keeps a LAN broadcaster working if the list does cover clients. If the
+    walk stops on junk, or the header is missing, the `POST` gets `400`
+    (`client_ip_unknown`) and a metric counts it: a misconfigured Ingress
+    fails loudly instead of collapsing into one shared bucket.
   - From a `RemoteAddr` outside `trustedProxyCidrs` the header is ignored and
     `RemoteAddr` (canonicalised) is the client IP. Empty `trustedProxyCidrs`
-    means `RemoteAddr` only, and the chart's notes warn that this is one
-    bucket behind an Ingress.
+    means `RemoteAddr` only and never `400`, so a deployment without an
+    Ingress (the compose stack, WG9's `whipsink`) works as is. The chart's
+    notes warn that behind an Ingress this is one bucket. The silent version
+    of that misconfiguration, a non-empty list that doesn't contain the
+    ingress's real address (e.g. a dual-stack cluster listing only v4), is
+    caught by a metric and a rate-limited warning log for "`X-Forwarded-For`
+    from an untrusted peer while `trustedProxyCidrs` is set".
   - IPv6 is keyed per address (/128), the same as the relay's limiter. One
     host on a /64 can rotate addresses past both. That's the relay's existing
     behaviour, and D4 doesn't change it.
@@ -338,7 +353,10 @@ re-checks it against the OBS release it tests.
   `GET /whip/status` (same bearer key, CORS-allowed for the configured
   `gawk-app` origins). It returns `{state, codec, resolution, fps, gopMs,
   bitrateKbps, lossPct, warnings[], lastError}` for the key's current or
-  last session. The OBS panel (§5) polls it every 2 s while open. The status
+  last session. A `POST` refused before any session exists (`503` at
+  `maxSessions`, `400 client_ip_unknown`, `422 gop_too_long`, relay refusals)
+  is recorded against its key for 10 minutes and reported as `lastError`, so
+  the panel can show the reason OBS can't. The OBS panel (§5) polls it every 2 s while open. The status
   holds no IPs and no frame data.
 
 - **D10 — ICE: ICE-lite on one UDP port, one replica.** pion runs ICE-lite
@@ -460,8 +478,14 @@ a broadcast whose publisher is the gateway.
   Ingress and the media LB), a ServiceMonitor and a PDB. `values.yaml` holds
   `relay.url`, `relay.publishSecret` (existing secret ref),
   `relay.publishProxyToken` (D4), `publicAddress` (D10), `allowedOrigins`
-  (D9 CORS), `trustedProxyCidrs` (D4), `maxSessions` (D10) and the D6/D7 knobs. Every value has a flag and a `GAWK_WHIP_*`
-  env (the `registryOptions` rule, applied to the gateway's own config).
+  (D9 CORS), `trustedProxyCidrs` (D4, default `[]`), `maxSessions` (D10)
+  and the D6/D7 knobs. Every value has a flag and a `GAWK_WHIP_*` env (the
+  `registryOptions` rule, applied to the gateway's own config). The chart's
+  notes carry D4's requirements: `trustedProxyCidrs` lists only the
+  header-writing proxy (exact node addresses under `hostNetwork`, both
+  address families on dual-stack), the ingress controller must see real
+  client IPs (`externalTrafficPolicy: Local` or PROXY protocol), and an empty
+  list behind an Ingress means one shared bucket.
 - **Frontend config:** `whipGatewayUrl` in `window.__GAWK_CONFIG__`
   (`gawk-app/src/config.ts`), set by the frontend chart's values. When it's
   unset the panel doesn't appear.
@@ -494,11 +518,11 @@ the same way as the native ≈50 ms figure.
 | **WG0** | Lab: OBS (latest release, Windows NVENC and x264, 1 s and 2 s GOP) → a minimal pion WHIP receiver → the pubsim engine → the compose relay → the shipping viewer. Re-check §3.3 on that release (PLI ignored, `bf=0`, keyint granularity), and find the sub-second custom-options spelling per encoder. | Glass-to-glass p50/p95 on LAN and with 1 % / 40 ms netem, recorded in §7. §3.3 confirmed or corrected. Loss rate OBS → receiver on the reference path recorded, and D6's window default confirmed or changed. CPU and memory per 1080p60 session recorded for D10's `maxSessions`. Owner sign-off on OD1–OD8. |
 | **WG1** | Promote the engine to `gawk-server/publisher` (OD1), and add `StopBroadcast()`, which closes the session with **4014** (`Stop()` closes with code 0 today, so the relay can't tell a stop from a drop). `gawk-pubsim`, `e2e`, `e2e-cluster` and the iOS viewer tests keep using `Stop()` unchanged. CONTRIBUTING gains the release-coupling line. | `go test ./...` and the e2e lanes green. No `internal/pubsim/engine` import left outside the package. A test: `StopBroadcast()` ends the broadcast at once (R78), while `Stop()` leaves it in grace. |
 | **WG2** | Relay: `CONNECT /publish?mint=1` (D3) and the new close code in all three wire copies with golden vectors. | Tests: a mint announces ID + token, creates no broadcast, emits no event, isn't counted in `max-broadcasts`, and passes every publish gate (secret, rate limit, IP ban, draining). A reclaim with the minted token creates the broadcast. Vectors byte-identical in Go, TS and Rust. |
-| **WG3** | Relay: `-publish-proxy-token` (D4) through `registryOptions`, flag + env + Helm, and D12's guard. | Tests: with the token, `Gawk-Publisher-Ip` drives rate limit, IP ban and the admin publisher-IP fields, and the Origin check is skipped. Without it the header is ignored. A test asserts no event or webhook carries the IP. The Helm value renders into the relay args. The relay refuses to start, and the chart to render, with the proxy token and no explicit `resumeTokenKey`. A gateway peer inside `trustedCidrs` (and one on loopback) presenting the token with a proxied IP is still rate-limited on that IP. `::ffff:203.0.113.7` and `203.0.113.7` in the header hit the same bucket and the same ban. An unparsable header with a valid token gets `400`. |
+| **WG3** | Relay: `-publish-proxy-token` (D4) through `registryOptions`, flag + env + Helm, and D12's guard. | Tests: with the token, `Gawk-Publisher-Ip` drives rate limit, IP ban and the admin publisher-IP fields, and the Origin check is skipped. Without it the header is ignored. A test asserts no event or webhook carries the IP. The Helm value renders into the relay args. The relay refuses to start, and the chart to render, with the proxy token and no explicit `resumeTokenKey`. A gateway peer inside `trustedCidrs` (and one on loopback) presenting the token with a proxied IP is still rate-limited on that IP. `::ffff:203.0.113.7` and `203.0.113.7` in the header hit the same bucket and the same ban. An unparsable or missing header with a valid token gets `400`, never the peer address. |
 | **WG4** | Gateway skeleton: module, config (flags + `GAWK_WHIP_*` + chart values), `/healthz`, metrics, Dockerfile, chart (default off), release-please package, a CI path filter on `gawk-whip-gateway/` and `gawk-server/`. | CI builds and tests it. The chart renders with defaults and does nothing until enabled. `maxSessions` and the resource requests are set from WG0's per-session measurement. A release produces image + chart at the same version. |
-| **WG5** | WHIP endpoint: `POST`/`DELETE`/`OPTIONS`, key parsing (D2), SDP answer (D5), ICE-lite + UDP mux + NAT 1:1 + ICE-TCP (D10), the D8 status mapping, per-IP `POST` rate limit. | A pion WHIP client test in CI: H.264+Opus accepted (`201` + `Location`); HEVC, AV1 and simulcast refused `406`; bad key `401`; every row of D8's table covered against a test relay. Client IP: from a `RemoteAddr` inside `trustedProxyCidrs` the right-most untrusted `X-Forwarded-For` address is used, from outside it a forged `X-Forwarded-For` is ignored, and the chosen address is what reaches the rate limit and `Gawk-Publisher-Ip`. An append-mode chain `forged, <ingress pod>` from a trusted peer, with only the ingress pod range trusted, yields the ingress-side client and never `forged`. Several header lines are joined in order. An unparsable entry stops the walk, and a missing header or all-trusted chain gets `400`. A v4-mapped entry is canonicalised. At `maxSessions`, a new key gets `503` + `Retry-After` while the same key's reconnect succeeds. |
+| **WG5** | WHIP endpoint: `POST`/`DELETE`/`OPTIONS`, key parsing (D2), SDP answer (D5), ICE-lite + UDP mux + NAT 1:1 + ICE-TCP (D10), the D8 status mapping, per-IP `POST` rate limit. | A pion WHIP client test in CI: H.264+Opus accepted (`201` + `Location`); HEVC, AV1 and simulcast refused `406`; bad key `401`; every row of D8's table covered against a test relay. Client IP: from a `RemoteAddr` inside `trustedProxyCidrs` the right-most untrusted `X-Forwarded-For` address is used, from outside it a forged `X-Forwarded-For` is ignored, and the chosen address is what reaches the rate limit and `Gawk-Publisher-Ip`. An append-mode chain `forged, <ingress pod>` from a trusted peer, with only the ingress pod range trusted, yields the ingress-side client and never `forged`. Several header lines are joined in order. An unparsable entry stops the walk and gets `400`, and so does a missing header. An all-trusted chain yields its left-most entry. With an empty `trustedProxyCidrs` a forged header is ignored and no request gets `400`. A header from an untrusted peer while the list is set increments the misconfiguration metric. A v4-mapped entry is canonicalised. At `maxSessions`, a new key gets `503` + `Retry-After` while the same key's reconnect succeeds. |
 | **WG6** | Media adapter: RTP → Annex-B AUs with the reorder window (D6), IDR/SPS/B-frame validation, GOP measurement and bounds (D7), Opus → the engine's audio, RTP/RTCP-SR timestamps → engine timestamps, event PLIs. | Unit tests with recorded OBS RTP: a dropped packet drops that frame and the deltas until the next IDR; a B-frame stream is refused with reason; GOP thresholds warn and end as specified, and a stream with a 2 s GOP that loses one whole IDR (and one IDR's first packet) is neither warned about more than it would be without the loss nor ended; A/V offset within 20 ms of the source; PLI sent on start and on resume only: never on a dropped frame, never periodically. |
-| **WG7** | `GET /whip/status` (D9) with CORS. | Tests: returns the D9 fields for the key's session, `401` for another key, and nothing containing an IP. |
+| **WG7** | `GET /whip/status` (D9) with CORS. | Tests: returns the D9 fields for the key's session, reports a `503`/`400`/`422` refusal of a `POST` that never made a session as `lastError`, `401` for another key, and nothing containing an IP. |
 | **WG8** | gawk-app OBS panel (§5), `whipGatewayUrl` config, key storage (OD3), status polling. | Vitest covers mint, show/copy/forget/reset, the publish-secret prompt, status states and warnings. The panel is hidden without `whipGatewayUrl`. |
 | **WG9** | Dev stack `whip` profile with a GStreamer/FFmpeg WHIP sender. Rooms attach from the panel. `docs/self-hosting.md` section, an OBS setup guide, `docs/gotchas.md` entries. | `docker compose --profile whip up` shows a live test pattern in the viewer with no copy-paste. A `dev-stack` CI job round-trips a frame through the gateway. Attach puts the OBS broadcast in a room. |
 | **WG10** | Owner pass on the reference deployment with real OBS on the gaming PC. | Key created in the web app, OBS streams, viewers watch. A drain during the stream doesn't reach OBS. OBS's auto-reconnect keeps the join code. Glass-to-glass recorded next to the native figure. |
