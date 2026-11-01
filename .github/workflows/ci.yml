@@ -3660,7 +3660,11 @@ jobs:
         if: matrix.read_port
         run: |
           set -euo pipefail
-          meta=$(curl -fsS "http://127.0.0.1:${{ matrix.read_port }}/v1/meta")
+          # /healthz answers before the read listener exists: gawk-telemetry
+          # serves it from a start gate while its startup history repair runs
+          # (docs/33 §4.17), so wait for this port rather than assume it.
+          meta=$(curl -fsS --retry 30 --retry-delay 1 --retry-connrefused --retry-all-errors \
+            "http://127.0.0.1:${{ matrix.read_port }}/v1/meta")
           echo "$meta"
           if ! grep -q '"sql":true' <<<"$meta"; then
             echo "::error::the image reports no SQL engine — it was built without -tags duckdb, or the driver failed to open"

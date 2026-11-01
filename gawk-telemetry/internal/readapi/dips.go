@@ -286,7 +286,7 @@ func relayMovers(lines [][]byte, sessionID string, fromMs, toMs int64) []Mover {
 		if o.AtMs < fromMs || o.AtMs > toMs {
 			continue
 		}
-		if o.SessionID == sessionID && o.Subscriber != nil {
+		if o.viewerOf(sessionID) {
 			any = true
 			record("subscriberDropped", float64(o.Subscriber.Dropped))
 			record("keyframesDropped", float64(o.Subscriber.KeyframesDropped))

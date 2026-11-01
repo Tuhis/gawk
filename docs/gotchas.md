@@ -110,6 +110,17 @@ Add to it when a new gotcha lands in `docs/`.
   `GAWK_UPDATE_GOLDEN=1 go test ./internal/storedshape/`, and a changed or
   removed one fails CI. Never edit a recorded line to make it pass: add a
   new field. ([docs/33](33-telemetry-and-diagnostics.md) D4)
+- **Never rewrite a stored telemetry row by decoding it into the current Go
+  struct.** `json.Unmarshal` into `rollup.Row` (or `relayscrape.Observation`)
+  silently drops every field the struct does not declare, so a rewrite run
+  by an older binary — or a newer row read by today's — deletes data on the
+  one artifact that is never pruned. Rewrite through
+  `map[string]json.RawMessage`, touch only the keys you own, keep lines that
+  do not parse byte for byte, and encode with `SetEscapeHTML(false)` (plain
+  `json.Marshal` rewrites `<` as `<` even inside a `RawMessage`). Also:
+  rollup files are `rollups/<date>.ndjson`, without the `date=` prefix that
+  D3's tree and the relay/session partitions use.
+  ([docs/33](33-telemetry-and-diagnostics.md) §4.17)
 - **Leg-A loss has three units and none of them is a substitute for
   another.** `ingressFramesLost` counts only frames of which *no* chunk
   arrived, so uplink loss — frames arriving a chunk short — read 0.01 %

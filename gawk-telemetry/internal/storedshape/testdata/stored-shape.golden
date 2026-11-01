@@ -134,6 +134,8 @@ rollups.relay.* number
 rollups.relayCoverage string
 rollups.relayPod string
 rollups.relayRole string
+rollups.repairs array
+rollups.repairs[] string
 rollups.role string
 rollups.roomKey string
 rollups.samples number

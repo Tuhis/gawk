@@ -127,12 +127,49 @@ type Row struct {
 	// "has this got better since the R15 fix?" a single query over rollups
 	// instead of a re-analysis of raw windows that no longer exist.
 	Verdict json.RawMessage `json:"verdict,omitempty"`
+
+	// --- Provenance ---
+	// Repairs names each one-time history rewrite that changed this row after
+	// it was written (internal/repair, docs/33 §4.17), by a stable id. Absent
+	// on every row written whole, which is every row since the repair shipped:
+	// a reader that sees an id knows which fields were removed and why.
+	Repairs []string `json:"repairs,omitempty"`
 }
 
 // StallThresholdMs is when a gap in frames becomes a stall. Two GOPs at the
 // 500 ms cadence: one missed keyframe is recovery, two is a freeze a viewer
 // notices.
 const StallThresholdMs = 1000
+
+// MaxPlausibleLatencyMs bounds capToRenderMs and liveEdgeDriftMs in every
+// DERIVED view: a sample above it is left out of the row's Stat (and out of
+// the live projection), never clamped. The deepest delay a playout mode is
+// built for is gawk-app's Deep buffer at its 30 s maximum
+// (MAX_DVR_BUFFER_MS in gawk-app/src/config.ts; the relay's -dvr-window
+// defaults to 3 s and has no upper limit, but the viewer clamps its buffer
+// to 30 s, so a larger relay window only stores more), so a viewer there
+// reports a little over 30 s on every sample. Two minutes clears that with
+// room and is still no latency this platform can produce; above it is a
+// clock fault. #376 was exactly that fault: viewers published the
+// broadcaster tab's age, up to 48 minutes, as both series. gawk-app's
+// source guard (#668, #670) uses the same bound. The raw stored line keeps
+// the value (D15).
+const MaxPlausibleLatencyMs = 120_000
+
+// latencySeries are the series MaxPlausibleLatencyMs applies to.
+var latencySeries = map[string]bool{
+	"capToRenderMs":   true,
+	"liveEdgeDriftMs": true,
+}
+
+// LatencySeries reports whether a series is bounded by MaxPlausibleLatencyMs.
+func LatencySeries(name string) bool { return latencySeries[name] }
+
+// PlausibleLatency reports whether v may enter a derived view of the latency
+// series name. Every other series is always plausible.
+func PlausibleLatency(name string, v float64) bool {
+	return !latencySeries[name] || v <= MaxPlausibleLatencyMs
+}
 
 // The series a rollup summarizes, per role. Additive: appending here makes a
 // new series appear on future rows, and old rows simply lack the key.
@@ -473,7 +510,7 @@ func Compute(in Input) Row {
 func collect(samples []Sample, field string) []float64 {
 	out := make([]float64, 0, len(samples))
 	for _, s := range samples {
-		if v, ok := schema.Number(s.Stats, field); ok {
+		if v, ok := schema.Number(s.Stats, field); ok && PlausibleLatency(field, v) {
 			out = append(out, v)
 		}
 	}

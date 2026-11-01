@@ -33,6 +33,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -47,6 +48,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/opsmetrics"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/readapi"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/relayscrape"
+	"github.com/Tuhis/gawk/gawk-telemetry/internal/repair"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/rollup"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/sessions"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/sqlengine"
@@ -74,6 +76,17 @@ func run() error {
 		return err
 	}
 	log := newLogger(cfg)
+
+	// The ingest listener comes up FIRST, behind a gate that answers
+	// /healthz and 503s everything else, so a long history repair cannot
+	// fail the liveness probe (no startupProbe, ~90 s budget) and crash-loop
+	// the pod. The repair still runs before the store, the scraper and the
+	// real ingest handler exist: nothing appends while history is rewritten.
+	errCh := make(chan error, 3)
+	gate := newStartGate()
+	ingestSrv := &http.Server{Addr: cfg.ingestAddr, Handler: gate, ReadHeaderTimeout: 10 * time.Second}
+	go func() { errCh <- serve(ingestSrv, "ingest", log) }()
+	repairHistory(cfg, log)
 
 	st, err := store.New(store.Options{Root: cfg.dataDir})
 	if err != nil {
@@ -278,11 +291,9 @@ func run() error {
 	}
 	readHandler := newReadHandler(cfg, routes, verifier)
 
-	ingestSrv := &http.Server{Addr: cfg.ingestAddr, Handler: ingestMux, ReadHeaderTimeout: 10 * time.Second}
 	readSrv := &http.Server{Addr: cfg.readAddr, Handler: readHandler, ReadHeaderTimeout: 10 * time.Second}
 
-	errCh := make(chan error, 3)
-	go func() { errCh <- serve(ingestSrv, "ingest", log) }()
+	gate.open(ingestMux)
 	go func() { errCh <- serve(readSrv, "read", log) }()
 
 	// --- metrics listener: ClusterIP only, no auth, no identifiers --------
@@ -314,6 +325,66 @@ func run() error {
 	// process's orphan sweep.
 	writer.FinalizeAll()
 	return nil
+}
+
+// startGate is the ingest listener's handler from bind until the service is
+// ready: /healthz answers 200 (the process is alive, and the liveness probe
+// must not kill it mid-repair), everything else 503 with Retry-After, so no
+// batch reaches a store that is not open yet. open installs the real handler.
+type startGate struct {
+	h atomic.Pointer[http.Handler]
+}
+
+func newStartGate() *startGate { return &startGate{} }
+
+func (g *startGate) open(h http.Handler) { g.h.Store(&h) }
+
+func (g *startGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h := g.h.Load(); h != nil {
+		(*h).ServeHTTP(w, r)
+		return
+	}
+	if r.URL.Path == "/healthz" {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok (starting)\n"))
+		return
+	}
+	// Wildcard CORS like the real ingest handler (docs/40 D17), so a
+	// browser client sees the 503 rather than an opaque network error.
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Retry-After", "30")
+	http.Error(w, "starting: history repair in progress", http.StatusServiceUnavailable)
+}
+
+// repairHistory runs the owner-decided 2026-11 rewrite of stored history
+// (docs/33 §4.17) unless it is disabled or its marker says it already ran.
+// A failure is logged, never fatal: telemetry is optional, and a crashloop
+// would take public ingest down with it. One attempt only (repair.Run): a
+// later boot that finds the attempt unfinished warns and boots normally.
+func repairHistory(cfg config, log *slog.Logger) {
+	if !cfg.repairHistory {
+		log.Info("history repair disabled", "repair", repair.ID)
+		return
+	}
+	start := time.Now()
+	sum, ran, err := repair.Run(cfg.dataDir)
+	switch {
+	case errors.Is(err, repair.ErrPreviousAttempt):
+		log.Warn("history repair NOT run: a previous attempt started and never completed "+
+			"(killed, OOM, or failed); the data is consistent but may be partly repaired. "+
+			"To re-run it, delete the in-progress marker and restart",
+			"repair", repair.ID, "marker", repair.StartedPath(cfg.dataDir))
+	case err != nil:
+		log.Error("history repair failed; it will NOT be retried automatically. "+
+			"To re-run it, delete the in-progress marker and restart",
+			"repair", repair.ID, "err", err, "marker", repair.StartedPath(cfg.dataDir),
+			"rollups", sum.Rollups, "relay", sum.Relay)
+	case !ran:
+		log.Info("history repair already applied", "repair", repair.ID, "marker", repair.MarkerPath(cfg.dataDir))
+	default:
+		log.Info("history repair applied", "repair", repair.ID, "took", time.Since(start).String(),
+			"rollups", sum.Rollups, "relay", sum.Relay)
+	}
 }
 
 // sqlTool adapts the query engine to the MCP tool's signature, or returns nil
@@ -541,6 +612,10 @@ type config struct {
 	statsKey   []byte
 	mcpEnabled bool
 	enableSQL  bool
+	// repairHistory runs the one-time 2026-11 history repair at startup
+	// (internal/repair, docs/33 §4.17). A marker under the data dir makes it
+	// a no-op after the first completed run.
+	repairHistory bool
 	// The SQL engine's budget and health probe (sqlengine.Options, Probe).
 	// sqlMemoryLimit 0 = DuckDB's own default; "auto" resolves to a quarter of
 	// the container's limit at parse time.
@@ -664,6 +739,8 @@ func parseFlags(args []string, env func(string) string) (config, error) {
 	// tool both say so rather than pretending (§8 Q1).
 	fs.BoolVar(&c.enableSQL, "query-sql", orBool(env("GAWK_TELEMETRY_QUERY_SQL"), true),
 		"expose the ad-hoc SQL surface (default on; needs a build with -tags duckdb to answer)")
+	fs.BoolVar(&c.repairHistory, "repair-history", orBool(env("GAWK_TELEMETRY_REPAIR_HISTORY"), true),
+		"run the one-time 2026-11 history repair at startup (docs/33 §4.17); a marker under the data dir makes it run once")
 	// The engine shares a process with public ingest, so its budget is stated
 	// (BUGS.md 2026-08-20: DuckDB's defaults OOMed every unpruned scan).
 	sqlMem := fs.String("sql-memory-limit", or(env("GAWK_TELEMETRY_SQL_MEMORY_LIMIT"), "auto"),
