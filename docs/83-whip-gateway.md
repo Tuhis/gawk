@@ -376,8 +376,9 @@ re-checks it against the OBS release it tests.
   alongside every other broadcaster's. The relay's `429` when the fleet is
   full reaches OBS through D8. So the gateway has its own cap, which also
   keeps WHIP from using up the fleet's broadcast budget: `maxSessions`
-  (knob, default 20). A `POST` over it gets `503` with `Retry-After: 30`. A `POST` for a key that already holds a session, or one
-  still being torn down, replaces that session and **isn't counted against
+  (knob, default 20). A `POST` over it gets `503` with `Retry-After: 30`.
+  A `POST` for a key that already holds a session, or one still being torn
+  down, replaces that session and **isn't counted against
   the cap**, so a full gateway never refuses a broadcaster's own reconnect.
   WG0 measures CPU and memory per 1080p60 session, and WG4 sizes the default
   and the pod's resource requests from that number. A restart is an ICE
