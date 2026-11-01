@@ -2,7 +2,11 @@
 
 **Status**: designed 2026-11-01 from a code survey of the relay, the viewer
 and OBS Studio's WHIP output (§3); owner decisions OD1–OD8 **taken
-2026-11-01** (§10: OD6 and OD7 differ from the first draft).
+2026-11-01** (§10: OD6 and OD7 differ from the first draft). The web app
+(§5) was redesigned in a Claude Design pass on 2026-11-02
+([canvas](https://claude.ai/artifact/TtFyDhdhEv5x13oSmjds2m), §5.1), and its
+owner decisions OD9 and OD10 were **taken 2026-11-02**: the way in is a
+footnote under the broadcaster card, and OBS gets a page of its own.
 Chunks **WG0–WG10** (`WG` = WHIP gateway; unused). Nothing is implemented.
 
 Supersedes the 2026-07-29 sketch in `ROADMAP.md` §R33, which put WHIP inside
@@ -12,8 +16,8 @@ Go Linux broadcaster, and it left the stream key's UX open.
 
 Touches a new seventh deployable `gawk-whip-gateway` (OD1), `gawk-server`
 (a mint-only publish, a trusted publish proxy, and the publisher engine
-promoted to a public package), `gawk-app` (an "OBS" panel on the broadcaster
-screen) and the dev stack. It does **not** touch the wire, the hub's ingest
+promoted to a public package), `gawk-app` (an OBS page at `#/broadcast/obs`
+and a way in from the broadcaster screen) and the dev stack. It does **not** touch the wire, the hub's ingest
 surface or any viewer.
 
 ## 1. Purpose
@@ -318,10 +322,10 @@ re-checks it against the OBS release it tests.
 
 - **D7 — The GOP is configured at the source, measured at the gateway,
   bounded by the gateway.** OBS can't be asked for keyframes (§3.3), so:
-  - The guide (and the web app's OBS panel) tells the user to set **Keyframe
-    Interval = 1 s**, the smallest the UI allows. It gives the custom-options
-    spelling for 0.5 s on x264 and NVENC as an advanced option, once WG0 has
-    verified it.
+  - The guide (and the web app's OBS page, §5.4) tells the user to set
+    **Keyframe Interval = 1 s**, the smallest the UI allows. The guide gives
+    the custom-options spelling for 0.5 s on x264 and NVENC as an advanced
+    option, once WG0 has verified it.
   - The gateway measures the IDR spacing from the **RTP timestamps of IDR
     starts**: the first packet of an access unit whose NAL (or FU-A / STAP-A
     inner) type is 5. It records them as packets arrive, before D6 can drop the
@@ -342,7 +346,7 @@ re-checks it against the OBS release it tests.
     10 minutes. That stops OBS's auto-reconnect from looping viewers through
     freezes. The gateway can't check a GOP before answering, so it can't tell
     a reconnect with the same bad settings from one where the user fixed OBS.
-    The panel's **Retry now** (§5) clears the backoff for its key with
+    The OBS page's **Retry now** (§5.4) clears the backoff for its key with
     `DELETE /whip/status` (same bearer key), so a user who has fixed OBS
     never waits it out and never has to reset the key.
   - **The gateway sends PLI anyway, on two events only**: on session start
@@ -384,11 +388,15 @@ re-checks it against the OBS release it tests.
   shows only "could not connect" (§3.3), so the gateway exposes
   `GET /whip/status` (same bearer key, CORS-allowed for the configured
   `gawk-app` origins). It returns `{state, codec, resolution, fps, gopMs,
-  bitrateKbps, lossPct, warnings[], lastError}` for the key's current or
-  last session. A `POST` refused before any session exists (`503` at
+  bitrateKbps, lossPct, viewers, warnings[], lastError, retryAfterMs}` for
+  the key's current or last session. `state` is `idle`, `live` or `ended`.
+  `viewers` is the relay's "N watching" count, which the engine already
+  receives (`Callbacks.OnViewerCount`). `retryAfterMs` is the time left on
+  D7's backoff, absent when none runs. `warnings[]` and `lastError.reason`
+  come from a fixed set that WG7 defines and §5.6 gives copy for. A `POST` refused before any session exists (`503` at
   `maxSessions`, `400 client_ip_unknown`, `406` codec or simulcast, `422`
   backoff, relay refusals including `451 banned`) is recorded for 10 minutes
-  and reported as `lastError`, so the panel can show the reason OBS can't.
+  and reported as `lastError`, so the OBS page can show the reason OBS can't.
   Records are keyed by a hash of the **full key**, never by the ID alone, so
   a code doesn't let anyone set another broadcaster's `lastError`. The table
   is bounded (an LRU, 4096 entries by default), because a `503` or `400`
@@ -396,8 +404,9 @@ re-checks it against the OBS release it tests.
   dialed with. So `GET /whip/status` answers `401` only for a key that
   doesn't parse. For a well-formed key it doesn't know, it answers an empty
   `idle` status. `DELETE /whip/status` clears D7's backoff for the
-  presenting key. The OBS panel (§5) polls it every 2 s while open. The
-  status holds no IPs and no frame data.
+  presenting key. The OBS page (§5.4) polls it every 2 s while its tab is
+  visible, and the broadcaster page reads it once on load when a key is
+  saved (§5.3). The status holds no IPs and no frame data.
 
 - **D10 — Several replicas from the start** (OD7, owner 2026-11-01). ICE
   binds a WebRTC session to the pod that answered the `POST`, so both the
@@ -452,7 +461,7 @@ re-checks it against the OBS release it tests.
       **forwarded** to the pod that has them. Otherwise OBS's `DELETE` would
       never reach the session: D8's `StopBroadcast()` wouldn't run, the
       broadcast would fall into the 5-minute grace instead of ending, and the
-      panel would show `idle` for a live stream or miss the last reason.
+      OBS page would show `idle` for a live stream or miss the last reason.
     - A `POST` is **never forwarded**; it reclaims on the pod it lands on,
       and the relay closes a peer's live session with 4004. But it uses what
       the lookup returns: a running D7 backoff on a peer refuses it with
@@ -542,43 +551,243 @@ re-checks it against the OBS release it tests.
   weakens every broadcast for the sake of a misconfigured one. The gateway
   bounds the GOP instead (D7).
 
-## 5. Stream-key UX in `gawk-app`
+## 5. The web app: the OBS page and its way in
 
-The OBS panel sits on the broadcaster screen's pre-start card, as a sibling
-of "Open in the desktop app" (`BroadcasterScreen.tsx`, the R67 handoff link).
-It opens a modal shaped like `DesktopHandoffModal`, and it appears only when
-the selected server has a gateway (OD4).
+OBS is a power-user path. Most people who open the broadcaster page should
+press **Start a stream** and never think about it, and nothing on the page
+should suggest they're missing a step. But someone who already streams with
+OBS should find the way in on their own, without reading a guide first. The
+design has two parts: a **way in** on the broadcaster page, kept outside the
+main flow (§5.3), and an **OBS page** of its own, `#/broadcast/obs`, that
+holds the key, the OBS settings and the live status (§5.4).
 
-1. **No key yet:** a short line ("Stream from OBS Studio or another WHIP
-   app") and a **Create stream key** button. It mints through D3 with the
-   server's saved publish secret, prompting for it the way Start does when
-   it's required.
-2. **Key ready:** two copyable fields, **Server** (the WHIP URL) and
-   **Bearer token** (the key, masked, with Show and Copy), using OBS's own
-   labels. A checklist of the OBS settings that matter: *Service: WHIP*,
-   *Keyframe Interval: 1 s*, *Encoder: H.264 (NVENC/AMF/QSV or x264)*, *Audio:
-   Opus*, *Simulcast off*. The join link and code for viewers, with the
-   existing copy and QR affordances.
-3. **Live status** from D9: *Waiting for OBS…* → *Live — 1920×1080 60 fps
-   H.264, keyframe every 1.0 s*, plus warnings ("Keyframe interval is 2 s;
-   set it to 1 s for faster recovery") and the last error in plain words
-   ("OBS is sending AV1; choose an H.264 encoder"). While D7's backoff is
-   running, the panel shows it with a **Retry now** button that clears it,
-   for after the user has fixed OBS. An **Open viewer** link gives a preview
-   in another tab.
-4. **Reset key** mints a new code, with a confirmation that the old link
-   stops being the one people should use. An old key can't be revoked
-   (§3.1); a leaked key is closed by an operator ID ban in gawk-admin, and the
-   panel says so.
+### 5.1 The design pass
 
-The key is stored per server in `localStorage`, next to that server's saved
-publish secret (OD3), so the same key and join code come back next time.
-**Forget key** removes it.
+Drawn in Claude Design on 2026-11-02 on the web app's real tokens
+(`gawk-app/src/styles/global.css`) and the broadcaster's real markup: 11
+boards in three rows.
 
-**Rooms** (later, WG9): the panel's room picker attaches the OBS broadcast to
-a room with the ID and token it already holds (`docs/44` D8: attach is keyed
-by ID + token, not by the publisher session). WG9 verifies that this works for
-a broadcast whose publisher is the gateway.
+- **Canvas**: <https://claude.ai/artifact/TtFyDhdhEv5x13oSmjds2m>, owned by
+  the maintainer. It is **private**: ask the maintainer for access or an
+  export. Its absence is not "no design exists". The boards are linked for
+  Play: each way in opens the OBS page, **Create stream key** moves to the
+  setup, **Show** reveals the key, **Retry now** and the settings
+  disclosure work.
+
+Where this document and the canvas disagree, this document wins.
+
+| Board | What it shows |
+|---|---|
+| **A** A third line under Start | Option A of §5.3 |
+| **B** Inside Sharing tips | Option B, the tips open |
+| **C** In Settings | Option C, the Settings sheet open |
+| **D** A footnote under the card | Option D, chosen (OD9) |
+| **D, returning user** | D once this browser holds a key and OBS is live (§5.3) |
+| **OBS page · first visit** | S1: no key yet (§5.4) |
+| **OBS page · key ready** | S2: the three steps, waiting for OBS |
+| **OBS page · live** | S3 |
+| **OBS page · keyframe warning** | S3 with a D7 warning |
+| **OBS page · gawk ended the stream** | S4: D7 ended the session, the backoff runs, **Retry now** |
+| **OBS page · reset key** | The **Reset key** confirmation |
+
+Not drawn, so this text is the spec: the page at phone width (§5.4), the
+**Paste a key** field (§5.7), the page on a server without a gateway (U3),
+and the publish-secret prompt, which is the broadcaster's existing modal.
+
+### 5.2 Goals and acceptance
+
+| # | Goal | Verified by |
+|---|---|---|
+| U1 | **New users aren't drawn in.** The pre-start card is unchanged: **Start a stream** stays the only primary action, and the R67 offer stays its only secondary line (`docs/69` G7). The way in sits outside the card with the **Advanced** chip (§5.5). | Component test: the card's buttons and links are those of today; the way in is outside the `GlassPanel` and carries the chip |
+| U2 | **OBS isn't hidden knowledge.** On a desktop where the server takes OBS, the way in is visible without opening anything. The page has a stable address, `#/broadcast/obs`, which the OBS guide, `docs/self-hosting.md` and the about site link to. | Component test; WG9's guide and self-hosting section link the route |
+| U3 | **No way in where it can't work.** None without `whipGatewayUrl`, none when the selected server isn't the deployment's default (the gateway publishes only to its own relay, OD4), and none on the devices where R67 hides its offer (Android, iOS, iPadOS, ChromeOS: `isDesktopForHandoff`), since OBS doesn't run there. Opened directly in those cases, the route says "This server doesn't take streams from OBS" with a link back. | Component tests per case |
+| U4 | **The page explains what OBS won't.** Every D9 state, warning and `lastError.reason` maps to a sentence that says what happened and what to change in OBS, by OBS's own menu names (§5.6). No raw status code or reason string reaches the screen. | A Vitest table test over the full reason set: each has copy, and an unknown reason gets the generic line |
+| U5 | **The key is treated as a password.** Masked by default. **Copy** copies the whole key without revealing it. It never enters a URL, a log line, telemetry or the diagnostics copy. | Unit tests; a test that the route's URL and the diagnostics text never contain the token |
+| U6 | **A returning OBS user gets straight back.** With a saved key, the way in names the code; when OBS is live on it, it says so (board **D, returning user**). | Component test with a mocked `GET /whip/status` |
+| U7 | **Polling stays cheap.** The OBS page polls D9 every 2 s only while the tab is visible, and stops on **Forget key**. The broadcaster page reads it once on load, and only when a key is saved. | Fake-timer tests over `visibilitychange` |
+
+### 5.3 Where the way in lives
+
+Four placements were drawn (row 1 of the canvas). Every one leads to the same
+OBS page and uses the same advanced cues (§5.5); they differ in how visible
+the way in is and what it costs the pre-start card.
+
+| | Placement | What a new user sees | What an OBS user does | Cost |
+|---|---|---|---|---|
+| **A** | A third quiet line inside the card, under **Open in the desktop app**: "Stream from OBS Studio", smaller than the R67 line, with the chip | Three ways to start under one heading | One click | Breaks U1: the card gets a second alternative, where R67 deliberately kept one quiet line (`docs/69` G7) |
+| **B** | The last item in the collapsed **Sharing tips**: "Already stream with OBS Studio? Its scenes, overlays and audio mixer work here too", **Set up OBS** | Nothing unless they open the tips | Two clicks, and only if they think to open tips | Leans towards hidden (U2) |
+| **C** | A group at the bottom of the **Settings** sheet: "Stream from another app", **Set up OBS…** | Nothing unless they open Settings | Two clicks, and only if they guess Settings | The least discoverable: Settings is about this tab's stream |
+| **D** | A footnote **under** the card, outside the glass, where the landing page keeps its server chip: "Already stream with OBS Studio? **Stream from OBS**" with the chip | One quiet line that plainly isn't part of the card | One click | None to the card |
+
+**Decided: D** (OD9, owner 2026-11-02, as recommended). A, B and C stay on
+the canvas as the rejected alternatives. D meets U1 and U2 together. The card
+stays what it is, and the position does the explaining: the card is for everyone, the line
+under it is for people who already know what OBS is. The copy picks its own
+audience. Someone without OBS reads "Already stream with OBS Studio?" as "not
+me", and someone with it finds the line on their first visit.
+
+**For a returning user**, D's line earns a little weight. With a key saved for
+this server it reads "Your OBS key for **K7Q2XM** is saved · **Open**". When
+the one D9 read on load (U7) says OBS is live, it becomes a glass pill with
+the LIVE badge: "**LIVE** OBS is streaming on **K7Q2XM** · **Open**". Live,
+it is the most useful thing on the page, and the browser broadcast is still
+one click away.
+
+### 5.4 The OBS page, `#/broadcast/obs`
+
+A page, not a modal (OD10, owner 2026-11-02, as recommended). The first
+draft of this section opened a modal
+like `DesktopHandoffModal` from the pre-start card. A modal suits a moment;
+this is where an OBS broadcaster watches their status for the whole stream.
+As a page, the tab can stay open beside OBS, a guide can link straight to
+it (U2), and it never sits over a **Start a stream** button that would start
+a second, browser broadcast. It is a new route with the broadcaster's query
+(`?relay=`), parsed in `routing.ts`.
+
+The look is the broadcaster's: the same drifting background and glass card,
+wider (at most 600 px) and left-aligned, because it holds fields and steps
+rather than one call to action. The header is the brand, the kicker
+"BROADCAST · OBS STUDIO" and the **Advanced** chip. The footer has **← Back**
+(to `#/broadcast`, keeping the query), **Reset key**, **Forget key** and
+**OBS setup guide ↗** (WG9's guide). At phone width the label/value grids
+stack and the footer wraps. The page is reachable there by address, but no
+way in is shown (U3).
+
+**S1 · First visit, no key.** At the top, a quiet strip: "New to streaming?
+The browser takes one click and needs no other app." with **Start a stream in
+the browser**. Then the title "Stream from OBS Studio", one paragraph on what
+it is for ("your scenes, overlays and OBS's audio mixer come with you"), and
+a **You need** box: OBS Studio 30 or later (or another WHIP app, such as
+FFmpeg or GStreamer), an H.264 video encoder (NVENC, AMF, QuickSync or x264),
+and a few minutes in OBS's Settings. Only then the primary **Create stream
+key**, which mints through D3 with the server's saved publish secret and
+asks for the secret with the broadcaster's existing modal when the server
+requires one. Beside it, quietly, **Already have a key? Paste it** (§5.7).
+
+**S2 · Key ready, waiting for OBS.** Three numbered steps, each named by
+where it happens in OBS:
+
+1. **In OBS, open Settings → Stream.** *Service* `WHIP`; *Server* (the
+   WHIP URL, with **Copy**); *Bearer Token* (the key, masked as
+   `gawk1_K7Q2XM_••••`, with **Show** and **Copy**); *Simulcast* `Off`, "if
+   your OBS shows it". Under them, with a lock icon: "The token works like a
+   password: anyone who has it can stream on your code. Keep it off screen."
+   (An OBS user's screen is often being captured.)
+2. **Then Settings → Output.** *Output Mode* `Advanced` (Keyframe Interval
+   isn't in Simple); *Video Encoder* `H.264` (NVENC, AMF, QuickSync or x264);
+   *Keyframe Interval* `1 s`, "not 0 (auto), which is often 4 s or more";
+   *Audio Encoder* `Opus`. WG0's custom-options spelling for 0.5 s (D7) goes
+   in the OBS guide, not here.
+3. **Press Start Streaming in OBS.** A status box with a pulsing accent
+   dot: "Waiting for OBS…", "This page updates on its own when OBS connects."
+
+Then **Your viewers join on**: the code in the six join-code boxes and
+**Copy link** (`buildViewLink`). The first draft mentioned "the existing copy
+and QR affordances"; `gawk-app` has no QR code anywhere, so there is none
+here. Labels and values are OBS's own words in monospace; WG0 checks each
+label against the OBS release it tests.
+
+**S3 · Live.** The steps fold into a closed **OBS settings for this key**
+disclosure. On top, the live topbar's pieces: the LIVE badge, the code pill
+with copy, and "N watching" (D9's new `viewers`). The title "You're live from
+OBS". A four-cell grid from D9: *Video* (`1920×1080 · 60 fps`), *Codec* (`H.264`
+✓), *Keyframes* (`every 1.0 s` ✓), *Upload* (`6.0 Mb/s · 0.1 % lost`). The
+checks mean the gateway measured it: the frames, not the settings, as
+CLAUDE.md asks. Then the primary **Copy link** (as on every live screen,
+`docs/60` D3), **Watch as a viewer ↗** (a viewer tab, which counts as a
+viewer), and "Stop Streaming in OBS ends the broadcast. Next time, your code
+is K7Q2XM again." The page has no Stop of its own: OBS's `DELETE` is the stop
+(D8), and the page holds no session.
+
+**S3 with a warning.** A D7 warning is an amber banner above the grid, the
+same weight as the broadcaster's live hints, and the cell it is about turns
+amber. Example: "**OBS sends a keyframe every 2.0 s.** At 1 s, viewers who
+join or hit a glitch see a moving picture again twice as fast." and "In OBS:
+Settings → Output → Keyframe Interval → `1 s`. It applies the next time you
+start streaming."
+
+**S4 · gawk ended the stream.** When the gateway ends a session itself (D7)
+the title is "gawk ended your stream", with "Viewers on K7Q2XM are waiting;
+they pick the stream up again when you're back." A red box gives the measured
+cause and the fix (§5.6). Under it, while the backoff runs: "If OBS says it
+failed to connect, that is gawk turning it away for 0:48 more, so viewers
+don't freeze in a loop." and the primary **Retry now** ("once you've changed
+the setting"), which sends `DELETE /whip/status` and turns the box into
+"Ready when you are: press Start Streaming in OBS again." The countdown
+comes from D9's new `retryAfterMs`. A refusal with no backoff (a codec, the
+gateway full, a ban) uses the same red box without the countdown or the
+button.
+
+The status box, the warning and the ended box are live regions: `status` for
+waiting, live and warnings, `alert` for S4 and refusals.
+
+### 5.5 The advanced cues
+
+The same five everywhere, so the signal is consistent rather than loud:
+
+1. **The ADVANCED chip.** A neutral outline pill (`--border` outline,
+   `--muted` text, uppercase, letter-spaced like the kicker), never amber:
+   in gawk, amber means something is wrong (`--warning` hints and badges).
+   It is on the way in and in the page's header.
+2. **Copy that names its audience.** "Already stream with OBS Studio?" and
+   "For people who already stream with OBS". It never calls OBS "pro" or
+   "better", and never sells it.
+3. **Position.** Outside the card (D), after everything a first broadcast
+   needs.
+4. **A way back before any button.** S1 opens with the browser alternative
+   and lists what you need before it offers **Create stream key**.
+5. **OBS's own words, in monospace.** Menus and fields read as OBS shows them
+   (*Settings → Output*, *Keyframe Interval*), which tells an OBS user they're
+   in the right place and tells everyone else they aren't.
+
+### 5.6 What each state says
+
+The page maps D9's `state`, `warnings[]` and `lastError.reason` to these
+lines (U4). `reason` is a fixed set the gateway defines in WG7; the wording
+is the app's and can change without a gateway release.
+
+| D9 | Where | Copy |
+|---|---|---|
+| `state: idle` | S2 step 3 | "Waiting for OBS…" / "This page updates on its own when OBS connects." |
+| `state: live` | S3 | "You're live from OBS" |
+| warning `gop_long` (1.1–2.2 s) | S3 amber banner | "OBS sends a keyframe every {g} s. At 1 s, viewers who join or hit a glitch see a moving picture again sooner." / "In OBS: Settings → Output → Keyframe Interval → 1 s. It applies the next time you start streaming." |
+| `gop_too_long` (backoff) | S4 | "OBS sent a keyframe only every {g} s. Viewers who joined, or hit a glitch, saw a frozen picture for seconds at a time." / "In OBS: Settings → Output → Keyframe Interval → 1 s. If it says 0 (auto), that is the cause." |
+| `bframes` (backoff) | S4 | "Your encoder sends B-frames, which gawk can't play live." / "Set B-frames to 0 in the encoder's settings (Settings → Output), then retry." |
+| `invalid_h264` (backoff) | S4 | "gawk couldn't read the video OBS sent." / "Choose another H.264 encoder in Settings → Output, then retry." |
+| `codec` (`406`) | refusal | "OBS is sending {AV1 / HEVC}. gawk takes H.264." / "In OBS: Settings → Output → Video Encoder → an H.264 one." |
+| `simulcast` (`406`) | refusal | "OBS is sending several layers (simulcast)." / "Turn Simulcast off in Settings → Stream." |
+| `gateway_full` (`503`) | refusal | "This server is streaming as many OBS broadcasts as it can." / "OBS retries on its own; try again in a minute." |
+| `relay_busy` (`429`) | refusal | "This server has no room for another stream right now." / "Try again in a few minutes." |
+| `rejected` (`401`/`403`) | refusal | "The server didn't accept this key. It may have been reset by whoever runs it." / "Reset the key here, then paste the new one into OBS." |
+| `banned` (`451`) | refusal | "The server's operator has blocked this stream." |
+| `reserved` (`409`) | refusal | "This code is in use on another gawk server." / "Reset the key to get a new code." |
+| `client_ip_unknown` (`400`) | refusal | "This server is set up wrong: it can't see where your stream comes from." / "Tell whoever runs it." |
+| `killed` (relay 4006) | refusal | "The server's operator ended this stream." |
+| any other | refusal | "OBS couldn't stream to gawk." / "Check the three steps above, then press Start Streaming again." |
+
+### 5.7 The key in the browser
+
+- **Storage** (OD3): per server in `localStorage`, next to that server's
+  saved publish secret, so the same key and code come back next time.
+- **Forget key** asks first: "Forget this key? OBS keeps streaming with it;
+  this browser just stops showing its status. Copy it from OBS (Settings →
+  Stream) to see it here again." It removes the key and stops polling.
+- **Reset key** asks first (board **reset key**): "You get a new key and a
+  new code. Paste the new key into OBS before you stream again, and share
+  the new link." and "The old key keeps working on K7Q2XM; gawk can't switch
+  it off. If it leaked, ask whoever runs this server to ban K7Q2XM." **Reset
+  key** is the danger button, **Cancel** the other. It mints through D3.
+- **Paste a key** (S1): a field that accepts a `gawk1_…` key, for the same
+  OBS on a second computer or after **Forget key**. The page checks only the
+  format (D2), saves it and starts polling. The gateway's answer for a key
+  it doesn't know is `idle` (D9), so a typo looks like "Waiting for OBS…"
+  until OBS connects with it.
+
+**Rooms** (later, WG9): a **Room** row under **Your viewers join on**, with
+the broadcaster's Room panel, attaches the OBS broadcast to a room with the
+ID and token the page already holds (`docs/44` D8: attach is keyed by ID +
+token, not by the publisher session). WG9 verifies that this works for a
+broadcast whose publisher is the gateway.
 
 ## 6. Where it lives
 
@@ -620,10 +829,11 @@ a broadcast whose publisher is the gateway.
   through a pod restart.
 - **Frontend config:** `whipGatewayUrl` in `window.__GAWK_CONFIG__`
   (`gawk-app/src/config.ts`), set by the frontend chart's values. When it's
-  unset the panel doesn't appear.
+  unset there is no way in, and `#/broadcast/obs` says the server doesn't
+  take streams from OBS (U3).
 - **Dev stack:** a `whip` compose profile with the gateway and a GStreamer
   `whipsink` (or `ffmpeg -f whip`) container publishing a test pattern with a
-  1 s GOP, so the OBS panel shows a live stream with nothing to install.
+  1 s GOP, so the OBS page shows a live stream with nothing to install.
 - **Telemetry:** Prometheus metrics only in v1: sessions, `POST` outcomes by
   status, frames dropped by the reorder window, measured GOP, NACKs sent.
   R28 per-session telemetry is a later addition.
@@ -654,9 +864,9 @@ the same way as the native ≈50 ms figure.
 | **WG4** | Gateway skeleton: module, config (flags + `GAWK_WHIP_*` + chart values), `/healthz`, metrics, Dockerfile, chart (default off), release-please package, a CI path filter on `gawk-whip-gateway/` and `gawk-server/`. | CI builds and tests it. The chart renders with defaults and does nothing until enabled. `maxSessions`, `maxSessionsHard` and the resource requests (sized for `maxSessionsHard`) are set from WG0's per-session measurement. With `replicas: 3` the chart renders a 3-pod StatefulSet, three media Services on one shared address with ports `basePort`…`basePort+2`, and the Ingress hash annotation. A release produces image + chart at the same version. |
 | **WG5** | WHIP endpoint: `POST`/`DELETE`/`OPTIONS`, key parsing (D2), SDP answer (D5), ICE-lite + per-pod UDP mux port + NAT 1:1 + ICE-TCP (D10), the D6 reorder window, the D8 status mapping, per-IP `POST` rate limit. | A pion WHIP client test in CI: H.264+Opus accepted (`201` + `Location`); HEVC, AV1 and simulcast refused `406`; bad key `401`; every row of D8's table covered against a test relay. Each pod answers with a candidate on its own `basePort + ordinal`. Two gateway instances behind a hashing proxy: a key's `POST`, `DELETE` and status reach the same instance, and the same key's `POST` landing on the other instance (as after a rescale) reclaims the ID while the relay closes the first with 4004. With the hash moved away from the instance holding a live session (as after a rescale or while a pod restarts during a rollout), a `DELETE` on its `Location` reaching the other instance still ends the broadcast with 4014; when the instance holding the key goes away (a scale-down), OBS's reconnect to the remaining one is admitted as a new key within its cap and reclaims the same ID; and `/whip/status` there still reports it live; the peer lookup is refused without `internalToken`. D6: with netem loss, a NACKed packet that returns within the window recovers its frame, one past it drops the frame and the deltas to the next IDR, a whole frame with no incomplete frame ahead of it is never delayed, a frame queued behind a loss waits at most one window, and the window follows the measured RTT within its clamp. Client IP: from a `RemoteAddr` inside `trustedProxyCidrs` the right-most untrusted `X-Forwarded-For` address is used, from outside it a forged `X-Forwarded-For` is ignored, and the chosen address is what reaches the rate limit and `Gawk-Publisher-Ip`. An append-mode chain `forged, <client>` arriving from an ingress pod `RemoteAddr`, with only the ingress pod range trusted, yields `<client>` and never `forged`. Several header lines are joined in order. An unparsable entry stops the walk and gets `400`, and so does a missing header. An all-trusted chain yields its left-most entry. With an empty `trustedProxyCidrs` a forged header is ignored and no request gets `400`. A header from an untrusted peer while the list is set increments the misconfiguration metric. A v4-mapped entry is canonicalised. At `maxSessions`, a new key gets `503` + `Retry-After` while the same key's reconnect succeeds, both on the same instance and when its session is live on the other instance; at `maxSessionsHard` even that reconnect gets `503` when its session is on the other instance. A key whose session ended on the other instance with a running D7 backoff gets `422` on this one, which then holds the backoff. A `GET /whip/status` reaching an instance without the key's records reports the other instance's `lastError`. A peer that doesn't answer within 200 ms is treated as having nothing. |
 | **WG6** | Media adapter: RTP → Annex-B AUs with the reorder window (D6), IDR/SPS/B-frame validation, GOP measurement and bounds (D7), Opus → the engine's audio, RTP/RTCP-SR timestamps → engine timestamps, event PLIs. | Unit tests with recorded OBS RTP: a dropped packet drops that frame and the deltas until the next IDR; a B-frame stream is refused with reason; GOP thresholds warn and end as specified (the session ends with 4014 through `StopBroadcast()`), the backoff runs 30 s → 60 s → … → 10 min on repeats and a B-frame refusal starts it too, and a stream with a 2 s GOP that loses one whole IDR (and one IDR's first packet) is neither warned about more than it would be without the loss nor ended; A/V offset within 20 ms of the source; PLI sent on start and on resume only: never on a dropped frame, never periodically. |
-| **WG7** | `GET` and `DELETE /whip/status` (D9) with CORS, and the bounded refusal table. | Tests: returns the D9 fields for the key's session; reports a `503`/`400`/`406`/`422`/`451` refusal of a `POST` that never made a session as `lastError`; a different key with the same ID neither sees nor sets that record; a malformed key gets `401` and an unknown well-formed key gets `idle`; the table evicts beyond its bound; `DELETE` clears the backoff so the next `POST` is answered; nothing in a response contains an IP. |
-| **WG8** | gawk-app OBS panel (§5), `whipGatewayUrl` config, key storage (OD3), status polling. | Vitest covers mint, show/copy/forget/reset, the publish-secret prompt, status states and warnings. The panel is hidden without `whipGatewayUrl`. |
-| **WG9** | Dev stack `whip` profile with a GStreamer/FFmpeg WHIP sender. Rooms attach from the panel. `docs/self-hosting.md` section, an OBS setup guide, `docs/gotchas.md` entries. | `docker compose --profile whip up` shows a live test pattern in the viewer with no copy-paste. A `dev-stack` CI job round-trips a frame through the gateway. Attach puts the OBS broadcast in a room. |
+| **WG7** | `GET` and `DELETE /whip/status` (D9) with CORS, and the bounded refusal table. The fixed `warnings[]` and `lastError.reason` sets (§5.6). | Tests: returns the D9 fields for the key's session, including `viewers` from the engine's viewer count and `retryAfterMs` while a backoff runs (absent otherwise); every warning and refusal carries a reason from the fixed set; reports a `503`/`400`/`406`/`422`/`451` refusal of a `POST` that never made a session as `lastError`; a different key with the same ID neither sees nor sets that record; a malformed key gets `401` and an unknown well-formed key gets `idle`; the table evicts beyond its bound; `DELETE` clears the backoff so the next `POST` is answered; nothing in a response contains an IP. |
+| **WG8** | gawk-app: the `#/broadcast/obs` route and page (§5.4, OD10), the way in on the broadcaster page (§5.3, OD9) with its returning-user state, `whipGatewayUrl` config, key storage, paste, forget and reset (§5.7, OD3), status polling and the copy for every state (§5.6). | U1–U7 (§5.2), each by its named test. Vitest also covers mint, the publish-secret prompt, show and copy (copy works while masked), and both confirmations. Built against the canvas at desktop and phone width with the `gawk-app:verify` skill. |
+| **WG9** | Dev stack `whip` profile with a GStreamer/FFmpeg WHIP sender. Rooms attach from the OBS page (§5.7). `docs/self-hosting.md` section, an OBS setup guide, `docs/gotchas.md` entries. | `docker compose --profile whip up` shows a live test pattern in the viewer with no copy-paste. A `dev-stack` CI job round-trips a frame through the gateway. Attach puts the OBS broadcast in a room. |
 | **WG10** | Owner pass on the reference deployment with real OBS on the gaming PC. | Key created in the web app, OBS streams, viewers watch. A drain during the stream doesn't reach OBS. OBS's auto-reconnect keeps the join code. With 2 replicas, restarting the pod holding the session ends in OBS reconnecting on the same code, with the surviving pod below its cap. Glass-to-glass recorded next to the native figure. |
 
 ## 9. Security considerations
@@ -665,8 +875,8 @@ the same way as the native ≈50 ms figure.
   explicit `-resume-token-key` rotates** (§3.1, D12). It's shown masked,
   stored only in the user's browser, and sent only to the gateway over HTTPS.
   A leaked key can be used until the operator bans the ID or rotates the key,
-  which invalidates every key. The panel says so, and Reset key gives the
-  user a fresh code.
+  which invalidates every key. The OBS page says so (§5.7), and Reset key
+  gives the user a fresh code.
 - **Turning D12 on is a one-time migration** on a relay that runs on the
   secret-derived key (the chart default, `resumeTokenKey: ""`). Setting an
   explicit key revokes every resume token in use, including the ones the
@@ -686,7 +896,9 @@ the same way as the native ≈50 ms figure.
 
 ## 10. Owner decisions
 
-Decided by the owner on 2026-11-01.
+OD1–OD8 decided by the owner on 2026-11-01, OD9 and OD10 on 2026-11-02 after
+the design pass (§5.1,
+[canvas](https://claude.ai/artifact/TtFyDhdhEv5x13oSmjds2m)).
 
 | # | Question | Decision |
 |---|---|---|
@@ -698,6 +910,8 @@ Decided by the owner on 2026-11-01.
 | **OD6** | D6's reorder window: a fixed 20 ms that drops on a miss, or about one round trip so a retransmit can arrive? | **About one RTT** (D6), clamped to 20–150 ms. Recommended was the fixed 20 ms; the owner chose recovering retransmits over the lowest latency on loss |
 | **OD7** | One replica with its own `maxSessions` cap, or several replicas from the start? | **Several replicas** (D10): a StatefulSet with a UDP port per pod and Ingress routing by key. Recommended was one replica |
 | **OD8** | Publish the gateway's WHIP endpoint on the official deployment (`whip.gawk.ioio.fi`) once WG10 passes? | **Yes, after WG10**, as recommended |
+| **OD9** | Where the way in lives on the broadcaster page: **A** a third line in the card, **B** in Sharing tips, **C** in Settings, or **D** a footnote under the card (§5.3)? | **D**, with the returning-user state, as recommended |
+| **OD10** | A page of its own at `#/broadcast/obs`, instead of the first draft's modal on the pre-start card (§5.4)? | **The page**, as recommended |
 
 ## 11. Non-goals
 
