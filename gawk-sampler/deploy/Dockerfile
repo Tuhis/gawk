@@ -61,7 +61,7 @@ ARG ORT_VERSION=1.31.0
 ARG ORT_PACKAGE=onnxruntime-linux-x64
 ARG ORT_SHA256=cc5c72baf5ae5c8238a6841f0897227be2d02826b9cf98eaf02fdefaeeb03a57
 WORKDIR /tmp/ort
-RUN curl -fsSL -o ort.tgz \
+RUN curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -o ort.tgz \
       "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_PACKAGE}-${ORT_VERSION}.tgz" \
  && echo "${ORT_SHA256}  ort.tgz" | sha256sum -c - \
  && tar -xzf ort.tgz \
