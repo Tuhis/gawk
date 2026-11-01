@@ -2533,6 +2533,17 @@ entries still describe code `gawk-pubsim` runs (now
   `docs/assets/81/harness/run-all.sh` does.
   ([docs/81](81-noise-suppression.md) §12.7)
 
+**OBS WHIP ingest (R33)**
+
+- **OBS's WHIP output ignores PLI/FIR, and its keyframe interval is whole
+  seconds.** Its video chain has only a sender-report and a NACK responder,
+  and libobs has no public force-keyframe call. `keyint_sec` is an integer
+  (x264 0–20, NVENC 0–10, 0 = encoder default, which can be ~4 s). A
+  receiver can't get keyframes on demand, and 1 s is the shortest GOP the UI
+  allows; sub-second needs the encoder's custom options. OBS also never shows
+  a WHIP server's error text, only "could not connect". Read from OBS master
+  on 2026-11-01. ([docs/83](83-whip-gateway.md) §3.3)
+
 **CI / deployment**
 
 - **`gawk-relay` ships the `gawk-app` that was current when `gawk-server`
