@@ -60,15 +60,25 @@ OBS never sees it.
 ### 3.1 The stream key already exists: broadcast ID + resume token
 
 - A broadcast's **resume token** is `HMAC-SHA256(key, normalizedID)`
-  truncated to 16 bytes. It is deterministic and **never expires**. Only
-  rotating `-resume-token-key` revokes it, which revokes every token at once
-  (`gawk-server/internal/transport/resume.go`).
+  truncated to 16 bytes. It is deterministic and has no expiry. How long it
+  lives depends on where the key comes from
+  (`gawk-server/internal/transport/resume.go`):
+  - **Explicit `-resume-token-key`:** the token lives until the key is
+    rotated, which revokes every token at once. The key never leaves the
+    relay, so the token is a real per-broadcast ownership proof.
+  - **Derived from `-publish-secret`** (HKDF, the chart default when
+    `resumeTokenKey` is empty): rotating the secret revokes every token, and
+    **anyone holding the publish secret can compute every ID's token
+    offline**. The package comment says fleets should set the explicit key.
+  - **Neither:** a random key per relay process, so every token dies on each
+    relay restart, which on the reference deployment means every release.
 - `CONNECT /publish/{id}?resume=<token>` with a valid token for an
   **unknown** ID **creates** the broadcast (`hub/hub.go`, `docs/22`). After
   R78's stop (close 4014) a reclaim recreates it, and viewers who stayed on
   the code pick it back up (`docs/79`, `TestPublisherStopThenReclaimRecreates`).
-- So **ID + token is already a lasting, Twitch-style stream key**: the same
-  code every session, so viewers' links keep working. The gateway needs no
+- So, **with an explicit key (D12), ID + token is already a lasting,
+  Twitch-style stream key**: the same code every session, so viewers' links
+  keep working. The gateway needs no
   new relay credential to publish one, and no state of its own.
 - No HTTP API mints an ID today. IDs are minted only by a live
   `CONNECT /publish`, which also creates the broadcast and fires
@@ -100,7 +110,7 @@ it:
 
 **Verdict:** a 1 s GOP works and roughly doubles the worst-case freeze on
 join and on loss. A 2 s GOP works with visibly worse recovery and a weaker
-Deep-buffer promise. Above ~4 s the gateway must refuse (D7), because OBS's
+Deep-buffer promise. Above 2.2 s the gateway refuses (D7): OBS's
 "0 = auto" can mean x264's default `keyint` of 250 frames (~4 s at 60 fps),
 and approaching 8 s breaks viewers.
 
@@ -251,8 +261,8 @@ re-checks it against the OBS release it tests.
   | Event | Gateway does | Relay sees |
   |---|---|---|
   | `POST` with a valid key | reclaim `/publish/{ID}?resume=` | broadcast created or resumed |
-  | `DELETE` on the `Location` | engine `Stop()` | close **4014**, broadcast ends (R78), viewers wait on the code |
-  | ICE/consent failure (OBS gone) | engine closes without 4014 | publisher gone, **grace** (`-broadcast-grace`, 5 min); OBS's auto-reconnect reclaims the same ID |
+  | `DELETE` on the `Location` | engine `StopBroadcast()` (added in WG1) | close **4014**, broadcast ends (R78), viewers wait on the code |
+  | ICE/consent failure (OBS gone) | engine `Stop()` (closes with code 0, as today) | publisher gone, **grace** (`-broadcast-grace`, 5 min); OBS's auto-reconnect reclaims the same ID |
   | Second OBS with the same key | new session reclaims | **4004** to the first; the gateway tears down the first PeerConnection |
   | Relay 4002 / 4003 | engine auto-resumes, sends PLI | resume on another pod |
   | Relay 4006 (operator kill) / ID ban | ends the session; `POST`s answer `403` | — |
@@ -287,6 +297,15 @@ re-checks it against the OBS release it tests.
   far from its relay would want the carrier; that waits for the Go engine
   growing one.
 
+- **D12 — A relay that a gateway publishes to must have an explicit
+  `-resume-token-key`.** Without it, D2's key either dies on every relay
+  restart (random key) or can be computed for every broadcast by anything
+  holding the publish secret, which the gateway holds (derived key, §3.1).
+  The relay refuses to start with `-publish-proxy-token` (D4) set and no
+  explicit `-resume-token-key`, and the relay chart refuses to render
+  `publishProxy.token` without `resumeTokenKey`. A gateway is useless without
+  D4 on a fleet with more than one publisher, so this ties the two together.
+
 ### Rejected
 
 - **WHIP inside `gawk-server`** (the 2026-07-29 sketch). See D1.
@@ -303,8 +322,10 @@ re-checks it against the OBS release it tests.
   stream, and a licensing question. A config field in OBS does the same job.
 - **The gateway holds `-resume-token-key` and mints keys itself.** That would
   let one compromised pod compute the token for every broadcast on the fleet
-  and supersede any of them (4004). With D3 it holds nothing that a stolen
-  key doesn't already give.
+  and supersede any of them (4004). With D3 and D12 it holds nothing that a
+  stolen key doesn't already give. (It does hold the publish secret, which is
+  why D12 requires the explicit key: with a derived key, the secret alone
+  would give it every token.)
 - **Mint by starting and immediately stopping a broadcast.** See D3.
 - **Raising `KEYFRAME_STALL_MS` or the DVR window for long GOPs.** That
   weakens every broadcast for the sake of a misconfigured one. The gateway
@@ -400,9 +421,9 @@ the same way as the native ≈50 ms figure.
 | Chunk | Scope | Accepted when |
 |---|---|---|
 | **WG0** | Lab: OBS (latest release, Windows NVENC and x264, 1 s and 2 s GOP) → a minimal pion WHIP receiver → the pubsim engine → the compose relay → the shipping viewer. Re-check §3.3 on that release (PLI ignored, `bf=0`, keyint granularity), and find the sub-second custom-options spelling per encoder. | Glass-to-glass p50/p95 on LAN and with 1 % / 40 ms netem, recorded in §7. §3.3 confirmed or corrected. Loss rate OBS → receiver on the reference path recorded, and D6's window default confirmed or changed. Owner sign-off on OD1–OD8. |
-| **WG1** | Promote the engine to `gawk-server/publisher` (OD1). `gawk-pubsim`, `e2e`, `e2e-cluster` and the iOS viewer tests keep using it unchanged. CONTRIBUTING gains the release-coupling line. | `go test ./...` and the e2e lanes green. No `internal/pubsim/engine` import left outside the package. |
+| **WG1** | Promote the engine to `gawk-server/publisher` (OD1), and add `StopBroadcast()`, which closes the session with **4014** (`Stop()` closes with code 0 today, so the relay can't tell a stop from a drop). `gawk-pubsim`, `e2e`, `e2e-cluster` and the iOS viewer tests keep using `Stop()` unchanged. CONTRIBUTING gains the release-coupling line. | `go test ./...` and the e2e lanes green. No `internal/pubsim/engine` import left outside the package. A test: `StopBroadcast()` ends the broadcast at once (R78), while `Stop()` leaves it in grace. |
 | **WG2** | Relay: `CONNECT /publish?mint=1` (D3) and the new close code in all three wire copies with golden vectors. | Tests: a mint announces ID + token, creates no broadcast, emits no event, isn't counted in `max-broadcasts`, and passes every publish gate (secret, rate limit, IP ban, draining). A reclaim with the minted token creates the broadcast. Vectors byte-identical in Go, TS and Rust. |
-| **WG3** | Relay: `-publish-proxy-token` (D4) through `registryOptions`, flag + env + Helm. | Tests: with the token, `Gawk-Publisher-Ip` drives rate limit, IP ban and the admin publisher-IP fields, and the Origin check is skipped. Without it the header is ignored. A test asserts no event or webhook carries the IP. The Helm value renders into the relay args. |
+| **WG3** | Relay: `-publish-proxy-token` (D4) through `registryOptions`, flag + env + Helm, and D12's guard. | Tests: with the token, `Gawk-Publisher-Ip` drives rate limit, IP ban and the admin publisher-IP fields, and the Origin check is skipped. Without it the header is ignored. A test asserts no event or webhook carries the IP. The Helm value renders into the relay args. The relay refuses to start, and the chart to render, with the proxy token and no explicit `resumeTokenKey`. |
 | **WG4** | Gateway skeleton: module, config (flags + `GAWK_WHIP_*` + chart values), `/healthz`, metrics, Dockerfile, chart (default off), release-please package, a CI path filter on `gawk-whip-gateway/` and `gawk-server/`. | CI builds and tests it. The chart renders with defaults and does nothing until enabled. A release produces image + chart at the same version. |
 | **WG5** | WHIP endpoint: `POST`/`DELETE`/`OPTIONS`, key parsing (D2), SDP answer (D5), ICE-lite + UDP mux + NAT 1:1 + ICE-TCP (D10), the D8 status mapping, per-IP `POST` rate limit. | A pion WHIP client test in CI: H.264+Opus accepted (`201` + `Location`); HEVC, AV1 and simulcast refused `406`; bad key `401`; every row of D8's table covered against a test relay. |
 | **WG6** | Media adapter: RTP → Annex-B AUs with the reorder window (D6), IDR/SPS/B-frame validation, GOP measurement and bounds (D7), Opus → the engine's audio, RTP/RTCP-SR timestamps → engine timestamps, event PLIs. | Unit tests with recorded OBS RTP: a dropped packet drops that frame and the deltas until the next IDR; a B-frame stream is refused with reason; GOP thresholds warn and end as specified; A/V offset within 20 ms of the source; PLI sent on start, resume and drop and never periodically. |
@@ -413,10 +434,11 @@ the same way as the native ≈50 ms figure.
 
 ## 9. Security considerations
 
-- **A key is a full publish credential for its code, forever** (§3.1). It's
-  shown masked, stored only in the user's browser, and sent only to the
-  gateway over HTTPS. A leaked key can be used until the operator bans the ID
-  or rotates `-resume-token-key`. The panel says so, and Reset key gives the
+- **A key is a full publish credential for its code until the relay's
+  explicit `-resume-token-key` rotates** (§3.1, D12). It's shown masked,
+  stored only in the user's browser, and sent only to the gateway over HTTPS.
+  A leaked key can be used until the operator bans the ID or rotates the key,
+  which invalidates every key. The panel says so, and Reset key gives the
   user a fresh code.
 - The gateway holds the relay's publish secret and the publish-proxy token.
   The proxy token lets its holder claim any publisher IP, so it lives only in
