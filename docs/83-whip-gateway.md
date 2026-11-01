@@ -259,8 +259,10 @@ re-checks it against the OBS release it tests.
     accepted, with a warning in the status (D9). **> 2.2 s**: the gateway ends
     the session with reason `gop_too_long`. Before 5 spacings exist, it ends
     early only after **two consecutive gaps of more than 4.5 s** with no IDR
-    start (OBS's "auto" GOP), which one lost IDR start can't produce at a GOP
-    the bounds allow. While the same key reconnects within 10 minutes it answers
+    start (OBS's "auto" GOP at ≲ 55 fps; at 60 fps "auto" is ~4.2 s and the
+    median rule ends it, after about 20 s of ~4 s freezes), which one lost IDR
+    start can't produce at a GOP the bounds allow. The 4.5 s threshold can't
+    come down without breaking that safeguard. While the same key reconnects within 10 minutes it answers
     `POST`s with `422` and that reason, so OBS's auto-reconnect doesn't loop
     viewers through freezes. The thresholds are gateway knobs.
   - **The gateway sends PLI anyway, on two events only**: on session start
@@ -310,8 +312,13 @@ re-checks it against the OBS release it tests.
   `LoadBalancer` Service, with an ICE-TCP passive candidate on the same port
   number as the fallback. **One replica** (`Recreate`): ICE binds a session to
   the pod that answered the `POST`, and kube-proxy may send another pod the
-  UDP flow behind one LB address. Load is bounded by concurrent broadcasts
-  (`max-broadcasts`, 5 by default), not viewers. A restart is an ICE failure,
+  UDP flow behind one LB address. Load is bounded by concurrent OBS
+  sessions, not viewers. `max-broadcasts` doesn't bound it: that cap is per
+  relay pod (`hub.go`, 5 for `gawk-server` and 50 for `gawk-relay`), and the
+  gateway's sessions spread over the whole fleet. So the gateway has its own
+  cap, `maxSessions` (knob, default 20). A `POST` over it gets `503` with
+  `Retry-After`. WG0 measures CPU and memory per 1080p60 session, and WG4
+  sizes the default and the pod's resource requests from that number. A restart is an ICE failure,
   so OBS reconnects and the key reclaims the same ID. Scaling past one pod
   (a port per pod, or a TURN front) is out of scope until a deployment needs
   it.
@@ -445,11 +452,11 @@ the same way as the native ≈50 ms figure.
 
 | Chunk | Scope | Accepted when |
 |---|---|---|
-| **WG0** | Lab: OBS (latest release, Windows NVENC and x264, 1 s and 2 s GOP) → a minimal pion WHIP receiver → the pubsim engine → the compose relay → the shipping viewer. Re-check §3.3 on that release (PLI ignored, `bf=0`, keyint granularity), and find the sub-second custom-options spelling per encoder. | Glass-to-glass p50/p95 on LAN and with 1 % / 40 ms netem, recorded in §7. §3.3 confirmed or corrected. Loss rate OBS → receiver on the reference path recorded, and D6's window default confirmed or changed. Owner sign-off on OD1–OD8. |
+| **WG0** | Lab: OBS (latest release, Windows NVENC and x264, 1 s and 2 s GOP) → a minimal pion WHIP receiver → the pubsim engine → the compose relay → the shipping viewer. Re-check §3.3 on that release (PLI ignored, `bf=0`, keyint granularity), and find the sub-second custom-options spelling per encoder. | Glass-to-glass p50/p95 on LAN and with 1 % / 40 ms netem, recorded in §7. §3.3 confirmed or corrected. Loss rate OBS → receiver on the reference path recorded, and D6's window default confirmed or changed. CPU and memory per 1080p60 session recorded for D10's `maxSessions`. Owner sign-off on OD1–OD8. |
 | **WG1** | Promote the engine to `gawk-server/publisher` (OD1), and add `StopBroadcast()`, which closes the session with **4014** (`Stop()` closes with code 0 today, so the relay can't tell a stop from a drop). `gawk-pubsim`, `e2e`, `e2e-cluster` and the iOS viewer tests keep using `Stop()` unchanged. CONTRIBUTING gains the release-coupling line. | `go test ./...` and the e2e lanes green. No `internal/pubsim/engine` import left outside the package. A test: `StopBroadcast()` ends the broadcast at once (R78), while `Stop()` leaves it in grace. |
 | **WG2** | Relay: `CONNECT /publish?mint=1` (D3) and the new close code in all three wire copies with golden vectors. | Tests: a mint announces ID + token, creates no broadcast, emits no event, isn't counted in `max-broadcasts`, and passes every publish gate (secret, rate limit, IP ban, draining). A reclaim with the minted token creates the broadcast. Vectors byte-identical in Go, TS and Rust. |
 | **WG3** | Relay: `-publish-proxy-token` (D4) through `registryOptions`, flag + env + Helm, and D12's guard. | Tests: with the token, `Gawk-Publisher-Ip` drives rate limit, IP ban and the admin publisher-IP fields, and the Origin check is skipped. Without it the header is ignored. A test asserts no event or webhook carries the IP. The Helm value renders into the relay args. The relay refuses to start, and the chart to render, with the proxy token and no explicit `resumeTokenKey`. |
-| **WG4** | Gateway skeleton: module, config (flags + `GAWK_WHIP_*` + chart values), `/healthz`, metrics, Dockerfile, chart (default off), release-please package, a CI path filter on `gawk-whip-gateway/` and `gawk-server/`. | CI builds and tests it. The chart renders with defaults and does nothing until enabled. A release produces image + chart at the same version. |
+| **WG4** | Gateway skeleton: module, config (flags + `GAWK_WHIP_*` + chart values), `/healthz`, metrics, Dockerfile, chart (default off), release-please package, a CI path filter on `gawk-whip-gateway/` and `gawk-server/`. | CI builds and tests it. The chart renders with defaults and does nothing until enabled. `maxSessions` and the resource requests are set from WG0's per-session measurement. A release produces image + chart at the same version. |
 | **WG5** | WHIP endpoint: `POST`/`DELETE`/`OPTIONS`, key parsing (D2), SDP answer (D5), ICE-lite + UDP mux + NAT 1:1 + ICE-TCP (D10), the D8 status mapping, per-IP `POST` rate limit. | A pion WHIP client test in CI: H.264+Opus accepted (`201` + `Location`); HEVC, AV1 and simulcast refused `406`; bad key `401`; every row of D8's table covered against a test relay. Client IP: from a `RemoteAddr` inside `trustedProxyCidrs` the right-most untrusted `X-Forwarded-For` address is used, from outside it a forged `X-Forwarded-For` is ignored, and the chosen address is what reaches the rate limit and `Gawk-Publisher-Ip`. |
 | **WG6** | Media adapter: RTP → Annex-B AUs with the reorder window (D6), IDR/SPS/B-frame validation, GOP measurement and bounds (D7), Opus → the engine's audio, RTP/RTCP-SR timestamps → engine timestamps, event PLIs. | Unit tests with recorded OBS RTP: a dropped packet drops that frame and the deltas until the next IDR; a B-frame stream is refused with reason; GOP thresholds warn and end as specified, and a stream with a 2 s GOP that loses one whole IDR (and one IDR's first packet) is neither warned about more than it would be without the loss nor ended; A/V offset within 20 ms of the source; PLI sent on start and on resume only: never on a dropped frame, never periodically. |
 | **WG7** | `GET /whip/status` (D9) with CORS. | Tests: returns the D9 fields for the key's session, `401` for another key, and nothing containing an IP. |
@@ -485,7 +492,7 @@ the same way as the native ≈50 ms figure.
 | **OD4** | Where the panel learns a server's gateway: only `whipGatewayUrl` in `config.js` (official and self-hosted SPAs), or also an optional per-server field in the R37 server picker? | `config.js` only in v1 |
 | **OD5** | GOP bounds: warn above 1.1 s, refuse above 2.2 s (D7)? | Yes, as knobs |
 | **OD6** | D6's reorder window: 20 ms default, drop rather than wait? | Yes, pending WG0's loss numbers |
-| **OD7** | One replica, ICE-lite behind its own UDP LB (D10)? | Yes |
+| **OD7** | One replica, ICE-lite behind its own UDP LB, with its own `maxSessions` cap (D10)? | Yes |
 | **OD8** | Publish the gateway's WHIP endpoint on the official deployment (`whip.gawk.ioio.fi`) once WG10 passes? | Yes |
 
 ## 11. Non-goals
