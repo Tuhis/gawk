@@ -44,7 +44,13 @@ vi.mock('../media/decoder', () => ({
 import { timeOriginMs } from './time-sync';
 import { INCOMING_DATAGRAM_BUFFER } from './datagram-buffer';
 import { getAvSkewMs, notePlayhead, resetAvSync } from './av-sync';
-import { SESSION_STALL_MS, ViewerPipeline, type ViewerCallbacks, type ViewerStats } from './viewer';
+import {
+  MAX_PLAUSIBLE_LATENCY_MS,
+  SESSION_STALL_MS,
+  ViewerPipeline,
+  type ViewerCallbacks,
+  type ViewerStats,
+} from './viewer';
 import type { RenderSink } from './render-sink';
 import { DVR_BUFFER_MS, getDvrGranted, setDvrGranted, setViewerDeliveryMode } from './playout';
 import type { ViewerTransport, ViewerTransportCallbacks } from './viewer-transport';
@@ -1050,6 +1056,88 @@ describe('ViewerPipeline', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // #376: a frame whose parity arrived before its data kept timestamp 0, so
+  // both latency metrics read the broadcaster tab's age (seconds to 48 min)
+  // and telemetry recorded it permanently. The source guard publishes null for
+  // a reading above MAX_PLAUSIBLE_LATENCY_MS, and passes a large-but-plausible
+  // one through untouched (not clamped).
+  describe('latency plausibility guard', () => {
+    async function latencyHarness() {
+      let tcb: ViewerTransportCallbacks | null = null;
+      const fakeTransport: ViewerTransport = {
+        kind: 'in-process',
+        connect: async (cb) => {
+          tcb = cb;
+        },
+        sampleConnectionStats: () => null,
+        sampleTimeSync: () => ({ offsetUs: 1_000_000n, rttMs: 5, timeOriginMs: timeOriginMs() }),
+        close: () => {},
+      };
+      const { cbs } = makeCallbacks();
+      const stats: ViewerStats[] = [];
+      cbs.onStats = (s) => stats.push(s);
+      const pipeline = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', {}, cbs, null, () => fakeTransport);
+      await pipeline.start();
+      // Broadcaster leg: relayUs = timestampUs + 2_000_000.
+      (tcb as unknown as ViewerTransportCallbacks).onDatagram(encodeClockMapping(2_000_000n));
+      // A timestamp whose capture→render latency is exactly latencyMs right now.
+      const tsFor = (latencyMs: number) =>
+        Number(BigInt(Math.round(performance.now() * 1000)) + 1_000_000n - 2_000_000n - BigInt(latencyMs * 1000));
+      const decode = (ts: number) =>
+        decoderCbs.value!.onDecoded({
+          frame: { timestamp: ts, displayWidth: 1920, displayHeight: 1080 },
+          captureTimestampUs: ts,
+          decodeStartMs: 0,
+          decodeEndMs: 1,
+        });
+      return { pipeline, stats, tsFor, decode };
+    }
+
+    it('publishes null, not the bogus number, for a timestamp-0 frame', async () => {
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+      });
+      try {
+        // The tab has been open for a minute: a timestamp-0 frame now reads
+        // ~60 s on both metrics — twice the bound.
+        await vi.advanceTimersByTimeAsync(60_000);
+        const { pipeline, stats, tsFor, decode } = await latencyHarness();
+        decode(tsFor(250));
+        decode(0);
+
+        await vi.advanceTimersByTimeAsync(500); // one stats tick
+        const last = stats.at(-1)!;
+        expect(last.capToRenderMs).toBeNull();
+        expect(last.liveEdgeDriftMs).toBeNull();
+
+        await pipeline.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('passes a large-but-plausible reading through unclamped', async () => {
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+      });
+      try {
+        const { pipeline, stats, tsFor, decode } = await latencyHarness();
+        decode(tsFor(250));
+        decode(tsFor(5_250));
+
+        await vi.advanceTimersByTimeAsync(500); // one stats tick
+        const last = stats.at(-1)!;
+        expect(last.capToRenderMs).toBeCloseTo(5_250, 0);
+        expect(last.liveEdgeDriftMs).toBeCloseTo(5_000, 0);
+        expect(MAX_PLAUSIBLE_LATENCY_MS).toBe(30_000);
+
+        await pipeline.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it('samples A/V skew at presentation via the render sink, not at decode', async () => {
