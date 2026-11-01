@@ -453,7 +453,7 @@ jobs:
             # workflow that does not load is not a failing job: it is zero jobs,
             # no logs, no annotation. This repository has already published a
             # release with no binaries that way (see the incident note in
-            # broadcast-desktop.yml). Falling back to all three entries means
+            # broadcast-desktop.yml). Falling back to every entry means
             # that if the gate ever fails open, CI does what it did before this
             # change instead of refusing to start — the safe direction, and one
             # this PR cannot test on itself, since editing ci.yml sets all=true.
@@ -3018,7 +3018,7 @@ jobs:
       # always build from their real Dockerfile: they are cgo with an ffmpeg
       # and ONNX Runtime beside them, so there is no binary to prebuild
       # (dev/compose.screening.yml).
-      - name: Build the relay, gawk-admin, fake-IdP and fixture binaries (fast path)
+      - name: Prebuild the relay, gawk-admin and fake-IdP (and the fixture, on the fast path)
         env:
           PUBSIM: ${{ needs.changes.outputs.dev_stack_images == 'false' && '--screening' || '' }}
         run: |
@@ -4023,7 +4023,9 @@ jobs:
       # directory, LAN detection, rolling certificate, console, PoP client).
       # Not the whole graph — some relay test files are Linux-only by design
       # (moderationsrc sends itself SIGHUP), and every other package is
-      # compiled for each GOOS by the build step below anyway.
+      # compiled for each GOOS by the build step below — for every target on
+      # relay_full, and for Windows by the compile-only step after it
+      # otherwise.
       - name: go vet per GOOS
         if: needs.changes.outputs.relay_full == 'true'
         working-directory: gawk-server
@@ -4092,6 +4094,26 @@ jobs:
       # refuses a module with a `replace` — so the binaries are the only way
       # the vendored quic-go (its 512-deep datagram queue, docs/75 D7) reaches
       # a party. Each one must say it was built against it.
+      # What a narrow PR (relay_full false) would otherwise not see: a change
+      # to a non-portable package — internal/transport, internal/hub, most
+      # relay PRs — that compiles on Linux only (a golang.org/x/sys/unix
+      # socket option, a //go:build linux file), which would first fail on
+      # the push to main, the run that attaches the release assets. Every
+      # non-main package of gawk-relay's graph, compiled for Windows (the
+      # GOOS that diverges) and discarded: no link, which is the serial part
+      # five parallel builds could not speed up. Same flags as the full
+      # build's windows/amd64, so main's runs keep its packages warm in the
+      # shared Go cache: 0.4 s warm, 72 s cold (662 packages, 2026-11-02).
+      - name: Every relay package compiles for Windows (narrow PRs)
+        if: needs.changes.outputs.relay_full != 'true'
+        working-directory: gawk-server
+        run: |
+          set -euo pipefail
+          mapfile -t pkgs < <(GOOS=windows go list -deps -f '{{if and (not .Standard) (ne .Name "main")}}{{.ImportPath}}{{end}}' ./cmd/gawk-relay)
+          # A failed `go list` inside <( ) does not trip set -e; an empty list must.
+          [ "${#pkgs[@]}" -gt 0 ] || { echo "::error::no packages to compile for GOOS=windows"; exit 1; }
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath "${pkgs[@]}"
+          echo "GOOS=windows: ${#pkgs[@]} packages compile"
       - name: Every binary carries the vendored quic-go
         run: |
           set -euo pipefail
