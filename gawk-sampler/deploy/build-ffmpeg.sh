@@ -28,7 +28,8 @@ mkdir -p "$prefix" "$work"
 
 cd "$work"
 if [ ! -f "ffmpeg-${FFMPEG_VERSION}.tar.xz" ]; then
-	curl -fsSL -o "ffmpeg-${FFMPEG_VERSION}.tar.xz" "$FFMPEG_URL"
+	# Retried: a reset from ffmpeg.org mid-download failed a dev-stack run.
+	curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -o "ffmpeg-${FFMPEG_VERSION}.tar.xz" "$FFMPEG_URL"
 fi
 echo "${FFMPEG_SHA256}  ffmpeg-${FFMPEG_VERSION}.tar.xz" | sha256sum -c -
 rm -rf "ffmpeg-${FFMPEG_VERSION}"
