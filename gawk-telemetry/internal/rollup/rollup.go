@@ -134,6 +134,31 @@ type Row struct {
 // notices.
 const StallThresholdMs = 1000
 
+// MaxPlausibleLatencyMs bounds capToRenderMs and liveEdgeDriftMs in every
+// DERIVED view: a sample above it is left out of the row's Stat (and out of
+// the live projection), never clamped. The relay's DVR window defaults to
+// 3 s (gawk-server/internal/hub/hub.go DefaultDVRWindow), the most delay any
+// playout mode is built to absorb; ten times that is a clock fault, not a
+// latency. #376 was exactly that fault: viewers published the broadcaster
+// tab's age, seconds to 48 minutes, as both series. gawk-app's source guard
+// uses the same bound. The raw stored line keeps the value (D15).
+const MaxPlausibleLatencyMs = 30_000
+
+// latencySeries are the series MaxPlausibleLatencyMs applies to.
+var latencySeries = map[string]bool{
+	"capToRenderMs":   true,
+	"liveEdgeDriftMs": true,
+}
+
+// LatencySeries reports whether a series is bounded by MaxPlausibleLatencyMs.
+func LatencySeries(name string) bool { return latencySeries[name] }
+
+// PlausibleLatency reports whether v may enter a derived view of the latency
+// series name. Every other series is always plausible.
+func PlausibleLatency(name string, v float64) bool {
+	return !latencySeries[name] || v <= MaxPlausibleLatencyMs
+}
+
 // The series a rollup summarizes, per role. Additive: appending here makes a
 // new series appear on future rows, and old rows simply lack the key.
 var viewerSeries = []string{
@@ -473,7 +498,7 @@ func Compute(in Input) Row {
 func collect(samples []Sample, field string) []float64 {
 	out := make([]float64, 0, len(samples))
 	for _, s := range samples {
-		if v, ok := schema.Number(s.Stats, field); ok {
+		if v, ok := schema.Number(s.Stats, field); ok && PlausibleLatency(field, v) {
 			out = append(out, v)
 		}
 	}

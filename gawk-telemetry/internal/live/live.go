@@ -345,6 +345,13 @@ func (p *Projection) ObserveClient(a ingest.Accepted, browser, os, appVersion st
 		stats := a.Samples[n-1].Stats
 		for _, f := range liveNumericFields {
 			if v, ok := schema.Number(stats, f); ok {
+				// #376: an old tab's clock fault reads as a 48-minute latency
+				// in the row's cap→render column. Absent, and the previous
+				// reading cleared rather than left standing as "now".
+				if !rollup.PlausibleLatency(f, v) {
+					delete(s.clientFacts, f)
+					continue
+				}
 				s.clientFacts[f] = v
 			}
 		}
