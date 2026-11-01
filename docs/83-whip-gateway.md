@@ -51,8 +51,8 @@ engine already does gawk's chunking within the ~1200-byte limit, keyframes on
 reliable streams, R29 forward parity, TimeSync, auto-resume with the resume
 token, and room attach. The relay, hub, wire and viewers don't change.
 
-The gateway absorbs relay-side churn. A relay drain (4002) or origin move
-(4003) makes the engine resume on another pod while OBS keeps sending;
+The gateway absorbs relay-side churn. A relay drain (4002) makes the engine
+resume on another pod while OBS keeps sending;
 OBS never sees it.
 
 ## 3. What the survey found
@@ -264,7 +264,7 @@ re-checks it against the OBS release it tests.
   | `DELETE` on the `Location` | engine `StopBroadcast()` (added in WG1) | close **4014**, broadcast ends (R78), viewers wait on the code |
   | ICE/consent failure (OBS gone) | engine `Stop()` (closes with code 0, as today) | publisher gone, **grace** (`-broadcast-grace`, 5 min); OBS's auto-reconnect reclaims the same ID |
   | Second OBS with the same key | new session reclaims | **4004** to the first; the gateway tears down the first PeerConnection |
-  | Relay 4002 / 4003 | engine auto-resumes, sends PLI | resume on another pod |
+  | Relay 4002 (drain) | engine auto-resumes, sends PLI | resume on another pod |
   | Relay 4006 (operator kill) / ID ban | ends the session; `POST`s answer `403` | — |
   | Relay `409` (ID reserved for a PoP) | `409` to OBS | — |
   | Relay `429` (caps, rate limit) | `429` + `Retry-After` | — |
