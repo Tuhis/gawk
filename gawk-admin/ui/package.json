@@ -18,7 +18,7 @@
     "@gawk/oidc-session": "file:../../common-ts/oidc-session",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "redoc": "2.5.4",
+    "redoc": "3.0.1",
     "yaml": "2.9.1"
   },
   "devDependencies": {
