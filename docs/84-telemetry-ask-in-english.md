@@ -336,4 +336,4 @@ spike's schema snapshot and re-checks everything:
 | `SELECT "Windows" FROM (PIVOT rollups ON os …)` | `OK` | binder error, as for any name |
 | `read_csv`, `read_json_auto`, `glob` on a path | allowed by `Check`; would read at bind (not probed on the deployment) | `Permission Error`, file access disabled |
 | `SET enable_external_access = true` | (refused by `Check`) | refused: configuration locked |
-| the spike's 169 final statements | all ran | all bind |
+| the spike's 169 final statements | 168 ran; one (the local model's q03, §12.4) bound but failed at run time on the NaN result (`BUGS.md`) | all bind |
