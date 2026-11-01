@@ -28,6 +28,13 @@ export default defineConfig({
   // main.tsx is the only exclusion beyond the tests themselves: it is the
   // `createRoot` bootstrap, which runs in a browser and asserts nothing.
   test: {
+    // Node 25+ ships its own Web Storage globals, enabled by default. Without
+    // --localstorage-file its `localStorage` is undefined, and it shadows the
+    // jsdom one, so every storage-backed test fails with "Cannot read
+    // properties of undefined (reading 'clear')". Turn it off in the test
+    // workers so jsdom's implementation is the one in scope. Harmless on
+    // older Node, which accepts the flag.
+    execArgv: ['--no-experimental-webstorage'],
     coverage: {
       provider: 'v8',
       include: ['src/**/*.{ts,tsx}'],

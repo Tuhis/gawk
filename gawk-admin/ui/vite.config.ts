@@ -113,6 +113,13 @@ export default defineConfig({
   // what lets v8 count a file outside this project; its harness (testing.ts)
   // is test code and excluded like the tests.
   test: {
+    // Node 25+ ships its own Web Storage globals, enabled by default. Without
+    // --localstorage-file its `localStorage` is undefined, and it shadows the
+    // jsdom one, so every storage-backed test fails with "Cannot read
+    // properties of undefined (reading 'clear')". Turn it off in the test
+    // workers so jsdom's implementation is the one in scope. Harmless on
+    // older Node, which accepts the flag.
+    execArgv: ['--no-experimental-webstorage'],
     // The shared session package (docs/55 D3) is tested where it lives, by
     // this run: it has no toolchain of its own. Every consumer's vitest
     // includes it, so a change to it is exercised against each of them.
