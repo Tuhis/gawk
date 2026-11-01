@@ -756,7 +756,7 @@ is the app's and can change without a gateway release.
 | `invalid_h264` (backoff) | S4 | "gawk couldn't read the video OBS sent." / "Choose another H.264 encoder in Settings → Output, then retry." |
 | `codec` (`406`) | refusal | "OBS is sending {AV1 / HEVC}. gawk takes H.264." / "In OBS: Settings → Output → Video Encoder → an H.264 one." |
 | `simulcast` (`406`) | refusal | "OBS is sending several layers (simulcast)." / "Turn Simulcast off in Settings → Stream." |
-| `gateway_full` (`503`) | refusal | "This server is streaming as many OBS broadcasts as it can." / "OBS retries on its own; try again in a minute." |
+| `gateway_full` (`503`) | refusal | "This server is streaming as many OBS broadcasts as it can." / "Wait a minute, then press Start Streaming in OBS again." |
 | `relay_busy` (`429`) | refusal | "This server has no room for another stream right now." / "Try again in a few minutes." |
 | `rejected` (`401`/`403`) | refusal | "The server didn't accept this key. It may have been reset by whoever runs it." / "Reset the key here, then paste the new one into OBS." |
 | `banned` (`451`) | refusal | "The server's operator has blocked this stream." |
