@@ -1495,13 +1495,15 @@ not a precedent for editing history when a number looks odd.
 **The bound.** `rollup.MaxPlausibleLatencyMs = 120 000` (two minutes). The
 deepest delay a playout mode is built for is gawk-app's Deep buffer at its
 30 s maximum (`MAX_DVR_BUFFER_MS`; the relay's `-dvr-window` defaults to 3 s
-and has no upper limit), where every `capToRenderMs` sample is a little over
+and has no upper limit, but the viewer clamps its buffer to 30 s, so a larger
+relay window only stores more), where every `capToRenderMs` sample is a little over
 30 s. The bound clears that with room, and nothing this platform does
 produces a two-minute latency: a larger value is a clock fault. #376's
 values ran up to 48 minutes; samples from a broadcaster tab younger than two
 minutes slip under the bound and stay, which is the price of not deleting
 real Deep-buffer history. gawk-app's source guard (#668) uses the same
-bound. *Revised 2026-11-01 in #669's review: the first value, 30 s, equalled
+bound, and #670 moved it to 120 s with this one. If a native viewer ever
+publishes `capToRenderMs` with a deeper buffer, revisit both. *Revised 2026-11-01 in #669's review: the first value, 30 s, equalled
 the Deep buffer's maximum and would have deleted real Stats.*
 
 **What changes going forward.**
@@ -1601,8 +1603,8 @@ is a fixed point, so a re-run changes nothing already fixed, and it finishes
 a relay group an interrupted run marked only partly.
 
 **Operator note:** the signal handler is installed after the repair, so a
-SIGTERM during it (a second `helm upgrade`, the chart's `Recreate` strategy,
-or a node drain) ends the process at once and counts as a death. Don't roll
+SIGTERM during it (a second `helm upgrade`, whose `Recreate` strategy
+terminates the old pod first, or a node drain) ends the process at once and counts as a death. Don't roll
 the deployment again until the `history repair applied` line is logged
 (about six minutes at the reference deployment's size).
 
@@ -1637,6 +1639,7 @@ minutes of ingest 503s and no relay scraping** on that one boot.
 | A leg (or edge) observation after the primary does not set the row's relay counters, pod or role; legs alone give coverage `none` | `readapi.TestJoinRelayIgnoresStripeLegsAndEdges` |
 | Session diagnose and dip movers ignore legs | `readapi.TestSessionRelayReadersIgnoreStripeLegs` |
 | Latency samples above the bound are out of the Stat; at the bound they stay; all-bogus gives an absent series | `rollup.TestImplausibleLatencySamplesAreExcluded`, `rollup.TestAllImplausibleLatencyLeavesSeriesAbsent` |
+| A 30 s Deep-buffer viewer's latency is plausible; the bound keeps at least 4× headroom over `MAX_DVR_BUFFER_MS` | `rollup.TestDeepBufferLatencyIsPlausible` |
 | The live row drops an implausible latency and clears the stale one | `live.TestLiveRowDropsImplausibleLatency` |
 | Rollup repair: poisoned series and leg-derived relay keys deleted, broadcast keys kept, `repairs` recorded (appended to an existing list), unknown fields and series preserved, unparsable lines verbatim, unchanged rows and files untouched | `repair.TestRollupRepair` |
 | Relay repair: one audience entry per session per round across pod files, the keyframe holder kept, already-marked entries not counted (post-#657 rounds need nothing), `.gz` stays gzip, unknown fields preserved, quiet dates untouched | `repair.TestRelayRepair` |

@@ -146,12 +146,14 @@ const StallThresholdMs = 1000
 // the live projection), never clamped. The deepest delay a playout mode is
 // built for is gawk-app's Deep buffer at its 30 s maximum
 // (MAX_DVR_BUFFER_MS in gawk-app/src/config.ts; the relay's -dvr-window
-// defaults to 3 s and has no upper limit), so a viewer there reports a
-// little over 30 s on every sample. Two minutes clears that with room and
-// is still no latency this platform can produce; above it is a clock
-// fault. #376 was exactly that fault: viewers published the broadcaster
-// tab's age, up to 48 minutes, as both series. gawk-app's source guard
-// (#668) uses the same bound. The raw stored line keeps the value (D15).
+// defaults to 3 s and has no upper limit, but the viewer clamps its buffer
+// to 30 s, so a larger relay window only stores more), so a viewer there
+// reports a little over 30 s on every sample. Two minutes clears that with
+// room and is still no latency this platform can produce; above it is a
+// clock fault. #376 was exactly that fault: viewers published the
+// broadcaster tab's age, up to 48 minutes, as both series. gawk-app's
+// source guard (#668, #670) uses the same bound. The raw stored line keeps
+// the value (D15).
 const MaxPlausibleLatencyMs = 120_000
 
 // latencySeries are the series MaxPlausibleLatencyMs applies to.

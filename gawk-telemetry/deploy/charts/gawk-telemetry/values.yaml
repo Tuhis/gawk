@@ -98,7 +98,8 @@ config:
   #     built from a fresh clone has no engine and says so (docs/36 §8 Q1).
   querySql: true
   # The one-time 2026-11 history repair (docs/33 §4.17): on the first start
-  # of a release that carries it, before ingest or any listener opens, it
+  # of a release that carries it, before the store, scraper or read listener
+  # start (the ingest port is up behind a start gate), it
   # deletes #376's implausible latency stats from the permanent rollups,
   # deletes stripe-leg-derived relay counters from striped viewers' rows, and
   # marks pre-#657 stripe legs in the raw relay files. A marker under the
