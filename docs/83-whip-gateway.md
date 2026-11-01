@@ -242,15 +242,19 @@ re-checks it against the OBS release it tests.
     `gop_too_long`. While the same key reconnects within 10 minutes it answers
     `POST`s with `422` and that reason, so OBS's auto-reconnect doesn't loop
     viewers through freezes. The thresholds are gateway knobs.
-  - **The gateway sends PLI anyway, on events only**: on session start, after
-    the engine resumes on another relay pod, and after a dropped frame (D6).
+  - **The gateway sends PLI anyway, on two events only**: on session start
+    and after the engine resumes on another relay pod. Both are moments when
+    the relay's cache is empty, not moments of loss.
     Stock OBS ignores it (§3.3), but GStreamer's and FFmpeg's WHIP senders and
     any future OBS that honours it get the fast re-prime the native publishers
-    get from `force_idr` (`docs/22`). The gateway **never sends periodic PLI**.
-    For a sender that honours it, a PLI every 500 ms is just a forced 500 ms
-    GOP, and `docs/15` D6 found that requested keyframes make the congested
-    case strictly worse. Asking the user for a short GOP gets the same result
-    without the extra keyframes.
+    get from `force_idr` (`docs/22`). The gateway **never sends a PLI for a
+    dropped frame and never sends periodic PLI**. Drops (D6) happen mostly
+    under loss and congestion, which is exactly where `docs/15` D6 found a
+    keyframe request makes things worse: the bottleneck is delivering the
+    keyframe, not how often one comes. A dropped frame waits for the next
+    natural IDR, as it does for viewers today.
+    A PLI every 500 ms would just be a forced 500 ms GOP; asking the user for
+    a short GOP gets the same result without the requests.
   - This doesn't conflict with `docs/15` D6, which rejected a
     **viewer → server** back-channel and the relay talking back to the
     broadcaster. Here the gateway is the WebRTC receiver of its own leg. No
@@ -426,7 +430,7 @@ the same way as the native ≈50 ms figure.
 | **WG3** | Relay: `-publish-proxy-token` (D4) through `registryOptions`, flag + env + Helm, and D12's guard. | Tests: with the token, `Gawk-Publisher-Ip` drives rate limit, IP ban and the admin publisher-IP fields, and the Origin check is skipped. Without it the header is ignored. A test asserts no event or webhook carries the IP. The Helm value renders into the relay args. The relay refuses to start, and the chart to render, with the proxy token and no explicit `resumeTokenKey`. |
 | **WG4** | Gateway skeleton: module, config (flags + `GAWK_WHIP_*` + chart values), `/healthz`, metrics, Dockerfile, chart (default off), release-please package, a CI path filter on `gawk-whip-gateway/` and `gawk-server/`. | CI builds and tests it. The chart renders with defaults and does nothing until enabled. A release produces image + chart at the same version. |
 | **WG5** | WHIP endpoint: `POST`/`DELETE`/`OPTIONS`, key parsing (D2), SDP answer (D5), ICE-lite + UDP mux + NAT 1:1 + ICE-TCP (D10), the D8 status mapping, per-IP `POST` rate limit. | A pion WHIP client test in CI: H.264+Opus accepted (`201` + `Location`); HEVC, AV1 and simulcast refused `406`; bad key `401`; every row of D8's table covered against a test relay. |
-| **WG6** | Media adapter: RTP → Annex-B AUs with the reorder window (D6), IDR/SPS/B-frame validation, GOP measurement and bounds (D7), Opus → the engine's audio, RTP/RTCP-SR timestamps → engine timestamps, event PLIs. | Unit tests with recorded OBS RTP: a dropped packet drops that frame and the deltas until the next IDR; a B-frame stream is refused with reason; GOP thresholds warn and end as specified; A/V offset within 20 ms of the source; PLI sent on start, resume and drop and never periodically. |
+| **WG6** | Media adapter: RTP → Annex-B AUs with the reorder window (D6), IDR/SPS/B-frame validation, GOP measurement and bounds (D7), Opus → the engine's audio, RTP/RTCP-SR timestamps → engine timestamps, event PLIs. | Unit tests with recorded OBS RTP: a dropped packet drops that frame and the deltas until the next IDR; a B-frame stream is refused with reason; GOP thresholds warn and end as specified; A/V offset within 20 ms of the source; PLI sent on start and on resume only: never on a dropped frame, never periodically. |
 | **WG7** | `GET /whip/status` (D9) with CORS. | Tests: returns the D9 fields for the key's session, `401` for another key, and nothing containing an IP. |
 | **WG8** | gawk-app OBS panel (§5), `whipGatewayUrl` config, key storage (OD3), status polling. | Vitest covers mint, show/copy/forget/reset, the publish-secret prompt, status states and warnings. The panel is hidden without `whipGatewayUrl`. |
 | **WG9** | Dev stack `whip` profile with a GStreamer/FFmpeg WHIP sender. Rooms attach from the panel. `docs/self-hosting.md` section, an OBS setup guide, `docs/gotchas.md` entries. | `docker compose --profile whip up` shows a live test pattern in the viewer with no copy-paste. A `dev-stack` CI job round-trips a frame through the gateway. Attach puts the OBS broadcast in a room. |
