@@ -3005,16 +3005,26 @@ jobs:
             sudo sysctl -w net.core.rmem_max="$need" net.core.wmem_max="$need"
           fi
 
-      # `dev-stack`'s fast path, plus the fixture publisher (its real
-      # Dockerfile compiled gawk-pubsim cold in BuildKit: 46 s in run
-      # 41303448495). The samplers still build from their real Dockerfile:
-      # they are cgo with an ffmpeg and ONNX Runtime beside them, so there is
-      # no binary to prebuild (dev/compose.screening.yml).
+      # `dev-stack`'s fast path, ALWAYS for the relay, gawk-admin and the
+      # fake IdP: their real Dockerfiles are `dev-stack`'s to exercise (its
+      # slow path, on dev_stack_images), and this job cannot afford them.
+      # Four golang builder stages beside the sampler's overflow the
+      # runner's RAM-backed /var/lib/docker: `no space left on device`
+      # loading the sampler image, in this job's first slow-path run
+      # (41350279880). The fixture publisher follows dev_stack_images like
+      # `dev-stack` does — prebuilt normally (its real Dockerfile compiled it
+      # cold in 46 s, run 41303448495), from dev/Dockerfile.pubsim on the
+      # slow path, which is the only job that builds that file. The samplers
+      # always build from their real Dockerfile: they are cgo with an ffmpeg
+      # and ONNX Runtime beside them, so there is no binary to prebuild
+      # (dev/compose.screening.yml).
       - name: Build the relay, gawk-admin, fake-IdP and fixture binaries (fast path)
-        if: needs.changes.outputs.dev_stack_images == 'false'
+        env:
+          PUBSIM: ${{ needs.changes.outputs.dev_stack_images == 'false' && '--screening' || '' }}
         run: |
           set -euo pipefail
-          override=$(.github/scripts/dev-stack-prebuilt.sh "$RUNNER_TEMP/prebuilt" --screening)
+          # shellcheck disable=SC2086 # empty or one flag, on purpose
+          override=$(.github/scripts/dev-stack-prebuilt.sh "$RUNNER_TEMP/prebuilt" $PUBSIM)
           echo "PREBUILT_OVERRIDE=$override" >> "$GITHUB_ENV"
 
       # THE SAMPLER'S LAYER CACHE, in the in-cluster zot (ioio's
