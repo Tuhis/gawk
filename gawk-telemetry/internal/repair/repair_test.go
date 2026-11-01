@@ -349,6 +349,38 @@ func TestRelayRepair(t *testing.T) {
 	}
 }
 
+// A run that stopped between two pod files' rewrites (an error, a kill)
+// leaves a group with some legs marked and some not. A re-run — the
+// operator deleting the .started marker — must finish the group: a marker
+// the repair wrote itself must not read as "post-#657, leave it alone".
+// The primary stays because it is still the unmarked member with keyframes.
+func TestRelayRepairFinishesAPartlyMarkedGroup(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "relay", "date=2026-09-20")
+	const at1 = 1790000000000
+	primX := sub{pod: "pod-a", key: "a1", sid: sidX, atMs: at1, keyframes: 40}
+	legXa := sub{pod: "pod-a", key: "a0", sid: sidX, atMs: at1, extra: `,"stripeLeg":true`} // rewritten before the stop
+	legXb1 := sub{pod: "pod-b", key: "b1", sid: sidX, atMs: at1}
+	legXb2 := sub{pod: "pod-b", key: "b2", sid: sidX, atMs: at1}
+	write(t, filepath.Join(dir, "pod-a.ndjson"), []byte(strings.Join(podFile("pod-a", at1, legXa, primX), "\n")+"\n"))
+	writeGz(t, filepath.Join(dir, "pod-b.ndjson.gz"), []byte(strings.Join(podFile("pod-b", at1, legXb1, legXb2), "\n")+"\n"))
+
+	run(t, root)
+
+	lc, dc := audienceCounts(t, dir)
+	k := fmt.Sprintf("%d/%s", at1, sidX)
+	if lc[k] != 1 || dc[k] != 1 {
+		t.Fatalf("X after re-run: %d audience lines, %d details, want 1 and 1", lc[k], dc[k])
+	}
+	for _, ln := range lines(read(t, filepath.Join(dir, "pod-a.ndjson"))) {
+		var o relayscrape.Observation
+		_ = json.Unmarshal([]byte(ln), &o)
+		if o.Subscriber != nil && o.Subscriber.Key == "a1" && o.Subscriber.StripeLeg {
+			t.Error("the primary was marked as a leg")
+		}
+	}
+}
+
 // The relay pass edits bytes instead of re-encoding: a marked line is the
 // stored line with `"stripeLeg":true` added to the right object (or an
 // explicit false overwritten), key order and every other byte unchanged, and

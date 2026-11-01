@@ -48,7 +48,6 @@ type group struct {
 	keep  int32  // arena index of the member that stays
 	head  int32  // arena index of the last member added (a linked list)
 	score uint64 // the kept member's keyframes
-	leg   bool   // a member already says stripeLeg (post-#657): leave it
 }
 
 // member is one audience subscriber entry and the edit that would mark it.
@@ -90,8 +89,14 @@ func (x *relayIndex) add(atMs int64, bkey []byte, s subEntry, file, line int, de
 		g = group{keep: -1, head: -1}
 	}
 	defer func() { x.groups[k] = g }()
+	// An entry already marked is not a member: post-#657 data marks every
+	// leg, which leaves only the primary and nothing to do. It must not veto
+	// the group either, because the marker may be this repair's own from a
+	// run that stopped between two pod files' rewrites; the unmarked rest
+	// still has to be finished. The primary stays the kept member across
+	// such a re-run: it is still the unmarked one with the most keyframes,
+	// or on a tie still the first unmarked one in file order.
 	if s.stripeLeg {
-		g.leg = true
 		return
 	}
 	m := member{next: g.head, file: int32(file), line: int32(line), pos: int32(s.close), empty: s.empty, detail: detail}
@@ -176,7 +181,7 @@ func repairRelayDate(x *relayIndex, dir string, sum *RelaySummary) error {
 	// Edits, per file, for every non-kept member of a duplicate group.
 	edits := map[int][]member{}
 	for _, g := range x.groups {
-		if g.n < 2 || g.leg {
+		if g.n < 2 {
 			continue
 		}
 		for i := g.head; i >= 0; i = x.arena[i].next {
