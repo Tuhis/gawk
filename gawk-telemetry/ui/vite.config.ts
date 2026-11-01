@@ -95,6 +95,13 @@ export default defineConfig({
   // the badge measures. `allowExternal` is what lets v8 count a file outside
   // this project; its harness (testing.ts) is test code and excluded.
   test: {
+    // Node 25+ ships its own Web Storage globals, enabled by default. Without
+    // --localstorage-file its `localStorage` is undefined, and it shadows the
+    // jsdom one, so every storage-backed test fails with "Cannot read
+    // properties of undefined (reading 'clear')". Turn it off in the test
+    // workers so jsdom's implementation is the one in scope. Harmless on
+    // older Node, which accepts the flag.
+    execArgv: ['--no-experimental-webstorage'],
     // The shared package is tested where it lives, by every consumer's run
     // (docs/55 D3): it has no toolchain of its own, so a change to it is
     // exercised against each SPA that bundles it.
