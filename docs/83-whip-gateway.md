@@ -373,7 +373,7 @@ re-checks it against the OBS release it tests.
   |---|---|---|
   | `POST` with a valid key | reclaim `/publish/{ID}?resume=` | broadcast created or resumed |
   | `DELETE` on the `Location` | engine `StopBroadcast()` (added in WG1) | close **4014**, broadcast ends (R78), viewers wait on the code |
-  | ICE/consent failure (OBS gone) | engine `Stop()` (closes with code 0, as today) | publisher gone, **grace** (`-broadcast-grace`, 5 min); OBS's auto-reconnect reclaims the same ID |
+  | ICE/consent failure (OBS gone) | engine `Stop()` (closes with code 0, as today), records `lost` | publisher gone, **grace** (`-broadcast-grace`, 5 min); OBS's auto-reconnect reclaims the same ID |
   | Second OBS with the same key | new session reclaims (not counted against `maxSessions` when the first session is live on this pod or a peer) | **4004** to the first; the gateway tears down the first PeerConnection |
   | Gateway at `maxSessions` (a new key) | `503` + `Retry-After: 30`, no relay dial | — |
   | Relay 4002 (drain) | engine auto-resumes, sends PLI | resume on another pod |
@@ -718,8 +718,17 @@ comes from D9's new `retryAfterMs`. A refusal with no backoff (a codec, the
 gateway full, a ban) uses the same red box without the countdown or the
 button.
 
+**S5 · Ended.** After OBS's **Stop Streaming** (D8's `DELETE`, close 4014)
+the page shows "Your stream has ended" and "Press Start Streaming in OBS to
+go live again on K7Q2XM.", with the S2 steps folded as in S3. Viewers who
+stayed on the code pick the stream up again (R78). If OBS vanished instead
+(D8's ICE failure, recorded as `lost`), it says "OBS disconnected" and "OBS
+reconnects on its own. Viewers keep waiting on K7Q2XM for a few minutes."
+The grace period isn't known to the app, so no countdown (as in `docs/60`
+D11). Neither is red: an end the user chose isn't an error.
+
 The status box, the warning and the ended box are live regions: `status` for
-waiting, live and warnings, `alert` for S4 and refusals.
+waiting, live, warnings and S5, `alert` for S4 and refusals.
 
 ### 5.5 The advanced cues
 
@@ -750,6 +759,8 @@ is the app's and can change without a gateway release.
 |---|---|---|
 | `state: idle` | S2 step 3 | "Waiting for OBS…" / "This page updates on its own when OBS connects." |
 | `state: live` | S3 | "You're live from OBS" |
+| `state: ended`, no `lastError` (OBS's Stop Streaming) | S5 | "Your stream has ended" / "Press Start Streaming in OBS to go live again on {code}." |
+| `state: ended`, `lost` (OBS vanished, the broadcast in grace) | S5 | "OBS disconnected" / "OBS reconnects on its own. Viewers keep waiting on {code} for a few minutes." |
 | warning `gop_long` (1.1–2.2 s) | S3 amber banner | "OBS sends a keyframe every {g} s. At 1 s, viewers who join or hit a glitch see a moving picture again sooner." / "In OBS: Settings → Output → Keyframe Interval → 1 s. It applies the next time you start streaming." |
 | `gop_too_long` (backoff) | S4 | "OBS sent a keyframe only every {g} s. Viewers who joined, or hit a glitch, saw a frozen picture for seconds at a time." / "In OBS: Settings → Output → Keyframe Interval → 1 s. If it says 0 (auto), that is the cause." |
 | `bframes` (backoff) | S4 | "Your encoder sends B-frames, which gawk can't play live." / "Set B-frames to 0 in the encoder's settings (Settings → Output), then retry." |
