@@ -60,6 +60,7 @@ func TestLegSlotWaitsOutALinkFailover(t *testing.T) {
 // With no link at all, the leg is still refused once the window ends: the
 // cap fails closed.
 func TestLegSlotWithNoLinkFailsClosedAfterTheWindow(t *testing.T) {
+	t.Parallel()
 	loc := &failoverLocator{visibleAt: time.Now().Add(time.Hour)}
 	srv := newLegCapServer(t, loc)
 	start := time.Now()

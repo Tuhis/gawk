@@ -37,6 +37,7 @@ import (
 )
 
 func TestDVRRingSurvivesACompleteBlackout(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	port, clientTLS, r, _ := startTestServer(t, ctx, 15)

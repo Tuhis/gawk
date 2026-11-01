@@ -69,6 +69,7 @@ func TestReserveRecordsAreAnsweredPerID(t *testing.T) {
 // the PoP, its leg claims that hub, the viewer gets the prime — and the
 // linger closes the leg with 4013.
 func TestSinglePodHomeServesAPoPBroadcastOnDemand(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	log := harnessLog(t)

@@ -436,6 +436,7 @@ func TestEdgePumpRewritesClockMappingAndForwardsVerbatim(t *testing.T) {
 // an upstream global count G to its local viewers verbatim (no per-hop
 // rewrite: a count is pod-independent, unlike the ClockMapping above).
 func TestEdgeReportsViewerCountUpAndForwardsGlobalDown(t *testing.T) {
+	t.Parallel()
 	h := newEdgeHarness(t)
 	up := newFakeUpstream()
 	h.queue(up)
@@ -652,6 +653,7 @@ func TestInternalSubscribeGuards(t *testing.T) {
 // at the origin. Docs/22 Decision 10: the Lease is the liveness truth; edge
 // hubs never idle in grace.
 func TestEdgeLingerOutDeletesDerivedHub(t *testing.T) {
+	t.Parallel()
 	h := newEdgeHarness(t)
 	h.manager.linger = time.Millisecond // linger out at the first viewerless check
 	up := newFakeUpstream()
@@ -688,6 +690,7 @@ func TestEdgeLingerOutDeletesDerivedHub(t *testing.T) {
 // origin had closed with 4006 — so a moderator's kill reached every viewer
 // on an edge pod as "broadcast ended".
 func TestEdgeHonoursTheOriginsTerminalClose(t *testing.T) {
+	t.Parallel()
 	remote := func(code uint32) error {
 		return &webtransport.SessionError{Remote: true, ErrorCode: webtransport.SessionErrorCode(code)}
 	}

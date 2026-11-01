@@ -73,6 +73,7 @@ func endpointsFrom(t *testing.T, msgs [][]byte) []string {
 // one RelayIdentity uni stream carrying the configured name and the stamped
 // release version.
 func TestEchoSendsRelayIdentity(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	port, clientTLS, _, _ := startTestServerCfg(t, ctx, config.Config{
@@ -97,6 +98,7 @@ func TestEchoSendsRelayIdentity(t *testing.T) {
 // An unset -server-name still identifies the release ("dev" when nothing was
 // stamped), with an empty name.
 func TestEchoIdentityWithoutName(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	port, clientTLS, _, _ := startTestServer(t, ctx, 2)
@@ -165,6 +167,7 @@ func telemetryTestKey() []byte {
 // SP11: enabled telemetry + a configured advertise URL ⇒ exactly one 0x12
 // per session on both media routes.
 func TestMediaRoutesAdvertiseTelemetryEndpoint(t *testing.T) {
+	t.Parallel()
 	const advertised = "https://gawk.example.com/api/telemetry/v1/ingest"
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -197,6 +200,7 @@ func TestMediaRoutesAdvertiseTelemetryEndpoint(t *testing.T) {
 
 // No advertise URL, or telemetry off entirely ⇒ no 0x12 anywhere.
 func TestNoTelemetryEndpointWhenUnconfigured(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		cfg  config.Config

@@ -195,6 +195,7 @@ func TestResumeReclaimsTheSameBroadcastCodeWithItsToken(t *testing.T) {
 // A dial that fails for a transient reason is retried — that is the whole
 // point of a grace window.
 func TestResumeRetriesATransientDialFailure(t *testing.T) {
+	t.Parallel()
 	first, second := newFakeSession(), newFakeSession()
 	media := newFakeMedia()
 	d := &recordingDialer{results: []dialResult{

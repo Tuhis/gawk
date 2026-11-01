@@ -262,6 +262,7 @@ func sendPopGop(t *testing.T, popBitrate int64) popGop {
 // quic-go's default windows the same GOP does not fit (asserted, as in
 // TestUplinkFirstGopIsNotFlowControlBlocked; the blocking is only logged).
 func TestPopLegCarriesA1440pGopWithoutFlowControlBlocking(t *testing.T) {
+	t.Parallel()
 	got := sendPopGop(t, 50_000_000/8)
 	if got.streamWindow != 2_000_000 || got.connWindow != 3_000_000 {
 		t.Fatalf("the PoP advertised %d / %d, want D10's 2000000 / 3000000", got.streamWindow, got.connWindow)
@@ -284,6 +285,7 @@ func TestPopLegCarriesA1440pGopWithoutFlowControlBlocking(t *testing.T) {
 // the link's 15 s idle timeout, not the fleet edge's 4 s — so the PoP keeps
 // the one leg and its prime, and the stream flows again on it.
 func TestPopLegSurvivesA10sOutage(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("holds a 10 s outage")
 	}

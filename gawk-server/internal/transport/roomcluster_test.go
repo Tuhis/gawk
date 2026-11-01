@@ -35,7 +35,6 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	clientfeatures "k8s.io/client-go/features"
-	clientfeaturestesting "k8s.io/client-go/features/testing"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
@@ -87,10 +86,37 @@ type roomFleet struct {
 	voiceBridge *fakeBridge
 }
 
+var watchListOff struct {
+	once sync.Once
+	err  error
+}
+
+// disableWatchListClient is popsrv.DisableWatchListClient for this package's
+// internal tests, which cannot import popsrv (popsrv imports transport); read
+// that one's comment for why it is process-wide and not per test. The
+// external transport_test package's fleets call popsrv's; both set the same
+// value, so the two coexist in one binary.
+func disableWatchListClient(tb testing.TB) {
+	tb.Helper()
+	watchListOff.once.Do(func() {
+		gates, ok := clientfeatures.FeatureGates().(interface {
+			SetForTesting(clientfeatures.Feature, bool) error
+		})
+		if !ok {
+			watchListOff.err = fmt.Errorf("client-go feature gates %T cannot be set for testing", clientfeatures.FeatureGates())
+			return
+		}
+		watchListOff.err = gates.SetForTesting(clientfeatures.WatchListClient, false)
+	})
+	if watchListOff.err != nil {
+		tb.Fatalf("disable client-go WatchListClient: %v", watchListOff.err)
+	}
+}
+
 func newRoomFleet(t *testing.T, objs ...runtime.Object) *roomFleet {
 	t.Helper()
 	// Plain LIST+WATCH for the fake tracker (see roomcluster's tests).
-	clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.WatchListClient, false)
+	disableWatchListClient(t)
 	cert, err := tlsutil.GenerateDevCert([]string{"localhost", "127.0.0.1"}, time.Hour)
 	if err != nil {
 		t.Fatalf("GenerateDevCert: %v", err)
@@ -748,6 +774,7 @@ func (nopHubConn) CloseWithError(uint32, string) error             { return nil 
 // grace expiry deletes the lease and B's refresh removes the attachment
 // with reason expired and drops it from the CR (docs/44 §6).
 func TestRoomMintOnAnotherPodThanThePublisherFollowsTheLease(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	f := newRoomFleet(t)
@@ -827,6 +854,7 @@ func (c *roomClient) nextAttachmentLive(t *testing.T, id string, want bool) {
 // refresh interval and live again once the page pings again. "Silent" is
 // no datagrams: TimeSync alone — a paused game's page — keeps it live.
 func TestRoomOnAnotherPodShowsASilentPublisherAway(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	f := newRoomFleet(t)

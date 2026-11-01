@@ -307,6 +307,7 @@ func waitForCascade(t *testing.T, check func() (ok bool, detail string), desc st
 // byte-identical keyframe, live deltas flow through, and A's /statusz counts
 // edge sessions — not viewers.
 func TestMultiPodEdgePullE2E(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cs := fake.NewClientset()
@@ -634,6 +635,7 @@ func keysOf(m map[uint8][]byte) []uint8 {
 // adapters, which do carry the notice. So a Chrome viewer on an edge pod is
 // told 4000 in-band exactly like one on the origin.
 func TestEdgeViewerGetsCloseNoticeWhenTheBroadcastEnds(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cs := fake.NewClientset()

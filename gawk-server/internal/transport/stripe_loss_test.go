@@ -258,6 +258,7 @@ const (
 // proves the forwarder bites (docs/24 finding 10 — a protection test whose
 // hazard is unverified ships green forever).
 func TestStripedDeliveryBeatsBurstThresholdLoss(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	port, clientTLS, r, _ := startTestServerCfg(t, ctx, stripedTestConfig(15))

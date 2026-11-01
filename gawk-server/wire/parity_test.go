@@ -143,8 +143,9 @@ func TestRecoverAllErasurePairs(t *testing.T) {
 			t.Fatalf("n=%d: ComputeParity: %v", n, err)
 		}
 		total := n + len(parity)
-		for a := 0; a < total; a++ {
-			for b := a; b < total; b++ {
+		positions := erasurePositions(n, total)
+		for ai, a := range positions {
+			for _, b := range positions[ai:] {
 				// a == b models a single erasure.
 				chunks, par := eraseAt(orig, parity, a, b)
 				lost := 0
@@ -181,6 +182,33 @@ func TestRecoverAllErasurePairs(t *testing.T) {
 			}
 		}
 	}
+}
+
+// erasurePositions lists the chunk positions TestRecoverAllErasurePairs
+// erases, in pairs, out of a frame of n data chunks and total transmitted
+// chunks. Normally that is every position, so the sweep is exhaustive.
+//
+// Under -race (see race_on_test.go) the two largest frames would cost
+// 100-160s for nothing, so a frame of more than sampledErasureAbove data
+// chunks keeps every boundary position — the first chunks, the last data chunks
+// (including the short final one) and every parity symbol — plus every
+// erasureSampleStride-th interior chunk. Every pair kind (single erasure,
+// data+data, data+parity, parity+parity) is still covered, and the smaller
+// frames stay exhaustive.
+func erasurePositions(n, total int) []int {
+	const (
+		sampledErasureAbove = 64
+		erasureEdge         = 8
+		erasureSampleStride = 17
+	)
+	out := make([]int, 0, total)
+	for p := 0; p < total; p++ {
+		if !raceEnabled || n <= sampledErasureAbove ||
+			p < erasureEdge || p >= n-erasureEdge || p%erasureSampleStride == 0 {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func TestRecoverPreservesShortFinalChunk(t *testing.T) {

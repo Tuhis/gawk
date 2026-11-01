@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -163,6 +164,56 @@ func freeTCPPort(t *testing.T) int {
 	return l.Addr().(*net.TCPAddr).Port
 }
 
+// The relay and devcert binaries are built once per test binary, not once per
+// test: the *AgainstRealRelay tests run in parallel, and eight concurrent
+// `go build`s of the same two commands turned each ~5s test into a ~45s one
+// under -race (2026-11-01). The binaries are read-only after the build, so
+// sharing them shares no test state; each test still gets its own relay
+// process, ports and certificate.
+var builtRelay struct {
+	once       sync.Once
+	dir        string
+	relay, dev string
+	err        error
+}
+
+// relayBinaries builds gawk-server and gawk-devcert from serverDir the first
+// time it is called and returns their paths; err (a reason to skip) is
+// sticky, so every caller sees the same outcome.
+func relayBinaries(serverDir string) (relay, devcert string, err error) {
+	builtRelay.once.Do(func() {
+		dir, err := os.MkdirTemp("", "gawk-engine-relay-")
+		if err != nil {
+			builtRelay.err = err
+			return
+		}
+		builtRelay.dir = dir
+		for _, b := range []struct{ out, pkg string }{
+			{filepath.Join(dir, "gawk-server"), "./cmd/gawk-server"},
+			{filepath.Join(dir, "gawk-devcert"), "./cmd/gawk-devcert"},
+		} {
+			build := exec.Command("go", "build", "-o", b.out, b.pkg)
+			build.Dir = serverDir
+			if out, err := build.CombinedOutput(); err != nil {
+				builtRelay.err = fmt.Errorf("cannot build %s: %v\n%s", b.pkg, err, out)
+				return
+			}
+		}
+		builtRelay.relay = filepath.Join(dir, "gawk-server")
+		builtRelay.dev = filepath.Join(dir, "gawk-devcert")
+	})
+	return builtRelay.relay, builtRelay.dev, builtRelay.err
+}
+
+// TestMain removes the shared relay build (relayBinaries) after the run.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if builtRelay.dir != "" {
+		_ = os.RemoveAll(builtRelay.dir)
+	}
+	os.Exit(code)
+}
+
 // startRelay builds and runs the real gawk-server, returning its URL and ops
 // address.
 func startRelay(t *testing.T, extraArgs ...string) (relayURL string, opsAddr string) {
@@ -181,19 +232,11 @@ func startRelay(t *testing.T, extraArgs ...string) (relayURL string, opsAddr str
 		t.Skipf("gawk-server source not present: %v", err)
 	}
 
-	bin := filepath.Join(t.TempDir(), "gawk-server")
-	build := exec.Command("go", "build", "-o", bin, "./cmd/gawk-server")
-	build.Dir = serverDir
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Skipf("cannot build gawk-server: %v\n%s", err, out)
+	bin, dcBin, err := relayBinaries(serverDir)
+	if err != nil {
+		t.Skip(err)
 	}
 	certDir := filepath.Join(t.TempDir(), "cert")
-	dcBin := filepath.Join(t.TempDir(), "gawk-devcert")
-	build = exec.Command("go", "build", "-o", dcBin, "./cmd/gawk-devcert")
-	build.Dir = serverDir
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Skipf("cannot build gawk-devcert: %v\n%s", err, out)
-	}
 	if out, err := exec.Command(dcBin, "-out", certDir).CombinedOutput(); err != nil {
 		t.Fatalf("gawk-devcert: %v\n%s", err, out)
 	}
@@ -245,6 +288,7 @@ func fetchStatusz(t *testing.T, opsAddr string) statusz {
 // The whole publisher protocol, against the real relay: dial, announce,
 // keyframes on reliable streams, deltas on datagrams, TimeSync, ClockMapping.
 func TestPublishesToRealRelay(t *testing.T) {
+	t.Parallel()
 	relayURL, opsAddr := startRelay(t)
 
 	src := newFixtureSource(t, engine.NewClock())
@@ -365,6 +409,7 @@ arrived:
 // whether the Annex-B/empty-extradata bet holds, and whether ClockMapping —
 // which /statusz does not expose at all — reaches viewers.
 func TestSubscriberReceivesAUsableStream(t *testing.T) {
+	t.Parallel()
 	relayURL, _ := startRelay(t)
 
 	src := newFixtureSource(t, engine.NewClock())
@@ -533,6 +578,7 @@ func TestSubscriberReceivesAUsableStream(t *testing.T) {
 // It publishes through the real relay with pubsim's audio source, which is the
 // same lane gawk-pubsim -audio drives in CI.
 func TestSubscriberReceivesAudio(t *testing.T) {
+	t.Parallel()
 	relayURL, _ := startRelay(t)
 
 	packets, err := fixture.SplitAudio(fixture.Audio)
@@ -646,6 +692,7 @@ func TestSubscriberReceivesAudio(t *testing.T) {
 // zombie publisher from a live one inside the QUIC idle window, and the old
 // 409 there forced the mint fallback that orphaned every viewer.
 func TestReclaimSupersedesAgainstRealRelay(t *testing.T) {
+	t.Parallel()
 	relayURL, _ := startRelay(t)
 
 	src := newFixtureSource(t, engine.NewClock())
@@ -764,6 +811,7 @@ func TestReclaimSupersedesAgainstRealRelay(t *testing.T) {
 // gawk-broadcast://native Origin header is one the QUIC/H3 stack transmits and
 // a real relay accepts, rather than choking on the unusual scheme.
 func TestCustomOriginDoesNotBreakTheDial(t *testing.T) {
+	t.Parallel()
 	relayURL, _ := startRelay(t, "-allowed-origins", engine.DefaultOrigin)
 
 	src := newFixtureSource(t, engine.NewClock())
@@ -787,6 +835,7 @@ func TestCustomOriginDoesNotBreakTheDial(t *testing.T) {
 // R2's publish secret, end to end: the query param the browser is forced to
 // use, and the 401 the browser cannot see.
 func TestPublishSecretAgainstRealRelay(t *testing.T) {
+	t.Parallel()
 	relayURL, _ := startRelay(t, "-publish-secret", "s3cret")
 
 	// Wrong secret → 401, as a sentence.

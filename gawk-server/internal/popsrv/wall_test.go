@@ -249,6 +249,7 @@ func (w *wallFleet) onWall(id string) bool {
 // is refused; and a broadcaster's 0x18 carries the wall code and its
 // on-wall state.
 func TestPartyBroadcastsJoinTheWallAndOutsidersCannot(t *testing.T) {
+	t.Parallel()
 	w := startWallFleet(t)
 	outsider := openRoom(t, w.f, "https://"+w.home.Addr()+"/room/"+wallCode, "outsider")
 	if st := outsider.state(t); st.Flags&wire.RoomStateFlagAttachOK != 0 || st.Code != wallCode {
@@ -303,6 +304,7 @@ func TestPartyBroadcastsJoinTheWallAndOutsidersCannot(t *testing.T) {
 // the PoP proxied home over the link; the broadcaster's 0x18 follows; a
 // broadcaster that remembered Hide (wall=hidden) never appears.
 func TestWallHideShowAndHiddenNeverFlashes(t *testing.T) {
+	t.Parallel()
 	w := startWallFleet(t)
 	outsider := openRoom(t, w.f, "https://"+w.home.Addr()+"/room/"+wallCode, "outsider")
 	outsider.state(t)
@@ -346,6 +348,7 @@ func TestWallHideShowAndHiddenNeverFlashes(t *testing.T) {
 // Unlinked, party guests see the local wall: the PoP's own broadcasts as
 // tiles, read-only.
 func TestUnlinkedPartyGuestsSeeTheLocalWall(t *testing.T) {
+	t.Parallel()
 	w := startWallFleet(t)
 	p := w.publish(t, url.Values{"name": {"tuhis"}}.Encode())
 	WaitFor(t, "the tile on the local wall", func() bool {
@@ -384,6 +387,7 @@ func rawDialPublic(t *testing.T, f *HomeFleet, pod *HomePod, path string) (*webt
 // a record dropped in an outage) comes back without the broadcaster doing
 // anything, and a hidden broadcast stays off.
 func TestAConfigResyncsTheWallHome(t *testing.T) {
+	t.Parallel()
 	w := startWallFleet(t)
 	p := w.publish(t, url.Values{"name": {"tuhis"}}.Encode())
 	hidden := w.publish(t, "wall=hidden")
@@ -412,6 +416,7 @@ func TestAConfigResyncsTheWallHome(t *testing.T) {
 // room at the PoP keeps its broadcast on the wall everyone sees, home's,
 // and the 0x18 keeps saying so, through a config resync too.
 func TestAMintAtThePoPKeepsTheBroadcastOnHomesWall(t *testing.T) {
+	t.Parallel()
 	w := startWallFleet(t)
 	p := w.publish(t, "")
 	WaitFor(t, "the tile on home's wall", func() bool { return w.onWall(p.id) })
@@ -442,6 +447,7 @@ func TestAMintAtThePoPKeepsTheBroadcastOnHomesWall(t *testing.T) {
 // check it); the PoP vouches for its own broadcast, as it does for the
 // wall, and the broadcast stays on the wall as well (OD17).
 func TestAPartyBroadcasterAttachesToAHomeRoomThroughThePoP(t *testing.T) {
+	t.Parallel()
 	w := startWallFleet(t)
 	if err := w.reg.UpsertStatic(roomsrv.StaticRoom{Code: "lan-team", DisplayCode: "lan-team"}); err != nil {
 		t.Fatal(err)

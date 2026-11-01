@@ -390,6 +390,11 @@ func TestUplinkFirstGopIsNotFlowControlBlocked(t *testing.T) {
 // (hub.MaxUplinkCarriers) gets a hole a little way in, and the publisher keeps writing until flow control stops
 // it. What the relay holds must stay within its connection receive window;
 // the measured number is recorded in docs/75 §8 RU1.
+//
+// Deliberately not t.Parallel: it waits for the held bytes to stay flat for
+// 2 s inside a 30 s budget, and with other tests competing for the CPU under
+// -race the trickle never settles (failed "held bytes never settled" in a
+// parallel `go test -race ./...`, 2026-11-01; ~11 s serial, ~24 s parallel).
 func TestUplinkHostilePublisherHoleIsBounded(t *testing.T) {
 	if testing.Short() {
 		t.Skip("writes until flow control stops a hostile publisher")

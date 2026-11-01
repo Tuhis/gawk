@@ -128,6 +128,7 @@ func oneLocalRelayOffer(t *testing.T, who string, msgs [][]byte) wire.LocalRelay
 // client-facing session kinds; the publish session's is asked with its
 // broadcast ID (minted or reclaimed), the others with "".
 func TestLocalRelayInfoOnEveryClientSessionKind(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	port, clientTLS, _, srv, _ := startRoomServer(t, ctx, nil)
@@ -177,6 +178,7 @@ func TestLocalRelayInfoOnEveryClientSessionKind(t *testing.T) {
 // Without a provider (every home relay, every relay before R74) nothing new
 // is sent.
 func TestNoLocalRelayInfoWithoutAProvider(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	port, clientTLS, _, _ := startTestServer(t, ctx, 5)
@@ -198,6 +200,7 @@ func TestNoLocalRelayInfoWithoutAProvider(t *testing.T) {
 
 // Stripe legs carry media only: the primary gets the 0x18, its legs never.
 func TestLocalRelayInfoNeverOnStripeLegs(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	port, clientTLS, r, _, srv := startTestServerCfgLogSrv(t, ctx, stripedTestConfig(15), discardLog)
@@ -224,6 +227,7 @@ func TestLocalRelayInfoNeverOnStripeLegs(t *testing.T) {
 // An edge reads every uni stream on /internal/subscribe as a keyframe, so
 // neither notice ever goes there.
 func TestLocalRelayNoticesNeverOnInternalSubscribe(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cs := fake.NewClientset()
@@ -276,6 +280,7 @@ func TestSessionNoticesGuardInternalAndPopPaths(t *testing.T) {
 // A home offers on all four client-facing kinds, asking the Offerer with the
 // client's address and its lr=1 flag; a refusal sends nothing.
 func TestLocalRelayOfferOnEveryClientSessionKind(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	port, clientTLS, _, srv, _ := startRoomServer(t, ctx, nil)
@@ -321,6 +326,7 @@ func TestLocalRelayOfferOnEveryClientSessionKind(t *testing.T) {
 // A PoP's own dials to home (its console probing /echo) carry popOrigin and
 // are never offered the PoP itself.
 func TestLocalRelayOfferNeverToAPoPsOwnOrigin(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	port, clientTLS, _, _, srv := startTestServerCfgLogSrv(t, ctx, stripedTestConfig(5), discardLog)
@@ -338,6 +344,7 @@ func TestLocalRelayOfferNeverToAPoPsOwnOrigin(t *testing.T) {
 
 // Setting nil removes either hook.
 func TestSetLocalRelayAndOffererNilRemoves(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	port, clientTLS, _, _, srv := startTestServerCfgLogSrv(t, ctx, stripedTestConfig(5), discardLog)

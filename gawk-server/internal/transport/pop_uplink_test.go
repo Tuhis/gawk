@@ -361,6 +361,7 @@ func sendDeltasUntilSeen(t *testing.T, p *publisher, v *viewer, frameID uint32) 
 // and the leg's delivery follows home's CapUplinkCarriers and the PoP's
 // -pop-leg-delivery.
 func TestOutsideViewerGetsTheBroadcastByteIdenticalOnlyOnDemand(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name         string
 		homeCarriers bool
@@ -463,6 +464,7 @@ func TestOutsideViewerGetsTheBroadcastByteIdenticalOnlyOnDemand(t *testing.T) {
 // with 4013 and the Lease is a dormant reservation again; the PoP keeps the
 // broadcast local, and the next outside viewer wants it again.
 func TestLingerClosesTheLegWith4013AndHandsBackTheReservation(t *testing.T) {
+	t.Parallel()
 	u := startUplinkFleet(t, 2, fleetOpts{home: func(c *config.Config) { c.PopUplinkLinger = 2 * time.Second }})
 	u.f.Route(0)
 	u.pair(t)
@@ -527,6 +529,7 @@ func TestLingerClosesTheLegWith4013AndHandsBackTheReservation(t *testing.T) {
 // linger hands the Lease back to a dormant reservation instead of leaving
 // it to the grace deadline, where the janitor would delete it.
 func TestAnEndedLegsLingerHandsTheLeaseBack(t *testing.T) {
+	t.Parallel()
 	u := startUplinkFleet(t, 2, fleetOpts{home: func(c *config.Config) { c.PopUplinkLinger = 2 * time.Second }})
 	u.f.Route(0)
 	u.pair(t)
@@ -614,6 +617,7 @@ func TestATransientLegClaimFailureKeepsTheWaitingViewers(t *testing.T) {
 // three streams; the fourth outside broadcast's viewer is told 4012
 // PopUplinkFull, in-band first (docs/76 item 28).
 func TestFourthStreamIsRefusedWith4012(t *testing.T) {
+	t.Parallel()
 	u := startUplinkFleet(t, 2, fleetOpts{})
 	u.f.Route(0)
 	u.pair(t)
@@ -693,6 +697,7 @@ func TestMintPastTheLimitStaysPartyOnly(t *testing.T) {
 // on it is joinable from outside like any reserved broadcast (docs/76 item
 // 15).
 func TestUnlinkedMintIsReservedOnRelink(t *testing.T) {
+	t.Parallel()
 	u := startUplinkFleet(t, 2, fleetOpts{})
 	p := publishOnPoP(t, u) // not paired yet: the mint does not wait on home
 	kf := keyframeMsg(t, 1)
@@ -727,6 +732,7 @@ func TestUnlinkedMintIsReservedOnRelink(t *testing.T) {
 // timers (15 s idle, 5 s keepalive), so a 10 s blackout of the venue's
 // uplink delays the stream without ending the leg (docs/76 item 18).
 func TestTenSecondOutageDoesNotEndTheLeg(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("10 s outage")
 	}
@@ -850,6 +856,7 @@ func (b *udpBlackhole) back(peer *net.UDPConn, to *net.UDPAddr) {
 // outside viewer (on a pod other than the leg's) is told 4014 too, well
 // inside the grace.
 func TestOutsideViewerIsToldThePartyBroadcasterStopped(t *testing.T) {
+	t.Parallel()
 	u := startUplinkFleet(t, 3, fleetOpts{})
 	u.f.Route(0)
 	u.pair(t)

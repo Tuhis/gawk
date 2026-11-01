@@ -676,6 +676,7 @@ func TestPublisherRestartPrimesWithNewConfig(t *testing.T) {
 }
 
 func TestSubscriberSurvivesPublisherRestart(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	port, clientTLS, r, _ := startTestServerCfg(t, ctx, config.Config{
@@ -746,6 +747,7 @@ func readNextKeyframeStreamNoFatal(ctx context.Context, sub *webtransport.Sessio
 }
 
 func TestIdleSubscriberTimesOutWithoutKeepalive(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	port, clientTLS, r, _ := startTestServerCfg(t, ctx, config.Config{
@@ -1281,6 +1283,7 @@ func TestTwoBroadcastsRelayIndependently(t *testing.T) {
 // E4: /statusz graceRemainingSeconds is 0 while the publisher is active and
 // counts down after it disconnects.
 func TestStatuszGraceRemainingMoves(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	port, clientTLS, r, _ := startTestServerCfg(t, ctx, config.Config{

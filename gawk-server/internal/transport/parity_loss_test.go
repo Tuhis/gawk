@@ -181,6 +181,7 @@ func (s *frameSink) assess(t *testing.T, want map[uint32][][]byte, chunkCount in
 // That is not an incidental constant — it is why the feature exists, and
 // picking a friendlier shape would prove something nobody is asking about.
 func TestParityRecoversFramesLostOnALossyDownlink(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	port, clientTLS, r, _ := startTestServerCfg(t, ctx, config.Config{
