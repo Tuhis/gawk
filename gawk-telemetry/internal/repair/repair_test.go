@@ -349,6 +349,41 @@ func TestRelayRepair(t *testing.T) {
 	}
 }
 
+// The relay pass edits bytes instead of re-encoding: a marked line is the
+// stored line with `"stripeLeg":true` added to the right object (or an
+// explicit false overwritten), key order and every other byte unchanged, and
+// the untouched lines of a rewritten file are byte-identical.
+func TestRelayEditsAreMinimal(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "relay", "date=2026-09-20")
+	prim := `{"kind":"subscriber","atMs":5,"pod":"pod-a","role":"origin","broadcastKey":"` + bkey + `","sessionId":"` + sidX + `","subscriber":{"key":"p","keyframesSent":9,"note":"a \"}\" in a string"}}`
+	legFalse := `{"kind":"subscriber","atMs":5,"pod":"pod-a","role":"origin","broadcastKey":"` + bkey + `","sessionId":"` + sidX + `","subscriber":{"key":"l1","stripeLeg":false,"zz":1}}`
+	legEmpty := `{"kind":"subscriber","atMs":5,"pod":"pod-a","role":"origin","broadcastKey":"` + bkey + `","sessionId":"` + sidX + `","subscriber":{ }}`
+	bc := `{"kind":"broadcast","atMs":5,"broadcastKey":"` + bkey + `","broadcast":{"subscriberDetails":[ {"sessionId":"` + sidX + `","keyframesSent":9} , {"sessionId":"` + sidX + `","x":[1,{"y":"}"}]} ],"after":true},"tail":[]}`
+	other := `{"kind":"subscriber","atMs":5,"broadcastKey":"` + bkey + `","sessionId":"` + sidY + `","subscriber":{"key":"y"}}`
+	in := strings.Join([]string{prim, legFalse, legEmpty, bc, other, "garbage {"}, "\n") + "\n"
+	write(t, filepath.Join(dir, "pod-a.ndjson"), []byte(in))
+
+	s := run(t, root)
+	got := lines(read(t, filepath.Join(dir, "pod-a.ndjson")))
+	want := []string{
+		prim,
+		strings.Replace(legFalse, `"stripeLeg":false`, `"stripeLeg":true`, 1),
+		strings.Replace(legEmpty, `"subscriber":{ }`, `"subscriber":{ "stripeLeg":true}`, 1),
+		strings.Replace(bc, `{"y":"}"}]}`, `{"y":"}"}],"stripeLeg":true}`, 1),
+		other,
+		"garbage {",
+	}
+	for i := range want {
+		if i >= len(got) || got[i] != want[i] {
+			t.Errorf("line %d:\n got %s\nwant %s", i, got[i], want[i])
+		}
+	}
+	if s.Relay.SubscriberLinesMarked != 2 || s.Relay.SubscriberDetailsMarked != 1 || s.Relay.UnparsedLinesKept != 1 {
+		t.Errorf("summary = %+v", s.Relay)
+	}
+}
+
 // --- run-once, crash safety ------------------------------------------------
 
 func TestRunOnceAndIdempotent(t *testing.T) {
@@ -439,8 +474,15 @@ func TestAPreviousAttemptIsNeverRetried(t *testing.T) {
 	day := filepath.Join(root, "rollups", "2026-09-20.ndjson")
 	write(t, day, []byte(rowPoisoned+"\n"))
 	write(t, StartedPath(root), []byte("{}\n"))
+	// A death mid-rewrite can leave a temp file, and relay readers read every
+	// file in a partition: it must go even though the repair does not run.
+	stale := filepath.Join(root, "relay", "date=2026-09-20", ".pod-a.ndjson.gz"+tmpSuffix)
+	write(t, stale, []byte("partial"))
 
 	_, ran, err := Run(root)
+	if _, serr := os.Stat(stale); !os.IsNotExist(serr) {
+		t.Error("an abandoned attempt's temp file survived; readers would take it for a pod")
+	}
 	if ran || !errors.Is(err, ErrPreviousAttempt) {
 		t.Fatalf("Run with a stale in-progress marker: ran=%v err=%v, want ErrPreviousAttempt", ran, err)
 	}

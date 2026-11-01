@@ -19,13 +19,16 @@
 // Every changed row says so in `repairs` (stable ids below). Rows are
 // rewritten through map[string]json.RawMessage, never rollup.Row: decoding
 // into the current struct would silently drop every field a newer release
-// wrote (docs/gotchas.md). Lines that do not parse, and lines with nothing to
-// fix, are written back byte for byte. A file with nothing to fix is not
-// rewritten at all; one that is goes through a temp file, fsync and rename.
+// wrote (docs/gotchas.md). Relay lines are edited at the byte level instead
+// (relay.go). Lines that do not parse, and lines with nothing to fix, are
+// written back byte for byte. A file with nothing to fix is not rewritten at
+// all; one that is goes through a temp file, fsync and rename.
 //
-// It runs before the store is opened for ingest and before any listener, so
-// nothing appends concurrently. A marker file records completion; every step
-// is idempotent, so a crash before the marker simply runs it again.
+// It runs before the store, the scraper and the real ingest handler exist,
+// so nothing appends concurrently (the ingest listener is up behind a gate
+// that answers /healthz and 503s the rest). It is attempted once: an
+// in-progress marker precedes the first rewrite and a done marker records
+// completion, so a boot after a death or a failure skips it (Run).
 package repair
 
 import (
@@ -39,7 +42,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
@@ -135,6 +137,11 @@ func Run(root string) (s Summary, ran bool, err error) {
 		return s, false, err
 	}
 	if _, err := os.Stat(StartedPath(root)); err == nil {
+		// Not repairing, but a death mid-rewrite may have left a temp file,
+		// and relay readers read every file in a partition.
+		if err := removeTemps(root); err != nil {
+			return s, false, err
+		}
 		return s, false, ErrPreviousAttempt
 	} else if !os.IsNotExist(err) {
 		return s, false, err
@@ -165,6 +172,26 @@ func Run(root string) (s Summary, ran bool, err error) {
 		return err
 	})
 	return s, true, err
+}
+
+// removeTemps deletes every in-flight rewrite an interrupted run left
+// (readDir removes them as it lists).
+func removeTemps(root string) error {
+	if _, err := readDir(filepath.Join(root, "rollups")); err != nil {
+		return err
+	}
+	dates, err := readDir(filepath.Join(root, "relay"))
+	if err != nil {
+		return err
+	}
+	for _, d := range dates {
+		if d.IsDir() {
+			if _, err := readDir(filepath.Join(root, "relay", d.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // --- rollups -------------------------------------------------------------
@@ -288,236 +315,6 @@ func striped(row map[string]json.RawMessage, series map[string]json.RawMessage) 
 		Max float64 `json:"max"`
 	}
 	return json.Unmarshal(series["stripeActive"], &st) == nil && st.Max > 0
-}
-
-// --- relay -----------------------------------------------------------------
-
-// A group is every audience-looking subscriber entry of one session in one
-// scrape round. A round is one ScrapeOnce pass: every pod's observations
-// carry the SAME atMs (relayscrape stamps them from one clock reading), and a
-// leg may land on any pod behind the UDP LB — so the group spans all pod files
-// of the date. Stored lines and the broadcast lines' subscriberDetails are
-// grouped separately (detail) but judged by the same rule, so they agree.
-type groupKey struct {
-	atMs         int64
-	broadcastKey string
-	sessionID    string
-	detail       bool
-}
-
-type loc struct{ file, line, idx int }
-
-type group struct {
-	n     int
-	leg   bool // a member already says stripeLeg: post-#657, leave it
-	score uint64
-	keep  loc
-	files uint64 // bitmask of file indices holding members; all ones past 64
-}
-
-type subProbe struct {
-	SessionID        string `json:"sessionId"`
-	Internal         bool   `json:"internal"`
-	StripeLeg        bool   `json:"stripeLeg"`
-	KeyframesSent    uint64 `json:"keyframesSent"`
-	KeyframesDropped uint64 `json:"keyframesDropped"`
-}
-
-type obsProbe struct {
-	Kind         string    `json:"kind"`
-	AtMs         int64     `json:"atMs"`
-	BroadcastKey string    `json:"broadcastKey"`
-	SessionID    string    `json:"sessionId"`
-	Subscriber   *subProbe `json:"subscriber"`
-	Broadcast    *struct {
-		SubscriberDetails []subProbe `json:"subscriberDetails"`
-	} `json:"broadcast"`
-}
-
-func repairRelay(dir string) (RelaySummary, error) {
-	var sum RelaySummary
-	dates, err := readDir(dir)
-	if err != nil {
-		return sum, err
-	}
-	for _, d := range dates {
-		if !d.IsDir() || !datePartRe.MatchString(d.Name()) {
-			continue
-		}
-		sum.DatesScanned++
-		if err := repairRelayDate(filepath.Join(dir, d.Name()), &sum); err != nil {
-			return sum, err
-		}
-	}
-	return sum, nil
-}
-
-func repairRelayDate(dir string, sum *RelaySummary) error {
-	entries, err := readDir(dir)
-	if err != nil {
-		return err
-	}
-	var files []string
-	for _, e := range entries {
-		if e.Type().IsRegular() {
-			files = append(files, filepath.Join(dir, e.Name()))
-		}
-	}
-	sort.Strings(files)
-
-	// Pass 1: index the groups. Streaming, because a busy day's relay files
-	// are far larger than the rollups, and the pod's memory limit is shared
-	// with nothing yet but is not generous.
-	groups := map[groupKey]*group{}
-	skipped := map[int]bool{}
-	add := func(k groupKey, s subProbe, at loc) {
-		if s.Internal || k.sessionID == "" {
-			return
-		}
-		g := groups[k]
-		if g == nil {
-			g = &group{}
-			groups[k] = g
-		}
-		if s.StripeLeg {
-			g.leg = true
-			return
-		}
-		// The primary is the member that received keyframes: a leg never
-		// does (docs/35 §5.1). On a tie the first in file order stays.
-		if sc := score(s); g.n == 0 || sc > g.score {
-			g.score, g.keep = sc, at
-		}
-		g.n++
-		if at.file < 64 {
-			g.files |= 1 << at.file
-		} else {
-			g.files = ^uint64(0)
-		}
-	}
-	for fi, path := range files {
-		err := eachLine(path, func(li int, body []byte) error {
-			var o obsProbe
-			if json.Unmarshal(body, &o) != nil {
-				return nil
-			}
-			if o.Subscriber != nil {
-				add(groupKey{o.AtMs, o.BroadcastKey, o.SessionID, false}, *o.Subscriber, loc{fi, li, -1})
-			}
-			if o.Broadcast != nil {
-				for i, s := range o.Broadcast.SubscriberDetails {
-					add(groupKey{o.AtMs, o.BroadcastKey, s.SessionID, true}, s, loc{fi, li, i})
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			// A file no reader can read whole either (a gzip cut short by a
-			// crash): never rewritten, so its tail is not lost. Its entries
-			// may still have been indexed; one left unmarked only leaves that
-			// round over-counted, as it was.
-			skipped[fi] = true
-			sum.UnreadableFilesSkipped++
-		}
-	}
-	var touched uint64
-	for _, g := range groups {
-		if g.n > 1 && !g.leg {
-			touched |= g.files
-		}
-	}
-
-	// Pass 2: rewrite only the files holding a duplicate.
-	isLeg := func(k groupKey, s subProbe, at loc) bool {
-		if s.Internal || s.StripeLeg || k.sessionID == "" {
-			return false
-		}
-		g := groups[k]
-		return g != nil && g.n > 1 && !g.leg && g.keep != at
-	}
-	for fi, path := range files {
-		if skipped[fi] || fi < 64 && touched&(1<<fi) == 0 {
-			continue
-		}
-		var lines []line
-		marked := 0
-		err := eachLineRaw(path, func(li int, ln line) error {
-			lines = append(lines, ln)
-			var o obsProbe
-			if json.Unmarshal(ln.body, &o) != nil {
-				if len(bytes.TrimSpace(ln.body)) > 0 {
-					sum.UnparsedLinesKept++
-				}
-				return nil
-			}
-			markLine := o.Subscriber != nil && isLeg(groupKey{o.AtMs, o.BroadcastKey, o.SessionID, false}, *o.Subscriber, loc{fi, li, -1})
-			var markIdx []int
-			if o.Broadcast != nil {
-				for i, s := range o.Broadcast.SubscriberDetails {
-					if isLeg(groupKey{o.AtMs, o.BroadcastKey, s.SessionID, true}, s, loc{fi, li, i}) {
-						markIdx = append(markIdx, i)
-					}
-				}
-			}
-			if !markLine && len(markIdx) == 0 {
-				return nil
-			}
-			out, err := markLegs(ln.body, markLine, markIdx)
-			if err != nil {
-				return fmt.Errorf("%s line %d: %w", path, li+1, err)
-			}
-			lines[len(lines)-1].body = out
-			marked++
-			if markLine {
-				sum.SubscriberLinesMarked++
-			}
-			sum.SubscriberDetailsMarked += len(markIdx)
-			return nil
-		})
-		if err != nil {
-			return err
-		}
-		if marked == 0 {
-			continue
-		}
-		gz := strings.HasSuffix(path, ".gz")
-		if err := atomicWrite(path, gz, func(w io.Writer) error { return writeLines(w, lines) }); err != nil {
-			return err
-		}
-		sum.FilesRewritten++
-	}
-	return nil
-}
-
-func score(s subProbe) uint64 { return s.KeyframesSent + s.KeyframesDropped }
-
-// markLegs sets stripeLeg on the line's subscriber object and/or on the given
-// subscriberDetails elements, leaving every other field as it was.
-func markLegs(body []byte, subscriber bool, details []int) ([]byte, error) {
-	var top map[string]json.RawMessage
-	if err := json.Unmarshal(body, &top); err != nil {
-		return nil, err
-	}
-	if subscriber {
-		sub := object(top["subscriber"])
-		sub["stripeLeg"] = json.RawMessage("true")
-		setObject(top, "subscriber", sub)
-	}
-	if len(details) > 0 {
-		bc := object(top["broadcast"])
-		var arr []json.RawMessage
-		if err := json.Unmarshal(bc["subscriberDetails"], &arr); err != nil {
-			return nil, err
-		}
-		for _, i := range details {
-			el := object(arr[i])
-			el["stripeLeg"] = json.RawMessage("true")
-			arr[i] = encode(el)
-		}
-		bc["subscriberDetails"] = mustRaw(arr)
-		setObject(top, "broadcast", bc)
-	}
-	return encode(top), nil
 }
 
 // --- JSON helpers ----------------------------------------------------------
