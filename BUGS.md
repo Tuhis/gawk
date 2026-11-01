@@ -4,6 +4,31 @@ Confirmed, not-yet-fixed defects. Each entry says how it was found, what the
 impact is, and where a fix would start. Remove entries when fixed (and move
 anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 
+## Telemetry SQL: a result containing NaN or ±Inf kills the query worker
+
+- **Found**: 2026-11-01, during R82's NQ0 spike (docs/84 §12.4), against the
+  reference deployment (`gawk-telemetry` 1.14.2). A local model's draft
+  averaged `framesDroppedIncomplete / (framesDroppedIncomplete +
+  decodedFrames)` over viewer rollups; 66 rows have both at 0, so the
+  average is NaN.
+- **What**: `SELECT 1/0`, `SELECT 'nan'::DOUBLE` and `SELECT 'inf'::DOUBLE`
+  each answer `sqlengine: query worker failed without answering (exit status
+  1)` in about 0.4 s. `SELECT isinf(1/0)` answers `true`, so DuckDB is fine;
+  what fails is the worker's reply. `runWorker` (`internal/sqlengine/
+  isolated.go`) encodes its response with `encoding/json`, which refuses NaN
+  and ±Inf, and on that error it returns 1 without writing anything.
+- **Impact**: any console or MCP `query_sql` statement whose result has a
+  NaN or infinite DOUBLE fails with a message that says nothing about why.
+  An `avg` of a ratio over sessions that include an empty one is enough,
+  which is an ordinary analytics query. The pod, ingest and later queries
+  are unaffected (0 restarts; the next statement answers).
+- **Fix would start**: test first, in `isolated_duckdb_test.go`: `SELECT
+  1/0` must return a result, not an error. Then either encode non-finite
+  floats as JSON `null` (or as the strings `"NaN"`, `"Infinity"`), which the
+  console and MCP already render, or at least have the worker report the
+  encode error in `workerResponse.Err` so the console can say what went
+  wrong.
+
 ## Room footer: a round control sits on top of the quality pill at 390 px
 
 - **Found**: 2026-10-28, reading `e2e/voice-panel.mjs`'s `hold-to-talk-390.png`

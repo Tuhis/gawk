@@ -1,0 +1,117 @@
+{
+ "_scale": "C = correct, P = partial, W = wrong (docs/84 \u00a712.1)",
+ "anthropic_claude-opus-5-5_glossary_medium": {
+  "q19": [
+   "P",
+   "x axis is receivedAtMs, the batch arrival: 2,821 samples on a few hundred x values"
+  ]
+ },
+ "anthropic_claude-sonnet-5-5_glossary_medium": {
+  "q19": [
+   "P",
+   "plots tMs (ms since session start) as an epoch: 1970 axis"
+  ]
+ },
+ "anthropic_claude-haiku-5-5_glossary_medium": {
+  "q03": [
+   "W",
+   "ratio over decodedFrames alone: macOS average 484"
+  ]
+ },
+ "anthropic_claude-sonnet-5-5_catalogue_medium": {
+  "q04": [
+   "P",
+   "no role = 'viewer': broadcasters included"
+  ],
+  "q07": [
+   "W",
+   "grouped by browser with version, not family"
+  ],
+  "q09": [
+   "W",
+   "looked for native via config.CapturePath/Encoder: 0 rows"
+  ],
+  "q16": [
+   "P",
+   "no role filter: Firefox broadcasters included"
+  ],
+  "q19": [
+   "W",
+   "startedAtMs + tMs: startedAtMs is null on samples, no time axis"
+  ],
+  "q20": [
+   "P",
+   "compared by browser version, not family"
+  ]
+ },
+ "anthropic_claude-sonnet-5-5_schema_medium": {
+  "q04": [
+   "P",
+   "no role = 'viewer': broadcasters included"
+  ],
+  "q07": [
+   "W",
+   "grouped by browser with version, not family"
+  ],
+  "q09": [
+   "W",
+   "looked for native in sessions.app.surface: 0 rows"
+  ],
+  "q16": [
+   "P",
+   "no role filter: Firefox broadcasters included"
+  ],
+  "q17": [
+   "W",
+   "native = app.surface 'native': 0 rows"
+  ],
+  "q20": [
+   "P",
+   "compared by browser version, not family"
+  ]
+ },
+ "anthropic_claude-sonnet-5-5_slim_medium": {
+  "q18": [
+   "P",
+   "concurrency from overlapping rollup intervals (12 on 10-26) where the relay's own viewersGlobal says 8"
+  ],
+  "q19": [
+   "P",
+   "plots tMs as an epoch: 1970 axis"
+  ]
+ },
+ "anthropic_claude-haiku-5-5_slim_medium": {
+  "q03": [
+   "W",
+   "ratio over decodedFrames alone: macOS average 484"
+  ],
+  "q19": [
+   "P",
+   "plots tMs as an epoch: 1970 axis"
+  ]
+ },
+ "anthropic_claude-haiku-5-5_glossary_medium_v2": {
+  "q18": [
+   "P",
+   "one broadcast's peak viewersGlobal per day (4 on 10-26), not the fleet-wide sum (8)"
+  ]
+ },
+ "anthropic_claude-sonnet-5-5_glossary_medium_v2": {},
+ "anthropic_claude-opus-5-5_glossary_medium_v2": {},
+ "ollama_qwen2.5-coder-7b_slim": {
+  "q03": [
+   "W",
+   "no role filter; 0/0 rows make the average NaN, which kills the query worker (BUGS.md)"
+  ],
+  "q09": [
+   "W",
+   "version parsed from browser instead of appVersion: one empty row"
+  ]
+ },
+ "ollama_qwen2.5-coder-7b_glossary": {
+  "q11": [
+   "W",
+   "no answer: the first request timed out at 30 min"
+  ]
+ }
+}

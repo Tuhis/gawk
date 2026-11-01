@@ -1,0 +1,1 @@
+{"id": "q11", "q": "How many viewer sessions reconnected more than 3 times?", "interp": "", "sql": "", "checks": 0, "usage": {}, "gen_s": 1800.1, "error": "TimeoutError('timed out')", "ran": false, "run_error": "no SQL produced", "rowCount": null, "columns": null}

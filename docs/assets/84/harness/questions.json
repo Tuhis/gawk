@@ -1,0 +1,122 @@
+[
+ {
+  "id": "q01",
+  "q": "How many sessions we had in the last 5 days?",
+  "ref": "SELECT role, count(*) AS sessions FROM rollups WHERE startedAt >= epoch_ms(now() - INTERVAL 5 DAY) GROUP BY role",
+  "grade": "count of rollups started in last 5 days (any role split acceptable; total 67 on 2026-11-01). Counting sessions-view distinct sessionId with date filter also acceptable."
+ },
+ {
+  "id": "q02",
+  "q": "How many viewers do the top 5% of sessions have?",
+  "ref": "SELECT quantile_cont(series.viewerCount.max, 0.95) AS p95_peak_viewers FROM rollups WHERE role='broadcaster'",
+  "grade": "fuzzy: broadcaster sessions' viewer count at the 95th percentile (peak or median viewerCount), or viewer-sessions-per-broadcast at p95. Must use a percentile / top-5% cut, not a plain max or avg."
+ },
+ {
+  "id": "q03",
+  "q": "What was the average loss ratio viewers experienced per platform?",
+  "ref": "SELECT os, avg(counters.framesDroppedIncomplete / nullif(counters.decodedFrames + counters.framesDroppedIncomplete, 0)) AS avg_loss FROM rollups WHERE role='viewer' GROUP BY os",
+  "grade": "fuzzy: viewer rollups grouped by os; a ratio of lost/dropped to total frames (framesDroppedIncomplete is 'the direct cost of datagram loss'), or stripe*LossPct. Must be a ratio, not a raw count; must guard divide-by-zero."
+ },
+ {
+  "id": "q04",
+  "q": "How does user experience between linux and windows compare?",
+  "ref": "SELECT os, count(*) n, avg(stalls) stalls, avg(totalStallMs/nullif(durationMs,0)) stall_share, median(series.capToRenderMs.median) g2g_ms, avg(reconnects) reconnects, avg(verdict.healthy::int) healthy FROM rollups WHERE role='viewer' AND os IN ('Linux','Windows') GROUP BY os",
+  "grade": "fuzzy: viewer rollups, os in Linux/Windows, several experience metrics side by side (stalls, fps, latency, loss, reconnects, verdict). One metric only = partial."
+ },
+ {
+  "id": "q05",
+  "q": "Which broadcast had the most viewer sessions last week?",
+  "ref": "SELECT broadcastKey, count(*) n FROM rollups WHERE role='viewer' AND startedAt >= epoch_ms(now() - INTERVAL 7 DAY) GROUP BY 1 ORDER BY n DESC LIMIT 1",
+  "grade": "group viewer rollups by broadcastKey, last 7 days (or previous calendar week), top 1."
+ },
+ {
+  "id": "q06",
+  "q": "How many distinct broadcasts were there in October 2026?",
+  "ref": "SELECT count(DISTINCT broadcastKey) FROM rollups WHERE startedAt >= epoch_ms(TIMESTAMP '2026-10-01') AND startedAt < epoch_ms(TIMESTAMP '2026-11-01')",
+  "grade": "distinct broadcastKey (or broadcaster sessions) within October bounds on startedAt."
+ },
+ {
+  "id": "q07",
+  "q": "What share of viewer sessions had at least one stall, by browser family?",
+  "ref": "SELECT split_part(browser,' ',1) fam, avg((stalls>0)::int) AS stall_share, count(*) n FROM rollups WHERE role='viewer' GROUP BY 1 ORDER BY n DESC",
+  "grade": "must strip version from browser (Firefox 159 -> Firefox); share = fraction with stalls>0."
+ },
+ {
+  "id": "q08",
+  "q": "What's the typical glass-to-glass latency for viewers on each OS?",
+  "ref": "SELECT os, median(series.capToRenderMs.median) FROM rollups WHERE role='viewer' GROUP BY os",
+  "grade": "must use capToRenderMs (capture-to-render). median/avg both OK."
+ },
+ {
+  "id": "q09",
+  "q": "Which versions of the Windows native broadcaster are in use and how many sessions each?",
+  "ref": "SELECT appVersion, count(*) FROM rollups WHERE role='broadcaster' AND browser='gawk-broadcast-windows' GROUP BY 1 ORDER BY 2 DESC",
+  "grade": "must identify native broadcaster via browser='gawk-broadcast-windows' (not Chrome-on-Windows broadcasters)."
+ },
+ {
+  "id": "q10",
+  "q": "Plot the average viewer session length per day over the last two weeks",
+  "ref": "SELECT date_trunc('day', to_timestamp(startedAt/1000)) AS day_bucket, avg(durationMs)/60000 avg_min FROM rollups WHERE role='viewer' AND startedAt >= epoch_ms(now() - INTERVAL 14 DAY) GROUP BY 1 ORDER BY 1",
+  "grade": "per-day bucket from epoch-ms startedAt, avg durationMs, ordered by day; time column first so the console can chart it."
+ },
+ {
+  "id": "q11",
+  "q": "How many viewer sessions reconnected more than 3 times?",
+  "ref": "SELECT count(*) FROM rollups WHERE role='viewer' AND reconnects > 3",
+  "grade": "exact."
+ },
+ {
+  "id": "q12",
+  "q": "Which video codec do broadcasters use most?",
+  "ref": "SELECT config.codec, count(*) FROM rollups WHERE role='broadcaster' GROUP BY 1 ORDER BY 2 DESC",
+  "grade": "config.codec grouped, broadcaster role."
+ },
+ {
+  "id": "q13",
+  "q": "What are the most common diagnosis findings on unhealthy viewer sessions?",
+  "ref": "SELECT f.id, count(*) FROM (SELECT unnest(verdict.findings) f FROM rollups WHERE role='viewer' AND NOT verdict.healthy) GROUP BY 1 ORDER BY 2 DESC",
+  "grade": "must unnest verdict.findings list and count by id."
+ },
+ {
+  "id": "q14",
+  "q": "Which relay pod served the most viewer sessions on 28 October?",
+  "ref": "SELECT relayPod, count(*) n FROM rollups WHERE role='viewer' AND to_timestamp(startedAt/1000)::DATE = DATE '2026-10-28' GROUP BY 1 ORDER BY n DESC LIMIT 1",
+  "grade": "relayPod, 28 Oct 2026 day bounds, viewer role."
+ },
+ {
+  "id": "q15",
+  "q": "List viewers in the last 3 days whose median received frame rate was below 30 fps",
+  "ref": "SELECT sessionId, browser, os, series.receivedFps.median FROM rollups WHERE role='viewer' AND startedAt >= epoch_ms(now() - INTERVAL 3 DAY) AND series.receivedFps.median < 30",
+  "grade": "series.receivedFps.median < 30 (decoderFps/renderedFps acceptable)."
+ },
+ {
+  "id": "q16",
+  "q": "Did Firefox 159 improve on stalls compared with Firefox 158?",
+  "ref": "SELECT browser, count(*), avg(stalls), avg(totalStallMs/nullif(durationMs,0)) FROM rollups WHERE role='viewer' AND browser IN ('Firefox 158','Firefox 159') GROUP BY 1",
+  "grade": "compare both versions on a stall metric, normalised per session (avg) not raw sum."
+ },
+ {
+  "id": "q17",
+  "q": "What is the uplink packet loss for native broadcasters, by platform?",
+  "ref": "SELECT browser, sum(counters.uplinkPacketsLost)/nullif(sum(counters.uplinkPacketsSent),0) FROM rollups WHERE role='broadcaster' AND browser LIKE 'gawk-%' GROUP BY 1",
+  "grade": "uplinkPacketsLost / uplinkPacketsSent, native broadcasters (browser gawk-*)."
+ },
+ {
+  "id": "q18",
+  "q": "How many viewers watched at the same time at peak, each day this week?",
+  "ref": "WITH per_bc AS (SELECT date, atMs // 60000 AS minute, broadcastKey, max(broadcast.viewersGlobal) AS v FROM relay WHERE date >= current_date - 6 AND broadcast.viewersGlobal IS NOT NULL GROUP BY ALL) SELECT date, max(total) AS peak FROM (SELECT date, minute, sum(v) AS total FROM per_bc GROUP BY ALL) GROUP BY date ORDER BY date",
+  "grade": "fleet-wide: per minute, sum each broadcast's live viewer count, then the day's max. From relay broadcast.viewersGlobal, or equivalently from the broadcasters' sessions.stats.viewerCount; either view pruned by date. One broadcast's max alone is partial, as are overlapping viewer rollup intervals (they disagree with the relay's own count). (The first reference took max(viewersGlobal), a single broadcast's peak; corrected after grading, 2026-11-01.)"
+ },
+ {
+  "id": "q19",
+  "q": "Show the received fps over time for the most recent finished viewer session",
+  "ref": "SELECT tMs, stats.receivedFps FROM sessions WHERE date >= current_date - 2 AND sessionId = (SELECT sessionId FROM rollups WHERE role='viewer' ORDER BY endedAt DESC LIMIT 1) ORDER BY tMs",
+  "grade": "sessions view with a date partition filter (pruning), stats.receivedFps over tMs for the latest rollup's sessionId."
+ },
+ {
+  "id": "q20",
+  "q": "Are Safari viewers worse off than Chrome viewers?",
+  "ref": "SELECT split_part(browser,' ',1) fam, count(*), avg(stalls), median(series.capToRenderMs.median), avg(verdict.healthy::int) FROM rollups WHERE role='viewer' AND split_part(browser,' ',1) IN ('Safari','Chrome') GROUP BY 1",
+  "grade": "fuzzy: compare families on several experience metrics; must match browser by prefix, not equality with 'Safari'."
+ }
+]
