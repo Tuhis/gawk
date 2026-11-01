@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useLayoutEffect, useState, useSyncExternalStore } from 'react';
 import { HashRouter } from 'react-router';
 import { RedocStandalone } from 'redoc';
 
@@ -70,11 +70,13 @@ function ThemedRedoc() {
  * sticky header owns that top, and its height is not a constant — 52px wide,
  * then 70px, 105px and more as its nav wraps — so a fixed offset left the
  * sidebar's search box, or the mobile menu, under the header's nav. The
- * header is App's (the page has exactly one); measuring it keeps this view
- * from restating App's layout.
+ * header is App's: `querySelector` returns the first in document order, and
+ * App renders it ahead of <main>, where this view and any <header> Redoc
+ * draws live. Measuring it keeps this view from restating App's layout. A
+ * layout effect, so the first frame is not painted at the 52px fallback.
  */
 function usePortalHeaderHeight() {
-  useEffect(() => {
+  useLayoutEffect(() => {
     const header = document.querySelector('header');
     if (!header || typeof ResizeObserver === 'undefined') return;
     const root = document.documentElement.style;
