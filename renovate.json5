@@ -84,6 +84,12 @@
       enabled: false,
     },
     {
+      description: "vitest and its @vitest/* plugins pin each other with exact peer versions (@vitest/coverage-v8 5.0.5 peers vitest 5.0.5), so a bump of one alone cannot resolve: PR #665 moved coverage-v8 to v5 without vitest, npm ci failed with ERESOLVE and no lockfile could be written. Bump them in one PR.",
+      matchManagers: ["npm"],
+      matchPackageNames: ["vitest", "@vitest/**"],
+      groupName: "vitest",
+    },
+    {
       description: "The Prometheus client libraries (client_golang + client_model) share a release cadence and transitive graph — land them together.",
       matchManagers: ["gomod"],
       matchPackageNames: ["github.com/prometheus/**"],
