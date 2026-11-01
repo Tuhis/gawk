@@ -1,7 +1,14 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 
-import { OPENAPI_URL, readPalette, redocOptions } from './apiDocs.ts';
+import {
+  DOCS_BASE_PATH,
+  OPENAPI_URL,
+  docsSlug,
+  legacyDocsRoute,
+  redocOptions,
+} from './apiDocs.ts';
+import { parseHash } from '../router/router.ts';
 
 describe('the API page’s Redoc configuration (R48, docs/49 D5)', () => {
   it('reads the document from this deployment, by a relative path', () => {
@@ -26,19 +33,22 @@ describe('the API page’s Redoc configuration (R48, docs/49 D5)', () => {
     // Fetching the raw document is exactly what a bot author came to do, and
     // the served copy is the one carrying this deployment's base URL and role
     // names rather than the repository's symbolic ones.
-    expect(redocOptions().hideDownloadButton).toBe(false);
+    expect(redocOptions().hideDownloadButtons).toBe(false);
   });
 
-  it('keeps the gawk extensions visible, and search off', () => {
-    const opts = redocOptions();
-    // Search builds its index in a worker created from a `blob:` URL, which
-    // the portal's CSP refuses. Turning it back on means widening the CSP of
-    // the page that holds an operator's token — see apiDocs.ts.
-    expect(opts.disableSearch).toBe(true);
+  it('keeps the gawk extensions visible', () => {
     // x-gawk-roles, x-gawk-requires and x-gawk-sensitive are the parts of the
     // document a consumer most needs to see; hiding them would leave the page
     // less informative than curl.
-    expect(opts.showExtensions).toBe(true);
+    expect(redocOptions().showExtensions).toBe(true);
+  });
+
+  // Redoc 3 reports usage to Redocly's collector unless told not to. The CSP
+  // would refuse the request, but a moderation console does not attempt to
+  // phone a vendor and rely on being stopped. vite.config.ts also strips the
+  // collector URL, and internal/portal's asset test asserts that half.
+  it('turns Redoc’s telemetry off', () => {
+    expect(redocOptions().disableTelemetry).toBe(true);
   });
 
   // The security property that came free with dropping Swagger UI: Redoc does
@@ -55,53 +65,41 @@ describe('the API page’s Redoc configuration (R48, docs/49 D5)', () => {
       expect(typeof value).not.toBe('function');
     }
   });
+});
 
-  // Redoc ships a light theme and paints NO background on its middle panel,
-  // so untouched it renders #333 prose straight onto the portal's near-black
-  // canvas. Measured in a browser, that was 1.07:1 — invisible. The theme is
-  // driven from the portal's own CSS variables so the page follows it into
-  // either scheme.
-  it('themes Redoc from the portal\u2019s palette, not Redoc\u2019s defaults', () => {
-    const portal = { ...readPalette(), text: '#abcdef', surface1: '#123456' };
-    const theme = redocOptions(portal).theme as Record<string, any>;
-
-    expect(theme.colors.text.primary).toBe('#abcdef');
-    expect(theme.sidebar.backgroundColor).toBe('#123456');
-    // Redoc's own default, which must not survive.
-    expect(JSON.stringify(theme)).not.toContain('#333');
+describe('the docs routes (docs/49 D5, revised 2026-11-01)', () => {
+  // Redoc 3 is routed by the API view's HashRouter under this base, so every
+  // docs URL is `#/api/...`. The portal's own router has to agree that such a
+  // URL is the API page, or a reload of any operation lands on not-found.
+  it('lives under a base the portal router resolves to the API page', () => {
+    expect(DOCS_BASE_PATH).toBe('/api');
+    expect(parseHash(`#${DOCS_BASE_PATH}`).view).toBe('api');
+    expect(parseHash(`#${DOCS_BASE_PATH}/bans/createban`).view).toBe('api');
   });
 
-  // The sample panel is DARK IN BOTH SCHEMES: Redoc syntax-highlights the JSON
-  // with token colours chosen against a dark background, and pointing this at
-  // the portal's light surfaces put 102 elements of white-on-white on the page
-  // in light mode.
-  it('keeps the sample panel on the scheme-independent code surfaces', () => {
-    const light = {
-      ...readPalette(),
-      bg: '#ffffff',
-      surface1: '#f2f4f7',
-      surface2: '#eceff3',
-      text: '#14161a',
-      codeBg: '#0a0b0d',
-      codeSurface: '#171920',
-      codeText: '#e8eaed',
-    };
-    const theme = redocOptions(light).theme as Record<string, any>;
-
-    expect(theme.rightPanel.backgroundColor).toBe('#171920');
-    expect(theme.rightPanel.textColor).toBe('#e8eaed');
-    expect(theme.codeBlock.backgroundColor).toBe('#0a0b0d');
-    // The light scheme's surfaces must not reach the sample panel.
-    expect(theme.rightPanel.backgroundColor).not.toBe(light.surface2);
-    expect(theme.codeBlock.backgroundColor).not.toBe(light.bg);
+  // Checked against a real render: every operation route this produces for
+  // the served document matched a link Redoc drew.
+  it('slugs a name the way Redoc does for this document', () => {
+    expect(docsSlug('createBan')).toBe('createban');
+    expect(docsSlug('bans')).toBe('bans');
+    expect(docsSlug('Ban mutations')).toBe('ban-mutations');
   });
 
-  it('falls back to the dark palette when no stylesheet is loaded', () => {
-    // jsdom resolves no CSS variables here, which is the same situation as a
-    // stylesheet that has not applied yet. The page must still theme itself.
-    const palette = readPalette();
-    expect(palette.text).toBeTruthy();
-    expect(palette.codeSurface).toBeTruthy();
-    expect(redocOptions(palette).theme).toBeTruthy();
+  // Redoc 2 wrote these into the address bar, so operators have them
+  // bookmarked; Redoc 3 does not understand them.
+  it('maps a Redoc 2 fragment to the Redoc 3 route it means', () => {
+    expect(legacyDocsRoute('#tag/bans/operation/createBan')).toBe('/api/bans/createban');
+    expect(legacyDocsRoute('#tag/rooms')).toBe('/api/rooms');
+    expect(legacyDocsRoute('#section/Ban-mutations')).toBe('/api/section/ban-mutations');
+    expect(legacyDocsRoute('#section/Authentication')).toBe('/api/section/authentication');
+    // No tag to route by: the top of the reference, rather than a guess.
+    expect(legacyDocsRoute('#operation/killBroadcast')).toBe('/api');
+    expect(legacyDocsRoute('#tag/')).toBe('/api');
+  });
+
+  it('leaves every other hash alone', () => {
+    for (const hash of ['', '#', '#/api', '#/api/bans/createban', '#/bans', '#tagged/x']) {
+      expect(legacyDocsRoute(hash), hash).toBeNull();
+    }
   });
 });

@@ -1,140 +1,173 @@
-/* What Redoc's theme cannot reach (R48, docs/49 D5).
+/* Redoc's theme, from the portal's palette (R48, docs/49 D5; revised for
+ * Redoc 3 on 2026-11-01).
  *
- * `apiDocs.ts` drives Redoc's own theme from the portal's CSS variables, and
- * that covers most of the page. These are the leftovers: places where Redoc
- * hard-codes a colour its ThemeInterface does not expose. Every one was found
- * by measuring composited text contrast against the canvas in a real browser,
- * in dark mode, and every one was below 4.5:1 — several were invisible
- * (black on near-black, light-on-white).
+ * Redoc 3 themes through CSS custom properties, and it ships a light AND a
+ * dark palette of its own: it puts `light` or `dark` on <html>, chosen from
+ * `prefers-color-scheme` — the same signal the portal's own scheme follows —
+ * so the two agree on the mode without any help. What it does not share is
+ * the portal's colours: its dark canvas is a mid grey beside the portal's
+ * near-black header. The block below points its base tokens at the portal's
+ * variables, which global.css redefines for the light scheme, so one block
+ * themes both modes.
  *
- * This file is imported by ApiView.tsx, so it rides in the lazily-loaded API
- * chunk rather than the entry bundle — the moderation views never fetch it.
+ * WHY ON <html>, and why `:has()`. Redoc defines its tokens on :root and
+ * derives hundreds more from them there (`--sidebar-bg-color:
+ * var(--bg-color)`, …). A custom property's var() is resolved on the element
+ * that declares it, so overriding `--bg-color` on a wrapper would recolour
+ * only the few rules that read it directly and leave every derived token on
+ * Redoc's grey. Overriding on the root re-derives all of them. `:has()`
+ * scopes that to while the API page is mounted, so nothing here can reach
+ * the moderation views; `html:` lifts the specificity above Redoc's own
+ * `:root.dark` rules, which are injected after this sheet.
  *
- * Plain CSS, not a module: Redoc's DOM is not ours to add class names to. The
- * selectors are structural on purpose — tag names, `.redoc-markdown`, and
- * react-tabs' own stable class names — never Redoc's generated
- * styled-components hashes (`sc-iqsgXZ dOsXip` today, something else after any
- * upgrade). `!important` because Redoc sets these from an injected <style>
- * that may come after this one.
+ * Only base tokens: surfaces, text, borders, links, fonts. Code blocks,
+ * syntax tokens, status colours and admonitions stay on Redoc's palette for
+ * the mode it picked, which was designed (and contrast-checked) together.
  *
- * Everything is scoped under `.gawk-redoc`, the wrapper ApiView puts around
- * the renderer, so none of it can leak into the portal's own views.
- */
+ * This file rides in the lazily-loaded API chunk with ApiView.tsx, so the
+ * moderation views never fetch it. Plain CSS, not a module: the selectors
+ * target Redoc's DOM and the root element, neither of which is ours to name. */
+html:root:has(.gawk-redoc) {
+  --font-family-base: var(--sans);
+  --font-family-monospaced: var(--mono);
 
-/* Section headings: "Authorizations:", "path Parameters", "REQUEST BODY
- * SCHEMA", and the media-type span inside them ("application/json", which
- * Redoc paints BLACK — 1.07:1 on the portal's canvas, i.e. invisible). */
-.gawk-redoc h5,
-.gawk-redoc h5 span,
-.gawk-redoc h5 + div > span {
-  color: var(--muted) !important;
+  --bg-color: var(--bg);
+  --bg-color-raised: var(--surface-1);
+  --bg-color-tonal: var(--surface-1);
+  --bg-color-tonal-hover: var(--surface-2);
+  --bg-color-tonal-active: var(--surface-2);
+  --bg-color-hover: var(--surface-1);
+  --bg-color-active: var(--surface-2);
+  --layer-color: var(--surface-1);
+  --layer-color-raised: var(--surface-1);
+  --layer-color-onraised: var(--surface-2);
+  --layer-color-ontonal: var(--surface-2);
+  --layer-color-hover: var(--surface-2);
+  /* Surfaces Redoc derives from its grey SCALE rather than from the tokens
+   * above, so they kept its mid grey: the selected sidebar item (POST on it
+   * was 3.5:1 in dark), inline code, inline schema values, and the segmented
+   * switch between a property's values (a `null` default: 4.2:1 in dark). */
+  --menu-item-bg-color-active: var(--surface-2);
+  --inline-code-bg-color: var(--surface-2);
+  --schema-inline-bg-color: var(--surface-2);
+  --segmented-buttons-bg-color-main: var(--surface-2);
+
+  --border-color-primary: var(--border);
+  --border-color-secondary: var(--border-soft);
+  --sidebar-border-color: var(--border);
+
+  --text-color-primary: var(--text);
+  --text-color-secondary: var(--muted);
+  --text-color-description: var(--muted);
+  --text-color-helper: var(--faint);
+
+  --link-color-primary: var(--accent);
+  --link-color-primary-hover: var(--accent-hover);
+  --link-color-primary-pressed: var(--accent-hover);
+  --link-color-visited: var(--accent);
+
+  /* The search box's placeholder and shortcut hint: Redoc draws them in its
+   * DISABLED grey, 2.6:1 in light mode and 2.7:1 in dark. */
+  --search-trigger-color: var(--muted);
+  --search-input-placeholder-color: var(--muted);
+
+  /* The one syntax token that needed help: `true`/`false` in a sample are a
+   * light green at 3.5:1 on Redoc's white light-mode code block. */
+  --code-block-tokens-boolean-color: var(--ok);
 }
 
-/* Markdown tables from `info.description` — the three-outcome matrix. Redoc
- * gives them a light surface and inherits the themed light text onto it, which
- * is 1.21:1: white on white. */
-.gawk-redoc .redoc-markdown table,
-.gawk-redoc .redoc-markdown thead,
-.gawk-redoc .redoc-markdown tbody,
-.gawk-redoc .redoc-markdown tr {
-  background: transparent !important;
-}
-
-.gawk-redoc .redoc-markdown th,
-.gawk-redoc .redoc-markdown td {
-  background: transparent !important;
-  color: var(--text) !important;
-  border-color: var(--border) !important;
-}
-
-.gawk-redoc .redoc-markdown th {
-  color: var(--muted) !important;
-}
-
-.gawk-redoc .redoc-markdown tr:nth-child(2n) td {
-  background: var(--surface-1) !important;
-}
-
-/* The Payload / Response sample tab strip. Redoc's selected tab takes the
- * theme's TEXT colour as its background, so the label lands on its own colour
- * — 1:1, perfectly invisible.
+/* What the tokens above cannot reach: colours Redoc hard-codes on a rule
+ * rather than deriving from a token. Each of these failed 4.5:1 in a
+ * composited-contrast pass over the rendered page in a real browser.
  *
- * These use the `--code-*` tokens, not the scheme's surfaces, because the tabs
- * sit ON the sample panel, which is dark in both schemes (see apiDocs.ts). */
-.gawk-redoc .react-tabs__tab {
-  background: var(--code-surface) !important;
-  color: var(--code-muted) !important;
-  border-color: var(--code-surface) !important;
+ * The HTTP method tags (`get`, `put`, … in the sidebar and on the samples):
+ * Redoc's light palette puts GET at 2.4:1 and PUT at 2.2:1 on its own canvas.
+ * They take the portal's status colours, which global.css keeps above 4.5:1
+ * in both schemes. `.tag-default` and `.tag-<method>` are Redoc's semantic
+ * class names, not generated hashes; the selector out-ranks its
+ * `:root.dark .tag-<method>` rules. */
+:root .gawk-redoc .tag-default.tag-get {
+  --tag-color: var(--ok);
 }
 
-/* The selected tab takes the sample body's own colour, so it reads as
- * continuous with the block below it — the ordinary tab metaphor — and its
- * label gets the darker surface to sit on, which is what carries the status
- * colours past 4.5:1. */
-.gawk-redoc .react-tabs__tab--selected {
-  background: var(--code-bg) !important;
-  color: var(--code-text) !important;
+:root .gawk-redoc .tag-default.tag-post {
+  --tag-color: var(--accent);
 }
 
-/* The status chips in that strip (201, 400, 429 …). Redoc colours them from
- * `colors.responses.*`, which the theme points at the SCHEME's status colours
- * — correct for the response accordions in the middle panel, wrong here, where
- * they sit on the always-dark sample panel: light mode put #cf222e on
- * near-black at 3.68:1. `tab-success`/`tab-error` are Redoc's own semantic
- * class names, not generated hashes. */
-.gawk-redoc .react-tabs__tab-list .tab-success {
-  color: var(--code-ok) !important;
+:root .gawk-redoc .tag-default.tag-put,
+:root .gawk-redoc .tag-default.tag-patch {
+  --tag-color: var(--warning);
 }
 
-.gawk-redoc .react-tabs__tab-list .tab-error {
-  color: var(--code-danger) !important;
+:root .gawk-redoc .tag-default.tag-delete {
+  --tag-color: var(--danger);
 }
 
-.gawk-redoc .react-tabs__tab-list .tab-redirect {
-  color: var(--code-warning) !important;
+/* Nested schema property names (`target.type`, `bans[].id`): a fixed
+ * #615cea in both modes, 3.96:1 on the portal's dark canvas. */
+.gawk-redoc .schema-name {
+  color: var(--accent) !important;
 }
 
-.gawk-redoc .react-tabs__tab-list .tab-info {
-  color: var(--code-accent) !important;
+/* Redoc's sidebar assumes it owns the viewport: sticky at its top, full
+ * height, on a wide screen, and fixed over the page as the mobile menu on a
+ * narrow one. Here the portal's sticky header covers that top, so the search
+ * box sat under the header once the page scrolled, and the mobile menu cut
+ * through the header's nav. The header's height changes as its nav wraps
+ * (52px, 70px, 105px, …), so ApiView.tsx measures it into
+ * `--gawk-header-h`; 52px is its unwrapped height, for the first paint.
+ * `menu-content` is Redoc's semantic class name for that container. */
+.gawk-redoc .menu-content {
+  top: var(--gawk-header-h, 52px) !important;
+  height: calc(100vh - var(--gawk-header-h, 52px)) !important;
 }
 
-/* The "API docs by Redocly" badge draws its logo from cdn.redoc.ly. The CSP
- * blocks it, which is the correct outcome and an ugly one: a console error on
- * every page load, for a decoration. `vite.config.ts` strips the URL from the
- * bundle; this removes the empty box it leaves behind. The attribution TEXT
- * stays — dropping the credit is not the goal.
- *
- * `:has()` rather than the generated parent class name, so a Redoc upgrade
- * that reshuffles its hashes does not silently restore the gap. */
-.gawk-redoc div:has(> a[href^="https://redocly.com/redoc/"]) {
-  background-image: none !important;
-  padding-left: 0 !important;
+/* Redoc's own light/dark switch. The portal has no scheme toggle — it follows
+ * the OS — and a Redoc-only one would put the reference in one mode inside a
+ * portal in the other, with the overrides above painting portal surfaces
+ * under Redoc's other-mode code and status colours. It also persists to
+ * localStorage, so the mismatch would outlive the visit. `data-testid` is
+ * Redoc's own stable test hook, not a generated class. */
+.gawk-redoc [data-testid='color-mode-switcher'] {
+  display: none !important;
 }
 
-/* The Console drawer (ApiConsole.module.css) is fixed to the right edge. On a
- * screen wide enough for Redoc's three columns AND the drawer, the wrapper
- * gives up the drawer's width so Redoc reflows into what is left rather than
- * having its sample panel covered. Below that, the drawer overlays — Redoc
- * has already collapsed to one column there, and the operator closes the
- * drawer to read. `--console-w` is defined here, once, and read by both. */
+/* The "API docs by Redocly" badge. Redoc draws the word "Redocly" as an
+ * image from cdn.redoc.ly, which vite.config.ts strips (the CSP would refuse
+ * it), leaving "API docs by" with nothing after it. The credit is written
+ * back as text: dropping the attribution was never the goal. */
+.gawk-redoc a[href^='https://redocly.com/redoc/'] p::after {
+  content: '\00a0Redocly';
+  font-weight: 600;
+}
+
+/* The Console drawer (ApiConsole.module.css) is fixed to the right edge and
+ * OVERLAYS the reference rather than squeezing it. Redoc 3 picks its layout
+ * from the VIEWPORT width, not its container's, so a wrapper narrowed by the
+ * drawer's width kept three columns in the space left and crushed the middle
+ * one to a word per line. Over Redoc's three columns the drawer sits where
+ * the samples column is — the console IS the request sample while it is
+ * open — so that column is hidden rather than left half-visible behind it.
+ * `data-testid` is Redoc's own stable test hook. `--console-w` (the drawer's
+ * width, read by ApiConsole.module.css) stays defined here, with the page
+ * the drawer belongs to. */
 :root {
   --console-w: 30rem;
 }
 
-@media (min-width: 1200px) {
-  .gawk-redoc.withConsole {
-    margin-right: var(--console-w);
-  }
+.gawk-redoc.withConsole [data-testid='right-panel'] {
+  visibility: hidden;
 }
 
-/* The floating Console toggle. Fixed under the portal's sticky header (52px,
- * App.module.css), right-aligned where the drawer will open, above Redoc's
- * own fixed pieces but below the drawer (50) and any dialog (100). It wears
+/* The floating Console toggle. Fixed under the portal's sticky header
+ * (`--gawk-header-h`, above), right-aligned where the drawer will open,
+ * above Redoc's own fixed pieces but below the drawer (50) and any dialog
+ * (100). It wears
  * the raised surface and the portal's shadow so it reads over whatever Redoc
  * has scrolled beneath it — a sample panel, a table, the canvas. */
 .gawk-console-toggle {
   position: fixed;
-  top: calc(52px + var(--sp-3));
+  top: calc(var(--gawk-header-h, 52px) + var(--sp-3));
   right: var(--sp-4);
   z-index: 40;
   background: var(--surface-2);

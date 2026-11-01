@@ -1,19 +1,28 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-// Redoc is ~1 MB of prebuilt JavaScript and spawns a worker. Mounting it in
-// jsdom would test Redoc, not this view; what this view is responsible for is
-// WHAT it hands the renderer.
-const mounted: { specUrl?: string; options?: Record<string, unknown> }[] = [];
-vi.mock('redoc', () => ({
-  RedocStandalone: (props: { specUrl?: string; options?: Record<string, unknown> }) => {
-    mounted.push(props);
-    return <div data-testid="redoc" />;
-  },
-  // The Console drawer subscribes to this to follow sidebar clicks.
-  history: { subscribe: () => () => undefined },
-}));
+// Redoc is ~2 MB of prebuilt JavaScript. Mounting it in jsdom would test
+// Redoc, not this view; what this view is responsible for is WHAT it hands
+// the renderer, and WHERE it mounts it. The stand-in records, per render, the
+// props, whether it found a router above it, and the address bar it saw.
+interface Mounted {
+  specUrl?: string;
+  basePath?: string;
+  options?: Record<string, unknown>;
+  inRouter: boolean;
+  hash: string;
+}
+const mounted: Mounted[] = [];
+vi.mock('redoc', async () => {
+  const { useInRouterContext } = await import('react-router');
+  return {
+    RedocStandalone: (props: { specUrl?: string; basePath?: string; options?: Record<string, unknown> }) => {
+      mounted.push({ ...props, inRouter: useInRouterContext(), hash: window.location.hash });
+      return <div data-testid="redoc" />;
+    },
+  };
+});
 
 // The drawer loads the contract itself; here it is a stub so opening it in
 // jsdom needs no network. `ApiConsole.test.tsx` covers the drawer.
@@ -28,12 +37,13 @@ vi.mock('./ApiConsole.tsx', () => ({
 }));
 
 import ApiView from './ApiView.tsx';
-import { ASYNCAPI_URL, OPENAPI_URL } from './apiDocs.ts';
+import { ASYNCAPI_URL, DOCS_BASE_PATH, OPENAPI_URL } from './apiDocs.ts';
 import { json, renderWithSession, stubSession } from '../testing/harness.tsx';
 
 afterEach(() => {
   cleanup();
   mounted.length = 0;
+  window.history.replaceState(null, '', '/');
 });
 
 function mount() {
@@ -46,9 +56,30 @@ describe('the API page (R48, docs/49 D5)', () => {
   it('renders the contract this deployment serves', async () => {
     mount();
     expect(await screen.findByText('API')).toBeTruthy();
-    expect(mounted).toHaveLength(1);
+    expect(mounted.length).toBeGreaterThan(0);
     expect(mounted[0].specUrl).toBe(OPENAPI_URL);
     expect(screen.getByTestId('redoc')).toBeTruthy();
+  });
+
+  // Redoc 3 checks for a router above it and, finding none, mounts a
+  // BrowserRouter that rewrites location.pathname — breaking a reload under
+  // an Ingress sub-path and the OIDC redirect URI. It must find ours, and
+  // route under the base the portal's router resolves to this page.
+  it('mounts Redoc inside the view’s own router, under #/api', async () => {
+    mount();
+    await screen.findByText('API');
+    expect(mounted[0].inRouter).toBe(true);
+    expect(mounted[0].basePath).toBe(DOCS_BASE_PATH);
+  });
+
+  // A Redoc 2 bookmark is rewritten BEFORE Redoc reads the location, so it
+  // opens on the operation it named rather than on Redoc's not-found.
+  it('rewrites a Redoc 2 link before Redoc reads it', async () => {
+    window.history.replaceState(null, '', '#tag/bans/operation/createBan');
+    mount();
+    await screen.findByText('API');
+    expect(mounted[0].hash).toBe('#/api/bans/createban');
+    expect(window.location.hash).toBe('#/api/bans/createban');
   });
 
   it('links to the raw document, relatively', async () => {
@@ -68,11 +99,10 @@ describe('the API page (R48, docs/49 D5)', () => {
     expect(link.getAttribute('href')?.startsWith('/')).toBe(false);
   });
 
-  // Redoc's StoreBuilder memoises `new AppStore(spec, specUrl, options)` on
-  // those three BY REFERENCE, so a fresh options object on a parent re-render
-  // re-normalises the document and resets the sidebar and every expanded
-  // response. `Portal` re-renders on every hash change and session
-  // transition, so this is not hypothetical.
+  // Redoc 3 reads its options once, when it loads the document, so a fresh
+  // object on a parent re-render would be silently ignored rather than
+  // applied. `Portal` re-renders on every hash change and session transition;
+  // pinning the object keeps what Redoc was handed and what it uses the same.
   it('hands Redoc the same options object across re-renders', async () => {
     // Rendered WITHOUT the session provider, deliberately: this page needs no
     // session, and re-rendering the same element type is what exercises the
@@ -97,9 +127,10 @@ describe('the API page (R48, docs/49 D5)', () => {
 
   // The drawer is closed on every visit and opens from a floating toggle
   // (fixed, so it is there however far down the reference the reader is);
-  // Redoc gives up its width to it so the reference reflows rather than being
-  // covered. While the drawer is open the toggle is gone — the drawer's own
-  // close is the way back — and closing returns both the page and the toggle.
+  // the wrapper is marked `withConsole`, which hides Redoc's samples column
+  // where the drawer sits over it. While the drawer is open the toggle is
+  // gone — the drawer's own close is the way back — and closing returns both
+  // the page and the toggle.
   it('opens and closes the Console drawer from the floating toggle', async () => {
     mount();
     await screen.findByText('API');
@@ -117,6 +148,42 @@ describe('the API page (R48, docs/49 D5)', () => {
     expect(screen.queryByLabelText('API console')).toBeNull();
     expect(screen.getByRole('button', { name: 'Console' })).toBeTruthy();
     expect(document.querySelector('.gawk-redoc.withConsole')).toBeNull();
+  });
+
+  // The portal header is 52px wide-screen but wraps as the window narrows
+  // (70px, 105px, …). Redoc's sticky sidebar — and its fixed mobile menu —
+  // are placed below whatever height it has NOW, so the view publishes it
+  // while mounted and takes it back on unmount.
+  it('publishes the live portal header height while mounted', async () => {
+    let height = 105;
+    const header = document.createElement('header');
+    header.getBoundingClientRect = () => ({ height }) as DOMRect;
+    document.body.prepend(header);
+    const observers: (() => void)[] = [];
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(cb: () => void) {
+          observers.push(cb);
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    try {
+      const { unmount } = render(<ApiView />);
+      await screen.findByText('API');
+      const root = document.documentElement.style;
+      expect(root.getPropertyValue('--gawk-header-h')).toBe('105px');
+      height = 70;
+      act(() => observers.forEach((cb) => cb()));
+      expect(root.getPropertyValue('--gawk-header-h')).toBe('70px');
+      unmount();
+      expect(root.getPropertyValue('--gawk-header-h')).toBe('');
+    } finally {
+      vi.unstubAllGlobals();
+      header.remove();
+    }
   });
 
   // Redoc reads the contract; it never acts on the caller's behalf. It

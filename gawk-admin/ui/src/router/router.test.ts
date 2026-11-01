@@ -61,13 +61,25 @@ describe('portal routes (§4.9)', () => {
     expect(href('api')).toBe('#/api');
   });
 
-  // Redoc owns location.hash while the API page is mounted: its scroll spy
-  // rewrites the fragment to #tag/<tag>/operation/<id> as the reader scrolls.
-  // Without this the next read of the hash — a reload, a bookmark, a pasted
-  // link, the Back button — resolves to `not-found`, and the page the reader
-  // was on disappears. Verified in a browser before it was fixed: scrolling
-  // the API page rewrote the hash to `#tag/identity/operation/getMe`.
-  it('resolves the fragments Redoc writes on the API page (R48)', () => {
+  // Redoc 3 runs inside the API view's own HashRouter with base `/api`
+  // (docs/49 D5, revised 2026-11-01), so every page of the reference is a
+  // route under #/api — including the field anchors it appends after a second
+  // `#`. A reload, a bookmark, a pasted link or the Back button must land on
+  // the API page, not on not-found.
+  it('resolves the routes Redoc 3 writes on the API page', () => {
+    for (const hash of [
+      '#/api/bans/createban',
+      '#/api/section/ban-mutations',
+      '#/api/bans/listbans#bans/listbans/t=request&in=query&path=state',
+    ]) {
+      expect(parseHash(hash).view, hash).toBe('api');
+    }
+  });
+
+  // Redoc 2 wrote these into the address bar (its scroll spy rewrote the
+  // fragment as the reader scrolled), so operators bookmarked them. They must
+  // still reach the API page, which rewrites them to the Redoc 3 route.
+  it('resolves the fragments Redoc 2 wrote, so old bookmarks still land (R48)', () => {
     for (const hash of [
       '#tag/identity/operation/getMe',
       '#tag/bans/operation/listBans',

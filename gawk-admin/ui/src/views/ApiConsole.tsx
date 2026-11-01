@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { history as redocHistory } from 'redoc';
+import { Link, useLocation, useNavigate } from 'react-router';
 
 import {
   CONSOLE_DOCUMENT_URL,
   buildRequestPath,
   curlFor,
-  hashForOperation,
+  docsRouteForOperation,
   listOperations,
-  operationFromHash,
+  operationFromDocsLocation,
   type Document,
   type Operation,
 } from './apiConsole.ts';
@@ -36,9 +36,10 @@ import ui from '../styles/ui.module.css';
  * the console does not second-guess it.
  *
  * It lives beside Redoc rather than inside it: Redoc's DOM is generated and
- * not ours to add buttons to. The two are linked through the hash Redoc
- * writes (`router.ts`): the console opens on the operation the reader is
- * looking at, follows sidebar clicks, and offers a "docs" link back.
+ * not ours to add buttons to. The two share `ApiView`'s router, whose routes
+ * live in the portal's hash (`apiDocs.ts`, `DOCS_BASE_PATH`): the console
+ * opens on the operation the reader is looking at, follows sidebar clicks,
+ * and offers a "docs" link back. It must therefore render inside that router.
  */
 export function ApiConsole({
   onClose,
@@ -94,7 +95,10 @@ export function ApiConsole({
         setOps(all);
         // Open on what the reader is looking at, else the first operation
         // that needs a token — the probe, which is the natural first send.
-        const fromHash = operationFromHash(window.location.hash);
+        // The ADDRESS BAR, not the router: Redoc's scroll spy rewrites the
+        // URL as the reader scrolls without telling the router (see below),
+        // and that silent rewrite is exactly "what they are looking at".
+        const fromHash = operationFromDocsLocation(window.location.hash, all);
         const initial =
           (fromHash && all.find((o) => o.id === fromHash)) ??
           all.find((o) => o.roles.length > 0) ??
@@ -110,29 +114,54 @@ export function ApiConsole({
     };
   }, [fetchDocument, select]);
 
-  // Follow the docs: a sidebar click in Redoc pushes `#tag/…/operation/<id>`
-  // and its history service emits; so does a hashchange. The scroll spy's
-  // `replaceState` emits nothing, so scrolling does not drag the console
-  // along — which is right: a half-typed request should not change under
-  // the operator because they scrolled to check a field.
+  // Follow the docs: a sidebar click in Redoc NAVIGATES the shared router to
+  // `/api/<tag>/<operationid>`, and so do Back, Forward and a typed hash.
+  // Redoc's scroll spy only `replaceState`s the address bar and leaves the
+  // router where it was, so scrolling does not drag the console along —
+  // which is right: a half-typed request should not change under the
+  // operator because they scrolled to check a field. Landing on the
+  // operation already open (the drawer's own "docs" link) keeps what was
+  // typed, for the same reason, and so does anything while a request is in
+  // flight: the response must land beside the operation that sent it.
+  //
+  // Keyed on the whole LOCATION, not its pathname. The scroll spy can leave
+  // the router on A while the address bar — and so the drawer — moved to X;
+  // a sidebar click on A is then a navigation to the pathname the router
+  // already has, a new location with an unchanged pathname, and it must
+  // still be followed.
+  const location = useLocation();
   const opsRef = useRef(ops);
+  const selectedRef = useRef(selectedId);
+  const phaseRef = useRef(phase);
   useEffect(() => {
     opsRef.current = ops;
+    selectedRef.current = selectedId;
+    phaseRef.current = phase;
   });
   useEffect(() => {
-    return redocHistory.subscribe(() => {
-      const id = operationFromHash(window.location.hash);
-      if (id) select(id, opsRef.current);
-    });
-  }, [select]);
+    if (phaseRef.current === 'sending') return;
+    const id = operationFromDocsLocation(location.pathname, opsRef.current);
+    if (id && id !== selectedRef.current) select(id, opsRef.current);
+  }, [location, select]);
+
+  // The operator picked an operation in the drawer: take the reference to it
+  // too, as a sidebar click would — a router navigation, which Redoc scrolls
+  // to and Back undoes. Only here: opening the drawer, or following the docs,
+  // must not move the page under the reader. The navigation comes back
+  // through the follow effect above as the operation already open, which
+  // leaves the freshly reset fields alone.
+  const navigate = useNavigate();
+  const pick = (id: string) => {
+    select(id, ops);
+    const next = ops.find((o) => o.id === id);
+    if (next) navigate(docsRouteForOperation(next));
+  };
 
   // Escape closes, unless a request is in flight — the same rule Dialog has,
   // for the same reason: the keyboard must not bypass a disabled state.
   const closeRef = useRef(onClose);
-  const phaseRef = useRef(phase);
   useEffect(() => {
     closeRef.current = onClose;
-    phaseRef.current = phase;
   });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -254,7 +283,7 @@ export function ApiConsole({
           ref={selectRef}
           value={selectedId ?? ''}
           disabled={busy || ops.length === 0}
-          onChange={(e) => select(e.target.value, ops)}
+          onChange={(e) => pick(e.target.value)}
         >
           {tags.map((tag) => (
             <optgroup key={tag} label={tag}>
@@ -276,9 +305,9 @@ export function ApiConsole({
             <span className={`${styles.method} ${styles[op.method.toLowerCase()]}`}>{op.method}</span>
             <code className={styles.path}>{op.path}</code>
             <span className={ui.spacer} />
-            <a href={hashForOperation(op)} className={styles.docsLink}>
+            <Link to={docsRouteForOperation(op)} className={styles.docsLink}>
               docs ↗
-            </a>
+            </Link>
           </div>
           <p className={styles.summary}>
             {op.summary}

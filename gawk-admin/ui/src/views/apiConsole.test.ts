@@ -3,9 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   buildRequestPath,
   curlFor,
-  hashForOperation,
+  docsRouteForOperation,
   listOperations,
-  operationFromHash,
+  operationFromDocsLocation,
   resolveRef,
 } from './apiConsole.ts';
 import { DOC } from '../testing/openapiFixture.ts';
@@ -110,19 +110,45 @@ describe('curlFor', () => {
   });
 });
 
-describe('the Redoc hash', () => {
-  it('names an operation in the shapes Redoc writes', () => {
-    expect(operationFromHash('#tag/bans/operation/createBan')).toBe('createBan');
-    expect(operationFromHash('#operation/getMe')).toBe('getMe');
-    expect(operationFromHash('#tag/bans')).toBeNull();
-    expect(operationFromHash('#/api')).toBeNull();
-    expect(operationFromHash('')).toBeNull();
+describe('the docs location (docs/49 D5, revised 2026-11-01)', () => {
+  // Redoc 3 routes an operation as /api/<tag>/<operationid>, lower case. The
+  // console sees it as the router's pathname, or as the raw hash with a field
+  // anchor after a second `#`.
+  it('names an operation in the shapes Redoc 3 writes', () => {
+    expect(operationFromDocsLocation('/api/bans/createban', ops)).toBe('createBan');
+    expect(operationFromDocsLocation('#/api/bans/createban', ops)).toBe('createBan');
+    expect(
+      operationFromDocsLocation('#/api/bans/listbans#bans/listbans/t=request&in=query&path=state', ops),
+    ).toBe('listBans');
+    expect(operationFromDocsLocation('#/api/identity/getme', ops)).toBe('getMe');
   });
 
-  it('round-trips through hashForOperation', () => {
-    const hash = hashForOperation(byId('createBan'));
-    expect(hash).toBe('#tag/bans/operation/createBan');
-    expect(operationFromHash(hash)).toBe('createBan');
+  // Round-1 review: a hand-typed route in mixed case is the same page.
+  it('matches a hand-typed route whatever its case', () => {
+    expect(operationFromDocsLocation('#/api/bans/createBan', ops)).toBe('createBan');
+    expect(operationFromDocsLocation('#/api/Bans/CREATEBAN', ops)).toBe('createBan');
+  });
+
+  it('names nothing for a tag, a section, another view or an unknown operation', () => {
+    for (const location of [
+      '#/api',
+      '#/api/bans',
+      '#/api/section/ban-mutations',
+      '#/bans',
+      '#/api/bans/nosuchoperation',
+      // The right ID under the wrong tag is not that operation's page.
+      '#/api/identity/createban',
+      '',
+    ]) {
+      expect(operationFromDocsLocation(location, ops), location).toBeNull();
+    }
+  });
+
+  it('round-trips through docsRouteForOperation', () => {
+    for (const op of ops) {
+      expect(operationFromDocsLocation(docsRouteForOperation(op), ops)).toBe(op.id);
+    }
+    expect(docsRouteForOperation(byId('createBan'))).toBe('/api/bans/createban');
   });
 });
 
