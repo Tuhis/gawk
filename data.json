@@ -10,10 +10,10 @@
     },
     "gawk-admin-ui": {
       "component": "gawk-admin-ui",
-      "covered": 1648,
+      "covered": 1684,
       "label": "admin-ui",
-      "pct": 91.2,
-      "total": 1807,
+      "pct": 91.3,
+      "total": 1845,
       "unit": "lines"
     },
     "gawk-app": {
