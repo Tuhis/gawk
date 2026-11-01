@@ -1492,10 +1492,17 @@ not a precedent for editing history when a number looks odd.
    movers had the same read. It was still live on `main` after #657 for
    any relay line already on disk.
 
-**The bound.** `rollup.MaxPlausibleLatencyMs = 30 000`: ten times the
-relay's default DVR window (`DefaultDVRWindow`, 3 s), the most delay any
-playout mode is built to absorb. A larger value is a clock fault. gawk-app's
-source guard uses the same bound.
+**The bound.** `rollup.MaxPlausibleLatencyMs = 120 000` (two minutes). The
+deepest delay a playout mode is built for is gawk-app's Deep buffer at its
+30 s maximum (`MAX_DVR_BUFFER_MS`; the relay's `-dvr-window` defaults to 3 s
+and has no upper limit), where every `capToRenderMs` sample is a little over
+30 s. The bound clears that with room, and nothing this platform does
+produces a two-minute latency: a larger value is a clock fault. #376's
+values ran up to 48 minutes; samples from a broadcaster tab younger than two
+minutes slip under the bound and stay, which is the price of not deleting
+real Deep-buffer history. gawk-app's source guard (#668) uses the same
+bound. *Revised 2026-11-01 in #669's review: the first value, 30 s, equalled
+the Deep buffer's maximum and would have deleted real Stats.*
 
 **What changes going forward.**
 
@@ -1543,6 +1550,20 @@ Rows finalized before #376 from non-striped viewers whose latency stayed
 under the bound are untouched, even if some of their samples were
 inflated: the bound only removes values that cannot be latencies.
 
+Two limits of the relay pass:
+- **It needs a fleet-wide `statsKey`.** The group key includes
+  `broadcastKey`, which is the relay's HMAC of the broadcast ID. Without a
+  shared `config.statsKey` (`GAWK_STATS_KEY`) each pod draws its own random
+  key, so one broadcast has a different `broadcastKey` on every pod (and
+  after every restart). A leg on another pod is then never grouped with its
+  primary and stays unmarked. The reference deployment sets the shared key.
+- **A reconnect can be mistaken for a leg.** If a viewer's old relay
+  session lingers until the QUIC idle timeout (about 30 s) after it
+  reconnects under the same telemetry `sessionId`, those rounds hold two
+  audience entries, and the dead one (more keyframes so far) is kept while
+  the live one is marked. That affects a few rounds of raw data, which
+  expire with the window.
+
 **How it runs.** On the first start of a release that carries it, `run()`
 binds the ingest listener first, behind a start gate, and then calls
 `repair.Run`. The store, the scraper and the real ingest handler are built
@@ -1576,7 +1597,14 @@ knows an attempt died (OOM, liveness kill) or failed. It removes any leftover
 temp files, logs a Warn naming the file, and boots normally without
 repairing. Every rewrite is atomic, so a partial run leaves consistent,
 partly repaired data. To re-run, delete `.started` and restart. Repaired data
-is a fixed point, so a re-run changes nothing already fixed.
+is a fixed point, so a re-run changes nothing already fixed, and it finishes
+a relay group an interrupted run marked only partly.
+
+**Operator note:** the signal handler is installed after the repair, so a
+SIGTERM during it (a second `helm upgrade`, the chart's `Recreate` strategy,
+or a node drain) ends the process at once and counts as a death. Don't roll
+the deployment again until the `history repair applied` line is logged
+(about six minutes at the reference deployment's size).
 
 A returned error is treated like a death, not retried at the next boot. The
 errors it can hit (a full volume, an unreadable directory) recur, and a retry

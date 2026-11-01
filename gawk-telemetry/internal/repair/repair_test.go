@@ -103,7 +103,7 @@ const (
 	// Striped by stripeActive only, and its latency is fine except the drift.
 	rowStripeActive = `{"sessionId":"cccccccccccccccccccccccc","broadcastKey":"1a2b3c4d5e6f","role":"viewer","relayCoverage":"full",` +
 		`"series":{"stripeActive":{"n":3,"min":0,"p05":0,"median":4,"p95":4,"max":4},` +
-		`"liveEdgeDriftMs":{"n":3,"min":10,"p05":10,"median":12,"p95":40000,"max":40000}},` +
+		`"liveEdgeDriftMs":{"n":3,"min":10,"p05":10,"median":12,"p95":400000,"max":400000}},` +
 		`"relay":{"dropped":12,"ingressFramesLost":1},"repairs":["some-earlier-repair"]}`
 	// Striped, but the relay never saw it: nothing to remove, nothing to record.
 	rowStripedNoRelay = `{"sessionId":"dddddddddddddddddddddddd","broadcastKey":"1a2b3c4d5e6f","role":"viewer","relayCoverage":"none",` +

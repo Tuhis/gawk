@@ -36,6 +36,11 @@ import (
 // the date. Stored subscriber lines and the broadcast lines'
 // subscriberDetails are grouped separately but judged by the same rule, so
 // they agree.
+//
+// Grouping across pods needs a fleet-wide statsKey (GAWK_STATS_KEY): the
+// broadcastKey is the relay's HMAC of the broadcast ID, and a pod without the
+// shared key draws its own, so one broadcast's key differs per pod and a leg
+// on another pod is never grouped with its primary (docs/33 §4.17).
 
 // groupID is a 128-bit hash of (atMs, broadcastKey, sessionId, detail). Two
 // independent 64-bit maphash seeds: ~1M groups per date collide with
