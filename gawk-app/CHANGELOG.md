@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.59.4](https://github.com/Tuhis/gawk/compare/gawk-app/v0.59.3...gawk-app/v0.59.4) (2026-11-01)
+
+
+### Bug Fixes
+
+* **app:** drop implausible capToRenderMs and liveEdgeDriftMs readings at the source ([#668](https://github.com/Tuhis/gawk/issues/668)) ([b163e62](https://github.com/Tuhis/gawk/commit/b163e62310988857a7e5742419edefef75ed9fbd))
+* **app:** leave the room view when a broadcast stops inside it ([#656](https://github.com/Tuhis/gawk/issues/656)) ([29b4a19](https://github.com/Tuhis/gawk/commit/29b4a193a2e60767cfe85006d33935a720b6a0ce))
+* **app:** raise the latency guard to 120 s, clear of the 30 s Deep buffer ([#670](https://github.com/Tuhis/gawk/issues/670)) ([c375efe](https://github.com/Tuhis/gawk/commit/c375efe1c5637d1ef10418f6db9f37201cb5df59))
+
 ## [0.59.3](https://github.com/Tuhis/gawk/compare/gawk-app/v0.59.2...gawk-app/v0.59.3) (2026-10-29)
 
 
