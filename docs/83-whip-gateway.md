@@ -212,6 +212,21 @@ re-checks it against the OBS release it tests.
   never leaves through events or webhooks (CLAUDE.md). The gateway also
   rate-limits `POST /whip` per client IP itself, before dialing the relay.
 
+  **Where the gateway gets the client IP.** `POST /whip` arrives through the
+  public Ingress (§6), so `r.RemoteAddr` is the ingress controller for every
+  OBS user. Keyed on it, both the gateway's limit and `Gawk-Publisher-Ip`
+  would collapse into one shared bucket, the failure `gawk-telemetry`'s
+  ingest already hit (`internal/ingest/ingest.go`). And `X-Forwarded-For` is
+  attacker-controlled unless a trusted-proxy list says otherwise
+  (`oidcauth/http.go`). So the gateway takes the client IP from
+  `X-Forwarded-For` **only when `RemoteAddr` is inside `trustedProxyCidrs`**
+  (the Ingress controller's pod or node CIDRs). It uses the right-most
+  address in the header that is not itself in that list. Otherwise it uses
+  `RemoteAddr`. Empty `trustedProxyCidrs` means `RemoteAddr` only, and the
+  chart's notes warn that this is one bucket behind an Ingress. The ICE
+  remote address isn't used: it isn't known until after the `POST` is
+  answered, and the relay dial and the rate limit both come first.
+
 - **D5 — H.264 + Opus only, one layer.** The SDP answer accepts H.264
   (packetization-mode 1, any profile the viewers' list can decode; Constrained
   Baseline / Main / High up to level 5.2) and Opus. It **rejects** HEVC, AV1
@@ -399,7 +414,7 @@ a broadcast whose publisher is the gateway.
   Ingress and the media LB), a ServiceMonitor and a PDB. `values.yaml` holds
   `relay.url`, `relay.publishSecret` (existing secret ref),
   `relay.publishProxyToken` (D4), `publicAddress` (D10), `allowedOrigins`
-  (D9 CORS) and the D6/D7 knobs. Every value has a flag and a `GAWK_WHIP_*`
+  (D9 CORS), `trustedProxyCidrs` (D4) and the D6/D7 knobs. Every value has a flag and a `GAWK_WHIP_*`
   env (the `registryOptions` rule, applied to the gateway's own config).
 - **Frontend config:** `whipGatewayUrl` in `window.__GAWK_CONFIG__`
   (`gawk-app/src/config.ts`), set by the frontend chart's values. When it's
@@ -435,7 +450,7 @@ the same way as the native ≈50 ms figure.
 | **WG2** | Relay: `CONNECT /publish?mint=1` (D3) and the new close code in all three wire copies with golden vectors. | Tests: a mint announces ID + token, creates no broadcast, emits no event, isn't counted in `max-broadcasts`, and passes every publish gate (secret, rate limit, IP ban, draining). A reclaim with the minted token creates the broadcast. Vectors byte-identical in Go, TS and Rust. |
 | **WG3** | Relay: `-publish-proxy-token` (D4) through `registryOptions`, flag + env + Helm, and D12's guard. | Tests: with the token, `Gawk-Publisher-Ip` drives rate limit, IP ban and the admin publisher-IP fields, and the Origin check is skipped. Without it the header is ignored. A test asserts no event or webhook carries the IP. The Helm value renders into the relay args. The relay refuses to start, and the chart to render, with the proxy token and no explicit `resumeTokenKey`. |
 | **WG4** | Gateway skeleton: module, config (flags + `GAWK_WHIP_*` + chart values), `/healthz`, metrics, Dockerfile, chart (default off), release-please package, a CI path filter on `gawk-whip-gateway/` and `gawk-server/`. | CI builds and tests it. The chart renders with defaults and does nothing until enabled. A release produces image + chart at the same version. |
-| **WG5** | WHIP endpoint: `POST`/`DELETE`/`OPTIONS`, key parsing (D2), SDP answer (D5), ICE-lite + UDP mux + NAT 1:1 + ICE-TCP (D10), the D8 status mapping, per-IP `POST` rate limit. | A pion WHIP client test in CI: H.264+Opus accepted (`201` + `Location`); HEVC, AV1 and simulcast refused `406`; bad key `401`; every row of D8's table covered against a test relay. |
+| **WG5** | WHIP endpoint: `POST`/`DELETE`/`OPTIONS`, key parsing (D2), SDP answer (D5), ICE-lite + UDP mux + NAT 1:1 + ICE-TCP (D10), the D8 status mapping, per-IP `POST` rate limit. | A pion WHIP client test in CI: H.264+Opus accepted (`201` + `Location`); HEVC, AV1 and simulcast refused `406`; bad key `401`; every row of D8's table covered against a test relay. Client IP: from a `RemoteAddr` inside `trustedProxyCidrs` the right-most untrusted `X-Forwarded-For` address is used, from outside it a forged `X-Forwarded-For` is ignored, and the chosen address is what reaches the rate limit and `Gawk-Publisher-Ip`. |
 | **WG6** | Media adapter: RTP → Annex-B AUs with the reorder window (D6), IDR/SPS/B-frame validation, GOP measurement and bounds (D7), Opus → the engine's audio, RTP/RTCP-SR timestamps → engine timestamps, event PLIs. | Unit tests with recorded OBS RTP: a dropped packet drops that frame and the deltas until the next IDR; a B-frame stream is refused with reason; GOP thresholds warn and end as specified, and a stream with a 2 s GOP that loses one whole IDR (and one IDR's first packet) is neither warned about more than it would be without the loss nor ended; A/V offset within 20 ms of the source; PLI sent on start and on resume only: never on a dropped frame, never periodically. |
 | **WG7** | `GET /whip/status` (D9) with CORS. | Tests: returns the D9 fields for the key's session, `401` for another key, and nothing containing an IP. |
 | **WG8** | gawk-app OBS panel (§5), `whipGatewayUrl` config, key storage (OD3), status polling. | Vitest covers mint, show/copy/forget/reset, the publish-secret prompt, status states and warnings. The panel is hidden without `whipGatewayUrl`. |
