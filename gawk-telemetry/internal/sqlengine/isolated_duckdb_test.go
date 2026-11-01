@@ -252,3 +252,37 @@ func TestAWorkerThatCannotAnswerStillFailsTheOpen(t *testing.T) {
 		t.Fatal("an engine whose worker crashes opened")
 	}
 }
+
+// encoding/json refuses NaN and ±Inf, so a DOUBLE result holding one used to
+// kill the worker's reply: "query worker failed without answering (exit
+// status 1)", with nothing about why (found in R82's NQ0 spike, docs/84
+// §12.4). An avg of a ratio over a session with an empty denominator is
+// enough. Non-finite values come back as JavaScript's names for them, so
+// they stay distinct from NULL, including inside lists, structs and maps.
+func TestANonFiniteDoubleCrossesTheWorkerBoundary(t *testing.T) {
+	e, err := OpenIsolated(Options{Root: seedStore(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	for stmt, want := range map[string]string{
+		"SELECT 1/0":                           "Infinity",
+		"SELECT -1/0":                          "-Infinity",
+		"SELECT 'nan'::DOUBLE":                 "NaN",
+		"SELECT 'inf'::DOUBLE":                 "Infinity",
+		"SELECT '-inf'::FLOAT":                 "-Infinity",
+		"SELECT [1.5, 'nan'::DOUBLE]":          "[1.5 NaN]",
+		"SELECT {'r': 'inf'::DOUBLE}":          "map[r:Infinity]",
+		"SELECT MAP {'k': 'nan'::DOUBLE}":      "map[k:NaN]",
+		"SELECT avg(0 / nullif(0, 1)::DOUBLE)": "NaN",
+	} {
+		res, err := e.Query(stmt)
+		if err != nil {
+			t.Errorf("%s: %v", stmt, err)
+			continue
+		}
+		if got := fmt.Sprint(res.Rows[0][0]); got != want {
+			t.Errorf("%s = %s, want %s", stmt, got, want)
+		}
+	}
+}

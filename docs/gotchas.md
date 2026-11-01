@@ -110,6 +110,14 @@ Add to it when a new gotcha lands in `docs/`.
   gives null on every sample. `tMs` itself is not an epoch: through
   `to_timestamp` it draws a 1970 axis. In the NQ0 spike, all three Claude
   models made one of these mistakes in at least one run. ([docs/84](84-telemetry-ask-in-english.md) §12.3)
+- **`encoding/json` refuses NaN, ±Inf and a map not keyed by strings, and
+  fails the whole value.** A DuckDB DOUBLE is NaN or infinite after any
+  0/0 or 1/0 (an `avg` of a ratio over an empty session is enough), and the
+  driver returns a `MAP` as `map[any]any`. Before NQ0b either one made the
+  SQL worker exit without answering. `sqlengine`'s `jsonSafe` turns them
+  into `"NaN"`/`"Infinity"`/`"-Infinity"` and a string-keyed object; any
+  new path that encodes engine values must go through it.
+  ([docs/84](84-telemetry-ask-in-english.md) NQ0b)
 - **A stored telemetry field never changes type and is never renamed.** The
   SQL views union partitions by name, so a field that is a number in old
   rows and a string in new ones turns the column into JSON for every query
