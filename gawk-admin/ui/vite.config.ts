@@ -91,6 +91,12 @@ const REDOC_REWRITES: readonly { name: string; pattern: RegExp; replacement: str
   },
 ];
 
+/** What must not survive the rewrites anywhere in the output. */
+const REDOC_LEFTOVERS: readonly [hazard: string, pattern: RegExp][] = [
+  ['a search worker probe (`_factory ??= Function(…)`)', /_factory\?\?=Function\(/],
+  ['an inline data: font (font-src refuses it)', /url\(['"]?data:(application\/font-woff|font\/)/],
+];
+
 function rewriteRedocForCsp() {
   const seen = new Set<string>();
   return {
@@ -106,12 +112,28 @@ function rewriteRedocForCsp() {
       }
       return out === code ? null : { code: out, map: null };
     },
-    buildEnd() {
+    buildEnd(error?: Error) {
+      // A build that already failed reports its own error, not this one.
+      if (error) return;
       const missing = REDOC_REWRITES.map((r) => r.name).filter((name) => !seen.has(name));
       if (missing.length > 0) {
         throw new Error(
           `Redoc no longer matches: ${missing.join(', ')}. Re-check what it would make the CSP refuse (vite.config.ts).`,
         );
+      }
+    },
+    // `seen` proves each rewrite matched ONCE, not that nothing of its kind
+    // is left. The off-origin hosts have a second net (internal/portal's
+    // no-external-assets test); these two CSP hazards do not, so the
+    // emitted chunks are checked for any survivor.
+    generateBundle(_options: unknown, bundle: Record<string, { type: string; code?: string }>) {
+      for (const [file, chunk] of Object.entries(bundle)) {
+        if (chunk.type !== 'chunk' || !chunk.code) continue;
+        for (const [hazard, pattern] of REDOC_LEFTOVERS) {
+          if (pattern.test(chunk.code)) {
+            throw new Error(`${file} still contains ${hazard} after the Redoc rewrites (vite.config.ts).`);
+          }
+        }
       }
     },
   };
