@@ -186,17 +186,17 @@ re-checks it against the OBS release it tests.
   findable by secret scanners.
 
 - **D3 — The web app mints keys; the relay gets a mint-only publish.**
-  `CONNECT /publish?mint=1` passes the same gates as a mint (draining,
-  per-IP rate limit, `?secret=`, IP ban, `CheckPublishNew`). It announces the
-  ID and the resume token as today, then closes the session with a new
-  close code meaning "minted, nothing to publish", **without creating a
-  broadcast**: no `broadcast.started`, nothing in `/statusz` or the admin
-  portal, nothing counted against `max-broadcasts`. OBS's first `POST` then creates the
+  `CONNECT /publish?mint=1` passes the same gates as a mint (draining, per-IP
+  rate limit, `?secret=`, IP ban, `CheckPublishNew`). It announces the ID and
+  the resume token as today, then closes the session with a new close code
+  meaning "minted, nothing to publish", **without creating a broadcast**: no
+  `broadcast.started`, nothing in `/statusz` or the admin portal, nothing
+  counted against `max-broadcasts`. OBS's first `POST` then creates the
   broadcast through the existing token reclaim. Minting by opening and
   stopping a real broadcast was rejected, because it fires a started/stopped
-  event pair and a webhook for a broadcast that never had media. The new
-  close code is allocated in `wire.go` and mirrored in TS and Rust with
-  golden vectors (CONTRIBUTING's three-copy rule).
+  event pair and a webhook for a broadcast that never had media. The new close
+  code is allocated in `wire.go` and mirrored in TS and Rust with golden
+  vectors (CONTRIBUTING's three-copy rule).
 
 - **D4 — The gateway is a trusted publish proxy, so bans and rate limits
   see the OBS IP.** Without this, every OBS user looks like the gateway's
@@ -395,7 +395,8 @@ re-checks it against the OBS release it tests.
   keeps WHIP from using up the fleet's broadcast budget: `maxSessions`
   (knob, default 20). A `POST` over it gets `503` with `Retry-After: 30`.
   A `POST` for a key that already holds a session, or one still being torn
-  down, replaces that session and **isn't counted against the cap**, so a full gateway never refuses a broadcaster's own reconnect.
+  down, replaces that session and **isn't counted against the cap**, so a
+  full gateway never refuses a broadcaster's own reconnect.
   WG0 measures CPU and memory per 1080p60 session, and WG4 sizes the default
   and the pod's resource requests from that number. A restart is an ICE
   failure, so OBS reconnects and the key reclaims the same ID. Scaling past
