@@ -47,6 +47,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/opsmetrics"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/readapi"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/relayscrape"
+	"github.com/Tuhis/gawk/gawk-telemetry/internal/repair"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/rollup"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/sessions"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/sqlengine"
@@ -74,6 +75,10 @@ func run() error {
 		return err
 	}
 	log := newLogger(cfg)
+
+	// Before the store, the scraper and any listener exist: nothing may
+	// append while history is being rewritten.
+	repairHistory(cfg, log)
 
 	st, err := store.New(store.Options{Root: cfg.dataDir})
 	if err != nil {
@@ -316,6 +321,30 @@ func run() error {
 	return nil
 }
 
+// repairHistory runs the owner-decided 2026-11 rewrite of stored history
+// (docs/33 §4.17) unless it is disabled or its marker says it already ran.
+// A failure is logged, never fatal: telemetry is optional, and a crashloop
+// would take public ingest down with it. Without a marker the next start
+// tries again, and every step is idempotent.
+func repairHistory(cfg config, log *slog.Logger) {
+	if !cfg.repairHistory {
+		log.Info("history repair disabled", "repair", repair.ID)
+		return
+	}
+	start := time.Now()
+	sum, ran, err := repair.Run(cfg.dataDir)
+	switch {
+	case err != nil:
+		log.Error("history repair failed; it will be retried at the next start",
+			"repair", repair.ID, "err", err, "rollups", sum.Rollups, "relay", sum.Relay)
+	case !ran:
+		log.Info("history repair already applied", "repair", repair.ID, "marker", repair.MarkerPath(cfg.dataDir))
+	default:
+		log.Info("history repair applied", "repair", repair.ID, "took", time.Since(start).String(),
+			"rollups", sum.Rollups, "relay", sum.Relay)
+	}
+}
+
 // sqlTool adapts the query engine to the MCP tool's signature, or returns nil
 // where there is no engine — which is what makes the tool's own "no engine is
 // wired in this deployment" message true rather than a stub's excuse.
@@ -541,6 +570,10 @@ type config struct {
 	statsKey   []byte
 	mcpEnabled bool
 	enableSQL  bool
+	// repairHistory runs the one-time 2026-11 history repair at startup
+	// (internal/repair, docs/33 §4.17). A marker under the data dir makes it
+	// a no-op after the first completed run.
+	repairHistory bool
 	// The SQL engine's budget and health probe (sqlengine.Options, Probe).
 	// sqlMemoryLimit 0 = DuckDB's own default; "auto" resolves to a quarter of
 	// the container's limit at parse time.
@@ -664,6 +697,8 @@ func parseFlags(args []string, env func(string) string) (config, error) {
 	// tool both say so rather than pretending (§8 Q1).
 	fs.BoolVar(&c.enableSQL, "query-sql", orBool(env("GAWK_TELEMETRY_QUERY_SQL"), true),
 		"expose the ad-hoc SQL surface (default on; needs a build with -tags duckdb to answer)")
+	fs.BoolVar(&c.repairHistory, "repair-history", orBool(env("GAWK_TELEMETRY_REPAIR_HISTORY"), true),
+		"run the one-time 2026-11 history repair at startup (docs/33 §4.17); a marker under the data dir makes it run once")
 	// The engine shares a process with public ingest, so its budget is stated
 	// (BUGS.md 2026-08-20: DuckDB's defaults OOMed every unpruned scan).
 	sqlMem := fs.String("sql-memory-limit", or(env("GAWK_TELEMETRY_SQL_MEMORY_LIMIT"), "auto"),

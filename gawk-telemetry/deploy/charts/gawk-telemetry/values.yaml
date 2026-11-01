@@ -97,6 +97,14 @@ config:
   #     build: the shipped image is compiled `-tags duckdb`, while a binary
   #     built from a fresh clone has no engine and says so (docs/36 §8 Q1).
   querySql: true
+  # The one-time 2026-11 history repair (docs/33 §4.17): on the first start
+  # of a release that carries it, before ingest or any listener opens, it
+  # deletes #376's implausible latency stats from the permanent rollups,
+  # deletes stripe-leg-derived relay counters from striped viewers' rows, and
+  # marks pre-#657 stripe legs in the raw relay files. A marker under the
+  # data dir (repairs/2026-11-history.done) makes every later start a no-op.
+  # Set false only to keep history exactly as it was written.
+  repairHistory: true
   # The SQL engine's budget. Each query runs in a short-lived worker process
   # in the same container (and cgroup) as public ingest, so it gets a stated
   # share instead of DuckDB's defaults (~80 % of the container's memory, one

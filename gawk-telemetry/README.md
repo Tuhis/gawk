@@ -221,6 +221,7 @@ Every flag has a `GAWK_TELEMETRY_*` environment fallback
 | `-dashboard-base` | `GAWK_TELEMETRY_DASHBOARD_BASE` | (empty) |
 | `-mcp` | `GAWK_TELEMETRY_MCP` | `true` |
 | `-query-sql` | `GAWK_TELEMETRY_QUERY_SQL` | `true` (needs a `-tags duckdb` build to answer) |
+| `-repair-history` | `GAWK_TELEMETRY_REPAIR_HISTORY` | `true` (one-time 2026-11 history repair at startup, [docs/33 §4.17](../docs/33-telemetry-and-diagnostics.md); a marker in `<data-dir>/repairs/` makes it run once) |
 | `-sql-memory-limit` | `GAWK_TELEMETRY_SQL_MEMORY_LIMIT` | `auto` (a quarter of the container's memory limit, min 128MiB; applies to each query's worker process) |
 | `-sql-threads` | `GAWK_TELEMETRY_SQL_THREADS` | `2` (each holds a 32 MiB JSON read buffer) |
 | `-sql-spill-limit` | `GAWK_TELEMETRY_SQL_SPILL_LIMIT` | `512MiB` (in `<data-dir>/.sql-spill`; `0` disables) |

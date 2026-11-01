@@ -117,6 +117,8 @@ spec:
               value: {{ .Values.config.mcp | quote }}
             - name: GAWK_TELEMETRY_QUERY_SQL
               value: {{ .Values.config.querySql | quote }}
+            - name: GAWK_TELEMETRY_REPAIR_HISTORY
+              value: {{ .Values.config.repairHistory | quote }}
             - name: GAWK_TELEMETRY_SQL_MEMORY_LIMIT
               value: {{ .Values.config.sqlMemoryLimit | quote }}
             - name: GAWK_TELEMETRY_SQL_THREADS
