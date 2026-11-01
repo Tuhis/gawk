@@ -730,7 +730,7 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 				last = &l
 			}
 		}
-		if o.SessionID == row.SessionID && o.Subscriber != nil {
+		if o.viewerOf(row.SessionID) {
 			coverage = "full"
 			f.SetRelay("subscriberDropped", float64(o.Subscriber.Dropped))
 			f.SetRelay("keyframesDropped", float64(o.Subscriber.KeyframesDropped))
@@ -968,7 +968,22 @@ type relayObservation struct {
 		CarrierRecordsDropped uint64 `json:"carrierRecordsDropped"`
 		DVRResyncs            uint64 `json:"dvrResyncs"`
 		DVRLagMs              int64  `json:"dvrLagMs"`
+		// Judged by relayscrape.IsAudience: an edge session or a stripe leg
+		// is plumbing, never the viewer the row describes.
+		Internal  bool `json:"internal"`
+		StripeLeg bool `json:"stripeLeg"`
 	} `json:"subscriber"`
+}
+
+// viewerOf reports whether o is the relay's view of the viewer session
+// sessionID itself. A stripe leg carries its viewer's sessionId (docs/35
+// §5.8), so matching on the id alone let the LAST line — often a leg on
+// another pod — put a leg's drops, pod and role on the permanent row and in
+// the verdict. The scraper stops storing legs since #657, but lines stored
+// before it (marked by the startup repair, internal/repair) still carry them.
+func (o *relayObservation) viewerOf(sessionID string) bool {
+	return o.SessionID == sessionID && o.Subscriber != nil &&
+		relayscrape.IsAudience(o.Subscriber.Internal, o.Subscriber.StripeLeg)
 }
 
 // --- fleet_summary --------------------------------------------------------
@@ -1147,7 +1162,7 @@ func JoinRelay(row *rollup.Row, relayLines [][]byte, interval time.Duration) {
 		if err := json.Unmarshal(ln, &o); err != nil {
 			continue
 		}
-		if o.SessionID == row.SessionID && o.Subscriber != nil {
+		if o.viewerOf(row.SessionID) {
 			seen = true
 			popName = cmp.Or(o.PopName, popName)
 			if o.Pod != "" {
