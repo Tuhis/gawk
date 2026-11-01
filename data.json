@@ -50,10 +50,10 @@
     },
     "gawk-telemetry": {
       "component": "gawk-telemetry",
-      "covered": 4341,
+      "covered": 4365,
       "label": "telemetry",
-      "pct": 75.9,
-      "total": 5718,
+      "pct": 76.1,
+      "total": 5739,
       "unit": "statements"
     },
     "gawk-telemetry-ui": {
