@@ -100,6 +100,7 @@ jobs:
       release_tool: ${{ steps.filter.outputs.release_tool }}
       relay_pack: ${{ steps.filter.outputs.relay_pack }}
       relay_portable: ${{ steps.filter.outputs.relay_portable }}
+      relay_full: ${{ steps.filter.outputs.relay_full }}
       icon: ${{ steps.filter.outputs.icon }}
       rnnoise: ${{ steps.filter.outputs.rnnoise }}
       common_ts: ${{ steps.filter.outputs.common_ts }}
@@ -347,6 +348,19 @@ jobs:
           # The shared relay core it also imports (transport, hub, roomsrv)
           # changes in most server PRs and is tested on Linux by `server`.
           relay_portable=$(decide relay_portable '^gawk-server/(cmd/gawk-relay/|internal/(config|serve|relaystate|lanaddr|relayconsole|popclient|poplink|tlsutil)/|go\.(mod|sum)$)')
+          # Whether `relay` builds every gawk-relay target and vets the
+          # portable packages per GOOS, or (a PR touching neither the relay's
+          # portable code nor its packaging) only the linux/amd64 binary it
+          # embed-checks and starts. The same line relay_portable already
+          # draws for relay-windows/relay-darwin: the shared relay core is
+          # tested on Linux by `server`, and the wide runs, which attach the
+          # release assets, always build all five.
+          relay_full=false
+          if [ "$all" = true ] || [ "$wide" = true ] || [ "$relay_pack" = true ] || [ "$relay_portable" = true ]; then
+            relay_full=true
+          fi
+          echo "relay_full=${relay_full}" >> "$GITHUB_OUTPUT"
+          printf '  %-14s %s\n' relay_full "$relay_full" >&2
           # R44 (docs/53 D2): the icon's generated derivatives are committed
           # and drift-checked against the SVG. The check runs on any edit to
           # either side, because the failure it catches is "edited the SVG
@@ -413,8 +427,17 @@ jobs:
           images=""
           add() { images="${images:+$images,}$1"; }
           if [ "$server" = true ]; then add "$relay"; fi
-          # gawk-relay embeds the app, so an app change rebuilds it too.
-          if [ "$server" = true ] || [ "$app" = true ]; then add "$pop_amd64"; add "$pop_arm64"; fi
+          # gawk-relay embeds the app, so an app change rebuilds it too — on
+          # the wide runs, and on a PR that moves its packaging (relay_pack:
+          # the relay's command, Dockerfile.relay). Otherwise a PR leaves the
+          # two images to main: each compiled the relay cold inside BuildKit
+          # (179-347 s in run 41350236368, the arm64 one under QEMU), which is
+          # the very binary the `relay` job already builds, embed-checks and
+          # starts with zero flags on the same PR.
+          if { [ "$server" = true ] || [ "$app" = true ]; } \
+            && { [ "$wide" = true ] || [ "$relay_pack" = true ]; }; then
+            add "$pop_amd64"; add "$pop_arm64"
+          fi
           if [ "$app" = true ]; then add "$spa"; fi
           if [ "$telemetry" = true ]; then add "$tel"; fi
           if [ "$admin" = true ]; then add "$adm"; fi
@@ -3992,6 +4015,7 @@ jobs:
       # (moderationsrc sends itself SIGHUP), and every other package is
       # compiled for each GOOS by the build step below anyway.
       - name: go vet per GOOS
+        if: needs.changes.outputs.relay_full == 'true'
         working-directory: gawk-server
         run: |
           set -euo pipefail
@@ -4022,12 +4046,21 @@ jobs:
         working-directory: gawk-server
         env:
           VERSION: ${{ steps.source.outputs.version }}
+          FULL: ${{ needs.changes.outputs.relay_full }}
         run: |
           set -euo pipefail
           mkdir -p ../relay-dist
           # Side by side, for the vet step's reason: five targets are five
-          # compiles and five serial links, 135-169 s back to back.
-          targets=(windows/amd64 darwin/amd64 darwin/arm64 linux/amd64 linux/arm64)
+          # compiles and five serial links, 135-169 s back to back. Only
+          # linux/amd64 when `changes` says this PR cannot have moved the
+          # others (relay_full); nothing on a PR consumes them then —
+          # relay-macos, the one PR-side consumer, runs on relay_pack, which
+          # sets relay_full.
+          if [ "$FULL" = true ]; then
+            targets=(windows/amd64 darwin/amd64 darwin/arm64 linux/amd64 linux/arm64)
+          else
+            targets=(linux/amd64)
+          fi
           declare -A pid
           for target in "${targets[@]}"; do
             goos=${target%/*} goarch=${target#*/}
