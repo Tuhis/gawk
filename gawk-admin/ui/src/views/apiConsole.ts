@@ -251,7 +251,9 @@ export function operationFromDocsLocation(
       return s;
     }
   });
-  const op = ops.find((o) => docsSlug(o.tag) === tag && docsSlug(o.id) === id);
+  // Slugged on both sides, so a hand-typed `#/api/bans/createBan` is the
+  // same page as the `createban` Redoc writes.
+  const op = ops.find((o) => docsSlug(o.tag) === docsSlug(tag) && docsSlug(o.id) === docsSlug(id));
   return op ? op.id : null;
 }
 

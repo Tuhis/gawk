@@ -108,6 +108,50 @@ describe('the API console (docs/49 D5, revised 2026-09-21)', () => {
     await waitFor(() => expect(operationSelect().value).toBe('listBans'));
   });
 
+  // Round-1 review finding: the router can sit on A while the scroll spy has
+  // moved the address bar (and so the drawer) to X. Clicking A in the sidebar
+  // again is a navigation to the SAME pathname — a new location, which the
+  // drawer must still follow.
+  it('follows a sidebar click to the route the router is already on', async () => {
+    window.history.replaceState(null, '', '#/api/bans');
+    function Page() {
+      const [open, setOpen] = useState(false);
+      return inRouter(
+        open ? (
+          <ApiConsole onClose={() => undefined} fetchDocument={fetchDocument} />
+        ) : (
+          <button type="button" onClick={() => setOpen(true)}>
+            Console
+          </button>
+        ),
+      );
+    }
+    renderWithSession(<Page />, stubSession(() => json({})));
+    act(() => navigate!('/api/bans/listbans'));
+    act(() => window.history.replaceState(window.history.state, '', '#/api/bans/createban'));
+    fireEvent.click(screen.getByRole('button', { name: 'Console' }));
+    await waitFor(() => expect(operationSelect().value).toBe('createBan'));
+    act(() => navigate!('/api/bans/listbans'));
+    await waitFor(() => expect(operationSelect().value).toBe('listBans'));
+  });
+
+  // Round-1 review finding: a sidebar click while a request is in flight
+  // must not swap the operation under it — the response would land beside
+  // another operation's caveats, with Send live again.
+  it('does not follow the docs while a request is in flight', async () => {
+    let release: (r: Response) => void = () => undefined;
+    mount(() => new Promise<Response>((r) => (release = r)));
+    await choose('getMe');
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await screen.findByRole('button', { name: 'Sending…' });
+    act(() => navigate!('/api/bans/listbans'));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(operationSelect().value).toBe('getMe');
+    await act(async () => release(json({ email: 'op@example.org' })));
+    await screen.findByRole('button', { name: 'Send' });
+    expect(operationSelect().value).toBe('getMe');
+  });
+
   // The scroll spy's silent rewrite must NOT drag the drawer along: a
   // half-typed request should not change under the operator because they
   // scrolled to check a field.

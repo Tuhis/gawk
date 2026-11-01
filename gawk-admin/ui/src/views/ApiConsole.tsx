@@ -121,18 +121,28 @@ export function ApiConsole({
   // which is right: a half-typed request should not change under the
   // operator because they scrolled to check a field. Landing on the
   // operation already open (the drawer's own "docs" link) keeps what was
-  // typed, for the same reason.
-  const { pathname } = useLocation();
+  // typed, for the same reason, and so does anything while a request is in
+  // flight: the response must land beside the operation that sent it.
+  //
+  // Keyed on the whole LOCATION, not its pathname. The scroll spy can leave
+  // the router on A while the address bar — and so the drawer — moved to X;
+  // a sidebar click on A is then a navigation to the pathname the router
+  // already has, a new location with an unchanged pathname, and it must
+  // still be followed.
+  const location = useLocation();
   const opsRef = useRef(ops);
   const selectedRef = useRef(selectedId);
+  const phaseRef = useRef(phase);
   useEffect(() => {
     opsRef.current = ops;
     selectedRef.current = selectedId;
+    phaseRef.current = phase;
   });
   useEffect(() => {
-    const id = operationFromDocsLocation(pathname, opsRef.current);
+    if (phaseRef.current === 'sending') return;
+    const id = operationFromDocsLocation(location.pathname, opsRef.current);
     if (id && id !== selectedRef.current) select(id, opsRef.current);
-  }, [pathname, select]);
+  }, [location, select]);
 
   // The operator picked an operation in the drawer: take the reference to it
   // too, as a sidebar click would — a router navigation, which Redoc scrolls
@@ -150,10 +160,8 @@ export function ApiConsole({
   // Escape closes, unless a request is in flight — the same rule Dialog has,
   // for the same reason: the keyboard must not bypass a disabled state.
   const closeRef = useRef(onClose);
-  const phaseRef = useRef(phase);
   useEffect(() => {
     closeRef.current = onClose;
-    phaseRef.current = phase;
   });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

@@ -123,6 +123,12 @@ describe('the docs location (docs/49 D5, revised 2026-11-01)', () => {
     expect(operationFromDocsLocation('#/api/identity/getme', ops)).toBe('getMe');
   });
 
+  // Round-1 review: a hand-typed route in mixed case is the same page.
+  it('matches a hand-typed route whatever its case', () => {
+    expect(operationFromDocsLocation('#/api/bans/createBan', ops)).toBe('createBan');
+    expect(operationFromDocsLocation('#/api/Bans/CREATEBAN', ops)).toBe('createBan');
+  });
+
   it('names nothing for a tag, a section, another view or an unknown operation', () => {
     for (const location of [
       '#/api',
