@@ -31,6 +31,15 @@
 #    stop being cached; compiled packages still are, and that is where the
 #    time goes. Commands that do not take -count (vet, build, mod, list) ignore
 #    it.
+#
+#    `test-results: cached` opts a job out, and takes on the rule's reason
+#    with it: that job must run every package with inputs Go cannot see under
+#    its own -count=1. `server` and `server-coverage` do, for gawk-server's
+#    packages that `go build` something they do not import (the integration
+#    test above, in internal/pubsim/engine), and in exchange stop re-running
+#    every unchanged package on every relay PR — `wire` alone was 163s under
+#    -race. The cache is per node (above), so a hit needs that node to have
+#    run the same package on the same inputs; a miss just runs the test.
 #  * Nothing may `go clean -cache` it. Other jobs are reading it at the same
 #    moment. The jobs that clean their tmpfs cache to make room gate that
 #    step on GO_SHARED_CACHE, which this action exports.
@@ -58,10 +67,22 @@
 name: Shared Go cache
 description: Point GOMODCACHE/GOCACHE at the runners' shared CephFS cache when mounted; a no-op elsewhere.
 
+inputs:
+  test-results:
+    description: >-
+      `uncached` (default) appends -count=1 to GOFLAGS, so no test result is
+      ever replayed from the shared cache. `cached` leaves GOFLAGS alone; the
+      job must then pass -count=1 itself to every package with inputs Go
+      cannot see (the header says which).
+    required: false
+    default: uncached
+
 runs:
   using: composite
   steps:
     - shell: bash
+      env:
+        TEST_RESULTS: ${{ inputs.test-results }}
       run: |
         set -euo pipefail
         root=/mnt/ci-cache
@@ -78,12 +99,18 @@ runs:
         {
           echo "GOMODCACHE=$root/go/mod"
           echo "GOCACHE=$root/go/build"
-          echo "GOFLAGS=${GOFLAGS:+$GOFLAGS }-count=1"
+          if [ "$TEST_RESULTS" != cached ]; then
+            echo "GOFLAGS=${GOFLAGS:+$GOFLAGS }-count=1"
+          fi
           echo "GO_SHARED_CACHE=true"
         } >> "$GITHUB_ENV"
         # The subvolume quota is the volume's size, so df reports the cache's
         # real headroom (all nodes' trees together, not just this one).
-        echo "Shared Go cache: $root/go (GOFLAGS += -count=1), $(go version)"
+        if [ "$TEST_RESULTS" = cached ]; then
+          echo "Shared Go cache: $root/go (test results cached; this job passes -count=1 itself where it must), $(go version)"
+        else
+          echo "Shared Go cache: $root/go (GOFLAGS += -count=1), $(go version)"
+        fi
         df -h "$root" | sed 's/^/  /'
         if [ -f "$root/go/trim.log" ]; then
           echo "  last trim: $(tail -n 1 "$root/go/trim.log")"

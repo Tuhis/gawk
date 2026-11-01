@@ -439,9 +439,10 @@ The compose stack gains a `screening` profile (docs/41): two samplers
 model, a `gawk-pubsim` publishing `-fixture magenta`, and a webhook receiver
 that records deliveries. `gawk-admin` runs with `-screening` there and the fake
 IdP's client-credentials grant serves a `flagger` client beside the rooms bot.
-The relay runs with a dev screening token and the notice on. CI's `dev-stack`
-job runs the profile and asserts the flag path end to end, so the lane cannot
-rot unnoticed.
+The relay runs with a dev screening token and the notice on. CI's
+`dev-stack-screening` job runs the profile and asserts the flag path end to
+end, so the lane cannot rot unnoticed: on a PR when the flag path can have
+moved, and on every main push and release PR that touches the stack.
 
 ### 9.8 Where the disclosure shows (owner, 2026-10-13)
 
