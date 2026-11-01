@@ -107,14 +107,16 @@ const FRAMES_FLOWING_WINDOW_MS = 1000;
 export const SESSION_STALL_MS = 15000;
 
 // Upper bound on a published capToRenderMs / liveEdgeDriftMs reading. The
-// relay's DVR window defaults to 3 s (gawk-server/internal/hub/hub.go
-// DefaultDVRWindow); a reading 10× that is not a latency measurement, it's a
-// clock/timestamp fault — #376's timestamp-0 frames read as the broadcaster
-// tab's age (up to 48 min) and poisoned telemetry's permanent rollups. Such a
-// reading publishes as null (unmeasured), never clamped: a clamped 30 000
-// would still be a fabricated number. gawk-telemetry's rollups apply the same
-// bound.
-export const MAX_PLAUSIBLE_LATENCY_MS = 30_000;
+// deepest delay a playout mode is built for is the Deep buffer at its 30 s
+// maximum (MAX_DVR_BUFFER_MS in config.ts; the relay's -dvr-window has no
+// upper limit), where every reading is a little over 30 s. Two minutes clears
+// that with room and is no latency this platform produces: above it is a
+// clock/timestamp fault, as #376's timestamp-0 frames were (they read as the
+// broadcaster tab's age, up to 48 min, and poisoned telemetry's permanent
+// rollups). Such a reading publishes as null (unmeasured), never clamped: a
+// clamped value would still be a fabricated number. gawk-telemetry's rollups
+// apply the same bound (rollup.MaxPlausibleLatencyMs).
+export const MAX_PLAUSIBLE_LATENCY_MS = 120_000;
 
 function plausibleLatencyMs(ms: number | null): number | null {
   return ms !== null && ms > MAX_PLAUSIBLE_LATENCY_MS ? null : ms;

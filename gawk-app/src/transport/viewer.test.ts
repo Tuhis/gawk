@@ -65,6 +65,7 @@ import {
   encodeViewerCount,
   encodeDeliveryAck,
 } from './wire';
+import { MAX_DVR_BUFFER_MS } from '../config';
 
 function makeFakeWT(closedAfterMs: number, closeInfo: unknown) {
   const closed = new Promise((res) => {
@@ -1100,9 +1101,9 @@ describe('ViewerPipeline', () => {
         toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
       });
       try {
-        // The tab has been open for a minute: a timestamp-0 frame now reads
-        // ~60 s on both metrics — twice the bound.
-        await vi.advanceTimersByTimeAsync(60_000);
+        // The tab has been open for three minutes: a timestamp-0 frame now
+        // reads ~180 s on both metrics, past the two-minute bound.
+        await vi.advanceTimersByTimeAsync(180_000);
         const { pipeline, stats, tsFor, decode } = await latencyHarness();
         decode(tsFor(250));
         decode(0);
@@ -1118,20 +1119,22 @@ describe('ViewerPipeline', () => {
       }
     });
 
-    it('passes a large-but-plausible reading through unclamped', async () => {
+    // A Deep buffer at its 30 s maximum (MAX_DVR_BUFFER_MS) reads a little
+    // over 30 s on every sample. That is a real latency and must publish.
+    it('passes a 30 s Deep-buffer reading through unclamped', async () => {
       vi.useFakeTimers({
         toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
       });
       try {
         const { pipeline, stats, tsFor, decode } = await latencyHarness();
         decode(tsFor(250));
-        decode(tsFor(5_250));
+        decode(tsFor(MAX_DVR_BUFFER_MS + 400));
 
         await vi.advanceTimersByTimeAsync(500); // one stats tick
         const last = stats.at(-1)!;
-        expect(last.capToRenderMs).toBeCloseTo(5_250, 0);
-        expect(last.liveEdgeDriftMs).toBeCloseTo(5_000, 0);
-        expect(MAX_PLAUSIBLE_LATENCY_MS).toBe(30_000);
+        expect(last.capToRenderMs).toBeCloseTo(MAX_DVR_BUFFER_MS + 400, 0);
+        expect(last.liveEdgeDriftMs).toBeCloseTo(MAX_DVR_BUFFER_MS + 150, 0);
+        expect(MAX_PLAUSIBLE_LATENCY_MS).toBeGreaterThanOrEqual(4 * MAX_DVR_BUFFER_MS);
 
         await pipeline.stop();
       } finally {
