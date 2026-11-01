@@ -300,8 +300,9 @@ re-checks it against the OBS release it tests.
   - A frame still incomplete when its window closes is **dropped**, and the
     deltas after it are dropped until the next IDR, exactly as a viewer
     handles loss today. The window delays frames only while the frame in
-    front of them is missing a packet; a frame that arrives whole is passed on
-    at once and never waits for the window.
+    front of them is missing a packet; a frame that arrives whole with no
+    incomplete frame ahead of it is passed on at once and never waits for
+    the window.
   - The latency cost is therefore paid **on loss**, not on every frame: a
     lost packet's frame (and the frames queued behind it) are held up to one
     window, then either recovered or dropped. The cap keeps "favour dropped
@@ -412,8 +413,8 @@ re-checks it against the OBS release it tests.
     `GET`/`DELETE /whip/status` all carry the bearer key, and the Ingress
     hashes on it (ingress-nginx
     `nginx.ingress.kubernetes.io/upstream-hash-by: "$http_authorization"`).
-    So every request for a key, and all of D7's and D9's per-key state, lands
-    on one pod; no pod forwards to another, and nothing is shared. `OPTIONS`
+    In the steady state every request for a key, and all of D7's and D9's
+    per-key state, lands on one pod, and nothing is shared. `OPTIONS`
     preflights carry no key, and they're stateless. An Ingress that can't hash
     on a header isn't supported in v1; the chart notes and the self-hosting
     guide say so.
@@ -426,6 +427,21 @@ re-checks it against the OBS release it tests.
     for a moved key are lost, which only shortens a backoff. A
     `PodDisruptionBudget` and `OrderedReady` rollouts restart one pod at a
     time.
+  - **A pod that doesn't hold a key's session asks its peers.** A key can be
+    hashed to a pod other than the one holding its session: after a rescale,
+    and on every rolling release, because the Ingress maps a pod's keys
+    elsewhere while it's down and back when it's Ready again, while a session
+    that reconnected meanwhile stays where it is. So a `DELETE` on a
+    `Location`, or a `GET`/`DELETE /whip/status`, that finds no local session
+    for its key asks the other pods (found through the StatefulSet's headless
+    Service, on an internal port that only gateway pods can reach under the
+    NetworkPolicy, authenticated with a shared `internalToken`) which one
+    holds it, and forwards the request there. Without this, OBS's `DELETE`
+    would never reach the pod holding the session: D8's `StopBroadcast()`
+    wouldn't run, the broadcast would fall into the 5-minute grace instead of
+    ending, and the panel would show `idle` for a live stream. With a
+    handful of pods the lookup is one small request per peer, only on a local
+    miss. A `POST` is never forwarded; it reclaims on the pod it lands on.
   - **Load and the cap.** Load is bounded by concurrent OBS sessions, not
     viewers. `max-broadcasts` doesn't size it: that cap counts relay
     broadcasts (per pod, and in cluster mode fleet-wide at Lease create; 5 for
@@ -466,8 +482,9 @@ re-checks it against the OBS release it tests.
   path from stalling playback.
 - **One replica** (the first draft's D10). The owner chose to scale out from
   the start (OD7). A shared state store or pod-to-pod forwarding was not
-  needed: hashing on the key at the Ingress puts every request and all
-  per-key state for a key on one pod.
+  needed: hashing on the key at the Ingress puts a key's requests and
+  per-key state on one pod in the steady state, and the peer lookup (D10)
+  covers a session that has moved.
 
 - **WHIP inside `gawk-server`** (the 2026-07-29 sketch). See D1.
 - **An OBS output plugin** (idea #19 in the mumisija ideas list): a native
@@ -549,12 +566,13 @@ a broadcast whose publisher is the gateway.
   `replicas` default 2), an HTTP Service for the WHIP endpoint behind the
   public Ingress (TLS by the Ingress, `upstream-hash-by` on the bearer key),
   one UDP+TCP `LoadBalancer` Service per replica on a shared address (port
-  `media.basePort + ordinal`), a NetworkPolicy (egress to the relay's UDP
-  port only, ingress from the Ingress and the media LBs), a ServiceMonitor
-  and a PDB. `values.yaml` holds
+  `media.basePort + ordinal`), a headless Service for D10's peer lookup, a
+  NetworkPolicy (egress to the relay's UDP port and to the other gateway
+  pods' internal port; ingress from the Ingress, the media LBs and the other
+  gateway pods on the internal port only), a ServiceMonitor and a PDB. `values.yaml` holds
   `relay.url`, `relay.publishSecret` (existing secret ref),
-  `relay.publishProxyToken` (D4), `publicAddress`, `replicas` and
-  `media.basePort` (D10), `allowedOrigins`
+  `relay.publishProxyToken` (D4), `publicAddress`, `replicas`,
+  `media.basePort` and `internalToken` (an existing secret ref) (D10), `allowedOrigins`
   (D9 CORS), `trustedProxyCidrs` (D4, default `[]`), `maxSessions` (D10)
   and the D6/D7 knobs. Every value has a flag and a `GAWK_WHIP_*` env (the
   `registryOptions` rule, applied to the gateway's own config). The chart's
@@ -586,7 +604,7 @@ the same way as the native ≈50 ms figure.
 | Encode | ~5–15 ms | ~15–50 ms |
 | Packetize + pace | ~1–5 ms | ~5–20 ms |
 | OBS → gateway | RTT/2 | RTT/2 |
-| Gateway reorder window (D6) | 0 ms for a frame that arrives whole; on loss up to `clamp(1.25 × RTT + 5, 20, 150)` ms (20 ms on a LAN) | same |
+| Gateway reorder window (D6) | 0 ms for a whole frame with no incomplete frame ahead of it; on loss (for the lost packet's frame and the frames queued behind it) up to `clamp(1.25 × RTT + 5, 20, 150)` ms (20 ms on a LAN) | same |
 | Gateway → relay → viewer | as today | as today |
 | **Glass-to-glass, LAN** | **~60–120 ms** | **~100–200 ms** |
 
@@ -599,7 +617,7 @@ the same way as the native ≈50 ms figure.
 | **WG2** | Relay: `CONNECT /publish?mint=1` (D3) and the new close code in all three wire copies with golden vectors. | Tests: a mint announces ID + token, creates no broadcast, emits no event, isn't counted in `max-broadcasts`, and passes every publish gate (secret, rate limit, IP ban, draining). A reclaim with the minted token creates the broadcast. Vectors byte-identical in Go, TS and Rust. |
 | **WG3** | Relay: `-publish-proxy-token` (D4) through `registryOptions`, flag + env + Helm, and D12's guard. | Tests: with the token, `Gawk-Publisher-Ip` drives rate limit, IP ban and the admin publisher-IP fields, and the Origin check is skipped. Without it the header is ignored. A test asserts no event or webhook carries the IP. The Helm value renders into the relay args. The relay refuses to start, and the chart to render, with the proxy token and no explicit `resumeTokenKey`. A gateway peer inside `trustedCidrs` (and one on loopback) presenting the token with a proxied IP is still rate-limited on that IP. `::ffff:203.0.113.7` and `203.0.113.7` in the header hit the same bucket and the same ban. An unparsable or missing header with a valid token gets `400`, never the peer address. The release notes and §9 carry D12's one-time token migration. |
 | **WG4** | Gateway skeleton: module, config (flags + `GAWK_WHIP_*` + chart values), `/healthz`, metrics, Dockerfile, chart (default off), release-please package, a CI path filter on `gawk-whip-gateway/` and `gawk-server/`. | CI builds and tests it. The chart renders with defaults and does nothing until enabled. `maxSessions` and the resource requests are set from WG0's per-session measurement. With `replicas: 3` the chart renders a 3-pod StatefulSet, three media Services on one shared address with ports `basePort`…`basePort+2`, and the Ingress hash annotation. A release produces image + chart at the same version. |
-| **WG5** | WHIP endpoint: `POST`/`DELETE`/`OPTIONS`, key parsing (D2), SDP answer (D5), ICE-lite + per-pod UDP mux port + NAT 1:1 + ICE-TCP (D10), the D6 reorder window, the D8 status mapping, per-IP `POST` rate limit. | A pion WHIP client test in CI: H.264+Opus accepted (`201` + `Location`); HEVC, AV1 and simulcast refused `406`; bad key `401`; every row of D8's table covered against a test relay. Each pod answers with a candidate on its own `basePort + ordinal`. Two gateway instances behind a hashing proxy: a key's `POST`, `DELETE` and status reach the same instance, and the same key's `POST` landing on the other instance (as after a rescale) reclaims the ID while the relay closes the first with 4004. D6: with netem loss, a NACKed packet that returns within the window recovers its frame, one past it drops the frame and the deltas to the next IDR, a whole frame is never delayed, and the window follows the measured RTT within its clamp. Client IP: from a `RemoteAddr` inside `trustedProxyCidrs` the right-most untrusted `X-Forwarded-For` address is used, from outside it a forged `X-Forwarded-For` is ignored, and the chosen address is what reaches the rate limit and `Gawk-Publisher-Ip`. An append-mode chain `forged, <client>` arriving from an ingress pod `RemoteAddr`, with only the ingress pod range trusted, yields `<client>` and never `forged`. Several header lines are joined in order. An unparsable entry stops the walk and gets `400`, and so does a missing header. An all-trusted chain yields its left-most entry. With an empty `trustedProxyCidrs` a forged header is ignored and no request gets `400`. A header from an untrusted peer while the list is set increments the misconfiguration metric. A v4-mapped entry is canonicalised. At `maxSessions`, a new key gets `503` + `Retry-After` while the same key's reconnect succeeds. |
+| **WG5** | WHIP endpoint: `POST`/`DELETE`/`OPTIONS`, key parsing (D2), SDP answer (D5), ICE-lite + per-pod UDP mux port + NAT 1:1 + ICE-TCP (D10), the D6 reorder window, the D8 status mapping, per-IP `POST` rate limit. | A pion WHIP client test in CI: H.264+Opus accepted (`201` + `Location`); HEVC, AV1 and simulcast refused `406`; bad key `401`; every row of D8's table covered against a test relay. Each pod answers with a candidate on its own `basePort + ordinal`. Two gateway instances behind a hashing proxy: a key's `POST`, `DELETE` and status reach the same instance, and the same key's `POST` landing on the other instance (as after a rescale) reclaims the ID while the relay closes the first with 4004. With the hash moved away from the instance holding a live session (as after a rescale or while a pod restarts during a rollout), a `DELETE` on its `Location` reaching the other instance still ends the broadcast with 4014, and `/whip/status` there still reports it live; the peer lookup is refused without `internalToken`. D6: with netem loss, a NACKed packet that returns within the window recovers its frame, one past it drops the frame and the deltas to the next IDR, a whole frame with no incomplete frame ahead of it is never delayed, a frame queued behind a loss waits at most one window, and the window follows the measured RTT within its clamp. Client IP: from a `RemoteAddr` inside `trustedProxyCidrs` the right-most untrusted `X-Forwarded-For` address is used, from outside it a forged `X-Forwarded-For` is ignored, and the chosen address is what reaches the rate limit and `Gawk-Publisher-Ip`. An append-mode chain `forged, <client>` arriving from an ingress pod `RemoteAddr`, with only the ingress pod range trusted, yields `<client>` and never `forged`. Several header lines are joined in order. An unparsable entry stops the walk and gets `400`, and so does a missing header. An all-trusted chain yields its left-most entry. With an empty `trustedProxyCidrs` a forged header is ignored and no request gets `400`. A header from an untrusted peer while the list is set increments the misconfiguration metric. A v4-mapped entry is canonicalised. At `maxSessions`, a new key gets `503` + `Retry-After` while the same key's reconnect succeeds. |
 | **WG6** | Media adapter: RTP → Annex-B AUs with the reorder window (D6), IDR/SPS/B-frame validation, GOP measurement and bounds (D7), Opus → the engine's audio, RTP/RTCP-SR timestamps → engine timestamps, event PLIs. | Unit tests with recorded OBS RTP: a dropped packet drops that frame and the deltas until the next IDR; a B-frame stream is refused with reason; GOP thresholds warn and end as specified (the session ends with 4014 through `StopBroadcast()`), the backoff runs 30 s → 60 s → … → 10 min on repeats and a B-frame refusal starts it too, and a stream with a 2 s GOP that loses one whole IDR (and one IDR's first packet) is neither warned about more than it would be without the loss nor ended; A/V offset within 20 ms of the source; PLI sent on start and on resume only: never on a dropped frame, never periodically. |
 | **WG7** | `GET` and `DELETE /whip/status` (D9) with CORS, and the bounded refusal table. | Tests: returns the D9 fields for the key's session; reports a `503`/`400`/`406`/`422`/`451` refusal of a `POST` that never made a session as `lastError`; a different key with the same ID neither sees nor sets that record; a malformed key gets `401` and an unknown well-formed key gets `idle`; the table evicts beyond its bound; `DELETE` clears the backoff so the next `POST` is answered; nothing in a response contains an IP. |
 | **WG8** | gawk-app OBS panel (§5), `whipGatewayUrl` config, key storage (OD3), status polling. | Vitest covers mint, show/copy/forget/reset, the publish-secret prompt, status states and warnings. The panel is hidden without `whipGatewayUrl`. |
