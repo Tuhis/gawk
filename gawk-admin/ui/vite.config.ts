@@ -104,8 +104,10 @@ const CSP_LEFTOVERS: readonly [hazard: string, pattern: RegExp][] = [
     /_factory\s*(?:\?\?=|\?\?\s*\([^)]*=)\s*(?:new\s+)?Function\(/,
   ],
   [
-    'an inline data: font, which font-src refuses',
-    /url\(\s*\\?['"]?\s*data:(?:font\/|application\/(?:x-)?font|application\/vnd\.ms-fontobject|application\/octet-stream)/,
+    // `octet-stream` is a font MIME type for some tools and an image's for
+    // others; either way the CSP refuses it, so the label says data: URL.
+    'an inline data: URL (a font or opaque binary) that the CSP refuses',
+    /url\(\s*\\?['"]?\s*data:(?:font\/|application\/(?:x-)?font|application\/vnd\.ms-fontobject|application\/octet-stream)/i,
   ],
 ];
 
@@ -144,12 +146,18 @@ function rewriteRedocForCsp() {
       bundle: Record<string, { type: string; code?: string; source?: string | Uint8Array }>,
     ) {
       for (const [file, out] of Object.entries(bundle)) {
+        // A stylesheet handed over as bytes is decoded, not skipped: a net that
+        // quietly stops covering CSS is the failure this check exists for.
         const text =
           out.type === 'chunk'
             ? out.code
-            : file.endsWith('.css') && typeof out.source === 'string'
-              ? out.source
-              : undefined;
+            : !file.endsWith('.css')
+              ? undefined
+              : typeof out.source === 'string'
+                ? out.source
+                : out.source instanceof Uint8Array
+                  ? new TextDecoder().decode(out.source)
+                  : undefined;
         if (!text) continue;
         for (const [hazard, pattern] of CSP_LEFTOVERS) {
           if (pattern.test(text)) {
