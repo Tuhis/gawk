@@ -109,14 +109,17 @@ html:root:has(.gawk-redoc) {
   color: var(--accent) !important;
 }
 
-/* Redoc's sidebar sticks to the top of the VIEWPORT at full viewport
- * height: it assumes it owns the page. Here the portal's sticky header
- * (52px, App.module.css) covers that top, so once the page scrolled the
- * search box sat under the header, and the sidebar's footer hung below the
- * fold. `menu-content` is Redoc's semantic class name for that container. */
+/* Redoc's sidebar assumes it owns the viewport: sticky at its top, full
+ * height, on a wide screen, and fixed over the page as the mobile menu on a
+ * narrow one. Here the portal's sticky header covers that top, so the search
+ * box sat under the header once the page scrolled, and the mobile menu cut
+ * through the header's nav. The header's height changes as its nav wraps
+ * (52px, 70px, 105px, …), so ApiView.tsx measures it into
+ * `--gawk-header-h`; 52px is its unwrapped height, for the first paint.
+ * `menu-content` is Redoc's semantic class name for that container. */
 .gawk-redoc .menu-content {
-  top: 52px !important;
-  height: calc(100vh - 52px) !important;
+  top: var(--gawk-header-h, 52px) !important;
+  height: calc(100vh - var(--gawk-header-h, 52px)) !important;
 }
 
 /* Redoc's own light/dark switch. The portal has no scheme toggle — it follows
@@ -156,14 +159,15 @@ html:root:has(.gawk-redoc) {
   visibility: hidden;
 }
 
-/* The floating Console toggle. Fixed under the portal's sticky header (52px,
- * App.module.css), right-aligned where the drawer will open, above Redoc's
- * own fixed pieces but below the drawer (50) and any dialog (100). It wears
+/* The floating Console toggle. Fixed under the portal's sticky header
+ * (`--gawk-header-h`, above), right-aligned where the drawer will open,
+ * above Redoc's own fixed pieces but below the drawer (50) and any dialog
+ * (100). It wears
  * the raised surface and the portal's shadow so it reads over whatever Redoc
  * has scrolled beneath it — a sample panel, a table, the canvas. */
 .gawk-console-toggle {
   position: fixed;
-  top: calc(52px + var(--sp-3));
+  top: calc(var(--gawk-header-h, 52px) + var(--sp-3));
   right: var(--sp-4);
   z-index: 40;
   background: var(--surface-2);

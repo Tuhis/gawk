@@ -1,4 +1,4 @@
-import { useState, useSyncExternalStore } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import { HashRouter } from 'react-router';
 import { RedocStandalone } from 'redoc';
 
@@ -62,6 +62,35 @@ function ThemedRedoc() {
 }
 
 /**
+ * Publish the portal header's live height as `--gawk-header-h` on <html>
+ * while the API page is mounted (ApiView.css reads it).
+ *
+ * Redoc's sidebar assumes it owns the viewport: sticky at the top on a wide
+ * screen, fixed over the page as a menu on a narrow one. Here the portal's
+ * sticky header owns that top, and its height is not a constant — 52px wide,
+ * then 70px, 105px and more as its nav wraps — so a fixed offset left the
+ * sidebar's search box, or the mobile menu, under the header's nav. The
+ * header is App's (the page has exactly one); measuring it keeps this view
+ * from restating App's layout.
+ */
+function usePortalHeaderHeight() {
+  useEffect(() => {
+    const header = document.querySelector('header');
+    if (!header || typeof ResizeObserver === 'undefined') return;
+    const root = document.documentElement.style;
+    const apply = () =>
+      root.setProperty('--gawk-header-h', `${Math.round(header.getBoundingClientRect().height)}px`);
+    apply();
+    const observer = new ResizeObserver(apply);
+    observer.observe(header);
+    return () => {
+      observer.disconnect();
+      root.removeProperty('--gawk-header-h');
+    };
+  }, []);
+}
+
+/**
  * Rewrite a Redoc 2 fragment in the address bar to the Redoc 3 route it means
  * (`legacyDocsRoute`), so a bookmark from before the upgrade still lands on
  * its operation. `replaceState`, not an assignment: the old URL is not a
@@ -115,6 +144,7 @@ export default function ApiView() {
   // the one hook that runs ahead of the first render's children. Idempotent,
   // so StrictMode's double call is harmless.
   useState(upgradeLegacyHash);
+  usePortalHeaderHeight();
 
   return (
     <HashRouter>

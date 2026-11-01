@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // Redoc is ~2 MB of prebuilt JavaScript. Mounting it in jsdom would test
@@ -148,6 +148,42 @@ describe('the API page (R48, docs/49 D5)', () => {
     expect(screen.queryByLabelText('API console')).toBeNull();
     expect(screen.getByRole('button', { name: 'Console' })).toBeTruthy();
     expect(document.querySelector('.gawk-redoc.withConsole')).toBeNull();
+  });
+
+  // The portal header is 52px wide-screen but wraps as the window narrows
+  // (70px, 105px, …). Redoc's sticky sidebar — and its fixed mobile menu —
+  // are placed below whatever height it has NOW, so the view publishes it
+  // while mounted and takes it back on unmount.
+  it('publishes the live portal header height while mounted', async () => {
+    let height = 105;
+    const header = document.createElement('header');
+    header.getBoundingClientRect = () => ({ height }) as DOMRect;
+    document.body.prepend(header);
+    const observers: (() => void)[] = [];
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(cb: () => void) {
+          observers.push(cb);
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    try {
+      const { unmount } = render(<ApiView />);
+      await screen.findByText('API');
+      const root = document.documentElement.style;
+      expect(root.getPropertyValue('--gawk-header-h')).toBe('105px');
+      height = 70;
+      act(() => observers.forEach((cb) => cb()));
+      expect(root.getPropertyValue('--gawk-header-h')).toBe('70px');
+      unmount();
+      expect(root.getPropertyValue('--gawk-header-h')).toBe('');
+    } finally {
+      vi.unstubAllGlobals();
+      header.remove();
+    }
   });
 
   // Redoc reads the contract; it never acts on the caller's behalf. It
