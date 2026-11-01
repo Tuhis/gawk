@@ -52,8 +52,7 @@ reliable streams, R29 forward parity, TimeSync, auto-resume with the resume
 token, and room attach. The relay, hub, wire and viewers don't change.
 
 The gateway absorbs relay-side churn. A relay drain (4002) makes the engine
-resume on another pod while OBS keeps sending;
-OBS never sees it.
+resume on another pod while OBS keeps sending; OBS never sees it.
 
 ## 3. What the survey found
 
@@ -78,8 +77,8 @@ OBS never sees it.
   the code pick it back up (`docs/79`, `TestPublisherStopThenReclaimRecreates`).
 - So, **with an explicit key (D12), ID + token is already a lasting,
   Twitch-style stream key**: the same code every session, so viewers' links
-  keep working. The gateway needs no
-  new relay credential to publish one, and no state of its own.
+  keep working. The gateway needs no new relay credential to publish one,
+  and no durable state of its own.
 - No HTTP API mints an ID today. IDs are minted only by a live
   `CONNECT /publish`, which also creates the broadcast and fires
   `broadcast.started`. gawk-admin's `/api/v1/broadcasts` lists and kills only.
@@ -179,7 +178,9 @@ re-checks it against the OBS release it tests.
   token. One WHIP URL serves everyone (`https://<gateway>/whip`), and the key
   says which broadcast. This is the server-URL-plus-stream-key pattern OBS
   users know from every other platform. The gateway parses the key and dials
-  `CONNECT /publish/{ID}?resume=<token>`. It holds **no state** and **no
+  `CONNECT /publish/{ID}?resume=<token>`. It holds **no durable state**
+  (only in-memory per-key records: sessions, D7's backoff and D9's refusals,
+  all lost on a restart, which one replica makes acceptable) and **no
   token-minting key**: a key is only as powerful as the publish it already
   allows. The `gawk1_` prefix versions the format and makes a leaked key
   findable by secret scanners.
@@ -189,9 +190,8 @@ re-checks it against the OBS release it tests.
   per-IP rate limit, `?secret=`, IP ban, `CheckPublishNew`). It announces the
   ID and the resume token as today, then closes the session with a new
   close code meaning "minted, nothing to publish", **without creating a
-  broadcast**: no
-  `broadcast.started`, nothing in `/statusz` or the admin portal, nothing
-  counted against `max-broadcasts`. OBS's first `POST` then creates the
+  broadcast**: no `broadcast.started`, nothing in `/statusz` or the admin
+  portal, nothing counted against `max-broadcasts`. OBS's first `POST` then creates the
   broadcast through the existing token reclaim. Minting by opening and
   stopping a real broadcast was rejected, because it fires a started/stopped
   event pair and a webhook for a broadcast that never had media. The new
@@ -218,8 +218,8 @@ re-checks it against the OBS release it tests.
   back to the peer address, which would bring the `trustedCidrs` bypass back
   for a buggy or older gateway. The same token exempts the gateway from the
   Origin allow-list. The publisher IP still never leaves through events or
-  webhooks (CLAUDE.md). The gateway also
-  rate-limits `POST /whip` per client IP itself, before dialing the relay.
+  webhooks (CLAUDE.md). The gateway also rate-limits `POST /whip` per
+  client IP itself, before dialing the relay.
 
   **Where the gateway gets the client IP.** `POST /whip` arrives through the
   public Ingress (§6), so `r.RemoteAddr` is the ingress controller for every
@@ -312,10 +312,18 @@ re-checks it against the OBS release it tests.
     start (OBS's "auto" GOP at ≲ 55 fps; at 60 fps "auto" is ~4.2 s and the
     median rule ends it, after about 20 s of ~4 s freezes), which one lost IDR
     start can't produce at a GOP the bounds allow. The 4.5 s threshold can't
-    come down without breaking that safeguard. While the same key reconnects
-    within 10 minutes it answers `POST`s with `422` and that reason, so OBS's
-    auto-reconnect doesn't loop viewers through freezes. The thresholds are
-    gateway knobs.
+    come down without breaking that safeguard. The thresholds are gateway
+    knobs.
+  - **Backoff after a session the gateway ends itself.** For `gop_too_long`
+    and every other reason the gateway ends a session (B-frames, a stream
+    that isn't valid H.264), it answers that key's `POST`s with `422` and the
+    reason for a backoff that starts at 30 s and doubles on each repeat up to
+    10 minutes. That stops OBS's auto-reconnect from looping viewers through
+    freezes. The gateway can't check a GOP before answering, so it can't tell
+    a reconnect with the same bad settings from one where the user fixed OBS.
+    The panel's **Retry now** (§5) clears the backoff for its key with
+    `DELETE /whip/status` (same bearer key), so a user who has fixed OBS
+    never waits it out and never has to reset the key.
   - **The gateway sends PLI anyway, on two events only**: on session start
     and after the engine resumes on another relay pod. Both are moments when
     the relay's cache is empty, not moments of loss.
@@ -344,10 +352,12 @@ re-checks it against the OBS release it tests.
   | Second OBS with the same key | new session reclaims (not counted against `maxSessions`) | **4004** to the first; the gateway tears down the first PeerConnection |
   | Gateway at `maxSessions` (a new key) | `503` + `Retry-After: 30`, no relay dial | — |
   | Relay 4002 (drain) | engine auto-resumes, sends PLI | resume on another pod |
-  | Relay 4006 (operator kill) / ID ban | ends the session; `POST`s answer `403` | — |
+  | The gateway ends the session itself (D7: `gop_too_long`, B-frames, invalid H.264) | engine `StopBroadcast()`, records the reason, starts D7's backoff | close **4014**, broadcast ends; viewers wait on the code |
+  | Relay 4006 (operator kill) | ends the session, records `killed` | — |
+  | Relay `451` (ID or IP ban) | `451` to OBS, recorded as `banned` | — |
   | Relay `409` (ID reserved for a PoP) | `409` to OBS | — |
   | Relay `429` (caps, rate limit) | `429` + `Retry-After` | — |
-  | Relay `401`/`403` (bad secret or token) | `401`/`403` | — |
+  | Relay `401`/`403` (bad secret or token) | `401`/`403`, recorded as `rejected` (never `banned`; the relay keeps `451` for that on purpose, `server.go` `rejectBanned`) | — |
 
 - **D9 — The web app is where the user sees the gateway's verdict.** OBS
   shows only "could not connect" (§3.3), so the gateway exposes
@@ -355,11 +365,18 @@ re-checks it against the OBS release it tests.
   `gawk-app` origins). It returns `{state, codec, resolution, fps, gopMs,
   bitrateKbps, lossPct, warnings[], lastError}` for the key's current or
   last session. A `POST` refused before any session exists (`503` at
-  `maxSessions`, `400 client_ip_unknown`, `422 gop_too_long`, relay refusals)
-  is recorded against its key for 10 minutes and reported as `lastError`, so
-  the panel can show the reason OBS can't. The OBS panel (§5) polls it every
-  2 s while open. The status
-  holds no IPs and no frame data.
+  `maxSessions`, `400 client_ip_unknown`, `406` codec or simulcast, `422`
+  backoff, relay refusals including `451 banned`) is recorded for 10 minutes
+  and reported as `lastError`, so the panel can show the reason OBS can't.
+  Records are keyed by a hash of the **full key**, never by the ID alone, so
+  a code doesn't let anyone set another broadcaster's `lastError`. The table
+  is bounded (an LRU, 4096 entries by default), because a `503` or `400`
+  comes before the relay dial and the gateway can't verify a key it never
+  dialed with. So `GET /whip/status` answers `401` only for a key that
+  doesn't parse. For a well-formed key it doesn't know, it answers an empty
+  `idle` status. `DELETE /whip/status` clears D7's backoff for the
+  presenting key. The OBS panel (§5) polls it every 2 s while open. The
+  status holds no IPs and no frame data.
 
 - **D10 — ICE: ICE-lite on one UDP port, one replica.** pion runs ICE-lite
   with a single UDP mux port and a 1:1 NAT mapping
@@ -378,14 +395,12 @@ re-checks it against the OBS release it tests.
   keeps WHIP from using up the fleet's broadcast budget: `maxSessions`
   (knob, default 20). A `POST` over it gets `503` with `Retry-After: 30`.
   A `POST` for a key that already holds a session, or one still being torn
-  down, replaces that session and **isn't counted against
-  the cap**, so a full gateway never refuses a broadcaster's own reconnect.
+  down, replaces that session and **isn't counted against the cap**, so a full gateway never refuses a broadcaster's own reconnect.
   WG0 measures CPU and memory per 1080p60 session, and WG4 sizes the default
   and the pod's resource requests from that number. A restart is an ICE
   failure, so OBS reconnects and the key reclaims the same ID. Scaling past
-  one pod
-  (a port per pod, or a TURN front) is out of scope until a deployment needs
-  it.
+  one pod (a port per pod, or a TURN front) is out of scope until a
+  deployment needs it.
 
 - **D11 — No R73 carrier in v1.** The Go engine has none, and the gateway's
   relay leg is normally a short, clean in-cluster or same-site hop. The lossy
@@ -422,7 +437,8 @@ re-checks it against the OBS release it tests.
   stolen key doesn't already give. (It does hold the publish secret, which is
   why D12 requires the explicit key: with a derived key, the secret alone
   would give it every token.)
-- **Mint by starting and immediately stopping a broadcast.** See D3.
+- **Mint by starting and immediately stopping a broadcast** (pending OD2).
+  See D3.
 - **Raising `KEYFRAME_STALL_MS` or the DVR window for long GOPs.** That
   weakens every broadcast for the sake of a misconfigured one. The gateway
   bounds the GOP instead (D7).
@@ -447,8 +463,10 @@ the selected server has a gateway (OD4).
 3. **Live status** from D9: *Waiting for OBS…* → *Live — 1920×1080 60 fps
    H.264, keyframe every 1.0 s*, plus warnings ("Keyframe interval is 2 s;
    set it to 1 s for faster recovery") and the last error in plain words
-   ("OBS is sending AV1; choose an H.264 encoder"). An **Open viewer** link
-   gives a preview in another tab.
+   ("OBS is sending AV1; choose an H.264 encoder"). While D7's backoff is
+   running, the panel shows it with a **Retry now** button that clears it,
+   for after the user has fixed OBS. An **Open viewer** link gives a preview
+   in another tab.
 4. **Reset key** mints a new code, with a confirmation that the old link
    stops being the one people should use. An old key can't be revoked
    (§3.1); a leaked key is closed by an operator ID ban in gawk-admin, and the
@@ -525,11 +543,11 @@ the same way as the native ≈50 ms figure.
 | **WG0** | Lab: OBS (latest release, Windows NVENC and x264, 1 s and 2 s GOP) → a minimal pion WHIP receiver → the pubsim engine → the compose relay → the shipping viewer. Re-check §3.3 on that release (PLI ignored, `bf=0`, keyint granularity), and find the sub-second custom-options spelling per encoder. | Glass-to-glass p50/p95 on LAN and with 1 % / 40 ms netem, recorded in §7. §3.3 confirmed or corrected. Loss rate OBS → receiver on the reference path recorded, and D6's window default confirmed or changed. CPU and memory per 1080p60 session recorded for D10's `maxSessions`. Owner sign-off on OD1–OD8. |
 | **WG1** | Promote the engine to `gawk-server/publisher` (OD1), and add `StopBroadcast()`, which closes the session with **4014** (`Stop()` closes with code 0 today, so the relay can't tell a stop from a drop). `gawk-pubsim`, `e2e`, `e2e-cluster` and the iOS viewer tests keep using `Stop()` unchanged. CONTRIBUTING gains the release-coupling line. | `go test ./...` and the e2e lanes green. No `internal/pubsim/engine` import left outside the package. A test: `StopBroadcast()` ends the broadcast at once (R78), while `Stop()` leaves it in grace. |
 | **WG2** | Relay: `CONNECT /publish?mint=1` (D3) and the new close code in all three wire copies with golden vectors. | Tests: a mint announces ID + token, creates no broadcast, emits no event, isn't counted in `max-broadcasts`, and passes every publish gate (secret, rate limit, IP ban, draining). A reclaim with the minted token creates the broadcast. Vectors byte-identical in Go, TS and Rust. |
-| **WG3** | Relay: `-publish-proxy-token` (D4) through `registryOptions`, flag + env + Helm, and D12's guard. | Tests: with the token, `Gawk-Publisher-Ip` drives rate limit, IP ban and the admin publisher-IP fields, and the Origin check is skipped. Without it the header is ignored. A test asserts no event or webhook carries the IP. The Helm value renders into the relay args. The relay refuses to start, and the chart to render, with the proxy token and no explicit `resumeTokenKey`. A gateway peer inside `trustedCidrs` (and one on loopback) presenting the token with a proxied IP is still rate-limited on that IP. `::ffff:203.0.113.7` and `203.0.113.7` in the header hit the same bucket and the same ban. An unparsable or missing header with a valid token gets `400`, never the peer address. |
+| **WG3** | Relay: `-publish-proxy-token` (D4) through `registryOptions`, flag + env + Helm, and D12's guard. | Tests: with the token, `Gawk-Publisher-Ip` drives rate limit, IP ban and the admin publisher-IP fields, and the Origin check is skipped. Without it the header is ignored. A test asserts no event or webhook carries the IP. The Helm value renders into the relay args. The relay refuses to start, and the chart to render, with the proxy token and no explicit `resumeTokenKey`. A gateway peer inside `trustedCidrs` (and one on loopback) presenting the token with a proxied IP is still rate-limited on that IP. `::ffff:203.0.113.7` and `203.0.113.7` in the header hit the same bucket and the same ban. An unparsable or missing header with a valid token gets `400`, never the peer address. The release notes and §9 carry D12's one-time token migration. |
 | **WG4** | Gateway skeleton: module, config (flags + `GAWK_WHIP_*` + chart values), `/healthz`, metrics, Dockerfile, chart (default off), release-please package, a CI path filter on `gawk-whip-gateway/` and `gawk-server/`. | CI builds and tests it. The chart renders with defaults and does nothing until enabled. `maxSessions` and the resource requests are set from WG0's per-session measurement. A release produces image + chart at the same version. |
 | **WG5** | WHIP endpoint: `POST`/`DELETE`/`OPTIONS`, key parsing (D2), SDP answer (D5), ICE-lite + UDP mux + NAT 1:1 + ICE-TCP (D10), the D8 status mapping, per-IP `POST` rate limit. | A pion WHIP client test in CI: H.264+Opus accepted (`201` + `Location`); HEVC, AV1 and simulcast refused `406`; bad key `401`; every row of D8's table covered against a test relay. Client IP: from a `RemoteAddr` inside `trustedProxyCidrs` the right-most untrusted `X-Forwarded-For` address is used, from outside it a forged `X-Forwarded-For` is ignored, and the chosen address is what reaches the rate limit and `Gawk-Publisher-Ip`. An append-mode chain `forged, <client>` arriving from an ingress pod `RemoteAddr`, with only the ingress pod range trusted, yields `<client>` and never `forged`. Several header lines are joined in order. An unparsable entry stops the walk and gets `400`, and so does a missing header. An all-trusted chain yields its left-most entry. With an empty `trustedProxyCidrs` a forged header is ignored and no request gets `400`. A header from an untrusted peer while the list is set increments the misconfiguration metric. A v4-mapped entry is canonicalised. At `maxSessions`, a new key gets `503` + `Retry-After` while the same key's reconnect succeeds. |
-| **WG6** | Media adapter: RTP → Annex-B AUs with the reorder window (D6), IDR/SPS/B-frame validation, GOP measurement and bounds (D7), Opus → the engine's audio, RTP/RTCP-SR timestamps → engine timestamps, event PLIs. | Unit tests with recorded OBS RTP: a dropped packet drops that frame and the deltas until the next IDR; a B-frame stream is refused with reason; GOP thresholds warn and end as specified, and a stream with a 2 s GOP that loses one whole IDR (and one IDR's first packet) is neither warned about more than it would be without the loss nor ended; A/V offset within 20 ms of the source; PLI sent on start and on resume only: never on a dropped frame, never periodically. |
-| **WG7** | `GET /whip/status` (D9) with CORS. | Tests: returns the D9 fields for the key's session, reports a `503`/`400`/`422` refusal of a `POST` that never made a session as `lastError`, `401` for another key, and nothing containing an IP. |
+| **WG6** | Media adapter: RTP → Annex-B AUs with the reorder window (D6), IDR/SPS/B-frame validation, GOP measurement and bounds (D7), Opus → the engine's audio, RTP/RTCP-SR timestamps → engine timestamps, event PLIs. | Unit tests with recorded OBS RTP: a dropped packet drops that frame and the deltas until the next IDR; a B-frame stream is refused with reason; GOP thresholds warn and end as specified (the session ends with 4014 through `StopBroadcast()`), the backoff runs 30 s → 60 s → … → 10 min on repeats and a B-frame refusal starts it too, and a stream with a 2 s GOP that loses one whole IDR (and one IDR's first packet) is neither warned about more than it would be without the loss nor ended; A/V offset within 20 ms of the source; PLI sent on start and on resume only: never on a dropped frame, never periodically. |
+| **WG7** | `GET` and `DELETE /whip/status` (D9) with CORS, and the bounded refusal table. | Tests: returns the D9 fields for the key's session; reports a `503`/`400`/`406`/`422`/`451` refusal of a `POST` that never made a session as `lastError`; a different key with the same ID neither sees nor sets that record; a malformed key gets `401` and an unknown well-formed key gets `idle`; the table evicts beyond its bound; `DELETE` clears the backoff so the next `POST` is answered; nothing in a response contains an IP. |
 | **WG8** | gawk-app OBS panel (§5), `whipGatewayUrl` config, key storage (OD3), status polling. | Vitest covers mint, show/copy/forget/reset, the publish-secret prompt, status states and warnings. The panel is hidden without `whipGatewayUrl`. |
 | **WG9** | Dev stack `whip` profile with a GStreamer/FFmpeg WHIP sender. Rooms attach from the panel. `docs/self-hosting.md` section, an OBS setup guide, `docs/gotchas.md` entries. | `docker compose --profile whip up` shows a live test pattern in the viewer with no copy-paste. A `dev-stack` CI job round-trips a frame through the gateway. Attach puts the OBS broadcast in a room. |
 | **WG10** | Owner pass on the reference deployment with real OBS on the gaming PC. | Key created in the web app, OBS streams, viewers watch. A drain during the stream doesn't reach OBS. OBS's auto-reconnect keeps the join code. Glass-to-glass recorded next to the native figure. |
@@ -542,6 +560,13 @@ the same way as the native ≈50 ms figure.
   A leaked key can be used until the operator bans the ID or rotates the key,
   which invalidates every key. The panel says so, and Reset key gives the
   user a fresh code.
+- **Turning D12 on is a one-time migration** on a relay that runs on the
+  secret-derived key (the chart default, `resumeTokenKey: ""`). Setting an
+  explicit key revokes every resume token in use, including the ones the
+  desktop apps keep on disk. Their next reclaim fails and falls back to
+  minting a new ID, so those broadcasters' viewers lose them once. Do it
+  between broadcasts and say so in the release notes, unless the deployment
+  already sets an explicit key.
 - The gateway holds the relay's publish secret and the publish-proxy token.
   The proxy token lets its holder claim any publisher IP, so it lives only in
   the gateway's Secret, never in the frontend, and the relay accepts it only
