@@ -91,10 +91,22 @@ const REDOC_REWRITES: readonly { name: string; pattern: RegExp; replacement: str
   },
 ];
 
-/** What must not survive the rewrites anywhere in the output. */
-const REDOC_LEFTOVERS: readonly [hazard: string, pattern: RegExp][] = [
-  ['a search worker probe (`_factory ??= Function(…)`)', /_factory\?\?=Function\(/],
-  ['an inline data: font (font-src refuses it)', /url\(['"]?data:(application\/font-woff|font\/)/],
+/**
+ * What must not survive anywhere in the output, JS or CSS, whichever package
+ * it came from. Wider than the rewrites on purpose: they match the one shape
+ * Redoc ships today, these the shapes the same hazard takes elsewhere — a
+ * `??=` lowered by a stricter target, `new Function`, the legacy font MIME
+ * types, a quote escaped inside a JS string.
+ */
+const CSP_LEFTOVERS: readonly [hazard: string, pattern: RegExp][] = [
+  [
+    'a search worker probe (`_factory ??= Function(…)`), which script-src refuses',
+    /_factory\s*(?:\?\?=|\?\?\s*\([^)]*=)\s*(?:new\s+)?Function\(/,
+  ],
+  [
+    'an inline data: font, which font-src refuses',
+    /url\(\s*\\?['"]?\s*data:(?:font\/|application\/(?:x-)?font|application\/vnd\.ms-fontobject|application\/octet-stream)/,
+  ],
 ];
 
 function rewriteRedocForCsp() {
@@ -124,14 +136,24 @@ function rewriteRedocForCsp() {
     },
     // `seen` proves each rewrite matched ONCE, not that nothing of its kind
     // is left. The off-origin hosts have a second net (internal/portal's
-    // no-external-assets test); these two CSP hazards do not, so the
-    // emitted chunks are checked for any survivor.
-    generateBundle(_options: unknown, bundle: Record<string, { type: string; code?: string }>) {
-      for (const [file, chunk] of Object.entries(bundle)) {
-        if (chunk.type !== 'chunk' || !chunk.code) continue;
-        for (const [hazard, pattern] of REDOC_LEFTOVERS) {
-          if (pattern.test(chunk.code)) {
-            throw new Error(`${file} still contains ${hazard} after the Redoc rewrites (vite.config.ts).`);
+    // no-external-assets test); these two CSP hazards do not, so every
+    // emitted chunk AND stylesheet is checked for any survivor — a portal
+    // @font-face small enough for Vite to inline lands in app.css, not JS.
+    generateBundle(
+      _options: unknown,
+      bundle: Record<string, { type: string; code?: string; source?: string | Uint8Array }>,
+    ) {
+      for (const [file, out] of Object.entries(bundle)) {
+        const text =
+          out.type === 'chunk'
+            ? out.code
+            : file.endsWith('.css') && typeof out.source === 'string'
+              ? out.source
+              : undefined;
+        if (!text) continue;
+        for (const [hazard, pattern] of CSP_LEFTOVERS) {
+          if (pattern.test(text)) {
+            throw new Error(`${file} contains ${hazard} (vite.config.ts, the CSP leftover check).`);
           }
         }
       }
