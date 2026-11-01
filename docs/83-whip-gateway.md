@@ -600,7 +600,7 @@ and the publish-secret prompt, which is the broadcaster's existing modal.
 |---|---|---|
 | U1 | **New users aren't drawn in.** The pre-start card is unchanged: **Start a stream** stays the only primary action, and the R67 offer stays its only secondary line (`docs/69` G7). The way in sits outside the card with the **Advanced** chip (§5.5). | Component test: the card's buttons and links are those of today; the way in is outside the `GlassPanel` and carries the chip |
 | U2 | **OBS isn't hidden knowledge.** On a desktop where the server takes OBS, the way in is visible without opening anything. The page has a stable address, `#/broadcast/obs`, which the OBS guide, `docs/self-hosting.md` and the about site link to. | Component test; WG9's guide and self-hosting section link the route |
-| U3 | **No way in where it can't work.** None without `whipGatewayUrl`, none when the selected server isn't the deployment's default (the gateway publishes only to its own relay, OD4), and none on the devices where R67 hides its offer (Android, iOS, iPadOS, ChromeOS: `isDesktopForHandoff`), since OBS doesn't run there. Opened directly in those cases, the route says "This server doesn't take streams from OBS" with a link back. | Component tests per case |
+| U3 | **No way in where it can't work.** None without `whipGatewayUrl`, none when the selected server isn't the deployment's default (the gateway publishes only to its own relay, OD4), and none on the devices where R67 hides its offer (Android, iOS, iPadOS, ChromeOS: `isDesktopForHandoff`), since OBS doesn't run there. Opened directly without a gateway, or with another server selected, the route says "This server doesn't take streams from OBS" with a link back. A phone or tablet opening it directly gets the full page: no way in leads there, but a shared link still works, and the code and status can be checked from it. | Component tests per case, including the full page under a phone user agent |
 | U4 | **The page explains what OBS won't.** Every D9 state, warning and `lastError.reason` maps to a sentence that says what happened and what to change in OBS, by OBS's own menu names (§5.6). No raw status code or reason string reaches the screen. | A Vitest table test over the full reason set: each has copy, and an unknown reason gets the generic line |
 | U5 | **The key is treated as a password.** Masked by default. **Copy** copies the whole key without revealing it. It never enters a URL, a log line, telemetry or the diagnostics copy. | Unit tests; a test that the route's URL and the diagnostics text never contain the token |
 | U6 | **A returning OBS user gets straight back.** With a saved key, the way in names the code; when OBS is live on it, it says so (board **D, returning user**). | Component test with a mocked `GET /whip/status` |
@@ -650,8 +650,8 @@ rather than one call to action. The header is the brand, the kicker
 "BROADCAST · OBS STUDIO" and the **Advanced** chip. The footer has **← Back**
 (to `#/broadcast`, keeping the query), **Reset key**, **Forget key** and
 **OBS setup guide ↗** (WG9's guide). At phone width the label/value grids
-stack and the footer wraps. The page is reachable there by address, but no
-way in is shown (U3).
+stack and the footer wraps. On phones and tablets only the way in is hidden:
+the route itself shows the full page (U3).
 
 **S1 · First visit, no key.** At the top, a quiet strip: "New to streaming?
 The browser takes one click and needs no other app." with **Start a stream in
