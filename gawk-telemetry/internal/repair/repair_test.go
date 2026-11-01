@@ -400,6 +400,33 @@ func TestRunOnceAndIdempotent(t *testing.T) {
 	}
 }
 
+// A relay file no reader can read whole (a .gz cut short by a crash) must not
+// block the marker forever, and must never be rewritten from its readable
+// prefix — that would drop its tail.
+func TestUnreadableRelayFileIsSkippedNotFatal(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "relay", "date=2026-09-20")
+	body := strings.Join(podFile("pod-b", 1, sub{pod: "pod-b", key: "p", sid: sidX, atMs: 1, keyframes: 1},
+		sub{pod: "pod-b", key: "l", sid: sidX, atMs: 1}), "\n") + "\n"
+	var b bytes.Buffer
+	zw := gzip.NewWriter(&b)
+	_, _ = zw.Write([]byte(body))
+	_ = zw.Close()
+	cut := b.Bytes()[:b.Len()-12] // no gzip trailer
+	write(t, filepath.Join(dir, "pod-b.ndjson.gz"), cut)
+
+	s := run(t, root)
+	if s.Relay.UnreadableFilesSkipped != 1 || s.Relay.FilesRewritten != 0 {
+		t.Errorf("summary = %+v, want the file skipped and nothing rewritten", s.Relay)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "pod-b.ndjson.gz")); !bytes.Equal(got, cut) {
+		t.Error("an unreadable file was rewritten")
+	}
+	if _, err := os.Stat(MarkerPath(root)); err != nil {
+		t.Errorf("an unreadable relay file blocked the marker: %v", err)
+	}
+}
+
 // An empty or brand-new data dir (no rollups/ or relay/ yet) completes and is
 // marked, so a fresh install never runs it again.
 func TestRunOnEmptyDataDir(t *testing.T) {

@@ -1550,7 +1550,9 @@ nothing appends while files are rewritten. Rows are rewritten through
 (docs/gotchas.md). Lines that do not parse, and lines with nothing to fix,
 are kept byte for byte. Unchanged files are not rewritten. A changed file
 goes through a temp file in the same directory, `fsync` and `rename`, and
-stays gzip if it was. Leftover temp files from an interrupted run are
+stays gzip if it was. A relay file that cannot be read whole (a `.gz` cut
+short) is skipped and counted, never rewritten from its readable prefix.
+Leftover temp files from an interrupted run are
 removed first. On completion it writes `<data>/repairs/2026-11-history.done`
 with a JSON summary of what changed, and logs the same summary as one
 `history repair applied` line. A failure is logged and retried at the next
@@ -1573,7 +1575,7 @@ rewrites are kept.
 | The live row drops an implausible latency and clears the stale one | `live.TestLiveRowDropsImplausibleLatency` |
 | Rollup repair: poisoned series and leg-derived relay keys deleted, broadcast keys kept, `repairs` recorded (appended to an existing list), unknown fields and series preserved, unparsable lines verbatim, unchanged rows and files untouched | `repair.TestRollupRepair` |
 | Relay repair: one audience entry per session per round across pod files, the keyframe holder kept, already-marked rounds left alone, `.gz` stays gzip, unknown fields preserved, quiet dates untouched | `repair.TestRelayRepair` |
-| Runs once (marker with summary); a re-run without the marker changes nothing; crash residue removed; an empty data dir completes and is marked | `repair.TestRunOnceAndIdempotent`, `repair.TestRunOnEmptyDataDir` |
+| Runs once (marker with summary); a re-run without the marker changes nothing; crash residue removed; an unreadable relay file is skipped, not fatal and not rewritten; an empty data dir completes and is marked | `repair.TestRunOnceAndIdempotent`, `repair.TestUnreadableRelayFileIsSkippedNotFatal`, `repair.TestRunOnEmptyDataDir` |
 | Flag, env and default; startup wiring runs before the store and logs one summary line; disabled touches nothing | `main.TestRepairHistoryFlag`, `main.TestRepairHistoryRunsOnceBeforeTheStore`, `helm template` with `config.repairHistory` default and `false` |
 | `repairs` is an additive stored field | `storedshape` golden (`rollups.repairs`) |
 

@@ -97,6 +97,7 @@ type RelaySummary struct {
 	SubscriberLinesMarked   int `json:"subscriberLinesMarked"`
 	SubscriberDetailsMarked int `json:"subscriberDetailsMarked"`
 	UnparsedLinesKept       int `json:"unparsedLinesKept"`
+	UnreadableFilesSkipped  int `json:"unreadableFilesSkipped"`
 }
 
 // MarkerPath is where a completed run is recorded.
@@ -336,6 +337,7 @@ func repairRelayDate(dir string, sum *RelaySummary) error {
 	// are far larger than the rollups, and the pod's memory limit is shared
 	// with nothing yet but is not generous.
 	groups := map[groupKey]*group{}
+	skipped := map[int]bool{}
 	add := func(k groupKey, s subProbe, at loc) {
 		if s.Internal || k.sessionID == "" {
 			return
@@ -378,7 +380,12 @@ func repairRelayDate(dir string, sum *RelaySummary) error {
 			return nil
 		})
 		if err != nil {
-			return err
+			// A file no reader can read whole either (a gzip cut short by a
+			// crash): never rewritten, so its tail is not lost. Its entries
+			// may still have been indexed; one left unmarked only leaves that
+			// round over-counted, as it was.
+			skipped[fi] = true
+			sum.UnreadableFilesSkipped++
 		}
 	}
 	var touched uint64
@@ -397,7 +404,7 @@ func repairRelayDate(dir string, sum *RelaySummary) error {
 		return g != nil && g.n > 1 && !g.leg && g.keep != at
 	}
 	for fi, path := range files {
-		if fi < 64 && touched&(1<<fi) == 0 {
+		if skipped[fi] || fi < 64 && touched&(1<<fi) == 0 {
 			continue
 		}
 		var lines []line
