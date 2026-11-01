@@ -593,8 +593,9 @@ Where this document and the canvas disagree, this document wins.
 | **OBS page · gawk ended the stream** | S4: D7 ended the session, the backoff runs, **Retry now** |
 | **OBS page · reset key** | The **Reset key** confirmation |
 
-Not drawn, so this text is the spec: the page at phone width (§5.4), the
-**Paste a key** field (§5.7), the page on a server without a gateway (U3),
+Not drawn, so this text is the spec: the page at phone width (§5.4), S5
+after a stream ends (§5.4), the **Paste a key** field (§5.7), the page on a
+server without a gateway (U3),
 and the publish-secret prompt, which is the broadcaster's existing modal.
 
 ### 5.2 Goals and acceptance
@@ -732,7 +733,9 @@ in OBS again; your code stays K7Q2XM." It promises no reconnect and no
 waiting time: `lost` also covers OBS closed, crashed or asleep, OBS's
 automatic reconnect can be off or run out of retries, and the relay's grace
 period isn't known to the app (as in `docs/60` D11). Neither is red: an end
-the user chose isn't an error.
+the user chose isn't an error. A gateway pod restart loses that pod's
+records (D10), so its sessions never show `lost`: the page shows S2's
+"Waiting for OBS…" until OBS reconnects, which is accepted.
 
 The status box, the warning and the ended box are live regions: `status` for
 waiting, live, warnings and S5, `alert` for S4 and refusals.
