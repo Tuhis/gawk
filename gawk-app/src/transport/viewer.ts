@@ -106,6 +106,20 @@ const FRAMES_FLOWING_WINDOW_MS = 1000;
 // timeout.
 export const SESSION_STALL_MS = 15000;
 
+// Upper bound on a published capToRenderMs / liveEdgeDriftMs reading. The
+// relay's DVR window defaults to 3 s (gawk-server/internal/hub/hub.go
+// DefaultDVRWindow); a reading 10× that is not a latency measurement, it's a
+// clock/timestamp fault — #376's timestamp-0 frames read as the broadcaster
+// tab's age (up to 48 min) and poisoned telemetry's permanent rollups. Such a
+// reading publishes as null (unmeasured), never clamped: a clamped 30 000
+// would still be a fabricated number. gawk-telemetry's rollups apply the same
+// bound.
+export const MAX_PLAUSIBLE_LATENCY_MS = 30_000;
+
+function plausibleLatencyMs(ms: number | null): number | null {
+  return ms !== null && ms > MAX_PLAUSIBLE_LATENCY_MS ? null : ms;
+}
+
 // Media-stall watchdog. The two watchdogs above leave one gap between them,
 // and it is exactly where the resilient and Deep-buffer modes live: in those
 // modes ALL video rides the stream path (carriers + keyframe streams, and in
@@ -218,13 +232,14 @@ export interface ViewerStats extends ReassemblerStats {
   // How far the newest decoded frame lags behind this session's best
   // capture→decode delta (windowed min — clock offset cancels). ~0 = at live
   // edge; growth = decoder backlog / reorder holds / queue growth. Null before
-  // the first decoded frame. Relative only — absolute capture→render latency is
-  // capToRenderMs.
+  // the first decoded frame, or when implausible (> MAX_PLAUSIBLE_LATENCY_MS).
+  // Relative only — absolute capture→render latency is capToRenderMs.
   liveEdgeDriftMs: number | null;
   // Absolute capture→render latency via the relay clock as the common reference
   // (broadcaster ClockMapping + this leg's TimeSync offset). Error ≈ sum of
   // both legs' best-sample rtt/2 asymmetries; a negative raw value (asymmetry
-  // pathology) is clamped to 0. Null until both clock legs have synced. The
+  // pathology) is clamped to 0. Null until both clock legs have synced, and
+  // when implausible (> MAX_PLAUSIBLE_LATENCY_MS, a timestamp fault). The
   // render paint follows the measurement point by at most one display interval.
   capToRenderMs: number | null;
   // Self-owned relay↔viewer RTT from the TimeSync exchange — works where
@@ -1272,8 +1287,11 @@ export class ViewerPipeline {
       timeSinceLastFrameMs: this.lastFrameReceivedAt === null ? null : now - this.lastFrameReceivedAt,
       timeSinceLastInboundMs: this.lastInboundAt === null ? null : now - this.lastInboundAt,
       lastKeyframeAgeMs: this.lastKeyframeReceivedAt === null ? null : now - this.lastKeyframeReceivedAt,
-      liveEdgeDriftMs: this.liveEdge.driftMs(),
-      capToRenderMs: this.lastCapToRenderMs,
+      // Guarded here, the one point both readings leave the pipeline: the
+      // overlay, Copy diagnostics and telemetry all read this object, and
+      // nothing else (playout, grace, A/V sync) consumes either value.
+      liveEdgeDriftMs: plausibleLatencyMs(this.liveEdge.driftMs()),
+      capToRenderMs: plausibleLatencyMs(this.lastCapToRenderMs),
       timeSyncRttMs: this.transport?.sampleTimeSync()?.rttMs ?? null,
       playoutOffsetMs: getPlayoutOffsetMs(),
       playoutMode: getPlayoutMode(),
