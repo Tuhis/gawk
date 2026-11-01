@@ -19,7 +19,13 @@ def q(sql):
 
 
 def check(sql):
-    """Mode B: EXPLAIN binds the statement against the real schema without reading a row."""
+    """EXPLAIN against the deployment's real views.
+
+    NOT data-free in general: a dynamic PIVOT (no IN list) reads DISTINCT values
+    while binding, and file table functions sniff at bind time. The spike's final
+    statements used neither (docs/84 §12.6). The design checks in an empty shadow
+    catalogue instead (docs/84 D2, shadow.py); do not reuse this function as it stands.
+    """
     s = sql.strip().rstrip(";")
     _, err = q("EXPLAIN " + s)
     return "OK: the statement parses and binds." if err is None else "ERROR: " + err

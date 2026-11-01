@@ -3,7 +3,8 @@
 `harness/` drafts SQL for twenty English questions against a live
 `gawk-telemetry` read listener, in data mode B: the model's only tool,
 `check_sql`, runs `EXPLAIN` on the deployment and returns `OK` or DuckDB's
-error text. The harness then runs the final SQL itself, for grading only.
+error text. That check is not data-free for every statement (§12.6); the
+design's check uses `shadow.py`'s empty catalogue instead. The harness then runs the final SQL itself, for grading only.
 
 | File | What |
 |---|---|
@@ -13,6 +14,7 @@ error text. The harness then runs the final SQL itself, for grading only.
 | `harness/q.sh`, `harness/fetch-schema.sh` | Query a read listener; snapshot `DESCRIBE` of each view and `/v1/fields` (the prompt's inputs) |
 | `harness/*.desc`, `harness/fields.json` | The snapshot the spike ran on (column names and types only) |
 | `harness/report.py` | Builds `results/grades.md` and strips rows from the run files |
+| `harness/shadow.py` | D2's shadow catalogue: empty tables from the snapshot, file access off; re-binds every spike statement and the leak probes (§12.6). From this directory: `docker run --rm -v "$PWD":/in:ro python:3.13-slim sh -c 'pip -q install duckdb==1.4.1 && python /in/harness/shadow.py'` |
 | `results/` | The graded runs: SQL, interpretations, check counts, tokens and timings. **No result rows**: they are the store's data and this repository is public. |
 
 ## Re-running
