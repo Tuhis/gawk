@@ -566,23 +566,22 @@ a broadcast whose publisher is the gateway.
   public Ingress (TLS by the Ingress, `upstream-hash-by` on the bearer key),
   one UDP+TCP `LoadBalancer` Service per replica on a shared address (port
   `media.basePort + ordinal`), a headless Service for D10's peer lookup, a
-  NetworkPolicy (egress to the relay's UDP port and to the other gateway
-  pods' internal port; ingress from the Ingress, the media LBs and the other
-  gateway pods on the internal port only), a ServiceMonitor and a PDB.
-  `values.yaml` holds `relay.url`, `relay.publishSecret` (existing secret
-  ref),
+  NetworkPolicy (egress to the relay's UDP port and to the other gateway pods'
+  internal port; ingress from the Ingress, the media LBs and the other gateway
+  pods on the internal port only), a ServiceMonitor and a PDB. `values.yaml`
+  holds `relay.url`, `relay.publishSecret` (existing secret ref),
   `relay.publishProxyToken` (D4), `publicAddress`, `replicas`,
   `media.basePort` and `internalToken` (an existing secret ref) (D10),
-  `allowedOrigins` (D9 CORS), `trustedProxyCidrs` (D4, default `[]`), `maxSessions` (D10)
-  and the D6/D7 knobs. Every value has a flag and a `GAWK_WHIP_*` env (the
-  `registryOptions` rule, applied to the gateway's own config). The chart's
-  notes carry D4's requirements: `trustedProxyCidrs` lists only the
-  header-writing proxy (exact node addresses under `hostNetwork`, both
-  address families on dual-stack), the ingress controller must see real
-  client IPs (`externalTrafficPolicy: Local` or PROXY protocol), and an empty
-  list behind an Ingress means one shared bucket. They also carry D10's: the
-  Ingress must hash on the `Authorization` header, and the firewall must open
-  `media.basePort` to `media.basePort + replicas - 1`.
+  `allowedOrigins` (D9 CORS), `trustedProxyCidrs` (D4, default `[]`),
+  `maxSessions` (D10) and the D6/D7 knobs. Every value has a flag and a
+  `GAWK_WHIP_*` env (the `registryOptions` rule, applied to the gateway's own
+  config). The chart's notes carry D4's requirements: `trustedProxyCidrs`
+  lists only the header-writing proxy (exact node addresses under
+  `hostNetwork`, both address families on dual-stack), the ingress controller
+  must see real client IPs (`externalTrafficPolicy: Local` or PROXY protocol),
+  and an empty list behind an Ingress means one shared bucket. They also carry
+  D10's: the Ingress must hash on the `Authorization` header, and the firewall
+  must open `media.basePort` to `media.basePort + replicas - 1`.
 - **Frontend config:** `whipGatewayUrl` in `window.__GAWK_CONFIG__`
   (`gawk-app/src/config.ts`), set by the frontend chart's values. When it's
   unset the panel doesn't appear.
