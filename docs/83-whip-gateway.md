@@ -298,8 +298,8 @@ re-checks it against the OBS release it tests.
     median rule ends it, after about 20 s of ~4 s freezes), which one lost IDR
     start can't produce at a GOP the bounds allow. The 4.5 s threshold can't
     come down without breaking that safeguard. While the same key reconnects
-    within 10 minutes it answers `POST`s with `422` and that reason, so OBS's auto-reconnect doesn't loop
-    viewers through freezes. The thresholds are gateway knobs.
+    within 10 minutes it answers `POST`s with `422` and that reason, so OBS's
+    auto-reconnect doesn't loop viewers through freezes. The thresholds are gateway knobs.
   - **The gateway sends PLI anyway, on two events only**: on session start
     and after the engine resumes on another relay pod. Both are moments when
     the relay's cache is empty, not moments of loss.
