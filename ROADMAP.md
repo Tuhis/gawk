@@ -51,7 +51,7 @@ feature set exists).
 | R30 | [Connection interleaving for live-edge delivery](#r30--connection-interleaving-for-live-edge-delivery) | 🔶 designed + **ST2–ST6 implemented 2026-07-29** (owner instruction moved implementation ahead of ST1); gates green in all four modules incl. a race-clean Go burst-threshold proof (control 8.3 % loss, 13/60 eighteen-chunk frames complete; striped ×3: 60/60 at 0.0 %, zero mismapped); §13.1 UI browser verify (ST5's manual half) **passed 2026-08-03** on desktop Chrome against the fleet; **ST1 paired on-hardware runs + ST7 acceptance/loadgen still owner-pending**; **ST8–ST10 leg-lifecycle correction implemented 2026-08-13** (orphaned-leg reap via ?owner= token + 20 s liveness lease, closing the 2026-08-03 BUGS.md leak) ([docs/35](docs/35-connection-interleaving.md) §12, §13, §14) |
 | R31 | [Telemetry UI v2: a purpose-built diagnosis SPA](#r31--telemetry-ui-v2-a-purpose-built-diagnosis-spa) | ✅ designed + **TH1–TH11 implemented 2026-07-30**; gates green (Go race + `-tags duckdb`, oxlint / 49 UI tests / build, and the no-external-fetch test over the built bundle); both §8 open questions resolved by the owner — build-tagged cgo DuckDB, SSE kept with the poll as fallback; **on-hardware pass passed 2026-08-03** (driven against real accumulated session data over the internal Ingress) ([docs/36](docs/36-telemetry-ui-history.md) §9); read-surface only — zero wire/relay/viewer/broadcaster change |
 | R32 | [Viewer playback presets & settings UX](#r32--viewer-playback-presets--settings-ux) | 🚧 designed + **UX1–UX6 implemented 2026-07-29**; gates green (1129 tests / oxlint / build) and live-verified in Chrome against the fleet on broadcast `5UP4XW` — control-bar preset pill, settings panel, menu cut 17 rows → 7; **on-device (iPhone) pass pending**; `gawk-app` viewer only — zero server/wire/broadcaster/pipeline change ([docs/37](docs/37-viewer-playback-presets.md) §13) |
-| R33 | [WHIP ingest for OBS support](#r33--whip-ingest-for-obs-support) | 💡 proposed 2026-07-29, not started — no design doc yet |
+| R33 | [WHIP ingest for OBS through `gawk-whip-gateway`](#r33--whip-ingest-for-obs-through-gawk-whip-gateway) | 🔶 **designed 2026-11-01** ([docs/83](docs/83-whip-gateway.md)), owner decisions OD1–OD8 open, WG0–WG10 not started — a separate default-off deployable terminates OBS's WHIP and republishes through the Go publisher engine; the stream key is the broadcast ID + resume token, minted by the web app through a new mint-only publish; OBS ignores PLI and its keyframe interval is whole seconds, so the gateway asks users for 1 s, warns above 1.1 s and refuses above 2.2 s |
 | R34 | [Native Windows broadcaster](#r34--native-windows-broadcaster) | 🔧 designed 2026-07-30 (Rust + Media Foundation + Slint; owner decisions OD1–OD13); **WB0–WB8 implemented 2026-07-30/31** (Cargo workspace + path-filtered CI + release-please component; wire mirror with golden vectors incl. Go-generated GF(256) parity pins; engine core seam-tested + wtransport with 5 vendored interop patches + real-relay integration suite; WGC capture + VideoProcessor + drop-only gating; trial-gated MFT cascade with the G3 refusal; WASAPI process/endpoint loopback + Opus under the R25 contract; Slint GUI with the full D12 card set; R28 reporter; single static EXE + INSTALL doc in the CI artifact); **WB9 (build version in the window) 2026-08-01**; **remaining: the on-hardware acceptance pass** — G1/G2/G6–G9 and the docs/38 §10 V-register on the gaming PC ([docs/38](docs/38-windows-native-broadcaster.md)) |
 | R35 | [Single-app sharing (window + app audio) in the native Linux broadcaster](#r35--single-app-sharing-window--app-audio-in-the-native-linux-broadcaster) | 🔧 designed + **implemented 2026-08-01** (AS1–AS6: portal `source_type`/`size`, bounding-box fit geometry, `gawk-pw-helper` virtual-sink tee, engine + GUI whose-audio step). Audio plane integration-tested against a real headless PipeWire daemon; AS7 was never run on the Go app: its register folded into R56's (docs/58 D15). **The Go app was removed on 2026-10-08** (R56 LX9, [docs/58](docs/58-linux-desktop-broadcaster.md) D15), `gawk-pw-helper` with it ([docs/39](docs/39-linux-app-sharing.md)) |
 | R36 | [Telemetry UI usability pass](#r36--telemetry-ui-usability-pass) | 💡 proposed 2026-08-01, not started — no design doc yet; `gawk-telemetry` read surface only (UI + the relay scrape it reads from), zero wire/relay/viewer/broadcaster change |
@@ -2691,94 +2691,34 @@ ground truth and the Copy-diagnostics path.
 
 ---
 
-## R33 — WHIP ingest for OBS support
+## R33 — WHIP ingest for OBS through `gawk-whip-gateway`
 
-**Goal**: let a broadcaster run OBS Studio (or any other WHIP-capable
-encoder — vMix, FFmpeg's `-f whip`, GStreamer's `whipsink`) as an
-alternative to the `gawk-app` browser broadcaster or the `gawk-broadcast`
-native Linux app, by giving the relay a **WHIP** (WebRTC-HTTP Ingestion
-Protocol, `draft-ietf-wish-whip`) ingest endpoint. OBS has shipped a native
-WHIP output (Settings → Stream → "WHIP", just a URL + Bearer Token) since
-OBS 30, so this is a config change for the broadcaster, not a plugin.
+**Goal**: let a broadcaster stream from OBS Studio (or FFmpeg's `-f whip`,
+GStreamer's `whipsink`) using OBS's built-in WHIP output (RFC 9725), with no
+plugin, instead of the browser or native broadcasters.
 
-**Why this is wanted**: OBS gives scene composition, multiple sources,
-overlays, and per-source audio mixing that `getDisplayMedia` screen-share
-can't — broadcasters who already run OBS for other platforms shouldn't
-have to give that up to use gawk. This is purely a new **ingest** path:
-every viewer-facing piece of the pipeline (WebTransport delivery, the wire
-format, DVR/resilient mode, forward parity, striping, telemetry) is
-unchanged, because the hub's ingest surface
-(`hub.Publisher.HandleDatagram` / `IngestKeyframeStream` in
-`gawk-server/internal/hub/hub.go`) already treats "how frames arrived" as
-opaque — R14 proved a non-browser publisher works with zero wire/viewer
-changes, and WHIP is a second instance of the same pattern.
+**Why**: OBS gives scenes, overlays, several sources and its own audio mixer,
+which `getDisplayMedia` and the native apps don't. People who already stream
+elsewhere with OBS shouldn't have to give it up. Requested in the mumisija
+ideas list (#12 OBS support, #19 OBS output plugin; #19 is settled as WHIP).
 
-**Scope sketch**:
+**Design**: [docs/83](docs/83-whip-gateway.md). A separate, default-off
+deployable `gawk-whip-gateway` (owner decision 2026-11-01: never in the relay
+binary) terminates WebRTC with pion and republishes into the relay through
+the Go publisher engine, as an ordinary publisher; relay, wire and viewers
+are unchanged. The WHIP bearer token is the stream key `gawk1_<ID>_<token>`
+(broadcast ID + the never-expiring resume token), so the join code stays the
+same every session; the web app mints it through a new mint-only
+`CONNECT /publish?mint=1` and shows it in an OBS panel with the gateway's
+live verdict. The gateway is a trusted publish proxy so bans and rate limits
+see the OBS IP. OBS's WHIP output ignores PLI and its keyframe interval is
+whole seconds, so the GOP is configured in OBS (1 s), measured by the
+gateway, warned above 1.1 s and refused above 2.2 s; PLI is sent on events
+only, never periodically (`docs/15` D6). Replaces the 2026-07-29 sketch that
+put WHIP inside `gawk-server`.
 
-- **New HTTP endpoint on the relay**, e.g. `POST /whip/{id}` — accepts the
-  SDP offer per the WHIP spec, returns an SDP answer plus a `Location`
-  header for the session resource; `DELETE` on that resource ends the
-  broadcast (the WHIP-native equivalent of today's session teardown).
-  Trickle ICE via `PATCH` is optional day-one scope.
-- **A Go WebRTC stack** (almost certainly `pion/webrtc`, the de facto Go
-  ICE/DTLS/SRTP implementation) terminates the PeerConnection and hands
-  the relay incoming RTP: H.264 (depacketized per RFC 6184) for video,
-  Opus (RFC 7587) for audio to match the existing Opus pipeline
-  (R25/`gawk-broadcast`).
-- **An adapter, not a hub change**: depacketize RTP into Annex-B access
-  units, detect keyframes the way the native broadcaster's engine already
-  does (IDR NAL type), and **re-chunk into gawk's own `VideoChunk`
-  datagrams and reliable keyframe streams** — respecting the ~1200-byte
-  safe payload limit — then feed them through the *existing*
-  `Publisher.HandleDatagram` / `IngestKeyframeStream` entry points. The
-  hub, wire format, and every downstream milestone stay untouched.
-- **Auth**: WHIP's `Authorization: Bearer <token>` header maps naturally
-  onto the R2 pre-shared broadcast secret and the R17 "newest publisher
-  wins" resume-token model — the broadcast is still started/minted via the
-  existing web UI/API, and the resulting URL + token get pasted into OBS's
-  stream settings, rather than OBS minting broadcasts itself.
-- **New third-party dependency** for `gawk-server` — the relay currently
-  only depends on `quic-go`/`webtransport-go`; this would be its first
-  non-QUIC transport stack.
-
-**Key design questions**:
-
-- **ICE reachability for the relay fleet.** R17 scaled the *viewer*
-  fan-out horizontally behind one UDP load balancer for WebTransport/QUIC;
-  WHIP's media path is a separate DTLS-SRTP/ICE session per broadcaster
-  that needs its own reachable host/srflx candidates (or a TURN relay) per
-  relay pod. The saving grace is scale — this is bounded by concurrent
-  *broadcasts* (R2's default ~5), not by hundreds of viewers — but it's
-  still a distinct network-exposure surface from today's single UDP
-  `LoadBalancer` Service and needs its own design-doc treatment (ICE-lite
-  with pod-routable host candidates vs. a shared TURN/relay component).
-- **Codec negotiation**: OBS's WHIP output can offer H.264, VP8, VP9, or
-  AV1 depending on the encoder chosen — the relay's SDP answer needs to
-  restrict to what the viewer's negotiated codec list (`avc1.42E02A` → … →
-  `vp8`, per CLAUDE.md) actually supports, most simply by refusing to
-  answer with anything outside that list.
-- **Keyframe interval mismatch**: OBS's configurable keyframe interval
-  (commonly 2s, vs. gawk's 500ms GOP) means late-joining viewers wait
-  longer for a cached keyframe to prime them — either document a
-  recommended OBS setting or accept the longer worst case.
-- **Where this lives**: inside `gawk-server` (it must feed the hub
-  directly), not a new module/binary like `gawk-broadcast` — this is
-  server-side protocol support, not a client we ship.
-- Whether reconnect/supersede semantics need a WHIP-specific mapping —
-  WHIP has no `wire.go` close codes; this likely maps onto HTTP status
-  codes on the `POST`/`DELETE`, per the WHIP spec's own conflict
-  semantics.
-
-**Non-goals**: WHEP (the read-side counterpart, for a WebRTC-based viewer
-path) — out of scope; viewers stay on WebTransport/WebCodecs. Running OBS
-*as a subprocess of* `gawk-broadcast` — already surveyed and rejected in
-`docs/19` (too heavyweight for the native broadcaster's
-minimal-dependency goal); this is the opposite shape, a remote OBS
-instance pushing *into* the relay over the network, not a local process
-wrapped by our engine. Any change to the existing WebTransport
-ingest/viewer path — WHIP is strictly additive.
-
-**Status**: proposed 2026-07-29, not started — no design doc yet.
+**Status**: designed 2026-11-01; owner decisions OD1–OD8 open; WG0–WG10 not
+started.
 
 ---
 
