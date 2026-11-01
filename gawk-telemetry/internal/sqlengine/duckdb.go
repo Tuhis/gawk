@@ -20,12 +20,13 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
-	_ "github.com/marcboeker/go-duckdb/v2"
+	duckdb "github.com/marcboeker/go-duckdb/v2"
 )
 
 type engine struct {
@@ -342,7 +343,9 @@ func (e *engine) Query(q string) (*Result, error) {
 			// looking at in the NDJSON anyway.
 			if b, ok := c.([]byte); ok {
 				cells[i] = string(b)
+				continue
 			}
+			cells[i] = jsonSafe(c)
 		}
 		res.Rows = append(res.Rows, cells)
 	}
@@ -352,4 +355,49 @@ func (e *engine) Query(q string) (*Result, error) {
 	res.RowCount = len(res.Rows)
 	res.ElapsedMs = time.Since(started).Milliseconds()
 	return res, nil
+}
+
+// jsonSafe makes a cell encodable by encoding/json, which refuses NaN, ±Inf
+// and a map keyed by anything but a string. Either one in a result used to
+// kill the isolated worker's reply ("failed without answering", docs/84
+// §12.4) and empty the HTTP response. A non-finite float becomes the name
+// JavaScript prints for it, so it stays distinct from NULL; a MAP becomes an
+// object keyed by each key's text. It recurses, because LISTs and STRUCTs
+// hold either.
+func jsonSafe(v any) any {
+	switch x := v.(type) {
+	case float64:
+		return finiteOrName(x)
+	case float32:
+		if f := float64(x); math.IsNaN(f) || math.IsInf(f, 0) {
+			return finiteOrName(f)
+		}
+	case []any:
+		for i := range x {
+			x[i] = jsonSafe(x[i])
+		}
+	case map[string]any:
+		for k := range x {
+			x[k] = jsonSafe(x[k])
+		}
+	case duckdb.Map:
+		out := make(map[string]any, len(x))
+		for k, e := range x {
+			out[fmt.Sprint(k)] = jsonSafe(e)
+		}
+		return out
+	}
+	return v
+}
+
+func finiteOrName(f float64) any {
+	switch {
+	case math.IsNaN(f):
+		return "NaN"
+	case math.IsInf(f, 1):
+		return "Infinity"
+	case math.IsInf(f, -1):
+		return "-Infinity"
+	}
+	return f
 }

@@ -3,8 +3,8 @@
 **Status**: designed 2026-11-01 after the NQ0 measurement spike (§12;
 harness, question set and graded results in
 [`assets/84/`](assets/84/results/grades.md)). Owner decision 2026-11-01:
-**data mode B** (OD1, §2); OD2–OD5 decided 2026-11-02. Not started: NQ0b
-(a bug fix the spike found) and NQ1–NQ5.
+**data mode B** (OD1, §2); OD2–OD5 decided 2026-11-02. NQ0b (a bug fix the
+spike found) done 2026-11-02; not started: NQ1–NQ5.
 
 **Relationship to earlier work**: R31 ([docs/36](36-telemetry-ui-history.md)
 UD18) built the `#/sql` console over the DuckDB engine, with a read-only
@@ -144,11 +144,10 @@ first.
 - **Local models are slow on CPU and less accurate at 7B** (§12.4). With
   the full prompt there was no answer in 30 minutes; slim answered in about
   30 s once warm but got 3 of 5 right, and never used `check_sql`.
-- **The engine fails on NaN and ±Inf results today** (`BUGS.md`): the
-  worker cannot encode them and exits with no message. A drafted ratio
-  without `nullif` hits it. It should be fixed before NQ3 ships, or the
-  first vague question an operator asks may get "worker failed" as its
-  answer.
+- **The engine failed on NaN and ±Inf results** (fixed in NQ0b): the
+  worker could not encode them and exited with no message, so a drafted
+  ratio without `nullif` answered "worker failed". They now come back as
+  the strings `"NaN"`, `"Infinity"` and `"-Infinity"`.
 
 ## 6. Out of scope
 
@@ -166,7 +165,7 @@ Every letter is claimed; this milestone's prefix is **NQ**.
 | Chunk | What | Acceptance |
 |---|---|---|
 | **NQ0** ✅ | **Measurement spike**: `docs/assets/84/harness/` (20 questions with reference SQL and grading notes, prompt builder, mode B check loop, both provider kinds), run against the reference deployment. | §12 filled; `results/grades.md` from the runs; the harness re-runs with `q.sh` pointed at any read listener. |
-| **NQ0b** | **Prerequisite fix**: `BUGS.md`'s NaN/±Inf worker failure, test first. Not part of this feature; the console has the bug today. | `SELECT 1/0`, `'nan'::DOUBLE` and `'inf'::DOUBLE` return a result through the isolated engine and through `/v1/query`; the `BUGS.md` entry is removed. |
+| **NQ0b** ✅ | **Prerequisite fix**: `BUGS.md`'s NaN/±Inf worker failure, test first. Not part of this feature; the console has the bug today. | `SELECT 1/0`, `'nan'::DOUBLE` and `'inf'::DOUBLE` return a result through the isolated engine and through `/v1/query`; the `BUGS.md` entry is removed. Done 2026-11-02: non-finite floats (also inside LISTs and STRUCTs) answer `"NaN"`, `"Infinity"` or `"-Infinity"`, distinct from NULL; a `MAP` result, which failed the same way, answers an object keyed by each key's text; a result the worker still cannot encode says why. |
 | **NQ1** | Providers: D4. | Tests against recorded request/response fixtures of both APIs: tool call round trip, the 4-check cap, a refusal, a 429 retry, a timeout, a malformed tool argument. The licence gate passes with `anthropic-sdk-go`. |
 | **NQ2** | The ask loop, the prompt and the glossary: D2, D3, D5–D7, D9. `sqlengine.Explain`. | Tests first: §4.2's mode B test; the glossary identifier test; the prompt is byte-stable between two questions; a binder error reaches the model and a fixed draft is returned; the per-operator rate limit; `Explain` refuses what `Check` refuses, never returns rows, and runs with file access off and its configuration locked; the shadow catalogue's columns and types equal the learned schema's, and it is rebuilt when that changes. |
 | **NQ3** | UI: §4.3. | Component tests: the box hidden without `ask.enabled`, the "no engine" and "no model" messages distinct, the draft lands in the editor with its interpretation, nothing runs on its own, an error from the model renders as prose. |
@@ -287,7 +286,7 @@ hardware class, not a measurement of the cluster's nodes.
   first took 24 minutes. After that Ollama reused the cached prompt and
   read only the question: 19 to 46 s each. It got 3 of 5 right (q01, q07,
   q11). It skipped the role filter on q03, which averaged a 0/0 to NaN, and
-  that crashed the deployment's query worker (`BUGS.md`; the bug is the
+  that crashed the deployment's query worker (fixed in NQ0b; the bug was the
   engine's, not the model's). On q09 it parsed a version out of `browser`
   instead of reading `appVersion`. Claude on the same five slim questions
   got all five right (Sonnet) and four (Haiku).
@@ -336,4 +335,4 @@ spike's schema snapshot and re-checks everything:
 | `SELECT "Windows" FROM (PIVOT rollups ON os …)` | `OK` | binder error, as for any name |
 | `read_csv`, `read_json_auto`, `glob` on a path | allowed by `Check`; would read at bind (not probed on the deployment) | `Permission Error`, file access disabled |
 | `SET enable_external_access = true` | (refused by `Check`) | refused: configuration locked |
-| the spike's 169 final statements | 168 ran; one (the local model's q03, §12.4) bound but failed at run time on the NaN result (`BUGS.md`) | all bind |
+| the spike's 169 final statements | 168 ran; one (the local model's q03, §12.4) bound but failed at run time on the NaN result (fixed in NQ0b) | all bind |

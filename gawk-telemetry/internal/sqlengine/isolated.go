@@ -141,6 +141,9 @@ func RunWorker(in io.Reader, out io.Writer) int {
 		}
 	}
 	if err := enc.Encode(resp); err != nil {
+		// Nothing was written (Encode marshals before it writes), so there is
+		// still room to say why instead of dying without an answer.
+		_ = enc.Encode(workerResponse{Err: "sqlengine: the result could not be encoded: " + err.Error()})
 		return 1
 	}
 	return 0
