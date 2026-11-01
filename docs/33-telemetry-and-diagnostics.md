@@ -1544,28 +1544,65 @@ under the bound are untouched, even if some of their samples were
 inflated: the bound only removes values that cannot be latencies.
 
 **How it runs.** On the first start of a release that carries it, `run()`
-calls `repair.Run` before the store, the scraper or any listener exists, so
-nothing appends while files are rewritten. Rows are rewritten through
-`map[string]json.RawMessage`, so fields a newer release wrote survive
-(docs/gotchas.md). Lines that do not parse, and lines with nothing to fix,
-are kept byte for byte. Unchanged files are not rewritten. A changed file
-goes through a temp file in the same directory, `fsync` and `rename`, and
-stays gzip if it was. A relay file that cannot be read whole (a `.gz` cut
-short) is skipped and counted, never rewritten from its readable prefix.
-Leftover temp files from an interrupted run are
-removed first. On completion it writes `<data>/repairs/2026-11-history.done`
-with a JSON summary of what changed, and logs the same summary as one
-`history repair applied` line. A failure is logged and retried at the next
-start rather than being fatal, so public ingest never crashloops on it.
-Repaired data is a fixed point, so a re-run after a crash before the
-marker changes nothing already fixed. `-repair-history=false`
-(`GAWK_TELEMETRY_REPAIR_HISTORY`, chart `config.repairHistory`) skips it.
+binds the ingest listener first, behind a start gate, and then calls
+`repair.Run`. The store, the scraper and the real ingest handler are built
+only after it returns, so nothing appends while files are rewritten. During
+the repair the gate answers `/healthz` with 200, so the liveness probe (no
+`startupProbe`, about 90 s of failures allowed) does not kill the pod. Every
+other ingest request gets **503 with `Retry-After: 30`**. The read listener
+is not up yet, and **the scraper does not run**. So that one boot has an
+ingest outage and a relay-data gap as long as the repair: clients retry
+their batches, and relay observations for that window are simply missing.
 
-The pod's liveness probe allows about 90 s before the first `/healthz`, and
-the repair runs before that listener. At the reference deployment's volume
-(the raw window is about 160 MB) it takes seconds. A much larger store
-would make each restart redo the relay scan, but each restart's completed
-rewrites are kept.
+Rollup rows are rewritten through `map[string]json.RawMessage`, so fields a
+newer release wrote survive (docs/gotchas.md). Relay lines are never decoded
+into values. A small scanner finds the fields the grouping needs and where
+each subscriber object ends, and the marking is a byte edit: `"stripeLeg":
+true` is inserted before the object's closing brace, or an existing
+`stripeLeg` value is overwritten. Key order and every other byte stay as
+stored. Lines that do not parse, and lines with nothing to fix, are kept byte
+for byte. Unchanged files are not rewritten. A changed file is streamed
+through a temp file in the same directory, `fsync` and `rename`, and stays
+gzip at the default level, so the volume does not grow. A relay file that
+cannot be read whole (a `.gz` cut short) is skipped and counted, never
+rewritten from its readable prefix. Leftover temp files from an interrupted
+run are removed first.
+
+**One attempt, ever.** `<data>/repairs/2026-11-history.started` is written
+before the first file is touched, and `2026-11-history.done`, with a JSON
+summary of what changed, when it completes. The same summary is logged as one
+`history repair applied` line. A boot that finds `.started` without `.done`
+knows an attempt died (OOM, liveness kill) or failed. It removes any leftover
+temp files, logs a Warn naming the file, and boots normally without
+repairing. Every rewrite is atomic, so a partial run leaves consistent,
+partly repaired data. To re-run, delete `.started` and restart. Repaired data
+is a fixed point, so a re-run changes nothing already fixed.
+
+A returned error is treated like a death, not retried at the next boot. The
+errors it can hit (a full volume, an unreadable directory) recur, and a retry
+per boot would repeat the whole outage window on every restart.
+`-repair-history=false` (`GAWK_TELEMETRY_REPAIR_HISTORY`, chart
+`config.repairHistory`) skips it entirely.
+
+**Measured, 2026-11-01**, on a synthetic data dir shaped like production
+(765 MB on disk: 14 dates of pre-#657 gzip relay files from 3 pods with a
+round every 5 s, 4 broadcasts of 7 viewers each with a quarter striped, about
+13 GB of JSON uncompressed; plus 100 days of rollups), with `GOMAXPROCS=1`
+to approximate the 500m CPU request:
+
+| | wall | peak RSS |
+|---|---|---|
+| first version (`encoding/json` decode, map re-encode, file buffered in memory) | ~2.5 min per date, about 36 min projected (stopped after 4 dates) | 1.41 GiB and climbing |
+| shipped version (scanner, hashed group index, streamed byte edits) | **6 min 11 s** for all 14 dates | **439 MiB** |
+
+In the shipped version, gzip recompression is about half the CPU. Rewriting
+at `BestSpeed` cut a date from 27 s to 19 s but made the files 1.75 times
+larger, which is too much on a 2 GiB volume holding 800 MB. `/healthz`
+answered 200 on all 185 two-second probes during the run, and ingest
+answered 503 on all of them. A second boot logged `already applied` in under
+a second. A boot after the first one was `SIGKILL`ed 25 s in logged the Warn
+and started normally. Production should therefore expect roughly **6
+minutes of ingest 503s and no relay scraping** on that one boot.
 
 | Goal | Verified by |
 |---|---|
@@ -1575,7 +1612,10 @@ rewrites are kept.
 | The live row drops an implausible latency and clears the stale one | `live.TestLiveRowDropsImplausibleLatency` |
 | Rollup repair: poisoned series and leg-derived relay keys deleted, broadcast keys kept, `repairs` recorded (appended to an existing list), unknown fields and series preserved, unparsable lines verbatim, unchanged rows and files untouched | `repair.TestRollupRepair` |
 | Relay repair: one audience entry per session per round across pod files, the keyframe holder kept, already-marked rounds left alone, `.gz` stays gzip, unknown fields preserved, quiet dates untouched | `repair.TestRelayRepair` |
-| Runs once (marker with summary); a re-run without the marker changes nothing; crash residue removed; an unreadable relay file is skipped, not fatal and not rewritten; an empty data dir completes and is marked | `repair.TestRunOnceAndIdempotent`, `repair.TestUnreadableRelayFileIsSkippedNotFatal`, `repair.TestRunOnEmptyDataDir` |
+| Runs once (done marker with summary); an operator re-run changes nothing already fixed; crash residue removed; an unreadable relay file is skipped, not fatal and not rewritten; an empty data dir completes and is marked | `repair.TestRunOnceAndIdempotent`, `repair.TestUnreadableRelayFileIsSkippedNotFatal`, `repair.TestRunOnEmptyDataDir` |
+| One attempt: the in-progress marker precedes the first rewrite; `.started` without `.done` skips the repair (and removes temp files) with `ErrPreviousAttempt`, and deleting `.started` allows a re-run | `repair.TestInProgressMarkerPrecedesTheFirstRewrite`, `repair.TestAPreviousAttemptIsNeverRetried`, `main.TestRepairHistoryRunsOnceBeforeTheStore` ("previous attempt died") |
+| Relay marks are minimal byte edits: insert into the right object (strings containing braces, empty objects, whitespace), overwrite an explicit `false`, untouched lines byte-identical | `repair.TestRelayEditsAreMinimal` |
+| `/healthz` answers 200 and everything else 503 with `Retry-After` until the real handler is installed | `main.TestStartGateServesHealthzUntilOpened`; the production-sized measurement above |
 | Flag, env and default; startup wiring runs before the store and logs one summary line; disabled touches nothing | `main.TestRepairHistoryFlag`, `main.TestRepairHistoryRunsOnceBeforeTheStore`, `helm template` with `config.repairHistory` default and `false` |
 | `repairs` is an additive stored field | `storedshape` golden (`rollups.repairs`) |
 

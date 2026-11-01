@@ -103,7 +103,11 @@ config:
   # deletes stripe-leg-derived relay counters from striped viewers' rows, and
   # marks pre-#657 stripe legs in the raw relay files. A marker under the
   # data dir (repairs/2026-11-history.done) makes every later start a no-op.
-  # Set false only to keep history exactly as it was written.
+  # While it runs (about 6 min at the reference deployment's size) /healthz
+  # answers 200 but ingest answers 503 and the relay is not scraped. It is
+  # attempted once: a boot that finds repairs/2026-11-history.started
+  # without .done logs a warning and starts normally (delete .started to
+  # re-run). Set false only to keep history exactly as it was written.
   repairHistory: true
   # The SQL engine's budget. Each query runs in a short-lived worker process
   # in the same container (and cgroup) as public ingest, so it gets a stated
