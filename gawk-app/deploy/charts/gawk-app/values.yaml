@@ -131,3 +131,13 @@ config:
   # same-origin (the terms.html ConfigMap pattern) or with CORS for this
   # frontend's origin. Empty ⇒ no directory section.
   serverDirectoryUrl: ""
+
+  # R33 (docs/83 §6, OD4): the base URL of this deployment's gawk-whip-gateway,
+  # e.g. "https://whip.example.com". OBS users paste <whipGatewayUrl>/whip
+  # into Settings → Stream, and the OBS page (#/broadcast/obs) polls
+  # <whipGatewayUrl>/whip/status. The gateway publishes only to this
+  # deployment's own relay, so the way in shows only while the default server
+  # is selected. Empty (the default) ⇒ no way in, and #/broadcast/obs says
+  # this server doesn't take streams from OBS. The gateway's allowedOrigins
+  # must list this frontend's origin (CORS on /whip/status).
+  whipGatewayUrl: ""

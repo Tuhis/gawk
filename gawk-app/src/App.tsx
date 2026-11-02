@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactElement } from 'react';
 import { parseRoute, type Route } from './routing';
 import { LandingPage } from './features/landing/LandingPage';
 import { BroadcasterScreen } from './features/broadcaster/BroadcasterScreen';
+import { ObsPage } from './features/obs/ObsPage';
 import { ViewerScreen } from './features/viewer/ViewerScreen';
 import { TermsPage } from './features/terms/TermsPage';
 import { DebugShell } from './features/debug/DebugShell';
@@ -55,6 +56,8 @@ function renderRoute(route: Route): ReactElement | null {
       return <LandingPage />;
     case 'broadcaster':
       return <BroadcasterScreen linkNickname={route.nick} linkDesktop={route.desktop} />;
+    case 'broadcaster-obs':
+      return <ObsPage />;
     case 'viewer':
       return <ViewerScreen key={route.broadcastId} broadcastId={route.broadcastId} />;
     case 'room':

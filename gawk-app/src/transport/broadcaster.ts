@@ -47,6 +47,7 @@ import {
   readDatagrams,
   type ConnectOptions,
 } from './connection';
+import { readStreamBytes } from '../lib/bytes';
 import { KeyframeSender } from './keyframe-sender';
 import { UplinkMonitor } from './uplink-monitor';
 import { ConnectionStatsSampler, type TransportConnectionStats } from './net-stats';
@@ -91,6 +92,45 @@ import {
   CLOSE_CODE_BROADCASTER_STOPPED,
   type TelemetryHelloMessage,
 } from './wire';
+
+export interface PublishUrlOptions {
+  // Reclaim this ID (`/publish/{id}`); absent mints (`/publish`).
+  broadcastId?: string | null;
+  // Presented on a reclaim only.
+  resumeToken?: string | null;
+  publishSecret?: string;
+  followOffers?: boolean;
+  wallHidden?: boolean;
+  // R33 (docs/83 D3): a mint-only publish, `/publish?mint=1`. The relay
+  // announces an ID and its resume token, creates no broadcast and closes
+  // with 4017. Ignored on a reclaim.
+  mint?: boolean;
+}
+
+// The /publish dial URL. Auth crosses as query params — the WebTransport
+// JS API can't set headers: the publish secret, and for any /publish/{id}
+// claim the resume token (required by the relay). Shared by the pipeline and
+// the OBS page's key mint (features/obs/mint.ts), so a mint passes exactly
+// the gates a broadcast's dial does.
+export function buildPublishUrl(serverUrl: string, opts: PublishUrlOptions = {}): string {
+  const path = opts.broadcastId ? `/publish/${opts.broadcastId}` : '/publish';
+  const urlObj = new URL(path, serverUrl);
+  if (opts.mint && !opts.broadcastId) urlObj.searchParams.set('mint', '1');
+  if (opts.publishSecret) {
+    urlObj.searchParams.set('secret', opts.publishSecret);
+  }
+  if (opts.broadcastId && opts.resumeToken) {
+    urlObj.searchParams.set('resume', opts.resumeToken);
+  }
+  // R59 (docs/61 D1): who this broadcaster is, for the relay's usage
+  // metrics. New vs resumed the relay tells from the path.
+  appendClientIdentity(urlObj);
+  // R74 (docs/76 items 21 and 34): this client follows a PoP offer, and the
+  // broadcaster asked to stay off the party wall.
+  if (opts.followOffers) urlObj.searchParams.set('lr', '1');
+  if (opts.wallHidden) urlObj.searchParams.set('wall', 'hidden');
+  return urlObj.toString();
+}
 
 export interface BroadcastStats {
   encodedFrames: number;
@@ -606,26 +646,14 @@ export class BroadcastPipeline {
     }
   }
 
-  // The /publish dial URL. Auth crosses as query params — the WebTransport
-  // JS API can't set headers: the publish secret, and for any
-  // /publish/{id} claim the resume token (required by the relay).
   private publishUrl(): string {
-    const path = this.broadcastId ? `/publish/${this.broadcastId}` : '/publish';
-    const urlObj = new URL(path, this.serverUrl);
-    if (this.connectOpts.publishSecret) {
-      urlObj.searchParams.set('secret', this.connectOpts.publishSecret);
-    }
-    if (this.broadcastId && this.resumeToken) {
-      urlObj.searchParams.set('resume', this.resumeToken);
-    }
-    // R59 (docs/61 D1): who this broadcaster is, for the relay's usage
-    // metrics. New vs resumed the relay tells from the path.
-    appendClientIdentity(urlObj);
-    // R74 (docs/76 items 21 and 34): this client follows a PoP offer, and the
-    // broadcaster asked to stay off the party wall.
-    if (this.connectOpts.followOffers) urlObj.searchParams.set('lr', '1');
-    if (this.connectOpts.wallHidden) urlObj.searchParams.set('wall', 'hidden');
-    return urlObj.toString();
+    return buildPublishUrl(this.serverUrl, {
+      broadcastId: this.broadcastId,
+      resumeToken: this.resumeToken,
+      publishSecret: this.connectOpts.publishSecret,
+      followOffers: this.connectOpts.followOffers,
+      wallHidden: this.connectOpts.wallHidden,
+    });
   }
 
   // Establishes one WebTransport session and everything scoped to it: the
@@ -705,25 +733,7 @@ export class BroadcastPipeline {
 
   private async readServerMessage(stream: ReadableStream<Uint8Array>, gen: number): Promise<void> {
     try {
-      const chunks: Uint8Array[] = [];
-      const streamReader = stream.getReader();
-      try {
-        while (true) {
-          const { value, done } = await streamReader.read();
-          if (done) break;
-          if (value) chunks.push(value);
-        }
-      } finally {
-        streamReader.releaseLock();
-      }
-      let totalLen = 0;
-      for (const c of chunks) totalLen += c.length;
-      const data = new Uint8Array(totalLen);
-      let offset = 0;
-      for (const c of chunks) {
-        data.set(c, offset);
-        offset += c.length;
-      }
+      const data = await readStreamBytes(stream);
       const { msgType } = peekType(data);
       switch (msgType) {
         case TYPE_BROADCAST_ANNOUNCE: {
