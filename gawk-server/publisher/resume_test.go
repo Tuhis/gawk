@@ -571,3 +571,53 @@ func TestStopBroadcastWhileResumingDeliversTheStopOnOneReclaim(t *testing.T) {
 		t.Errorf("stop reclaim dialled %q, want the broadcast's own token reclaim", last)
 	}
 }
+
+// A StopBroadcast that lands after the relay deposed this engine (4004, a
+// newer publisher reclaimed with the same token) must not reclaim to deliver
+// its 4014: that reclaim would supersede the newer publisher and end the
+// broadcast for every viewer (PR #688 review round 1). The supervisor is held
+// inside OnError, after it has seen the 4004 and before it finishes, so the
+// stop lands in exactly that window.
+func TestStopBroadcastAfterASupersedeDoesNotReclaim(t *testing.T) {
+	first := newFakeSession()
+	media := newFakeMedia()
+	var mu sync.Mutex
+	dials := 0
+	dial := func(ctx context.Context, rawURL, origin string, insecure bool) (RelaySession, int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		dials++
+		if dials == 1 {
+			return first, http.StatusOK, nil
+		}
+		return newFakeSession(), http.StatusOK, nil
+	}
+	reached, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	s := New(Config{RelayURL: "https://relay.example", BroadcastID: "K7M2QP", ResumeToken: "ab"},
+		Callbacks{OnError: func(error) {
+			once.Do(func() { close(reached) })
+			<-release
+		}},
+		Options{Clock: &FakeClock{}, Dial: dial, MediaFactory: media.factory(), Log: testLog, StatsInterval: time.Hour})
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	first.closedByRelay(wire.CloseCodePublisherSuperseded)
+	waitSignal(t, reached, 3*time.Second, "the supervisor seeing the 4004")
+
+	done := make(chan struct{})
+	go func() { _ = s.StopBroadcast(); close(done) }()
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("StopBroadcast hung")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if dials != 1 {
+		t.Errorf("%d dials, want 1: a deposed engine's stop must not reclaim over the newer publisher", dials)
+	}
+}

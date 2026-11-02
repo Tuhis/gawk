@@ -978,7 +978,9 @@ const stopReclaimTimeout = 5 * time.Second
 // deliverStop sends the 4014 a StopBroadcast owes the relay when there was no
 // live session to send it on: the stop landed while auto-resume was between
 // attempts. One reclaim with the broadcast's token, closed at once with 4014,
-// carries it, as the desktop engine's end() does from Paused. It is best
+// carries it, as the desktop engine's end() does from Paused. Never after a
+// terminal close: a deposed engine (4004) must not reclaim over the newer
+// publisher. It is best
 // effort and bounded; if it fails, the relay's grace ends the broadcast as
 // it would after Stop.
 func (s *Session) deliverStop() {
@@ -989,6 +991,16 @@ func (s *Session) deliverStop() {
 	s.mu.Unlock()
 	if delivered || id == "" || token == "" {
 		return
+	}
+	// A relay that closed the last session terminally gets no stop: after a
+	// 4004 a newer publisher holds the broadcast, and a token reclaim would
+	// supersede it and end the broadcast for its viewers; after a 4000 or
+	// 4006 there is nothing left to end.
+	if relay := s.currentRelay(); relay != nil && relay.Context().Err() != nil {
+		if code, ok := sessionCloseCode(relay); ok && terminalForPublisher(code) {
+			s.log.Info("not delivering the stop: the relay already ended this session for good", "close_code", code)
+			return
+		}
 	}
 	if origin == "" {
 		origin = DefaultOrigin
