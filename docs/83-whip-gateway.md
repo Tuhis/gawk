@@ -231,7 +231,8 @@ re-checks it against the OBS release it tests.
   client IP itself, before dialing the relay.
 
   **Where the gateway gets the client IP.** `POST /whip` arrives through the
-  public Ingress (§6), so `r.RemoteAddr` is the ingress controller for every
+  public Ingress (§6; or a Gateway API route, §12.5, where everything below
+  holds for the Gateway's proxy pods), so `r.RemoteAddr` is the ingress controller for every
   OBS user. Keyed on it, both the gateway's limit and `Gawk-Publisher-Ip`
   would collapse into one shared bucket, the failure `gawk-telemetry`'s
   ingest already hit (`internal/ingest/ingest.go`). And `X-Forwarded-For` is
@@ -434,15 +435,17 @@ re-checks it against the OBS release it tests.
     the pod that holds the session. The chart renders one Service per
     replica, so changing `replicas` is a `helm upgrade`, and the firewall
     opens the port range.
-  - **HTTP: the Ingress routes by key.** `POST`, `DELETE` and
-    `GET`/`DELETE /whip/status` all carry the bearer key, and the Ingress
-    hashes on it (ingress-nginx
-    `nginx.ingress.kubernetes.io/upstream-hash-by: "$http_authorization"`).
+  - **HTTP: the route hashes on the key.** `POST`, `DELETE` and
+    `GET`/`DELETE /whip/status` all carry the bearer key, and the route in
+    front of the gateway hashes on it: an HTTPRoute with Envoy Gateway's
+    consistent hash on the `Authorization` header, or an ingress-nginx
+    Ingress with
+    `nginx.ingress.kubernetes.io/upstream-hash-by: "$http_authorization"`.
     In the steady state every request for a key, and all of D7's and D9's
     per-key state, lands on one pod, and nothing is shared. `OPTIONS`
-    preflights carry no key, and they're stateless. An Ingress that can't hash
-    on a header isn't supported in v1; the chart notes and the self-hosting
-    guide say so.
+    preflights carry no key, and they're stateless. A route that can't hash
+    on a header holds only at `replicas: 1`; the chart refuses more. (Amended
+    2026-11-02, §12.5: v1 shipped with the Ingress only.)
   - **Scaling and restarts move some keys.** On a **scale-up**, some keys
     hash to a new pod. A live session keeps running on its old pod until it
     ends; OBS's next `POST` reaches the new pod, which reclaims the ID, and
@@ -461,7 +464,7 @@ re-checks it against the OBS release it tests.
   - **A pod without a key's live session or running backoff asks its
     peers.** A key can be hashed to a pod other than the one holding its
     session or its records: after a rescale, and on every rolling release,
-    because the Ingress maps a pod's keys elsewhere while it's down and back
+    because the route maps a pod's keys elsewhere while it's down and back
     when it's Ready again, while a session that reconnected meanwhile stays
     where it is, and D7's backoff or D9's refusal records are written
     wherever that session ends. A local refusal record or `lost` settles
@@ -858,11 +861,12 @@ broadcast whose publisher is the gateway.
   the gateway releases with every relay release.
 - **Chart:** based on `gawk-mumble-bridge`'s, with a StatefulSet (D10,
   `replicas` default 2), an HTTP Service for the WHIP endpoint behind the
-  public Ingress (TLS by the Ingress, `upstream-hash-by` on the bearer key),
+  public route (an HTTPRoute or an Ingress, TLS there, hashing on the bearer
+  key, §12.5),
   one UDP+TCP `LoadBalancer` Service per replica on a shared address (port
   `media.basePort + ordinal`), a headless Service for D10's peer lookup, a
   NetworkPolicy (egress to the relay's UDP port and to the other gateway pods'
-  internal port; ingress from the Ingress, the media LBs and the other gateway
+  internal port; ingress from the HTTP proxy, the media LBs and the other gateway
   pods on the internal port only), a ServiceMonitor and a PDB. `values.yaml`
   holds `relay.url`, `relay.publishSecret` (existing secret ref),
   `relay.publishProxyToken` (D4), `publicAddress`, `replicas`,
@@ -873,9 +877,9 @@ broadcast whose publisher is the gateway.
   the gateway's own config). The chart's notes carry D4's requirements:
   `trustedProxyCidrs` lists only the header-writing proxy (exact node
   addresses under `hostNetwork`, both address families on dual-stack), the
-  ingress controller must see real client IPs (`externalTrafficPolicy: Local`
-  or PROXY protocol), and an empty list behind an Ingress means one shared
-  bucket. They also carry D10's: the Ingress must hash on the `Authorization`
+  proxy must see real client IPs (`externalTrafficPolicy: Local`
+  or PROXY protocol), and an empty list behind a proxy means one shared
+  bucket. They also carry D10's: the route must hash on the `Authorization`
   header, and the firewall must open `media.basePort` to `media.basePort +
   replicas - 1`, and only `(replicas − 1) × maxSessions` sessions are safe
   through a pod restart.
@@ -1126,3 +1130,43 @@ so in the code and the chart.
   because OBS closes its PeerConnection first; and offers are refused `406`
   unless their `profile-level-id` is Baseline, Main or High at level 5.2 or
   below.
+
+### 12.5 Routing through Gateway API (2026-11-02)
+
+The chart shipped in 1.0 with an ingress-nginx Ingress as the only public
+route, because §6 and D10 assumed the reference deployment's frontend sat
+behind ingress-nginx. It doesn't: ioio routes HTTP through Gateway API with
+Envoy Gateway (v1.9), one HTTPS listener per hostname on a shared `Gateway`,
+and ingress-nginx is gone there. So:
+
+- **`httpRoute` is the chart's Gateway API route.** It renders an
+  `HTTPRoute` for `/whip` to the gateway's HTTP Service, attached to the
+  `parentRefs` the operator names (the Gateway and the WHIP host's
+  listener). The Gateway and its listener stay the cluster's own; the chart
+  never creates one.
+- **The key hash is the implementation's.** Gateway API has no standard way
+  to hash on a header. `httpRoute.keyHash: envoy-gateway` (the default)
+  adds a `BackendTrafficPolicy` with `loadBalancer.type: ConsistentHash`,
+  `consistentHash.type: Headers` on `Authorization`, the equivalent of the
+  Ingress annotation. It sets `mergeType: StrategicMerge`: an unmerged
+  route-level policy *replaces* a Gateway-level one for that route, so the
+  route would lose the Gateway's own timeouts and the rest. `keyHash: none`
+  renders no policy and is refused above one replica, which is what an
+  implementation without a header hash (Cilium's, say) supports.
+- **One route, not two.** The chart refuses `httpRoute` and `ingress`
+  together: two routes could hash a key to different pods.
+- **The NetworkPolicy's HTTP source is `networkPolicy.httpProxy`**, which
+  names the proxy pods (Envoy Gateway's are `app.kubernetes.io/name: envoy`,
+  `app.kubernetes.io/component: proxy` in its namespace). Naming nothing
+  falls back to 1.0's `networkPolicy.ingressController` and its
+  ingress-nginx default, so a 1.0 install keeps its policy on upgrade.
+- **D4 is unchanged.** Envoy appends the address it received the request
+  from to `X-Forwarded-For`, as ingress-nginx does, so `trustedProxyCidrs`
+  lists the Envoy pods' range, and the proxy's own Service must keep client
+  IPs (`externalTrafficPolicy: Local`, as both of ioio's Envoy Services are).
+- **Verified by** the chart CI step: the HTTPRoute attaches to the named
+  listener and routes `/whip` to the HTTP Service; the policy hashes on
+  `Authorization` with `StrategicMerge`; `keyHash: none` above one replica,
+  a route with an Ingress, an unknown `keyHash` and missing `parentRefs`
+  are refused; `httpProxy` replaces the ingress-nginx default, and a
+  `cidrs`-only `httpProxy` renders no pod peer. WG10 checks it on ioio.
