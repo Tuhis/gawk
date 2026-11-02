@@ -87,6 +87,7 @@ jobs:
       admin_ui: ${{ steps.filter.outputs.admin_ui }}
       sampler: ${{ steps.filter.outputs.sampler }}
       bridge: ${{ steps.filter.outputs.bridge }}
+      whip: ${{ steps.filter.outputs.whip }}
       tidy: ${{ steps.filter.outputs.tidy }}
       licenses: ${{ steps.filter.outputs.licenses }}
       notices: ${{ steps.filter.outputs.notices }}
@@ -261,6 +262,12 @@ jobs:
           # R79 (docs/80 D1): gawk-mumble-bridge `replace`s gawk-server for
           # its public wire and voice packages, the same shape as the sampler.
           bridge=$(decide       bridge       "^gawk-mumble-bridge/|$(srvdeps gawk-mumble-bridge)")
+          # R33 (docs/83 §8 WG4): gawk-whip-gateway `replace`s gawk-server for
+          # its public publisher and wire packages, but NOT through srvdeps:
+          # its end-to-end tests `go build` cmd/gawk-server and publish
+          # through the real relay, a dependency `go list` cannot see. So
+          # every gawk-server change is a gateway change.
+          whip=$(decide         whip         '^(gawk-whip-gateway|gawk-server)/')
           # `go mod tidy` resolves the import graph, so any .go file can untidy a
           # module — not just a manifest. The vendored quic-go's patch and
           # derive script too: the same job checks the copy (docs/75 D7).
@@ -288,7 +295,9 @@ jobs:
           # common-ts/ because the admin image's UI stage builds it (docs/55 D3).
           # e2e/Dockerfile.prebuilt because the fast path below packages the
           # stack's Go images with it.
-          dev_stack=$(decide    dev_stack    '^(docker-compose\.yml|\.env\.example|dev/|gawk-server/|gawk-app/|gawk-admin/|common-ts/|e2e/Dockerfile\.prebuilt$)')
+          # gawk-whip-gateway/ since R33 WG9: the `whip` profile's gateway and
+          # sender round-trip a frame in this job.
+          dev_stack=$(decide    dev_stack    '^(docker-compose\.yml|\.env\.example|dev/|gawk-server/|gawk-app/|gawk-admin/|gawk-whip-gateway/|common-ts/|e2e/Dockerfile\.prebuilt$)')
           # R40's screening lane (docs/71 §9.7) is its own job,
           # `dev-stack-screening`, and on a PR it runs only when the flag path
           # can have moved: the samplers (their own module and Dockerfile), the
@@ -1465,6 +1474,127 @@ jobs:
       - if: always()
         run: docker rm -f ci-bridge >/dev/null 2>&1 || true
 
+  # R33 (docs/83 WG4-WG7): the WHIP gateway. Pion WHIP clients in process
+  # against a fake relay seam, two instances behind a hashing proxy (D10),
+  # and end-to-end tests that `go build` the real relay from ../gawk-server
+  # and publish through it. That build is an input Go cannot see, which is
+  # why this job keeps go-shared-cache's default (-count=1 for every
+  # package, nothing replayed) rather than `server`'s cached results.
+  # `go mod tidy` for this module is checked by the `tidy` job.
+  whip-gateway:
+    needs: changes
+    if: needs.changes.outputs.whip == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: gawk-whip-gateway
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
+        with:
+          go-version-file: gawk-whip-gateway/go.mod
+          cache-dependency-path: |
+            gawk-whip-gateway/go.sum
+            gawk-server/go.sum
+      - uses: ./.github/actions/go-shared-cache
+      # See the server job: the end-to-end tests push QUIC over loopback.
+      - name: Ensure UDP buffer limits for quic-go
+        run: |
+          need=7340032
+          if [ "$(sysctl -n net.core.rmem_max)" -lt "$need" ] || [ "$(sysctl -n net.core.wmem_max)" -lt "$need" ]; then
+            sudo sysctl -w net.core.rmem_max="$need" net.core.wmem_max="$need"
+          fi
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - name: go test -race (every package fresh)
+        run: go test -race -count=1 ./...
+        env:
+          CGO_ENABLED: "1"
+      - name: the image's build has no cgo
+        run: CGO_ENABLED=0 go build ./...
+
+  # Coverage for the gateway, race-free for the reason server-coverage gives.
+  # internal/testmedia is test scaffolding and cmd/gawk-whipsim the dev
+  # stack's sender; neither ships in the image.
+  whip-gateway-coverage:
+    needs: changes
+    if: needs.changes.outputs.whip == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: gawk-whip-gateway
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
+        with:
+          go-version-file: gawk-whip-gateway/go.mod
+          cache-dependency-path: |
+            gawk-whip-gateway/go.sum
+            gawk-server/go.sum
+      - uses: ./.github/actions/go-shared-cache
+      - name: Ensure UDP buffer limits for quic-go
+        run: |
+          need=7340032
+          if [ "$(sysctl -n net.core.rmem_max)" -lt "$need" ] || [ "$(sysctl -n net.core.wmem_max)" -lt "$need" ]; then
+            sudo sysctl -w net.core.rmem_max="$need" net.core.wmem_max="$need"
+          fi
+      - name: go test -cover
+        run: |
+          # Per-package coverage, as bridge-coverage measures it.
+          pkgs=$(go list ./... | grep -v -e /internal/testmedia -e /cmd/gawk-whipsim)
+          go test -count=1 -covermode=set -coverprofile=coverage.out $pkgs
+      - uses: ./.github/actions/coverage
+        with:
+          format: go
+          report: gawk-whip-gateway/coverage.out
+          component: gawk-whip-gateway
+          label: WHIP gateway
+
+  # The gateway image, built and started as it ships: distroless, nonroot,
+  # /readyz answering on the ops port with no session open. The relay URL
+  # need not answer: the gateway dials it only for a POST. Host networking,
+  # so the ports are moved off anything a runner may already hold.
+  whip-gateway-image:
+    needs: changes
+    if: needs.changes.outputs.whip == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-buildx
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: gawk-whip-gateway/deploy/Dockerfile
+          push: false
+          load: true
+          tags: gawk-whip-gateway:ci
+      - name: it starts and reports ready
+        run: |
+          set -euo pipefail
+          docker run -d --name ci-whip --network host gawk-whip-gateway:ci \
+            -relay-url https://127.0.0.1:4433 -public-address 127.0.0.1 \
+            -allowed-origins http://localhost:8080 \
+            -listen :18180 -internal-listen :18181 -ops-listen :18190 -media-base-port 18189
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18190/readyz >/dev/null; then
+              # A here-string, not `curl | grep -q` (docs/gotchas.md).
+              whip_metrics=$(curl -fsS http://127.0.0.1:18190/metrics)
+              grep -q '^gawk_whip_sessions 0$' <<<"$whip_metrics"
+              curl -fsS http://127.0.0.1:18180/healthz >/dev/null
+              echo "gawk-whip-gateway:ci is ready"; exit 0
+            fi
+            sleep 1
+          done
+          docker logs ci-whip 2>&1 | tail -30
+          echo "::error::the gateway never reported ready"; exit 1
+      - if: always()
+        run: docker rm -f ci-whip >/dev/null 2>&1 || true
+
   tidy:
     needs: changes
     if: needs.changes.outputs.tidy == 'true'
@@ -1496,7 +1626,7 @@ jobs:
       - uses: ./.github/actions/go-shared-cache
       - name: go mod tidy leaves every module unchanged
         run: |
-          for mod in gawk-server gawk-telemetry gawk-admin gawk-sampler gawk-mumble-bridge tools/icon tools/commonlock; do
+          for mod in gawk-server gawk-telemetry gawk-admin gawk-sampler gawk-mumble-bridge gawk-whip-gateway tools/icon tools/commonlock; do
             (cd "$mod" && go mod tidy)
           done
           if ! git diff --exit-code; then
@@ -2443,6 +2573,131 @@ jobs:
           fi
           appver=$(awk '/^appVersion:/{gsub(/"/,"",$2); print $2}' "$chart/Chart.yaml")
           grep -q "ghcr.io/tuhis/gawk-mumble-bridge:${appver}" <<<"$out"
+      # ---- R33 (docs/83 WG3, WG4) -----------------------------------------
+      # The relay half (D4, D12): no proxy token by default, the token and
+      # an explicit resume-token key render the env, and the token without
+      # the key refuses to render.
+      - name: relay chart — the publish-proxy token and its resume-key guard (D4, D12)
+        run: |
+          set -euo pipefail
+          chart=gawk-server/deploy/charts/gawk-server
+          # Default: no proxy token anywhere.
+          if helm template "$chart" | grep -q GAWK_PUBLISH_PROXY_TOKEN; then
+            echo "::error::the default relay render carries GAWK_PUBLISH_PROXY_TOKEN"; exit 1
+          fi
+          key=(--set config.resumeTokenKey=0000000000000000000000000000000000000000000000000000000000000000)
+          out=$(helm template "$chart" --set publishProxy.token=ci-proxy-token "${key[@]}" --show-only templates/deployment.yaml)
+          grep -A1 'name: GAWK_PUBLISH_PROXY_TOKEN$' <<<"$out" | grep -q 'value: "ci-proxy-token"'
+          grep -q 'name: GAWK_RESUME_TOKEN_KEY$' <<<"$out"
+          ref=$(helm template "$chart" --set publishProxy.tokenSecretRef.name=gawk-whip \
+                  --set publishProxy.tokenSecretRef.key=publishProxyToken "${key[@]}" --show-only templates/deployment.yaml)
+          grep -A4 'name: GAWK_PUBLISH_PROXY_TOKEN$' <<<"$ref" | grep -q 'name: "gawk-whip"'
+          grep -A4 'name: GAWK_PUBLISH_PROXY_TOKEN$' <<<"$ref" | grep -q 'key: "publishProxyToken"'
+          # D12: the proxy token without an explicit resume-token key refuses
+          # to render, in both forms.
+          for v in publishProxy.token=ci-proxy-token publishProxy.tokenSecretRef.name=gawk-whip; do
+            if err=$(helm template "$chart" --set "$v" 2>&1); then
+              echo "::error::$v rendered without config.resumeTokenKey (docs/83 D12)"; exit 1
+            fi
+            grep -q 'resumeTokenKey' <<<"$err" || { echo "$err"; exit 1; }
+          done
+      - run: helm lint gawk-whip-gateway/deploy/charts/gawk-whip-gateway
+      # WG4's acceptance criteria, executable, for the reason the R39 block
+      # gives (no golden renders).
+      - name: gateway chart — StatefulSet, per-pod media LoadBalancers, the hash, every knob (D10)
+        run: |
+          set -euo pipefail
+          chart=gawk-whip-gateway/deploy/charts/gawk-whip-gateway
+          appver=$(awk '/^appVersion:/{gsub(/"/,"",$2); print $2}' "$chart/Chart.yaml")
+          chartver=$(awk '/^version:/{print $2}' "$chart/Chart.yaml")
+          [ "$appver" = "$chartver" ] || { echo "::error::chart version $chartver != appVersion $appver"; exit 1; }
+          kinds() { grep '^kind:' | sort | uniq -c | tr -s ' ' | tr '\n' ';'; }
+
+          # Default: renders; two pods, two media Services; no Ingress and
+          # no NetworkPolicy until asked; the internal and ops ports on no
+          # LoadBalancer; the image is the chart's own version.
+          out=$(helm template gawk-whip-gateway "$chart")
+          [ "$(kinds <<<"$out")" = " 1 kind: PodDisruptionBudget; 4 kind: Service; 1 kind: StatefulSet;" ] || {
+            echo "::error::default render: $(kinds <<<"$out")"; exit 1; }
+          grep -q 'replicas: 2$' <<<"$out"
+          grep -q "image: \"ghcr.io/tuhis/gawk-whip-gateway:${appver}\"" <<<"$out"
+          lbs=$(awk '/^---/{doc=""} {doc=doc"\n"$0} /type: LoadBalancer/{print doc}' <<<"$out")
+          if grep -qE 'port: (8080|8081|9090|80)$' <<<"$lbs"; then
+            echo "::error::an HTTP, internal or ops port is on a media LoadBalancer"; exit 1
+          fi
+          grep -A1 'name: GAWK_WHIP_TRUSTED_PROXY_CIDRS$' <<<"$out" | grep -q 'value: ""'
+
+          # WG4's acceptance row: replicas 3 is a 3-pod StatefulSet, three
+          # media Services on one shared address with ports basePort..+2,
+          # each selecting its own pod, and the Ingress hashing on the key.
+          ip=203.0.113.10
+          out=$(helm template gawk-whip-gateway "$chart" --namespace gawk --set replicas=3 \
+                  --set ingress.enabled=true --set publicAddress=$ip --set media.loadBalancerIP=$ip \
+                  --set-string 'ingress.annotations.nginx\.ingress\.kubernetes\.io/upstream-hash-by=$remote_addr')
+          grep -q 'replicas: 3$' <<<"$out"
+          for i in 0 1 2; do
+            svc=$(helm template gawk-whip-gateway "$chart" --namespace gawk --set replicas=3 \
+                    --set media.loadBalancerIP=$ip --show-only templates/service-media.yaml \
+                  | awk -v n="gawk-whip-gateway-media-$i" '/^---/{p=0} $0 ~ "name: "n"$"{p=1} p')
+            port=$((8189 + i))
+            grep -q 'type: LoadBalancer' <<<"$svc"
+            grep -q "loadBalancerIP: $ip" <<<"$svc"
+            grep -q 'metallb.universe.tf/allow-shared-ip: "gawk-whip-gateway"' <<<"$svc"
+            grep -q "statefulset.kubernetes.io/pod-name: gawk-whip-gateway-$i$" <<<"$svc"
+            [ "$(grep -cE "[pP]ort: $port$" <<<"$svc")" = 4 ] || { echo "::error::media-$i is not UDP+TCP $port"; echo "$svc"; exit 1; }
+            grep -q 'protocol: UDP' <<<"$svc" && grep -q 'protocol: TCP' <<<"$svc"
+          done
+          [ "$(grep -c 'name: gawk-whip-gateway-media-' <<<"$out")" = 3 ] || { echo "::error::not three media Services"; exit 1; }
+          ing=$(helm template gawk-whip-gateway "$chart" --set ingress.enabled=true \
+                  --set-string 'ingress.annotations.nginx\.ingress\.kubernetes\.io/upstream-hash-by=$remote_addr' \
+                  --set-string 'ingress.annotations.cert-manager\.io/cluster-issuer=le' --show-only templates/ingress.yaml)
+          [ "$(grep -c 'upstream-hash-by' <<<"$ing")" = 1 ] && grep -q 'nginx.ingress.kubernetes.io/upstream-hash-by: "$http_authorization"' <<<"$ing" || {
+            echo "::error::the Ingress does not hash on Authorization, or an annotation overrode it"; echo "$ing"; exit 1; }
+          grep -q 'cert-manager.io/cluster-issuer: le' <<<"$ing"
+          sts=$(helm template gawk-whip-gateway "$chart" --namespace gawk --set replicas=3 --show-only templates/statefulset.yaml)
+          grep -A1 'name: GAWK_WHIP_REPLICAS$' <<<"$sts" | grep -q 'value: "3"'
+          grep -A1 'name: GAWK_WHIP_PEER_TEMPLATE$' <<<"$sts" \
+            | grep -q 'value: "http://gawk-whip-gateway-{ordinal}.gawk-whip-gateway-peers.gawk.svc:8081"'
+          grep -A3 'name: GAWK_WHIP_POD_NAME$' <<<"$sts" | grep -q 'fieldPath: metadata.name'
+          np=$(helm template gawk-whip-gateway "$chart" --set replicas=3 --set networkPolicy.enabled=true --show-only templates/networkpolicy.yaml)
+          [ "$(grep -c 'endPort: 8191$' <<<"$np")" = 2 ]
+          for port in 8080 8081 9090 4433 53; do grep -qE "port: $port$" <<<"$np"; done
+
+          # Every value reaches its GAWK_WHIP_* env as written, and the
+          # secrets render through the Ref form without the literal.
+          sts=$(helm template gawk-whip-gateway "$chart" --show-only templates/statefulset.yaml \
+                  --set relay.url=https://gawk-server.gawk.svc:4433 --set publicAddress=$ip \
+                  --set 'trustedProxyCidrs={10.42.0.0/16,fd00:42::/56}' --set 'allowedOrigins={https://gawk.example.com}' \
+                  --set maxSessions=12 --set maxSessionsHard=15 --set gop.max=3s --set reorder.windowMultiplier=1.5 \
+                  --set postRate=0.5 --set media.basePort=9000 --set tls.secretName=direct-tls \
+                  --set relay.publishProxyToken=leaked --set relay.publishProxyTokenRef.name=gawk-whip --set relay.publishProxyTokenRef.key=publishProxyToken \
+                  --set internalToken=leaked --set internalTokenRef.name=gawk-whip --set internalTokenRef.key=internalToken \
+                  --set relay.publishSecretRef.name=gawk-server-secrets --set relay.publishSecretRef.key=publishSecret)
+          env() { grep -A1 "name: GAWK_WHIP_$1\$" <<<"$sts" | grep -qF "value: \"$2\"" || { echo "::error::GAWK_WHIP_$1 is not $2"; exit 1; }; }
+          env RELAY_URL https://gawk-server.gawk.svc:4433
+          env PUBLIC_ADDRESS $ip
+          env TRUSTED_PROXY_CIDRS 10.42.0.0/16,fd00:42::/56
+          env ALLOWED_ORIGINS https://gawk.example.com
+          env MAX_SESSIONS 12
+          env MAX_SESSIONS_HARD 15
+          env GOP_MAX 3s
+          env REORDER_WINDOW_MULTIPLIER 1.5
+          env POST_RATE 0.5
+          env MEDIA_BASE_PORT 9000
+          env TLS_CERT_FILE /tls/tls.crt
+          for e in RELAY_PUBLISH_PROXY_TOKEN INTERNAL_TOKEN RELAY_PUBLISH_SECRET; do
+            grep -A4 "name: GAWK_WHIP_$e\$" <<<"$sts" | grep -q 'secretKeyRef:' || { echo "::error::GAWK_WHIP_$e is not from its Secret"; exit 1; }
+          done
+          if grep -q leaked <<<"$sts"; then echo "::error::a Ref form leaked its literal"; exit 1; fi
+          # Every flag the binary has is either set by the chart or one the
+          # chart deliberately leaves at its default (media-bind, peers).
+          flags=$(sed -n 's/.*\b\(str\|dur\|boolean\)("\([a-z-]*\)".*/\2/p' gawk-whip-gateway/internal/config/config.go | sort -u)
+          for f in $flags; do
+            case $f in media-bind|peers) continue ;; esac
+            e=GAWK_WHIP_$(tr 'a-z-' 'A-Z_' <<<"$f")
+            grep -q "name: $e\$" <<<"$sts" || { echo "::error::-$f ($e) has no chart value"; exit 1; }
+          done
+          echo "gateway chart: every property held"
       - name: sampler chart — two sharded pods, the share count from replicas, PDB and spread (D22)
         run: |
           set -euo pipefail
@@ -2721,7 +2976,7 @@ jobs:
         if: needs.changes.outputs.dev_stack_images == 'false'
         run: |
           set -euo pipefail
-          override=$(.github/scripts/dev-stack-prebuilt.sh "$RUNNER_TEMP/prebuilt")
+          override=$(.github/scripts/dev-stack-prebuilt.sh "$RUNNER_TEMP/prebuilt" --whip)
           echo "COMPOSE_FILE=docker-compose.yml:$override" >> "$GITHUB_ENV"
 
       # HOST_UID/HOST_GID decide who owns the pair the relay generates into
@@ -2936,6 +3191,62 @@ jobs:
             'http://127.0.0.1:8088/api/v1/events?category=moderation&limit=50' \
             | jq -e '[.events[] | select(.category != "moderation")] | length == 0' >/dev/null
           echo "bus lane: a join travelled relay -> JetStream -> portal"
+
+      # R33 WG9 (docs/83 §8): an OBS-style WHIP stream, end to end. The
+      # `whip` profile's gawk-whipsim mints a key with CONNECT
+      # /publish?mint=1, streams FFmpeg's WHIP muxer (a test pattern, 1 s
+      # GOP, Opus) to the gateway, attaches the broadcast to `devroom` and
+      # subscribes as a viewer: its ROUNDTRIP line is a frame that went
+      # FFmpeg → gateway → relay → viewer. Then what the OBS page and a room
+      # viewer see, from outside the compose network. COMPOSE_PROFILES goes
+      # to GITHUB_ENV so the restart, the logs and the tear-down below
+      # include the profile's services.
+      - name: A frame round-trips through the WHIP gateway (R33 WG9)
+        run: |
+          set -euo pipefail
+          echo "COMPOSE_PROFILES=whip" >> "$GITHUB_ENV"
+          export COMPOSE_PROFILES=whip
+          docker compose up -d --build --wait
+          ok=0
+          for i in $(seq 120); do
+            logs=$(docker compose logs --no-color whipsim)
+            if grep -q 'GAWK_WHIPSIM_ROUNDTRIP ok' <<<"$logs"; then ok=1; break; fi
+            sleep 1
+          done
+          if [ "$ok" != 1 ]; then
+            echo "::error::no frame round-tripped through the WHIP gateway"
+            docker compose logs --no-color whipsim whip-gateway | tail -80
+            exit 1
+          fi
+          grep 'GAWK_WHIPSIM_ROUNDTRIP' <<<"$logs"
+          key=$(sed -n 's/.*GAWK_WHIPSIM_KEY=\(gawk1_[A-Za-z0-9_]*\).*/\1/p' <<<"$logs" | tail -1)
+          id=$(sed -n 's/.*GAWK_WHIPSIM_ID=\([A-Z0-9]*\).*/\1/p' <<<"$logs" | tail -1)
+          [ -n "$key" ] && [ -n "$id" ]
+
+          # The frontend is told where the gateway is, and the OBS page's
+          # status read works cross-origin: live, H.264, the GOP measured
+          # from the frames at 1 s.
+          grep -q 'whipGatewayUrl: "http://localhost:8180"' dev/generated/config.js
+          curl -fsS http://127.0.0.1:8080/config.js | grep -q whipGatewayUrl
+          st=$(curl -fsS -D "$RUNNER_TEMP/whip-headers" -H "Authorization: Bearer $key" \
+                 -H 'Origin: http://localhost:8080' http://127.0.0.1:8180/whip/status)
+          echo "$st"
+          jq -e '.state == "live" and .codec == "H.264" and .gopMs >= 900 and .gopMs <= 1100 and (.warnings | length) == 0' <<<"$st" >/dev/null
+          grep -qi '^access-control-allow-origin: http://localhost:8080' "$RUNNER_TEMP/whip-headers"
+
+          # The room a viewer opens holds the broadcast, live (WG9's attach,
+          # with the gateway as the publisher).
+          (cd gawk-server && go run ./cmd/gawk-roomsim -url https://127.0.0.1:4433 -insecure \
+            -origin http://localhost:8080 -code devroom -nick ci-whip -duration 2s) > roomsim-whip.out 2>&1 \
+            || { cat roomsim-whip.out; exit 1; }
+          head -n1 roomsim-whip.out | jq -e --arg id "$id" \
+            '.attachments[] | select(.broadcastID == $id and .live)' >/dev/null \
+            || { echo "::error::$id is not live in devroom"; cat roomsim-whip.out; exit 1; }
+
+          whip_metrics=$(curl -fsS http://127.0.0.1:2114/metrics)
+          grep -q '^gawk_whip_sessions 1$' <<<"$whip_metrics"
+          grep -q '^gawk_whip_posts_total{status="201"}' <<<"$whip_metrics"
+          echo "whip lane: a frame went FFmpeg -> gateway -> relay -> viewer, and the room shows it"
 
       - name: The certificate survives a restart (the re-paste loop, gone)
         run: |
@@ -4656,7 +4967,7 @@ jobs:
   # download tolerates finding nothing, and the writer treats an empty record
   # set as "nothing moved".
   coverage-badges:
-    needs: [server-coverage, app, telemetry, telemetry-ui, admin-coverage, admin-ui, bridge-coverage]
+    needs: [server-coverage, app, telemetry, telemetry-ui, admin-coverage, admin-ui, bridge-coverage, whip-gateway-coverage]
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     permissions:

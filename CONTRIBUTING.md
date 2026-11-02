@@ -275,7 +275,8 @@ For **Renovate PRs this happens automatically**: `postUpgradeTasks` in
 `renovate.json5` runs the generator on the bump branch, so the notices land in
 the same PR as the version change. Before it, `tools/renovate/tidy-go.sh`
 tidies the modules that build gawk-server through a local `replace`
-(gawk-admin, gawk-telemetry, gawk-sampler, gawk-mumble-bridge). Renovate only
+(gawk-admin, gawk-telemetry, gawk-sampler, gawk-mumble-bridge,
+gawk-whip-gateway). Renovate only
 tidies the `go.mod` files it edited itself, so without this step a bump that
 moved gawk-server's graph left the other modules stale. Run the same script by
 hand after editing `gawk-server/go.mod` yourself. Both commands only take

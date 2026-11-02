@@ -1,0 +1,57 @@
+{{- $full := include "gawk-whip-gateway.fullname" . -}}
+{{- $base := int .Values.media.basePort -}}
+{{- $last := add $base (int .Values.replicas) -1 -}}
+gawk-whip-gateway {{ .Chart.AppVersion }}: WHIP ingest for OBS (docs/83).
+{{- if not .Values.relay.url }}
+
+  relay.url is empty: the pods will not start until it is set.
+{{- end }}
+{{- if not .Values.publicAddress }}
+
+  publicAddress is empty: ICE candidates will carry the pods' own
+  addresses, which OBS cannot reach from outside the cluster.
+{{- end }}
+{{- if and (gt (int .Values.replicas) 1) (not (or .Values.internalToken .Values.internalTokenRef)) }}
+
+  internalToken is empty with replicas > 1: the pods will not start until
+  it (or internalTokenRef) is set.
+{{- end }}
+
+OBS users enter, in Settings → Stream (Service: WHIP):
+  Server:       https://{{ .Values.ingress.host }}/whip
+  Bearer Token: the gawk1_… key the web app's OBS page creates
+The frontend chart's config.whipGatewayUrl must be https://{{ .Values.ingress.host }},
+and allowedOrigins here must list the frontend's origin.
+
+Requirements (docs/83 D4, D10, D12; docs/self-hosting.md):
+
+1. The relay: publishProxy.token (or tokenSecretRef) equal to
+   relay.publishProxyToken here, and an explicit config.resumeTokenKey.
+   Setting the key on a relay that had none revokes every resume token in
+   use, once.
+
+2. The Ingress must hash on the Authorization header. This chart sets
+   nginx.ingress.kubernetes.io/upstream-hash-by: "$http_authorization";
+   ingress-nginx is the only controller supported. Without the hash a
+   key's DELETE and status reads land on pods that never saw its session.
+
+3. trustedProxyCidrs (now: {{ if .Values.trustedProxyCidrs }}{{ join ", " .Values.trustedProxyCidrs }}{{ else }}empty{{ end }}) lists ONLY the proxy
+   that writes X-Forwarded-For: the ingress controller's pod range, or
+   under hostNetwork its exact node addresses (/32, /128). Never a subnet
+   clients share, never a kube-proxy SNAT hop in front of it; both families
+   on dual-stack. The ingress controller must see real client IPs
+   (externalTrafficPolicy: Local on its Service, or PROXY protocol).
+{{- if and .Values.ingress.enabled (not .Values.trustedProxyCidrs) }}
+   WARNING: the Ingress is enabled and trustedProxyCidrs is empty, so
+   every OBS user shares ONE rate-limit bucket on the gateway and on the
+   relay.
+{{- end }}
+
+4. The firewall (and any NAT in front of the LoadBalancer) must pass
+   {{ if .Values.publicAddress }}{{ .Values.publicAddress }}{{ else }}publicAddress{{ end }} ports {{ $base }}-{{ $last }}, UDP and TCP: pod N's media is on
+   {{ $base }} + N, through Service {{ $full }}-media-N.
+
+5. Capacity: maxSessions ({{ .Values.maxSessions }}) is per pod. Keys hash unevenly, so
+   {{ .Values.replicas }} × {{ .Values.maxSessions }} holds only on average, and only
+   ({{ .Values.replicas }} − 1) × {{ .Values.maxSessions }} = {{ mul (sub (int .Values.replicas) 1) (int .Values.maxSessions) }} sessions are safe through a pod
+   restart. The defaults and resource requests are provisional until WG0.

@@ -1,0 +1,16 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+# maxUnavailable 1 (D10): a node drain restarts one pod at a time, whose OBS
+# clients reconnect to the others; safe at one replica too, where a
+# minAvailable budget would block the drain outright.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "gawk-whip-gateway.fullname" . }}
+  labels:
+    {{- include "gawk-whip-gateway.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "gawk-whip-gateway.selectorLabels" . | nindent 6 }}
+{{- end }}

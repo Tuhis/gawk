@@ -22,7 +22,10 @@
 #   e2e/out/prebuilt/{Dockerfile,gawk-server,gawk-echo,gawk-admin,gawk-fakeidp}
 #
 # (plus gawk-pubsim for the `pubsim` stage, which only the screening lane
-# builds: its real counterpart is dev/Dockerfile.pubsim).
+# builds: its real counterpart is dev/Dockerfile.pubsim; and gawk-whip-gateway
+# and gawk-whipsim for the `whip` profile's two stages, which only dev-stack
+# builds: their counterparts are gawk-whip-gateway/deploy/Dockerfile's runtime
+# and `whipsim` stages).
 
 FROM gcr.io/distroless/static-debian12:nonroot AS relay
 COPY gawk-server /gawk-server
@@ -45,3 +48,16 @@ ENTRYPOINT ["/gawk-fakeidp"]
 FROM gcr.io/distroless/static-debian12:nonroot AS pubsim
 COPY gawk-pubsim /gawk-pubsim
 ENTRYPOINT ["/gawk-pubsim"]
+
+FROM gcr.io/distroless/static-debian13:nonroot AS whip-gateway
+COPY gawk-whip-gateway /gawk-whip-gateway
+EXPOSE 8080/tcp 8081/tcp 9090/tcp 8189/udp 8189/tcp
+ENTRYPOINT ["/gawk-whip-gateway"]
+
+# FFmpeg's WHIP muxer has no fast path: the package comes from Alpine as in
+# the real stage.
+FROM alpine:3.24 AS whipsim
+RUN apk add --no-cache ffmpeg
+COPY gawk-whipsim /usr/local/bin/gawk-whipsim
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/gawk-whipsim"]
