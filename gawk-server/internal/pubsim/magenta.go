@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/engine"
+	"github.com/Tuhis/gawk/gawk-server/publisher"
 )
 
 // MagentaPhaseFrames is how many frames each phase of the `-fixture magenta`
@@ -26,7 +26,7 @@ const MagentaPhaseFrames = 1350
 // every repetition is a closed set of GOPs: a decoder joining anywhere — the
 // relay's cached keyframe is all R40's sampler ever decodes — sees a valid
 // stream. Access units are shared, not copied; the engine never writes them.
-func PhasedLoop(aus []engine.AccessUnit, phaseFrames int) ([]engine.AccessUnit, error) {
+func PhasedLoop(aus []publisher.AccessUnit, phaseFrames int) ([]publisher.AccessUnit, error) {
 	if len(aus) < 2 || len(aus)%2 != 0 {
 		return nil, fmt.Errorf("pubsim: phased fixture needs an even number of access units, got %d", len(aus))
 	}
@@ -38,8 +38,8 @@ func PhasedLoop(aus []engine.AccessUnit, phaseFrames int) ([]engine.AccessUnit, 
 	if phaseFrames < half || phaseFrames%half != 0 {
 		return nil, fmt.Errorf("pubsim: phase of %d frames is not a whole number of %d-frame halves", phaseFrames, half)
 	}
-	out := make([]engine.AccessUnit, 0, 2*phaseFrames)
-	for _, part := range [][]engine.AccessUnit{first, second} {
+	out := make([]publisher.AccessUnit, 0, 2*phaseFrames)
+	for _, part := range [][]publisher.AccessUnit{first, second} {
 		for range phaseFrames / half {
 			out = append(out, part...)
 		}

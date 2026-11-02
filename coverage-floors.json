@@ -20,6 +20,7 @@
     "gawk-mumble-bridge": 85,
     "gawk-server": 81,
     "gawk-telemetry": 66,
-    "gawk-telemetry-ui": 17
+    "gawk-telemetry-ui": 17,
+    "gawk-whip-gateway": 85
   }
 }

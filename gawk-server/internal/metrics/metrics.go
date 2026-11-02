@@ -502,6 +502,15 @@ const (
 	// conflating the two would hide an enforcement event inside the
 	// credential-failure rate every operator already watches.
 	OutcomeBanned = "banned"
+	// OutcomeMinted marks a mint-only publish (R33, docs/83 D3:
+	// CONNECT /publish?mint=1) that announced a fresh ID and its resume
+	// token and closed with 4017. Not "accepted": no broadcast started, and
+	// the broadcast-started counters stay untouched.
+	OutcomeMinted = "minted"
+	// OutcomeBadRequest marks a publish CONNECT refused 400 as malformed:
+	// ?mint on a claim (docs/83 D3), or a trusted publish proxy's request
+	// with a missing or unparsable Gawk-Publisher-Ip (D4).
+	OutcomeBadRequest = "bad_request"
 )
 
 // NewServerMetrics builds and registers the transport counters.

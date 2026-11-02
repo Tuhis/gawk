@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/engine"
 	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/fixture"
+	"github.com/Tuhis/gawk/gawk-server/publisher"
 )
 
 // The committed clip has the shape PhasedLoop and the docs/71 CF8 tier rely
@@ -48,7 +48,7 @@ func TestPhasedLoopBuildsTwoLongPhases(t *testing.T) {
 		t.Fatalf("a phase is %d s at 30 fps; docs/71 CF8 needs at least 40", MagentaPhaseFrames/30)
 	}
 	for i, au := range out {
-		var src engine.AccessUnit
+		var src publisher.AccessUnit
 		if i < MagentaPhaseFrames {
 			src = aus[i%30]
 		} else {
@@ -64,16 +64,16 @@ func TestPhasedLoopBuildsTwoLongPhases(t *testing.T) {
 }
 
 func TestPhasedLoopRejectsBadShapes(t *testing.T) {
-	kf := engine.AccessUnit{Data: []byte{1}, Keyframe: true}
-	delta := engine.AccessUnit{Data: []byte{2}}
+	kf := publisher.AccessUnit{Data: []byte{1}, Keyframe: true}
+	delta := publisher.AccessUnit{Data: []byte{2}}
 	for name, tc := range map[string]struct {
-		aus   []engine.AccessUnit
+		aus   []publisher.AccessUnit
 		phase int
 	}{
-		"odd length":                 {[]engine.AccessUnit{kf, delta, kf}, 4},
-		"second half not a keyframe": {[]engine.AccessUnit{kf, delta, delta, delta}, 4},
-		"phase not a whole multiple": {[]engine.AccessUnit{kf, delta, kf, delta}, 3},
-		"phase shorter than a half":  {[]engine.AccessUnit{kf, delta, kf, delta}, 1},
+		"odd length":                 {[]publisher.AccessUnit{kf, delta, kf}, 4},
+		"second half not a keyframe": {[]publisher.AccessUnit{kf, delta, delta, delta}, 4},
+		"phase not a whole multiple": {[]publisher.AccessUnit{kf, delta, kf, delta}, 3},
+		"phase shorter than a half":  {[]publisher.AccessUnit{kf, delta, kf, delta}, 1},
 	} {
 		if _, err := PhasedLoop(tc.aus, tc.phase); err == nil {
 			t.Errorf("%s: PhasedLoop accepted it", name)

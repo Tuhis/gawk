@@ -1,0 +1,586 @@
+/* R33 (docs/83 §5.4): the OBS page, in the broadcaster's visual language —
+   the drifting background and a glass card — but wider (≤600px) and
+   left-aligned, because it holds fields and steps, not one call to action. */
+
+.root {
+  position: relative;
+  min-height: 100vh;
+  background: #000;
+  overflow-x: hidden;
+}
+
+/* The broadcaster's drifting background (broadcaster.module.css .bg), fixed
+   so it stays behind a page that scrolls. */
+.bg {
+  position: fixed;
+  inset: -25%;
+  z-index: 0;
+  background:
+    radial-gradient(38% 42% at 32% 34%, rgba(107, 138, 254, 0.14), transparent 70%),
+    radial-gradient(34% 40% at 70% 66%, rgba(134, 59, 255, 0.12), transparent 70%);
+  filter: blur(30px);
+  animation: drift 26s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+
+@keyframes drift {
+  from {
+    transform: translate3d(-3%, -2%, 0) scale(1.05);
+  }
+  to {
+    transform: translate3d(4%, 3%, 0) scale(1.12);
+  }
+}
+
+.page {
+  position: relative;
+  z-index: 1;
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 2.5rem 1rem;
+}
+
+.card {
+  width: min(100%, 600px);
+  padding: 1.75rem 1.75rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  text-align: left;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.header > p {
+  margin: 0;
+}
+
+/* The ADVANCED chip (§5.5 cue 1): neutral, uppercase, letter-spaced like the
+   kicker. Never amber. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.12rem 0.5rem;
+  font-size: 0.66rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.title {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+
+.text {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.6rem 0.8rem;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-md);
+}
+
+.link {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--faint);
+  text-underline-offset: 0.2em;
+}
+
+.link:hover {
+  text-decoration-color: var(--text);
+}
+
+.box {
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.boxTitle {
+  margin: 0 0 0.4rem;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--faint);
+}
+
+.needs {
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem 1rem;
+}
+
+.linkBtn {
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: var(--faint);
+  text-underline-offset: 0.2em;
+}
+
+.linkBtn:hover {
+  color: var(--text);
+}
+
+.pasteForm {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, monospace;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 0.55rem 0.7rem;
+}
+
+.input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.error {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+/* ── The three steps ── */
+.steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  counter-reset: step;
+}
+
+.step {
+  counter-increment: step;
+  display: grid;
+  grid-template-columns: 1.6rem 1fr;
+  column-gap: 0.6rem;
+  row-gap: 0.5rem;
+}
+
+.step::before {
+  content: counter(step);
+  grid-row: 1 / span 3;
+  width: 1.5rem;
+  height: 1.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+}
+
+.step > * {
+  grid-column: 2;
+}
+
+.stepTitle {
+  margin: 0.1rem 0 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+/* OBS's own words, in monospace (§5.5 cue 5). */
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.92em;
+}
+
+.grid {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.45rem 1rem;
+  align-items: center;
+  font-size: var(--fs-sm);
+}
+
+.grid dt {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--muted);
+}
+
+.grid dd {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.6rem;
+  min-width: 0;
+}
+
+.value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text);
+  padding: 0.15rem 0.45rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-sm);
+  overflow-wrap: anywhere;
+}
+
+.hint {
+  color: var(--faint);
+  font-size: var(--fs-xs);
+}
+
+.small {
+  font-size: var(--fs-xs);
+  padding: 0.35rem 0.6rem;
+}
+
+.lockNote {
+  margin: 0;
+  display: flex;
+  gap: 0.45rem;
+  align-items: flex-start;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.lockNote svg {
+  flex: none;
+  margin-top: 0.1rem;
+}
+
+/* ── Status boxes ── */
+.statusBox {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  font-size: var(--fs-sm);
+}
+
+.statusHead {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+}
+
+.pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 50%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse {
+    animation: none;
+  }
+}
+
+.errorBox {
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+  background: color-mix(in srgb, var(--danger) 9%, transparent);
+}
+
+.errorBox strong {
+  color: var(--text);
+}
+
+.warnBox {
+  border-color: color-mix(in srgb, var(--warning) 50%, transparent);
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+}
+
+.fix {
+  color: var(--muted);
+}
+
+/* ── Join code ── */
+.codeRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.codeBoxes {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.codeBox {
+  width: 2.2rem;
+  height: 2.7rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--faint);
+  border-radius: var(--r-md);
+}
+
+/* ── Live ── */
+.liveBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.stats {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.cell {
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  min-width: 0;
+}
+
+.cell dt {
+  font-size: var(--fs-xs);
+  color: var(--faint);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.cell dd {
+  margin: 0.25rem 0 0;
+  font-size: var(--fs-sm);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-wrap: anywhere;
+}
+
+.cellWarn {
+  border-color: color-mix(in srgb, var(--warning) 55%, transparent);
+  color: var(--warning);
+}
+
+.check {
+  color: var(--ok);
+  margin-left: 0.3rem;
+}
+
+.watchLink {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.3rem;
+  padding: 0 0.9rem;
+  font-size: var(--fs-md);
+  font-weight: 500;
+  color: var(--text);
+  text-decoration: none;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+
+.watchLink:hover {
+  border-color: var(--faint);
+}
+
+.disclosure summary {
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+.disclosure[open] summary {
+  margin-bottom: 0.9rem;
+}
+
+/* ── Footer ── */
+.foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+  margin-top: 0.5rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--glass-border);
+}
+
+.footLink {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.3rem;
+  padding: 0 0.6rem;
+  font-size: var(--fs-md);
+  color: var(--muted);
+  text-decoration: none;
+  border-radius: var(--r-md);
+}
+
+.footLink:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.footEnd {
+  margin-left: auto;
+}
+
+/* ── Dialogs ── */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+
+/* ── Confirmations ── */
+.confirmText {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  text-align: left;
+  line-height: 1.5;
+}
+
+/* ── The way in on the broadcaster page (docs/83 §5.3 D) ── */
+.wayIn {
+  margin: 0;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem 0.5rem;
+  max-width: min(92vw, 420px);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  text-align: center;
+}
+
+.wayIn code {
+  font-family: ui-monospace, monospace;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text);
+}
+
+.wayInLive {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.8rem 0.3rem 0.35rem;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+}
+
+.wayInLive code {
+  font-family: ui-monospace, monospace;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+/* Phone width: the label/value grids stack and the footer wraps. */
+@media (max-width: 520px) {
+  .page {
+    padding: 1rem;
+  }
+
+  .card {
+    padding: 1.25rem 1rem 1rem;
+  }
+
+  .grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.2rem;
+  }
+
+  .grid dd {
+    margin-bottom: 0.4rem;
+  }
+
+  .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .footEnd {
+    margin-left: 0;
+  }
+
+  .codeBox {
+    width: 2rem;
+    height: 2.5rem;
+    font-size: 1.1rem;
+  }
+}

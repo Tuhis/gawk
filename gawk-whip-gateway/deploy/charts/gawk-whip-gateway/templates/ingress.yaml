@@ -1,0 +1,40 @@
+{{- if .Values.ingress.enabled }}
+{{- $ann := omit (.Values.ingress.annotations | default dict) "nginx.ingress.kubernetes.io/upstream-hash-by" }}
+# The public WHIP endpoint. TLS terminates here; the gateway reads the client
+# IP from X-Forwarded-For only when the request comes from
+# trustedProxyCidrs (D4).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "gawk-whip-gateway.fullname" . }}
+  labels:
+    {{- include "gawk-whip-gateway.labels" . | nindent 4 }}
+  annotations:
+    # D10: every request for a key (POST, DELETE on its Location, the
+    # status reads) reaches the pod that holds its session and records.
+    # Not overridable: without it the gateway is broken at replicas > 1.
+    nginx.ingress.kubernetes.io/upstream-hash-by: "$http_authorization"
+    {{- with $ann }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.secretName }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          # /whip, /whip/session/<id>, /whip/status. /healthz stays off it.
+          - path: /whip
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "gawk-whip-gateway.fullname" . }}
+                port:
+                  name: http
+{{- end }}

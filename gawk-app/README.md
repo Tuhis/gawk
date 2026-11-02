@@ -19,6 +19,11 @@ Production surfaces:
 
 - `#/` — landing page; join-by-code entry, broadcaster/viewer chrome
 - `#/broadcast` — capture the screen, encode, publish chunked datagrams
+- `#/broadcast/obs` — stream from OBS Studio through the deployment's WHIP
+  gateway: the stream key, OBS's settings and the live status
+  ([docs/83](../docs/83-whip-gateway.md) §5). Needs `whipGatewayUrl` in
+  `config.js` (the chart's `config.whipGatewayUrl`); without it the page says
+  the server doesn't take streams from OBS
 - `#/view/<id>` — subscribe to a broadcast ID, reassemble datagrams,
   decode, paint to canvas
 - `#/room/<code>` — room viewer: several broadcasts at once with a roster

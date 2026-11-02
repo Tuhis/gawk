@@ -19,6 +19,9 @@
 //                                    beside a LAN-address relayUrl, with
 //                                    requirePublishSecret: false. Applies to
 //                                    relayUrl only; not dev-gated.
+//   whipGatewayUrl: string         — R33: base URL of this deployment's
+//                                    gawk-whip-gateway; enables the OBS page
+//                                    (#/broadcast/obs). Empty ⇒ no OBS ingest.
 //
 // DEV-ONLY (R38, docs/41 D4) — read only when the page is served from
 // localhost, and deliberately NOT a chart value; the local docker compose

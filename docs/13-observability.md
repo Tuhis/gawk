@@ -371,7 +371,7 @@ Per-broadcast gauges and server-wide metrics:
 | `gawk_broadcast_subscribers` | gauge | `broadcast` | audience size per broadcast |
 | `gawk_broadcast_viewers_global` | gauge | `broadcast` | **R18**: the global count `G` the origin pushes to clients (local viewers + edge downstream reports); **origin hubs only** — the Prometheus-side truth stays `sum(gawk_broadcast_subscribers) by (broadcast)`, this gauge exists to debug the pushed value |
 | `gawk_broadcast_cached_keyframe_bytes` | gauge | `broadcast` | late-joiner prime size (also a bitrate proxy) |
-| `gawk_connections_total` | counter | `route`, `outcome` | connect/reject rates per route (M4); outcomes: `accepted`, `unauthorized`, `not_found`, `conflict`, `limit_rejected`, `upgrade_failed`, `error` |
+| `gawk_connections_total` | counter | `route`, `outcome` | connect/reject rates per route (M4); outcomes: `accepted`, `unauthorized`, `not_found`, `conflict`, `limit_rejected`, `upgrade_failed`, `error`, `draining` (refused 503 during the SIGTERM drain, R17), `banned` (an ID or IP ban, R39), `minted` (a mint-only `CONNECT /publish?mint=1` that announced an ID and its resume token and closed with 4017, starting no broadcast; docs/83 D3) and `bad_request` (a publish refused 400 as malformed: `?mint` on a claim, or a trusted publish proxy's missing or unparsable `Gawk-Publisher-Ip`; docs/83 D3, D4) |
 | `gawk_rate_limited_total` | counter | — | per-IP limiter hits (counted here only, not as a connection outcome) |
 | `gawk_origin_rejected_total` | counter | — | misconfigured `allowedOrigins` / probing |
 | Go/process defaults | — | — | CPU, RSS, goroutines, GC — free from client_golang |

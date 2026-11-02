@@ -182,6 +182,11 @@ pub const CLOSE_CODE_VOICE_REMOVED: u32 = 4015;
 /// connect the person to Mumble. NOT terminal: the browser offers to try
 /// again. Sent in-band first. Never reaches the native clients.
 pub const CLOSE_CODE_VOICE_UNAVAILABLE: u32 = 4016;
+/// Relay → a mint-only publish session (R33, docs/83 D3): the relay minted
+/// and announced an ID and its resume token, and created no broadcast. The
+/// web app's OBS page is its one client; mirrored for namespace parity. Sent
+/// in-band first, and terminal: nothing redials on it.
+pub const CLOSE_CODE_PUBLISH_MINTED: u32 = 4017;
 
 /// Whether a close code ends a *viewer* for good (R65, docs/67 D13): the
 /// broadcast was garbage-collected (4000) or the operator killed it (4006).

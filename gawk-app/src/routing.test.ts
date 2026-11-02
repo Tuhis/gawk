@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hashWithoutGrant, hashWithoutParam, parseRoute } from './routing';
+import { hashWithPathKeepingQuery, hashWithoutGrant, hashWithoutParam, parseRoute } from './routing';
 
 const noQuery = { relay: null, certHashes: [], droppedParams: [] };
 
@@ -377,5 +377,56 @@ describe('hashWithoutParam', () => {
       '#/broadcast?relay=https%3A%2F%2Fx.example',
     );
     expect(hashWithoutParam('#/broadcast', 'room')).toBe('#/broadcast');
+  });
+});
+
+// R33 (docs/83 §5.4, OD10): the OBS page takes the broadcaster's query.
+describe('parseRoute #/broadcast/obs (R33)', () => {
+  it('maps #/broadcast/obs (and a trailing slash) to the OBS page', () => {
+    expect(parseRoute('#/broadcast/obs')).toEqual({ view: 'broadcaster-obs', ...noQuery });
+    expect(parseRoute('#/broadcast/obs/')).toEqual({ view: 'broadcaster-obs', ...noQuery });
+  });
+
+  it('carries a valid relay like the broadcast route, normalized', () => {
+    expect(parseRoute('#/broadcast/obs?relay=https%3A%2F%2FRelay.Example.com%3A4433%2F')).toEqual({
+      view: 'broadcaster-obs',
+      relay: 'https://relay.example.com:4433',
+      certHashes: [],
+      droppedParams: [],
+    });
+  });
+
+  it('drops an invalid relay into the quiet note, never fatal', () => {
+    expect(parseRoute('#/broadcast/obs?relay=not%20a%20url')).toEqual({
+      view: 'broadcaster-obs',
+      relay: null,
+      certHashes: [],
+      droppedParams: ['relay'],
+    });
+  });
+
+  it('takes certHash pins beside a private-literal relay, as the broadcast route does', () => {
+    const h = 'a'.repeat(64);
+    expect(parseRoute(`#/broadcast/obs?relay=https://192.168.1.20:4433&certHash=${h}`)).toEqual({
+      view: 'broadcaster-obs',
+      relay: 'https://192.168.1.20:4433',
+      certHashes: [h],
+      droppedParams: [],
+    });
+  });
+
+  it('sends anything else under /broadcast/ home', () => {
+    expect(parseRoute('#/broadcast/obsx')).toEqual({ view: 'redirect', to: '#/' });
+    expect(parseRoute('#/broadcast/obs/more')).toEqual({ view: 'redirect', to: '#/' });
+  });
+});
+
+describe('hashWithPathKeepingQuery', () => {
+  it('swaps the path and keeps the query verbatim', () => {
+    expect(hashWithPathKeepingQuery('#/broadcast/obs?relay=https%3A%2F%2Fx.example', '/broadcast')).toBe(
+      '#/broadcast?relay=https%3A%2F%2Fx.example',
+    );
+    expect(hashWithPathKeepingQuery('#/broadcast', '/broadcast/obs')).toBe('#/broadcast/obs');
+    expect(hashWithPathKeepingQuery('', '/broadcast')).toBe('#/broadcast');
   });
 });

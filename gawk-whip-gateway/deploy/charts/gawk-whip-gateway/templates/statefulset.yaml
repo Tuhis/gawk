@@ -1,0 +1,235 @@
+{{- if lt (int .Values.replicas) 1 }}
+{{- fail "replicas must be at least 1" }}
+{{- end }}
+{{- if not (has .Values.podAntiAffinity (list "soft" "hard" "none")) }}
+{{- fail "podAntiAffinity must be one of: soft, hard, none" }}
+{{- end }}
+{{- if gt (add (int .Values.media.basePort) (int .Values.replicas) -1) 65535 }}
+{{- fail "media.basePort + replicas - 1 is past 65535" }}
+{{- end }}
+{{- $full := include "gawk-whip-gateway.fullname" . }}
+{{- $peers := include "gawk-whip-gateway.peersName" . }}
+apiVersion: apps/v1
+# A StatefulSet, not a Deployment (D10): pod N has a stable name and ordinal,
+# answers ICE on media.basePort + N behind its own LoadBalancer Service
+# (service-media.yaml selects it by statefulset.kubernetes.io/pod-name), and
+# is reachable by its peers as <name>-N.<headless Service>.
+kind: StatefulSet
+metadata:
+  name: {{ $full }}
+  labels:
+    {{- include "gawk-whip-gateway.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ $peers }}
+  replicas: {{ int .Values.replicas }}
+  # Parallel: no pod waits for a lower ordinal. The pods are independent;
+  # OrderedReady would hold every higher ordinal's OBS users behind one pod
+  # that cannot start.
+  podManagementPolicy: Parallel
+  # One pod at a time on a release (D10): a restart is an ICE failure for
+  # that pod's sessions, which OBS reconnects to the others.
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "gawk-whip-gateway.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "gawk-whip-gateway.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      # The gateway talks to OBS, the relay and its peers, never to the
+      # Kubernetes API.
+      automountServiceAccountToken: false
+      # Shutdown closes the listeners (10 s) and every session (code 0: the
+      # broadcasts wait in the relay's grace while OBS reconnects elsewhere).
+      terminationGracePeriodSeconds: 15
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if ne .Values.podAntiAffinity "none" }}
+      affinity:
+        podAntiAffinity:
+          {{- if eq .Values.podAntiAffinity "hard" }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  {{- include "gawk-whip-gateway.selectorLabels" . | nindent 18 }}
+          {{- else }}
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "gawk-whip-gateway.selectorLabels" . | nindent 20 }}
+          {{- end }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: gateway
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          # The media port (media.basePort + ordinal, UDP and TCP) differs
+          # per pod, which one pod template cannot declare; the media
+          # Services target it by number.
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: internal
+              containerPort: 8081
+              protocol: TCP
+            - name: ops
+              containerPort: 9090
+              protocol: TCP
+          env:
+            # The ordinal is the name's trailing -N (D10).
+            - name: GAWK_WHIP_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: GAWK_WHIP_LISTEN
+              value: ":8080"
+            - name: GAWK_WHIP_INTERNAL_LISTEN
+              value: ":8081"
+            - name: GAWK_WHIP_OPS_LISTEN
+              value: ":9090"
+            {{- if .Values.tls.secretName }}
+            - name: GAWK_WHIP_TLS_CERT_FILE
+              value: "/tls/tls.crt"
+            - name: GAWK_WHIP_TLS_KEY_FILE
+              value: "/tls/tls.key"
+            {{- end }}
+            - name: GAWK_WHIP_RELAY_URL
+              value: {{ .Values.relay.url | quote }}
+            {{- include "gawk-whip-gateway.secretEnv" (dict "name" "GAWK_WHIP_RELAY_PUBLISH_SECRET" "value" .Values.relay.publishSecret "ref" .Values.relay.publishSecretRef) | nindent 12 }}
+            {{- include "gawk-whip-gateway.secretEnv" (dict "name" "GAWK_WHIP_RELAY_PUBLISH_PROXY_TOKEN" "value" .Values.relay.publishProxyToken "ref" .Values.relay.publishProxyTokenRef) | nindent 12 }}
+            - name: GAWK_WHIP_RELAY_ORIGIN
+              value: {{ .Values.relay.origin | quote }}
+            - name: GAWK_WHIP_RELAY_INSECURE
+              value: {{ .Values.relay.insecure | quote }}
+            - name: GAWK_WHIP_RELAY_DIAL_TIMEOUT
+              value: {{ .Values.relay.dialTimeout | quote }}
+            - name: GAWK_WHIP_PUBLIC_ADDRESS
+              value: {{ .Values.publicAddress | quote }}
+            - name: GAWK_WHIP_MEDIA_BASE_PORT
+              value: {{ int .Values.media.basePort | quote }}
+            - name: GAWK_WHIP_ICE_DISCONNECTED_TIMEOUT
+              value: {{ .Values.ice.disconnectedTimeout | quote }}
+            - name: GAWK_WHIP_ICE_FAILED_TIMEOUT
+              value: {{ .Values.ice.failedTimeout | quote }}
+            - name: GAWK_WHIP_ICE_KEEPALIVE
+              value: {{ .Values.ice.keepalive | quote }}
+            - name: GAWK_WHIP_ALLOWED_ORIGINS
+              value: {{ join "," .Values.allowedOrigins | quote }}
+            - name: GAWK_WHIP_TRUSTED_PROXY_CIDRS
+              value: {{ join "," .Values.trustedProxyCidrs | quote }}
+            - name: GAWK_WHIP_POST_RATE
+              value: {{ .Values.postRate | toString | quote }}
+            - name: GAWK_WHIP_POST_BURST
+              value: {{ int .Values.postBurst | quote }}
+            - name: GAWK_WHIP_STATUS_RATE
+              value: {{ .Values.statusRate | toString | quote }}
+            - name: GAWK_WHIP_STATUS_BURST
+              value: {{ int .Values.statusBurst | quote }}
+            - name: GAWK_WHIP_MAX_SESSIONS
+              value: {{ int .Values.maxSessions | quote }}
+            - name: GAWK_WHIP_MAX_SESSIONS_HARD
+              value: {{ int .Values.maxSessionsHard | quote }}
+            - name: GAWK_WHIP_FULL_RETRY_AFTER
+              value: {{ .Values.fullRetryAfter | quote }}
+            - name: GAWK_WHIP_RELAY_BUSY_RETRY_AFTER
+              value: {{ .Values.relayBusyRetryAfter | quote }}
+            - name: GAWK_WHIP_REORDER_INITIAL_RTT
+              value: {{ .Values.reorder.initialRtt | quote }}
+            - name: GAWK_WHIP_REORDER_WINDOW_FLOOR
+              value: {{ .Values.reorder.windowFloor | quote }}
+            - name: GAWK_WHIP_REORDER_WINDOW_CAP
+              value: {{ .Values.reorder.windowCap | quote }}
+            - name: GAWK_WHIP_REORDER_WINDOW_MULTIPLIER
+              value: {{ .Values.reorder.windowMultiplier | toString | quote }}
+            - name: GAWK_WHIP_REORDER_WINDOW_OFFSET
+              value: {{ .Values.reorder.windowOffset | quote }}
+            - name: GAWK_WHIP_REORDER_NACK_DELAY
+              value: {{ .Values.reorder.nackDelay | quote }}
+            - name: GAWK_WHIP_REORDER_MAX_PACKETS
+              value: {{ int .Values.reorder.maxPackets | quote }}
+            - name: GAWK_WHIP_GOP_WARN
+              value: {{ .Values.gop.warn | quote }}
+            - name: GAWK_WHIP_GOP_MAX
+              value: {{ .Values.gop.max | quote }}
+            - name: GAWK_WHIP_GOP_EARLY_GAP
+              value: {{ .Values.gop.earlyGap | quote }}
+            - name: GAWK_WHIP_GOP_SAMPLES
+              value: {{ int .Values.gop.samples | quote }}
+            - name: GAWK_WHIP_BACKOFF_INITIAL
+              value: {{ .Values.backoff.initial | quote }}
+            - name: GAWK_WHIP_BACKOFF_MAX
+              value: {{ .Values.backoff.max | quote }}
+            - name: GAWK_WHIP_RECORD_TTL
+              value: {{ .Values.records.ttl | quote }}
+            - name: GAWK_WHIP_MAX_RECORDS
+              value: {{ int .Values.records.max | quote }}
+            # D10's peers: every ordinal but this pod's, through the
+            # headless Service, from one template and the replica count.
+            - name: GAWK_WHIP_PEER_TEMPLATE
+              value: {{ printf "http://%s-{ordinal}.%s.%s.svc:8081" $full $peers .Release.Namespace | quote }}
+            - name: GAWK_WHIP_REPLICAS
+              value: {{ int .Values.replicas | quote }}
+            {{- include "gawk-whip-gateway.secretEnv" (dict "name" "GAWK_WHIP_INTERNAL_TOKEN" "value" .Values.internalToken "ref" .Values.internalTokenRef) | nindent 12 }}
+            - name: GAWK_WHIP_PEER_TIMEOUT
+              value: {{ .Values.peerTimeout | quote }}
+            - name: GAWK_WHIP_LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            - name: GAWK_WHIP_LOG_FORMAT
+              value: {{ .Values.logFormat | quote }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: ops
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: ops
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.tls.secretName }}
+          volumeMounts:
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+          {{- end }}
+      {{- if .Values.tls.secretName }}
+      volumes:
+        - name: tls
+          secret:
+            secretName: {{ .Values.tls.secretName }}
+      {{- end }}

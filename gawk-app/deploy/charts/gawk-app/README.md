@@ -8,6 +8,16 @@ renders a `/config.js` (and, for R23, a `/terms.html`) from a ConfigMap that is
 mounted over the shipped defaults and read by the app at load. See
 `values.yaml` `config.*` and `gawk-app/src/config.ts`.
 
+## OBS ingest (R33, docs/83)
+
+Set `config.whipGatewayUrl` to the base URL of this deployment's
+`gawk-whip-gateway` (e.g. `https://whip.example.com`) to offer streaming from
+OBS Studio: a footnote under the broadcaster's start card on desktops, and the
+page at `#/broadcast/obs`, which mints the stream key, shows the WHIP URL
+(`<whipGatewayUrl>/whip`) and polls `<whipGatewayUrl>/whip/status`. The gateway
+must list this frontend's origin in its `allowedOrigins`. Empty (the default)
+turns all of it off.
+
 ## Terms of use (R23, docs/29)
 
 The app ships a default **Terms of Use** text, reachable at `#/terms` from every

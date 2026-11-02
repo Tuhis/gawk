@@ -1,0 +1,43 @@
+{{- /*
+D10: one LoadBalancer per pod, all on one shared address. Pod N answers ICE
+with a host candidate on publicAddress:(basePort + N), and only Service N
+forwards that port, to pod N alone, so a session's media can only reach the
+pod that holds it. UDP for ICE and ICE-TCP's passive fallback on the same
+port number. A replica count change adds or removes Services here.
+*/}}
+{{- $full := include "gawk-whip-gateway.fullname" . }}
+{{- $m := .Values.media }}
+{{- range $i := until (int .Values.replicas) }}
+{{- $port := add (int $m.basePort) $i }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ printf "%s-media-%d" $full $i }}
+  labels:
+    {{- include "gawk-whip-gateway.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: media
+  annotations:
+    {{ $m.sharedIpAnnotation }}: {{ $m.sharingKey | quote }}
+    {{- with $m.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  type: LoadBalancer
+  {{- with $m.loadBalancerIP }}
+  loadBalancerIP: {{ . }}
+  {{- end }}
+  externalTrafficPolicy: {{ $m.externalTrafficPolicy }}
+  selector:
+    {{- include "gawk-whip-gateway.selectorLabels" $ | nindent 4 }}
+    statefulset.kubernetes.io/pod-name: {{ printf "%s-%d" $full $i }}
+  ports:
+    - name: media-udp
+      port: {{ $port }}
+      targetPort: {{ $port }}
+      protocol: UDP
+    - name: media-tcp
+      port: {{ $port }}
+      targetPort: {{ $port }}
+      protocol: TCP
+{{- end }}

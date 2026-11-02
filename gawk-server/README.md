@@ -126,7 +126,7 @@ go run ./cmd/gawk-loadgen -url https://api.gawk.example:4433 -id K7XQ2M -viewers
 ```
 
 `cmd/gawk-pubsim` is the synthetic publisher: it loops a committed H.264
-and Opus fixture through a real publisher engine (`internal/pubsim`), so the
+and Opus fixture through the real publisher engine (`publisher`, fed by `internal/pubsim`), so the
 dev stack's `sim` and `rooms` profiles, the `e2e` and `e2e-cluster` CI tiers
 and the iOS viewer tests need no GPU. It prints the minted code as
 `GAWK_PUBSIM_ID=<code>` on stdout, and its package comment lists the rest.

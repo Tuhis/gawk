@@ -1,0 +1,107 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy }}
+{{- $base := int .Values.media.basePort }}
+{{- $last := add $base (int .Values.replicas) -1 }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "gawk-whip-gateway.fullname" . }}
+  labels:
+    {{- include "gawk-whip-gateway.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "gawk-whip-gateway.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # WHIP over HTTP: from the ingress controller only.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- toYaml $np.ingressController.podSelector | nindent 14 }}
+          {{- with $np.ingressController.namespaceSelector }}
+          namespaceSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
+        {{- range $np.ingressController.cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Media from anywhere: ICE over UDP and ICE-TCP, the whole port range
+    # (each pod listens on its own one).
+    - ports:
+        - protocol: UDP
+          port: {{ $base }}
+          {{- if gt $last $base }}
+          endPort: {{ $last }}
+          {{- end }}
+        - protocol: TCP
+          port: {{ $base }}
+          {{- if gt $last $base }}
+          endPort: {{ $last }}
+          {{- end }}
+    # D10's peer lookup: the other gateway pods only.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "gawk-whip-gateway.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 8081
+    # Probes come from the kubelet (not subject to the policy); scrapes from
+    # the monitoring namespace.
+    - from:
+        - namespaceSelector:
+            {{- if $np.monitoring.namespaceSelector }}
+            matchLabels:
+              {{- toYaml $np.monitoring.namespaceSelector | nindent 14 }}
+            {{- else }}
+            {}
+            {{- end }}
+      ports:
+        - protocol: TCP
+          port: 9090
+  egress:
+    # The publish sessions to the relay (QUIC).
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- toYaml $np.relay.podSelector | nindent 14 }}
+          {{- with $np.relay.namespaceSelector }}
+          namespaceSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
+      ports:
+        - protocol: UDP
+          port: {{ $np.relay.port }}
+    # The other gateway pods' internal port.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "gawk-whip-gateway.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 8081
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- toYaml $np.dns.podSelector | nindent 14 }}
+          {{- with $np.dns.namespaceSelector }}
+          namespaceSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- with $np.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

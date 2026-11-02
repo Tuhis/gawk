@@ -1,10 +1,11 @@
 #!/bin/sh
 # Tidy every Go module that builds gawk-server through a local replace.
 #
-# gawk-admin, gawk-telemetry, gawk-sampler and gawk-mumble-bridge reach
-# gawk-server via `replace github.com/Tuhis/gawk/gawk-server => ../gawk-server`,
-# so a bump that moves gawk-server's go.mod (x/net dragging x/sys along, say)
-# changes their module graph too. Renovate only runs its gomodTidy in the
+# gawk-admin, gawk-telemetry, gawk-sampler, gawk-mumble-bridge and
+# gawk-whip-gateway reach gawk-server via
+# `replace github.com/Tuhis/gawk/gawk-server => ../gawk-server`, so a bump
+# that moves gawk-server's go.mod (x/net dragging x/sys along, say) changes
+# their module graph too. Renovate only runs its gomodTidy in the
 # go.mod files it edited, so those modules were left untidy: CI's tidy job and
 # every build in them failed with "updates to go.mod needed", and so did
 # gen-notices.py's `go list` in the same postUpgradeTasks run (PRs #608, #611,

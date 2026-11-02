@@ -34,6 +34,17 @@ describe('applyRouteRelay', () => {
     expect(store.getState().serverUrl).toBe('https://link2.example:4433');
   });
 
+  // R33 (docs/83 §5.4): the OBS page takes the broadcaster's query, so a
+  // link's server applies there too (and the page then says that server
+  // takes no OBS).
+  it('applies a link relay on the OBS page too', async () => {
+    const { store, applyRouteRelay, parseRoute } = await load();
+    applyRouteRelay(parseRoute('#/broadcast/obs?relay=https://link.example:4433'));
+    expect(store.getState().serverUrl).toBe('https://link.example:4433');
+    applyRouteRelay(parseRoute('#/broadcast/obs'));
+    expect(store.getState().sessionOverrideUrl).toBe(null);
+  });
+
   it('never writes the override to localStorage (D2)', async () => {
     const { store, applyRouteRelay, parseRoute } = await load();
     applyRouteRelay(parseRoute('#/view/AB2CD3?relay=https://link.example:4433'));

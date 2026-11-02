@@ -34,6 +34,7 @@ export function applyRouteRelay(route: Route): void {
     route.view !== 'landing' &&
     route.view !== 'viewer' &&
     route.view !== 'broadcaster' &&
+    route.view !== 'broadcaster-obs' &&
     route.view !== 'room' &&
     route.view !== 'join'
   ) {

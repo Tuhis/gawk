@@ -7,7 +7,9 @@ and OBS Studio's WHIP output (§3); owner decisions OD1–OD8 **taken
 ([canvas](https://claude.ai/artifact/TtFyDhdhEv5x13oSmjds2m), §5.1), and its
 owner decisions OD9 and OD10 were **taken 2026-11-02**: the way in is a
 footnote under the broadcaster card, and OBS gets a page of its own.
-Chunks **WG0–WG10** (`WG` = WHIP gateway; unused). Nothing is implemented.
+Chunks **WG0–WG10** (`WG` = WHIP gateway; unused). **WG1–WG9 implemented
+2026-11-02** (§12 records what the build settled); WG0's lab pass with real
+OBS, WG10's owner pass and the OBS page's Room row (§12.4) are open.
 
 Supersedes the 2026-07-29 sketch in `ROADMAP.md` §R33, which put WHIP inside
 `gawk-server`. That sketch predates the relay fleet's scale-out targets, R73's
@@ -972,3 +974,155 @@ the design pass (§5.1,
 - Transcoding, scaling, or any change to OBS's encoded bitstream beyond
   re-chunking.
 - R73 carriers on the gateway → relay leg (D11).
+
+## 12. Implementation contract (2026-11-02)
+
+WG1–WG9 were built against this section. It records what §4–§8 left to the
+chunks and where the build departs from them. Where the two disagree, this
+section is what the code does. WG0 (the lab pass with real OBS) has not run,
+so every number it was to set (D6's floor, cap and multiplier, D10's
+`maxSessions`, the pod's resources) is the provisional value from §4, marked
+so in the code and the chart.
+
+### 12.1 Relay (WG1–WG3)
+
+- **WG1.** The engine is `gawk-server/publisher`. `StopBroadcast()` closes
+  with 4014, `Stop()` with 0. A terminal relay close reaches `OnError` as a
+  typed `*publisher.CloseError{Code}`, which the gateway maps (D8) instead
+  of matching text. `Config.Header` rides every publish dial, first and
+  resumed, and never overrides Origin.
+- **The engine owns its QUIC connection.** webtransport-go's
+  `Transport.Dial` closes the connection the instant the session's context
+  ends, which is when `CloseWithError` has queued its close capsule, not
+  when the capsule has left. On loopback about half of the 4014s then read
+  as drops and the broadcast sat in grace. The engine dials QUIC itself and
+  lets the connection linger until the relay closes it, at most 2 s
+  (`publisher/relay.go`). R78's PoP dialer had the same fix.
+- **4017 `CloseCodePublishMinted`** closes a mint-only session, noticed
+  in-band first (`011700000fb1`), in all three wire copies. Terminal.
+- **Mint-only gate order:** draining 503, the proxy header check (400), the
+  rate limit 429, `?mint` validity (400: a value other than `1`, or on a
+  `/publish/{id}` claim), the secret 401, the IP ban 451, `CheckPublishNew`
+  429, the upgrade, the ban re-check (4006), then BroadcastAnnounce and
+  ResumeToken on their own uni streams as on any mint, SessionClosing(4017),
+  a 250 ms settle and the close. The connection counter's new outcome is
+  `minted`; nothing else is counted.
+- **No reservation for a minted ID.** The token is the only way to use it
+  later, and a reclaim of an unknown ID creates the broadcast. The draw only
+  skips IDs that are live, graced or reserved on this pod, held by an origin
+  Lease anywhere in the fleet (asked of the API server, not the informer
+  cache), or ID-banned. A PoP relay answers a mint-only `404`: its mint
+  gate clears IDs with the home fleet, which a mint-only would skip, and the
+  gateway publishes only to its home relay (OD4). The cost of no
+  reservation: an OBS key is saved for weeks, so an ordinary mint that later
+  draws the same ID while the key is idle is superseded (4004) by the key's
+  next Start. The odds are the ordinary mint's one in ~31^6 per mint, the
+  same as for any long-lived resume token.
+- **A stop during auto-resume still ends the broadcast.** If
+  `StopBroadcast()` lands while a reclaim dial is in flight, the session that
+  dial returns is closed with 4014 instead of attached. If it lands between
+  attempts, with no live session, the engine makes one bounded reclaim and
+  closes it with 4014 at once, as the desktop engine does when paused. It
+  never does that after a terminal close: a deposed engine (4004) that
+  reclaimed would supersede the newer publisher and end its broadcast.
+- **Proxy (D4).** A bearer that doesn't match the token is ignored, not
+  refused: browsers can't send headers on a WebTransport CONNECT and the
+  native apps send none, so ignoring it leaves the sender with what it had.
+  The relay logs a mismatch after the rate limit. `Gawk-Publisher-Ip` must
+  be exactly one bare address; a port, a CIDR, a list, `::` or a repeated
+  header is a 400. The token must differ from `-publish-secret`, which is
+  handed to broadcasters. The local-relay offer also matches on the
+  proxied address. The bad-header 400 is counted as `bad_request`.
+- **D12 on `gawk-relay`.** `gawk-server` refuses the proxy token without an
+  explicit `-resume-token-key` when parsing flags. `gawk-relay` keeps a
+  durable key in its state directory, which satisfies D12, so the shared
+  backstop in `serve.Run` checks the key it actually got.
+
+### 12.2 Gateway (WG4–WG7)
+
+- **Checks on `POST /whip`, in order:** a malformed key 401, not SDP 415,
+  D7's backoff 422 (records nothing), the client IP unknown 400, the
+  gateway's own per-IP limit 429 (1/s, burst 5), the peer lookup (a peer's
+  backoff is a 422 and a takeover), the cap 503, the SDP checks 406, the
+  relay dial (D8's mapping), the answer.
+- **Not recorded for D9:** the gateway's own 429, a 415 and a malformed
+  offer's 400, which have no reason in the fixed set. A relay that can't be
+  reached, a 5xx, 404 or 400 from it and a failed resume are all `503` with
+  `relay_busy`, the closest reason in the set.
+- **NACKs are the gateway's own**, not pion's generator: one NACK per hole,
+  sent at once, and only once-NACKed packets are sampled for D6's RTT. A
+  packet that was only reordered gives a short sample, which the 20 ms floor
+  absorbs. pion v4.2 deprecates `SetNAT1To1IPs`; the gateway uses the
+  equivalent `SetICEAddressRewriteRules`.
+- **B-frames** are detected from the slice types the engine's own
+  `publisher.HasBSlices` reads. Audio is 48 kHz Opus in 20 ms frames, which
+  the engine's first-packet check requires; a sender with other Opus
+  settings keeps its video and loses audio.
+- **Backoff level.** The doc doesn't say when D7's ladder resets: a key's
+  record lives one record lifetime (10 minutes) past the end of its backoff,
+  and the level goes with it. **Retry now** clears the backoff but keeps the
+  level, so a user who retries with the same bad settings still climbs.
+- **"Live"** for D9 and D10 means the PeerConnection is connected. A session
+  that has been answered but isn't connected yet still exempts a reconnect
+  from the cap; one that doesn't connect within 30 s ends as `lost`. A
+  same-pod replacement is exempt even at `maxSessionsHard`, since the
+  count doesn't grow.
+- **Peer routes** (internal listener, bearer `internalToken`, keyed by the
+  key's hash, never the key): `GET`/`DELETE /internal/v1/keys/{hash}` (the
+  `DELETE` is the takeover acknowledgement), `GET`/`DELETE
+  /internal/v1/keys/{hash}/status`, `DELETE
+  /internal/v1/sessions/{id}?key={hash}`. Peers come from
+  `-peer-template` + `-replicas` or an explicit `-peers` list.
+- **No broadcast ID in the gateway's logs**: the engine's `broadcast_id`
+  attribute is stripped, and relay dial errors are redacted, since an ID is
+  a join capability (CLAUDE.md).
+
+### 12.3 Web app (WG8)
+
+- **The key is stored under its own `localStorage` entry,
+  `gawk.obsKey:<relay origin>`,** not inside the server record beside the
+  publish secret (OD3's wording). Clearing the default server's secret
+  deletes that record, which would have deleted the key with it.
+- **Browsers see no HTTP status on a refused CONNECT,** so a failed mint
+  can't tell a missing secret from a ban or a rate limit. A refused dial
+  opens the broadcaster's publish-secret prompt with its existing "may
+  require a publish secret" note and the error.
+- **Create stream key goes through the one-time terms acknowledgement**,
+  like Start a stream: a key is a licence to broadcast.
+- Copy §5.6 doesn't give: a malformed key (`401`): "The server can't read
+  this key." / "Forget it here, then paste the key from OBS (Settings →
+  Stream) again, or reset it."; the confirmation titles "Forget this key?"
+  and "Reset this key?". A refusal keeps S2's layout with the red box in
+  step 3, since its fallback copy points at the steps above.
+
+### 12.4 Dev stack (WG9) and what is open
+
+- **The dev sender is FFmpeg's `whip` muxer** (Alpine FFmpeg 8.1), sending a
+  test pattern with a 1 s GOP. `gawk-whip-gateway/cmd/gawk-whipsim` does
+  what FFmpeg can't: it mints the key over `/publish?mint=1`, attaches the
+  broadcast to `devroom`, and checks that a frame comes back, which is the
+  `dev-stack` CI job's round trip. A pion sender was not used: the
+  gateway's synthetic test media isn't displayable and pubsim's fixture is
+  internal to `gawk-server` (`docs/41`).
+- **Every dev lane's relay carries a dev proxy token and an explicit resume
+  key**, because a compose profile can't change an existing service.
+- **The OBS page has no Room row yet.** The relay side works: attach checks
+  only ID + token, and the dev stack attaches a gateway broadcast to a room.
+  But §5.7 assumed more than holds. OBS's Stop Streaming ends the broadcast
+  with 4014, which removes the attachment, so every Stop and Start needs a
+  re-attach driven by the status poll. A room the page creates ends when the
+  page leaves it. The broadcaster's join/create sheet is inline in
+  `BroadcasterScreen.tsx` and would have to be extracted first. It needs
+  its own small design.
+- **The gateway takes no relay CA or server name**, only `-relay-insecure`:
+  `relay.url` must be a name on the relay's certificate, normally its
+  public URL.
+- **WG0 is not done**, so the reorder window's floor, cap, multiplier and
+  NACK delay (3 ms), `maxSessions` (20), `maxSessionsHard` (25) and the
+  pod's requests are the §4 estimates. The review before landing changed
+  three behaviours WG0 should look at: a hole is NACKed only after it has
+  been missing 3 ms, so a reordered packet never sets the RTT; a session
+  the sender closed waits 2 s for OBS's DELETE before it counts as `lost`,
+  because OBS closes its PeerConnection first; and offers are refused `406`
+  unless their `profile-level-id` is Baseline, Main or High at level 5.2 or
+  below.

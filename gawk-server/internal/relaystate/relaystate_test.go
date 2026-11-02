@@ -169,3 +169,22 @@ func TestSecretRoundTrip(t *testing.T) {
 		t.Errorf("RemoveSecret of a missing secret: %v", err)
 	}
 }
+
+// R33 (docs/83 D12) on gawk-relay: its flags parse a publish-proxy token
+// without -resume-token-key, because the state directory supplies a durable
+// server-side key before serve.Run, whose ValidatePublishProxy then passes.
+func TestPublishProxyMeetsD12FromTheStateDirectory(t *testing.T) {
+	cfg, _, err := config.ParseRelayFlags([]string{"-publish-proxy-token", "gw"}, func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("ParseRelayFlags: %v", err)
+	}
+	if err := config.ValidatePublishProxy(cfg); err == nil {
+		t.Fatal("before the state directory there is no key, so D12 must refuse")
+	}
+	if err := ApplyPersistedKeys(&cfg, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.ValidatePublishProxy(cfg); err != nil {
+		t.Errorf("with the persisted key: %v", err)
+	}
+}

@@ -12,6 +12,9 @@ import { getRuntimeConfig, requiresPublishSecret,
   getRelayUrl,
   getDevCertHashHex,
   getRelayCertHashes,
+  getWhipGatewayUrl,
+  getWhipUrl,
+  getWhipStatusUrl,
 } from './config';
 
 beforeEach(() => {
@@ -221,5 +224,39 @@ describe('the gawk-app chart does not learn devCertHashHex (D4)', () => {
       .filter(([, body]) => body.includes('devCertHashHex'))
       .map(([path]) => path);
     expect(offenders).toEqual([]);
+  });
+});
+
+// R33 (docs/83 §6): the WHIP gateway, plumbed from the chart's
+// config.whipGatewayUrl into config.js.
+describe('whipGatewayUrl', () => {
+  const chartFiles = import.meta.glob('../deploy/charts/**/*', {
+    query: '?raw',
+    import: 'default',
+    eager: true,
+  }) as Record<string, string>;
+
+  it('is empty when unset or blank, and so are the derived URLs', () => {
+    window.__GAWK_CONFIG__ = {};
+    expect(getWhipGatewayUrl()).toBe('');
+    expect(getWhipUrl()).toBe('');
+    expect(getWhipStatusUrl()).toBe('');
+    window.__GAWK_CONFIG__ = { whipGatewayUrl: '  ' };
+    expect(getWhipGatewayUrl()).toBe('');
+  });
+
+  it('derives the WHIP URL and the status endpoint, dropping a trailing slash', () => {
+    window.__GAWK_CONFIG__ = { whipGatewayUrl: ' https://whip.example.com/ ' };
+    expect(getWhipGatewayUrl()).toBe('https://whip.example.com');
+    expect(getWhipUrl()).toBe('https://whip.example.com/whip');
+    expect(getWhipStatusUrl()).toBe('https://whip.example.com/whip/status');
+  });
+
+  it('is a chart value rendered into config.js', () => {
+    const entry = (suffix: string) => Object.entries(chartFiles).find(([p]) => p.endsWith(suffix))?.[1] ?? '';
+    expect(entry('values.yaml')).toMatch(/^ {2}whipGatewayUrl: ""$/m);
+    expect(entry('configmap.yaml')).toContain(
+      '"whipGatewayUrl": {{ .Values.config.whipGatewayUrl | default "" | toJson }}',
+    );
   });
 });

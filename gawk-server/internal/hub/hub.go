@@ -904,19 +904,9 @@ func (r *Registry) StartPublish(id string) (string, *Publisher, error) {
 		if r.opts.MaxBroadcasts > 0 && len(r.hubs) >= r.opts.MaxBroadcasts {
 			return "", nil, ErrMaxBroadcasts
 		}
-		var newID string
-		var err error
-		for range 10 {
-			newID, err = broadcastid.Mint()
-			if err != nil {
-				return "", nil, err
-			}
-			if _, exists := r.hubs[newID]; !exists && !r.idReserved(newID) {
-				break
-			}
-		}
-		if _, exists := r.hubs[newID]; exists || r.idReserved(newID) {
-			return "", nil, errors.New("hub: collision limits exceeded minting ID")
+		newID, err := r.drawIDLocked()
+		if err != nil {
+			return "", nil, err
 		}
 		id = newID
 		r.newHubLocked(id)
@@ -935,6 +925,36 @@ func (r *Registry) StartPublish(id string) (string, *Publisher, error) {
 	r.setRoleLocked(b, false)
 	r.busStarted(id)
 	return id, pub, nil
+}
+
+// drawIDLocked draws a fresh broadcast ID that names no hub this process
+// knows (live, graced or edge) and no reserved code (Options.IDReserved: a
+// live room, an R74 PoP reservation). Caller holds r.mu.
+func (r *Registry) drawIDLocked() (string, error) {
+	for range 10 {
+		id, err := broadcastid.Mint()
+		if err != nil {
+			return "", err
+		}
+		if _, exists := r.hubs[id]; !exists && !r.idReserved(id) {
+			return id, nil
+		}
+	}
+	return "", errors.New("hub: collision limits exceeded minting ID")
+}
+
+// MintUnusedID is the mint-only publish's draw (R33, docs/83 D3): a fresh ID
+// under exactly StartPublish's collision rules, but nothing is created — no
+// hub, no publisher slot, no broadcast.started, nothing counted against
+// MaxBroadcasts. The ID is not reserved either: its only later use is a
+// token-bearing reclaim, which creates the broadcast like any unknown-ID
+// resume, so all a mint must guarantee is not naming a broadcast that exists
+// at draw time (whose owner the minted token would otherwise let it
+// supersede).
+func (r *Registry) MintUnusedID() (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.drawIDLocked()
 }
 
 // ResumePublish claims the publisher slot of a specific broadcast ID,

@@ -3,6 +3,7 @@ package config
 import (
 	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -871,5 +872,60 @@ func TestPopKnobs(t *testing.T) {
 		if _, err := ParseFlags(bad, noEnv); err == nil {
 			t.Errorf("%v accepted, want an error", bad)
 		}
+	}
+}
+
+// R33 (docs/83 D4, D12): -publish-proxy-token reaches the Config from the
+// flag and the env, trimmed, and refuses to start without an explicit
+// -resume-token-key or when it equals the broadcaster-held publish secret.
+func TestPublishProxyToken(t *testing.T) {
+	key64 := "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+
+	cfg, err := ParseFlags(nil, noEnv)
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if cfg.PublishProxyToken != "" {
+		t.Fatalf("default PublishProxyToken = %q, want empty (no proxy trusted)", cfg.PublishProxyToken)
+	}
+
+	cfg, err = ParseFlags([]string{"-publish-proxy-token", " gw-token\n", "-resume-token-key", key64}, noEnv)
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if cfg.PublishProxyToken != "gw-token" {
+		t.Errorf("flag PublishProxyToken = %q, want gw-token (trimmed)", cfg.PublishProxyToken)
+	}
+
+	cfg, err = ParseFlags(nil, envMap(map[string]string{
+		"GAWK_PUBLISH_PROXY_TOKEN": "env-gw",
+		"GAWK_RESUME_TOKEN_KEY":    key64,
+	}))
+	if err != nil {
+		t.Fatalf("ParseFlags(env): %v", err)
+	}
+	if cfg.PublishProxyToken != "env-gw" {
+		t.Errorf("env PublishProxyToken = %q, want env-gw", cfg.PublishProxyToken)
+	}
+
+	// D12: the start refusal, with a derived key (publish secret set) and
+	// with the per-process random one alike.
+	for _, args := range [][]string{
+		{"-publish-proxy-token", "gw"},
+		{"-publish-proxy-token", "gw", "-publish-secret", "s"},
+	} {
+		_, err := ParseFlags(args, noEnv)
+		if err == nil || !strings.Contains(err.Error(), "resume-token-key") {
+			t.Errorf("ParseFlags(%v) = %v, want the D12 refusal naming -resume-token-key", args, err)
+		}
+	}
+	if _, err := ParseFlags([]string{"-publish-proxy-token", "same", "-publish-secret", "same", "-resume-token-key", key64}, noEnv); err == nil {
+		t.Error("ParseFlags accepted a publish-proxy-token equal to the publish secret")
+	}
+	if err := ValidatePublishProxy(Config{PublishProxyToken: "gw", ResumeTokenKey: []byte(key64)}); err != nil {
+		t.Errorf("ValidatePublishProxy with an explicit key = %v, want nil", err)
+	}
+	if err := ValidatePublishProxy(Config{}); err != nil {
+		t.Errorf("ValidatePublishProxy with no proxy = %v, want nil", err)
 	}
 }

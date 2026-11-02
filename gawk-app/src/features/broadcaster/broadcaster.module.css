@@ -303,6 +303,9 @@
   position: absolute;
   inset: 0;
   display: flex;
+  /* Column: R33's OBS way in sits under the card, outside it (docs/83 D). */
+  flex-direction: column;
+  gap: 1rem;
   align-items: center;
   justify-content: center;
   padding: 1.5rem;

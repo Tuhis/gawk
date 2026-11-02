@@ -36,7 +36,7 @@
 #    with it: that job must run every package with inputs Go cannot see under
 #    its own -count=1. `server` and `server-coverage` do, for gawk-server's
 #    packages that `go build` something they do not import (the integration
-#    test above, in internal/pubsim/engine), and in exchange stop re-running
+#    test above, in publisher), and in exchange stop re-running
 #    every unchanged package on every relay PR — `wire` alone was 163s under
 #    -race. The cache is per node (above), so a hit needs that node to have
 #    run the same package on the same inputs; a miss just runs the test.
