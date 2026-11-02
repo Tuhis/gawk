@@ -118,5 +118,16 @@
       matchFileNames: ["gawk-broadcast-desktop/vendor/**"],
       enabled: false,
     },
+    {
+      description: "Hold the Linux build image on ubuntu 24.04. It is the distro floor of the shipped Linux broadcaster, not a routine bump: docs/58 D12 builds everything that compiles Linux code on ubuntu:24.04, and OD14 sets the floor at Ubuntu 24.04-class (glibc 2.39, GStreamer 1.24, PipeWire 1.0). Building on a newer release raises the binary's glibc floor and drops 24.04/Debian 13 users (PR #683 proposed 26.04 with green CI: the published image only rebuilds on main, so the PR never exercised it). Raise the floor deliberately, in docs/58 OD14 and broadcast-desktop.yml's glibc check, then here. Digest updates of 24.04 still flow. Scoped to the files that carry the floor: ci.yml's relay-windows container only runs the relay's Windows tests under Wine and ships nothing, so it may move.",
+      matchDatasources: ["docker"],
+      matchDepNames: ["ubuntu"],
+      matchFileNames: [
+        ".github/actions/linux-container-setup/**",
+        ".github/workflows/broadcast-desktop.yml",
+        ".github/workflows/desktop-ci-image.yml",
+      ],
+      allowedVersions: "/^24\\.04$/",
+    },
   ],
 }
