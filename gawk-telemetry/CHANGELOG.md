@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.15.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.14.2...gawk-telemetry/v1.15.0) (2026-11-02)
+
+
+### Features
+
+* **r33:** WHIP ingest for OBS through gawk-whip-gateway (WG1–WG9) ([#688](https://github.com/Tuhis/gawk/issues/688)) ([f9c5f6a](https://github.com/Tuhis/gawk/commit/f9c5f6a8b7f2279c808e66f20b7141ceeeaa48d0))
+
+
+### Bug Fixes
+
+* **telemetry:** answer NaN, ±Inf and MAP results from the SQL worker ([#679](https://github.com/Tuhis/gawk/issues/679)) ([80aaa1e](https://github.com/Tuhis/gawk/commit/80aaa1eb250ae299aacb7287082964898901962b))
+
 ## [1.14.2](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.14.1...gawk-telemetry/v1.14.2) (2026-11-01)
 
 
