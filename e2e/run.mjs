@@ -2466,8 +2466,20 @@ try {
 } finally {
   clearTimeout(watchdog);
   cleanup();
-  // vite preview ignores SIGTERM occasionally; give children a moment, then
-  // make sure the process exits regardless of lingering handles.
-  await sleep(500);
+  // Wait for the children to exit before this process does: the next pass in
+  // the same job binds the same ports, and a relay drains its open sessions
+  // (a 1 s window, longer with several sessions) before it releases UDP 4433.
+  // A fixed 500 ms here let the next pass's relay hit "address already in
+  // use". vite preview ignores SIGTERM occasionally, so whatever is still up
+  // after the bound is killed outright.
+  const deadline = Date.now() + 10_000;
+  while (children.some((c) => !c.exited) && Date.now() < deadline) await sleep(100);
+  for (const { name, child, exited } of children) {
+    if (!exited) {
+      log(`killing ${name}: still running after SIGTERM`);
+      child.kill('SIGKILL');
+    }
+  }
+  await sleep(200);
   process.exit(process.exitCode ?? 0);
 }
