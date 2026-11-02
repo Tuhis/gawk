@@ -209,6 +209,12 @@ export const CLOSE_CODE_VOICE_REMOVED = 4015;
 // unavailable, with the close's reason, and offers to try again. Sent in-band
 // first. Mirrored from Go wire.CloseCodeVoiceUnavailable.
 export const CLOSE_CODE_VOICE_UNAVAILABLE = 4016;
+// R33 (docs/83 D3): closes a mint-only publish session (`/publish?mint=1`).
+// The relay announced a fresh broadcast ID and its resume token and created
+// no broadcast; the ID and token are the result, and the first reclaim with
+// them creates the broadcast. Terminal: never redial or resume on it. Sent
+// in-band first. Mirrored from Go wire.CloseCodePublishMinted.
+export const CLOSE_CODE_PUBLISH_MINTED = 4017;
 
 // SessionClosing: relay→client on its own server-opened uni
 // stream, a settle interval BEFORE the relay closes the session with this

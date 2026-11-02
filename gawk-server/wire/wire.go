@@ -346,6 +346,20 @@ const CloseCodePopNoDemand = 4013
 // 2026-10-24 (R78).
 const CloseCodeBroadcasterStopped = 4014
 
+// 4015 and 4016 are R79's voice codes (voice.go).
+
+// CloseCodePublishMinted (4017) closes a mint-only publish session
+// (`CONNECT /publish?mint=1`, R33, docs/83 D3): the relay minted a broadcast
+// ID, announced it and its resume token as on any mint, and created no
+// broadcast, so there is nothing to publish. The session's purpose is done,
+// so the code is terminal: a client never redials or resumes on it. The ID
+// and token are the result; the first reclaim with them
+// (`/publish/{id}?resume=`) creates the broadcast. The relay notices it
+// in-band first (SessionClosing), because Chrome rarely surfaces a close
+// capsule's code. Only the relay sends it, and only on a mint-only session.
+// Allocated 2026-11-02 (R33).
+const CloseCodePublishMinted = 4017
+
 // Size constants for the wire format.
 const (
 	// MaxDatagramSize is the largest datagram we ever produce. It is chosen
