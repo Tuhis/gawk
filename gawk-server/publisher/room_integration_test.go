@@ -1,4 +1,4 @@
-package engine_test
+package publisher_test
 
 // R42 rooms (RM6) against the real relay binary — the same harness as
 // relay_integration_test.go (startRelay, newFixtureSource), for the same
@@ -19,7 +19,7 @@ import (
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/webtransport-go"
 
-	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/engine"
+	"github.com/Tuhis/gawk/gawk-server/publisher"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
@@ -123,17 +123,17 @@ func TestRoomMintAttachDetachAgainstRealRelay(t *testing.T) {
 	t.Parallel()
 	relayURL, _ := startRelay(t, "-rooms")
 
-	src := newFixtureSource(t, engine.NewClock())
+	src := newFixtureSource(t, publisher.NewClock())
 	created := make(chan [2]string, 1)
 	roomErrs := make(chan error, 8)
-	sess := engine.New(
-		engine.Config{RelayURL: relayURL, Insecure: true, Media: engine.DefaultMediaConfig(),
+	sess := publisher.New(
+		publisher.Config{RelayURL: relayURL, Insecure: true, Media: publisher.DefaultMediaConfig(),
 			RoomNew: true, Nickname: "native"},
-		engine.Callbacks{
+		publisher.Callbacks{
 			OnRoomCreated: func(code, tok string) { created <- [2]string{code, tok} },
 			OnRoomError:   func(err error) { roomErrs <- err },
 		},
-		engine.Options{MediaFactory: src.factory()},
+		publisher.Options{MediaFactory: src.factory()},
 	)
 	if err := sess.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -212,13 +212,13 @@ func TestRoomStaticAttachSecretAgainstRealRelay(t *testing.T) {
 	}
 	relayURL, _ := startRelay(t, "-rooms", "-rooms-file", roomsFile)
 
-	src := newFixtureSource(t, engine.NewClock())
+	src := newFixtureSource(t, publisher.NewClock())
 	roomErrs := make(chan error, 8)
-	sess := engine.New(
-		engine.Config{RelayURL: relayURL, Insecure: true, Media: engine.DefaultMediaConfig(),
+	sess := publisher.New(
+		publisher.Config{RelayURL: relayURL, Insecure: true, Media: publisher.DefaultMediaConfig(),
 			Room: "TuhisRoom", RoomAttachSecret: "wrong", Nickname: "Desk"},
-		engine.Callbacks{OnRoomError: func(err error) { roomErrs <- err }},
-		engine.Options{MediaFactory: src.factory()},
+		publisher.Callbacks{OnRoomError: func(err error) { roomErrs <- err }},
+		publisher.Options{MediaFactory: src.factory()},
 	)
 	if err := sess.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -227,7 +227,7 @@ func TestRoomStaticAttachSecretAgainstRealRelay(t *testing.T) {
 
 	select {
 	case err := <-roomErrs:
-		re, ok := engine.AsRoomError(err)
+		re, ok := publisher.AsRoomError(err)
 		if !ok {
 			t.Fatalf("room error %T (%v), want *RoomError", err, err)
 		}
@@ -240,11 +240,11 @@ func TestRoomStaticAttachSecretAgainstRealRelay(t *testing.T) {
 
 	// The right secret, on a fresh session: the probe sees the attachment.
 	sess.Stop()
-	sess = engine.New(
-		engine.Config{RelayURL: relayURL, Insecure: true, Media: engine.DefaultMediaConfig(),
+	sess = publisher.New(
+		publisher.Config{RelayURL: relayURL, Insecure: true, Media: publisher.DefaultMediaConfig(),
 			Room: "TuhisRoom", RoomAttachSecret: "k", Nickname: "Desk"},
-		engine.Callbacks{OnRoomError: func(err error) { roomErrs <- err }},
-		engine.Options{MediaFactory: newFixtureSource(t, engine.NewClock()).factory()},
+		publisher.Callbacks{OnRoomError: func(err error) { roomErrs <- err }},
+		publisher.Options{MediaFactory: newFixtureSource(t, publisher.NewClock()).factory()},
 	)
 	if err := sess.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)

@@ -1,4 +1,4 @@
-package engine_test
+package publisher_test
 
 // An end-to-end test against the *real* relay binary.
 //
@@ -36,30 +36,30 @@ import (
 	"github.com/quic-go/webtransport-go"
 
 	"github.com/Tuhis/gawk/gawk-server/internal/pubsim"
-	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/engine"
 	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/fixture"
 	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/mpegts"
+	"github.com/Tuhis/gawk/gawk-server/publisher"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
 // fixtureSource replays the committed MPEG-TS fixture as access units — the
 // same bytes the demuxer tests use, standing in for a GPU we do not have here.
 type fixtureSource struct {
-	aus    []engine.AccessUnit
-	clock  engine.Clock
-	frames chan engine.AccessUnit
+	aus    []publisher.AccessUnit
+	clock  publisher.Clock
+	frames chan publisher.AccessUnit
 	stop   chan struct{}
 	done   chan struct{}
 }
 
-func newFixtureSource(t *testing.T, clock engine.Clock) *fixtureSource {
+func newFixtureSource(t *testing.T, clock publisher.Clock) *fixtureSource {
 	t.Helper()
 	ts := fixture.TS
-	var aus []engine.AccessUnit
+	var aus []publisher.AccessUnit
 	d := mpegts.NewDemuxer(wire.MaxKeyframeBytes, func(au mpegts.AU) error {
-		aus = append(aus, engine.AccessUnit{
+		aus = append(aus, publisher.AccessUnit{
 			Data:     bytes.Clone(au.Data),
-			Keyframe: engine.HasIDR(au.Data),
+			Keyframe: publisher.HasIDR(au.Data),
 		})
 		return nil
 	})
@@ -72,20 +72,20 @@ func newFixtureSource(t *testing.T, clock engine.Clock) *fixtureSource {
 	return &fixtureSource{
 		aus:    aus,
 		clock:  clock,
-		frames: make(chan engine.AccessUnit, 4),
+		frames: make(chan publisher.AccessUnit, 4),
 		stop:   make(chan struct{}),
 		done:   make(chan struct{}),
 	}
 }
 
-func (s *fixtureSource) factory() engine.MediaSourceFactory {
-	return func(cfg engine.MediaConfig, clock engine.Clock, log *slog.Logger) (engine.MediaSource, error) {
+func (s *fixtureSource) factory() publisher.MediaSourceFactory {
+	return func(cfg publisher.MediaConfig, clock publisher.Clock, log *slog.Logger) (publisher.MediaSource, error) {
 		s.clock = clock
 		return s, nil
 	}
 }
 
-func (s *fixtureSource) Start(ctx context.Context) (<-chan engine.AccessUnit, error) {
+func (s *fixtureSource) Start(ctx context.Context) (<-chan publisher.AccessUnit, error) {
 	go func() {
 		defer close(s.done)
 		defer close(s.frames)
@@ -224,7 +224,7 @@ func startRelay(t *testing.T, extraArgs ...string) (relayURL string, opsAddr str
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go toolchain unavailable")
 	}
-	serverDir, err := filepath.Abs("../../..")
+	serverDir, err := filepath.Abs("..")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,17 +291,17 @@ func TestPublishesToRealRelay(t *testing.T) {
 	t.Parallel()
 	relayURL, opsAddr := startRelay(t)
 
-	src := newFixtureSource(t, engine.NewClock())
+	src := newFixtureSource(t, publisher.NewClock())
 	gotID := make(chan string, 1)
 	errs := make(chan error, 8)
 
-	sess := engine.New(
-		engine.Config{RelayURL: relayURL, Insecure: true, Media: engine.DefaultMediaConfig()},
-		engine.Callbacks{
+	sess := publisher.New(
+		publisher.Config{RelayURL: relayURL, Insecure: true, Media: publisher.DefaultMediaConfig()},
+		publisher.Callbacks{
 			OnBroadcastID: func(id string) { gotID <- id },
 			OnError:       func(err error) { errs <- err },
 		},
-		engine.Options{MediaFactory: src.factory(), StatsInterval: 100 * time.Millisecond},
+		publisher.Options{MediaFactory: src.factory(), StatsInterval: 100 * time.Millisecond},
 	)
 
 	if err := sess.Start(context.Background()); err != nil {
@@ -412,12 +412,12 @@ func TestSubscriberReceivesAUsableStream(t *testing.T) {
 	t.Parallel()
 	relayURL, _ := startRelay(t)
 
-	src := newFixtureSource(t, engine.NewClock())
+	src := newFixtureSource(t, publisher.NewClock())
 	gotID := make(chan string, 1)
-	sess := engine.New(
-		engine.Config{RelayURL: relayURL, Insecure: true, Media: engine.DefaultMediaConfig()},
-		engine.Callbacks{OnBroadcastID: func(id string) { gotID <- id }},
-		engine.Options{MediaFactory: src.factory()},
+	sess := publisher.New(
+		publisher.Config{RelayURL: relayURL, Insecure: true, Media: publisher.DefaultMediaConfig()},
+		publisher.Callbacks{OnBroadcastID: func(id string) { gotID <- id }},
+		publisher.Options{MediaFactory: src.factory()},
 	)
 	if err := sess.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -509,7 +509,7 @@ func TestSubscriberReceivesAUsableStream(t *testing.T) {
 			kfDone <- fmt.Errorf("keyframe payload does not start with an Annex-B start code: %x", payload[:min(8, len(payload))])
 			return
 		}
-		if !engine.HasIDR(payload) {
+		if !publisher.HasIDR(payload) {
 			kfDone <- fmt.Errorf("the keyframe contains no IDR slice")
 			return
 		}
@@ -591,10 +591,10 @@ func TestSubscriberReceivesAudio(t *testing.T) {
 	}
 
 	gotID := make(chan string, 1)
-	sess := engine.New(
-		engine.Config{RelayURL: relayURL, Insecure: true, Media: engine.DefaultMediaConfig()},
-		engine.Callbacks{OnBroadcastID: func(id string) { gotID <- id }},
-		engine.Options{MediaFactory: pubsim.Factory(aus, 30, packets)},
+	sess := publisher.New(
+		publisher.Config{RelayURL: relayURL, Insecure: true, Media: publisher.DefaultMediaConfig()},
+		publisher.Callbacks{OnBroadcastID: func(id string) { gotID <- id }},
+		publisher.Options{MediaFactory: pubsim.Factory(aus, 30, packets)},
 	)
 	if err := sess.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -639,7 +639,7 @@ func TestSubscriberReceivesAudio(t *testing.T) {
 			if err != nil {
 				t.Fatalf("bad audio config: %v", err)
 			}
-			if cfg.Codec != engine.AudioCodec || cfg.SampleRate != engine.AudioSampleRate || cfg.Channels != engine.AudioChannels {
+			if cfg.Codec != publisher.AudioCodec || cfg.SampleRate != publisher.AudioSampleRate || cfg.Channels != publisher.AudioChannels {
 				t.Errorf("audio config = %+v, want 48 kHz stereo opus", cfg)
 			}
 			sawConfig = true
@@ -680,8 +680,8 @@ func TestSubscriberReceivesAudio(t *testing.T) {
 		}
 	}
 
-	if st := sess.Stats(); st.AudioState != engine.AudioActive {
-		t.Errorf("AudioState = %q, want %q while packets are flowing", st.AudioState, engine.AudioActive)
+	if st := sess.Stats(); st.AudioState != publisher.AudioActive {
+		t.Errorf("AudioState = %q, want %q while packets are flowing", st.AudioState, publisher.AudioActive)
 	}
 }
 
@@ -695,18 +695,18 @@ func TestReclaimSupersedesAgainstRealRelay(t *testing.T) {
 	t.Parallel()
 	relayURL, _ := startRelay(t)
 
-	src := newFixtureSource(t, engine.NewClock())
+	src := newFixtureSource(t, publisher.NewClock())
 	gotID := make(chan string, 1)
 	gotToken := make(chan string, 1)
 	ended := make(chan struct{}, 1)
-	sess := engine.New(
-		engine.Config{RelayURL: relayURL, Insecure: true, Media: engine.DefaultMediaConfig()},
-		engine.Callbacks{
+	sess := publisher.New(
+		publisher.Config{RelayURL: relayURL, Insecure: true, Media: publisher.DefaultMediaConfig()},
+		publisher.Callbacks{
 			OnBroadcastID: func(id string) { gotID <- id },
 			OnResumeToken: func(token string) { gotToken <- token },
 			OnEnded:       func() { ended <- struct{}{} },
 		},
-		engine.Options{MediaFactory: src.factory()},
+		publisher.Options{MediaFactory: src.factory()},
 	)
 	if err := sess.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -726,12 +726,12 @@ func TestReclaimSupersedesAgainstRealRelay(t *testing.T) {
 
 	// A second publisher claiming the same live ID with the token wins the
 	// slot (newest publisher wins) and announces the same code.
-	src2 := newFixtureSource(t, engine.NewClock())
+	src2 := newFixtureSource(t, publisher.NewClock())
 	takenOver := make(chan string, 1)
-	sess2 := engine.New(
-		engine.Config{RelayURL: relayURL, BroadcastID: id, ResumeToken: token, Insecure: true, Media: engine.DefaultMediaConfig()},
-		engine.Callbacks{OnBroadcastID: func(id string) { takenOver <- id }},
-		engine.Options{MediaFactory: src2.factory()},
+	sess2 := publisher.New(
+		publisher.Config{RelayURL: relayURL, BroadcastID: id, ResumeToken: token, Insecure: true, Media: publisher.DefaultMediaConfig()},
+		publisher.Callbacks{OnBroadcastID: func(id string) { takenOver <- id }},
+		publisher.Options{MediaFactory: src2.factory()},
 	)
 	if err := sess2.Start(context.Background()); err != nil {
 		t.Fatalf("superseding publisher Start = %v, want success", err)
@@ -755,14 +755,14 @@ func TestReclaimSupersedesAgainstRealRelay(t *testing.T) {
 
 	// Without the token the same claim never reaches the takeover: 403, the
 	// R17 hijack fix working as designed — supersede is owner-only.
-	src2b := newFixtureSource(t, engine.NewClock())
-	sess2b := engine.New(
-		engine.Config{RelayURL: relayURL, BroadcastID: id, Insecure: true, Media: engine.DefaultMediaConfig()},
-		engine.Callbacks{},
-		engine.Options{MediaFactory: src2b.factory()},
+	src2b := newFixtureSource(t, publisher.NewClock())
+	sess2b := publisher.New(
+		publisher.Config{RelayURL: relayURL, BroadcastID: id, Insecure: true, Media: publisher.DefaultMediaConfig()},
+		publisher.Callbacks{},
+		publisher.Options{MediaFactory: src2b.factory()},
 	)
 	err := sess2b.Start(context.Background())
-	se, ok := engine.AsStartError(err)
+	se, ok := publisher.AsStartError(err)
 	if !ok {
 		t.Fatalf("tokenless claim error = %v, want *StartError", err)
 	}
@@ -778,12 +778,12 @@ func TestReclaimSupersedesAgainstRealRelay(t *testing.T) {
 	sess2.Stop()
 	src2.Stop()
 
-	src3 := newFixtureSource(t, engine.NewClock())
+	src3 := newFixtureSource(t, publisher.NewClock())
 	reclaimed := make(chan string, 1)
-	sess3 := engine.New(
-		engine.Config{RelayURL: relayURL, BroadcastID: id, ResumeToken: token, Insecure: true, Media: engine.DefaultMediaConfig()},
-		engine.Callbacks{OnBroadcastID: func(id string) { reclaimed <- id }},
-		engine.Options{MediaFactory: src3.factory()},
+	sess3 := publisher.New(
+		publisher.Config{RelayURL: relayURL, BroadcastID: id, ResumeToken: token, Insecure: true, Media: publisher.DefaultMediaConfig()},
+		publisher.Callbacks{OnBroadcastID: func(id string) { reclaimed <- id }},
+		publisher.Options{MediaFactory: src3.factory()},
 	)
 	if err := sess3.Start(context.Background()); err != nil {
 		t.Fatalf("reclaim failed: %v", err)
@@ -812,17 +812,17 @@ func TestReclaimSupersedesAgainstRealRelay(t *testing.T) {
 // a real relay accepts, rather than choking on the unusual scheme.
 func TestCustomOriginDoesNotBreakTheDial(t *testing.T) {
 	t.Parallel()
-	relayURL, _ := startRelay(t, "-allowed-origins", engine.DefaultOrigin)
+	relayURL, _ := startRelay(t, "-allowed-origins", publisher.DefaultOrigin)
 
-	src := newFixtureSource(t, engine.NewClock())
+	src := newFixtureSource(t, publisher.NewClock())
 	gotID := make(chan string, 1)
-	sess := engine.New(
-		engine.Config{RelayURL: relayURL, Insecure: true, Media: engine.DefaultMediaConfig()},
-		engine.Callbacks{OnBroadcastID: func(id string) { gotID <- id }},
-		engine.Options{MediaFactory: src.factory()},
+	sess := publisher.New(
+		publisher.Config{RelayURL: relayURL, Insecure: true, Media: publisher.DefaultMediaConfig()},
+		publisher.Callbacks{OnBroadcastID: func(id string) { gotID <- id }},
+		publisher.Options{MediaFactory: src.factory()},
 	)
 	if err := sess.Start(context.Background()); err != nil {
-		t.Fatalf("Start while sending %q as Origin: %v", engine.DefaultOrigin, err)
+		t.Fatalf("Start while sending %q as Origin: %v", publisher.DefaultOrigin, err)
 	}
 	defer sess.Stop()
 	select {
@@ -839,13 +839,13 @@ func TestPublishSecretAgainstRealRelay(t *testing.T) {
 	relayURL, _ := startRelay(t, "-publish-secret", "s3cret")
 
 	// Wrong secret → 401, as a sentence.
-	src := newFixtureSource(t, engine.NewClock())
-	sess := engine.New(
-		engine.Config{RelayURL: relayURL, PublishSecret: "wrong", Insecure: true, Media: engine.DefaultMediaConfig()},
-		engine.Callbacks{},
-		engine.Options{MediaFactory: src.factory()},
+	src := newFixtureSource(t, publisher.NewClock())
+	sess := publisher.New(
+		publisher.Config{RelayURL: relayURL, PublishSecret: "wrong", Insecure: true, Media: publisher.DefaultMediaConfig()},
+		publisher.Callbacks{},
+		publisher.Options{MediaFactory: src.factory()},
 	)
-	se, ok := engine.AsStartError(sess.Start(context.Background()))
+	se, ok := publisher.AsStartError(sess.Start(context.Background()))
 	if !ok {
 		t.Fatal("want *StartError for a bad secret")
 	}
@@ -854,12 +854,12 @@ func TestPublishSecretAgainstRealRelay(t *testing.T) {
 	}
 
 	// Right secret → published.
-	src2 := newFixtureSource(t, engine.NewClock())
+	src2 := newFixtureSource(t, publisher.NewClock())
 	gotID := make(chan string, 1)
-	sess2 := engine.New(
-		engine.Config{RelayURL: relayURL, PublishSecret: "s3cret", Insecure: true, Media: engine.DefaultMediaConfig()},
-		engine.Callbacks{OnBroadcastID: func(id string) { gotID <- id }},
-		engine.Options{MediaFactory: src2.factory()},
+	sess2 := publisher.New(
+		publisher.Config{RelayURL: relayURL, PublishSecret: "s3cret", Insecure: true, Media: publisher.DefaultMediaConfig()},
+		publisher.Callbacks{OnBroadcastID: func(id string) { gotID <- id }},
+		publisher.Options{MediaFactory: src2.factory()},
 	)
 	if err := sess2.Start(context.Background()); err != nil {
 		t.Fatalf("Start with the right secret: %v", err)
@@ -870,4 +870,74 @@ func TestPublishSecretAgainstRealRelay(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("no code with the correct secret")
 	}
+}
+
+// StopBroadcast ends the broadcast at once (R78, close 4014), while Stop
+// leaves it in the relay's grace period for a reclaim (docs/83 WG1). Both
+// against the real relay: only its reading of the close code decides this.
+func TestStopBroadcastEndsAndStopLeavesGraceAgainstRealRelay(t *testing.T) {
+	t.Parallel()
+	relayURL, opsAddr := startRelay(t)
+
+	publish := func(t *testing.T) *publisher.Session {
+		t.Helper()
+		src := newFixtureSource(t, publisher.NewClock())
+		gotID := make(chan string, 1)
+		sess := publisher.New(
+			publisher.Config{RelayURL: relayURL, Insecure: true, Media: publisher.DefaultMediaConfig()},
+			publisher.Callbacks{OnBroadcastID: func(id string) { gotID <- id }},
+			publisher.Options{MediaFactory: src.factory()},
+		)
+		if err := sess.Start(context.Background()); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		select {
+		case <-gotID:
+		case <-time.After(10 * time.Second):
+			t.Fatal("no broadcast code announced")
+		}
+		return sess
+	}
+	broadcasts := func() (n, active int) {
+		st := fetchStatusz(t, opsAddr)
+		for _, b := range st.Broadcasts {
+			n++
+			if b.PublisherActive {
+				active++
+			}
+		}
+		return n, active
+	}
+	waitFor := func(what string, ok func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if ok() {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		n, a := broadcasts()
+		t.Fatalf("%s: relay shows %d broadcasts, %d with an active publisher", what, n, a)
+	}
+
+	// Stop: the broadcast stays, publisher away, inside the 5-minute grace.
+	dropped := publish(t)
+	waitFor("publish", func() bool { _, a := broadcasts(); return a == 1 })
+	if err := dropped.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor("Stop", func() bool { n, a := broadcasts(); return n == 1 && a == 0 })
+	time.Sleep(500 * time.Millisecond)
+	if n, _ := broadcasts(); n != 1 {
+		t.Fatalf("after Stop the relay shows %d broadcasts, want 1 held in grace", n)
+	}
+
+	// StopBroadcast: its broadcast is gone at once, the other stays in grace.
+	stopped := publish(t)
+	waitFor("second publish", func() bool { n, a := broadcasts(); return n == 2 && a == 1 })
+	if err := stopped.StopBroadcast(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor("StopBroadcast", func() bool { n, a := broadcasts(); return n == 1 && a == 0 })
 }

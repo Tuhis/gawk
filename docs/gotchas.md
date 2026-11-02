@@ -267,7 +267,7 @@ Add to it when a new gotcha lands in `docs/`.
   the action adds `-count=1` to GOFLAGS by default. Builds stay cached; test
   results are not, except in a job that opts in with `test-results: cached`
   and then runs every such package under its own `-count=1` (`server` and
-  `server-coverage` do, for `internal/pubsim/engine`). A new test that execs
+  `server-coverage` do, for `publisher`). A new test that execs
   `go build`, or reads anything Go's test cache cannot see (a service, a
   binary off `PATH`), in gawk-server belongs on that fresh list. Go's own 5-day trim is far too slow for this volume (a Renovate
   wave of one-line go.mod bumps recompiles everything above each, per node,

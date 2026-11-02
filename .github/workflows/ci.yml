@@ -530,7 +530,7 @@ jobs:
           CGO_ENABLED: "1"
         run: |
           set -euo pipefail
-          fresh=$(go list ./internal/pubsim/engine)
+          fresh=$(go list ./publisher)
           mapfile -t rest < <(go list ./... | grep -vxF "$fresh")
           go test -race -count=1 "$fresh" > "$RUNNER_TEMP/fresh.log" 2>&1 &
           pid=$!
@@ -602,7 +602,7 @@ jobs:
       - name: go test -cover (unchanged packages from the cache, engine fresh)
         run: |
           set -euo pipefail
-          fresh=$(go list ./internal/pubsim/engine)
+          fresh=$(go list ./publisher)
           mapfile -t rest < <(go list ./... | grep -vxF "$fresh")
           go test -count=1 -covermode=set -coverprofile=fresh.out "$fresh" > "$RUNNER_TEMP/fresh.log" 2>&1 &
           pid=$!

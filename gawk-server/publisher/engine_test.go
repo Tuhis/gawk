@@ -1,4 +1,4 @@
-package engine
+package publisher
 
 import (
 	"bytes"
@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/quic-go/webtransport-go"
 
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
@@ -765,6 +767,48 @@ func TestStopIsIdempotentAndEndsOnce(t *testing.T) {
 	defer mu.Unlock()
 	if ended != 1 {
 		t.Errorf("OnEnded fired %d times, want exactly 1", ended)
+	}
+}
+
+// Stop is a drop (code 0: the relay holds the broadcast in grace) and
+// StopBroadcast the deliberate end (4014, R78), and whichever runs first
+// decides: the session is closed once (docs/83 WG1).
+func TestStopBroadcastClosesWith4014AndStopWithZero(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stop  func(*Session) error
+		other func(*Session) error
+		want  webtransport.SessionErrorCode
+	}{
+		{"StopBroadcast", (*Session).StopBroadcast, (*Session).Stop, webtransport.SessionErrorCode(wire.CloseCodeBroadcasterStopped)},
+		{"Stop", (*Session).Stop, (*Session).StopBroadcast, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := newFakeSession()
+			media := newFakeMedia()
+			ended := 0
+			s := New(Config{RelayURL: "https://relay.example"},
+				Callbacks{OnEnded: func() { ended++ }},
+				testOpts(sess, media, &FakeClock{}))
+			if err := s.Start(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.stop(s); err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.other(s); err != nil {
+				t.Fatal(err)
+			}
+			if got := sess.lastCloseCode(); got != tc.want {
+				t.Errorf("relay session closed with %d, want %d", got, tc.want)
+			}
+			if !media.wasStopped() {
+				t.Error("media source not stopped")
+			}
+			if ended != 1 {
+				t.Errorf("OnEnded fired %d times, want 1", ended)
+			}
+		})
 	}
 }
 

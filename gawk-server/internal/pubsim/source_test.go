@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/engine"
 	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/fixture"
+	"github.com/Tuhis/gawk/gawk-server/publisher"
 )
 
 const (
@@ -57,7 +57,7 @@ func TestSourceLoopsWithLiveTimestamps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Demux: %v", err)
 	}
-	clock := &engine.FakeClock{Us: 1_000_000}
+	clock := &publisher.FakeClock{Us: 1_000_000}
 	src, err := NewSource(aus, 30, clock)
 	if err != nil {
 		t.Fatalf("NewSource: %v", err)
@@ -104,7 +104,7 @@ func TestSourceStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Demux: %v", err)
 	}
-	clock := &engine.FakeClock{}
+	clock := &publisher.FakeClock{}
 	src, err := NewSource(aus, 30, clock)
 	if err != nil {
 		t.Fatalf("NewSource: %v", err)
@@ -139,7 +139,7 @@ func TestSourceStopBeforeStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Demux: %v", err)
 	}
-	src, err := NewSource(aus, 30, &engine.FakeClock{})
+	src, err := NewSource(aus, 30, &publisher.FakeClock{})
 	if err != nil {
 		t.Fatalf("NewSource: %v", err)
 	}
@@ -160,8 +160,8 @@ func TestFactoryUsesEngineClock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Demux: %v", err)
 	}
-	clock := &engine.FakeClock{Us: 42}
-	ms, err := Factory(aus, 30, nil)(engine.MediaConfig{}, clock, slog.New(slog.DiscardHandler))
+	clock := &publisher.FakeClock{Us: 42}
+	ms, err := Factory(aus, 30, nil)(publisher.MediaConfig{}, clock, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("factory: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestFactoryUsesEngineClock(t *testing.T) {
 	if !ok {
 		t.Fatalf("factory returned %T, want *Source", ms)
 	}
-	if src.clock != engine.Clock(clock) {
+	if src.clock != publisher.Clock(clock) {
 		t.Fatal("factory did not thread the engine's clock into the source")
 	}
 	if _, err := NewSource(aus, 0, clock); err == nil {
@@ -190,34 +190,34 @@ func TestAudioLaneIsOptIn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Demux: %v", err)
 	}
-	clock := &engine.FakeClock{Us: 42}
+	clock := &publisher.FakeClock{Us: 42}
 	log := slog.New(slog.DiscardHandler)
 
-	videoOnly, err := Factory(aus, 30, nil)(engine.MediaConfig{}, clock, log)
+	videoOnly, err := Factory(aus, 30, nil)(publisher.MediaConfig{}, clock, log)
 	if err != nil {
 		t.Fatalf("factory: %v", err)
 	}
-	if _, ok := videoOnly.(engine.AudioSource); ok {
-		t.Error("a source built with no packets still satisfies engine.AudioSource")
+	if _, ok := videoOnly.(publisher.AudioSource); ok {
+		t.Error("a source built with no packets still satisfies publisher.AudioSource")
 	}
 
 	packets, err := fixture.SplitAudio(fixture.Audio)
 	if err != nil {
 		t.Fatalf("SplitAudio: %v", err)
 	}
-	withAudio, err := Factory(aus, 30, packets)(engine.MediaConfig{}, clock, log)
+	withAudio, err := Factory(aus, 30, packets)(publisher.MediaConfig{}, clock, log)
 	if err != nil {
 		t.Fatalf("factory: %v", err)
 	}
-	as, ok := withAudio.(engine.AudioSource)
+	as, ok := withAudio.(publisher.AudioSource)
 	if !ok {
-		t.Fatal("a source built with packets does not satisfy engine.AudioSource")
+		t.Fatal("a source built with packets does not satisfy publisher.AudioSource")
 	}
 	format, ok := as.AudioFormat()
 	if !ok {
 		t.Fatal("AudioFormat reports nothing")
 	}
-	if format.Codec != engine.AudioCodec || format.SampleRate != engine.AudioSampleRate || format.Channels != engine.AudioChannels {
+	if format.Codec != publisher.AudioCodec || format.SampleRate != publisher.AudioSampleRate || format.Channels != publisher.AudioChannels {
 		t.Errorf("AudioFormat = %+v, want 48 kHz stereo opus", format)
 	}
 }
@@ -234,12 +234,12 @@ func TestAudioPacketsAreStampedFromTheEngineClock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SplitAudio: %v", err)
 	}
-	clock := &engine.FakeClock{Us: 7_000_000}
-	ms, err := Factory(aus, 30, packets)(engine.MediaConfig{}, clock, slog.New(slog.DiscardHandler))
+	clock := &publisher.FakeClock{Us: 7_000_000}
+	ms, err := Factory(aus, 30, packets)(publisher.MediaConfig{}, clock, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("factory: %v", err)
 	}
-	src := ms.(engine.AudioSource)
+	src := ms.(publisher.AudioSource)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

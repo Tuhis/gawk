@@ -13,22 +13,22 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/engine"
 	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/mpegts"
+	"github.com/Tuhis/gawk/gawk-server/publisher"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
 // Demux turns a raw MPEG-TS stream into engine access units, exactly as the
 // relay integration test's fixtureSource does: bytes cloned per AU, keyframes
 // flagged by the IDR sniff.
-func Demux(ts []byte) ([]engine.AccessUnit, error) {
-	var aus []engine.AccessUnit
+func Demux(ts []byte) ([]publisher.AccessUnit, error) {
+	var aus []publisher.AccessUnit
 	d := mpegts.NewDemuxer(wire.MaxKeyframeBytes, func(au mpegts.AU) error {
 		data := make([]byte, len(au.Data))
 		copy(data, au.Data)
-		aus = append(aus, engine.AccessUnit{
+		aus = append(aus, publisher.AccessUnit{
 			Data:     data,
-			Keyframe: engine.HasIDR(data),
+			Keyframe: publisher.HasIDR(data),
 		})
 		return nil
 	})
@@ -54,12 +54,12 @@ func Demux(ts []byte) ([]engine.AccessUnit, error) {
 // and TimeSync read one timeline (docs/19 Decision 6) — pubsim must not
 // weaken that invariant just because its frames are canned.
 //
-// packets non-empty makes the source implement engine.AudioSource as well
+// packets non-empty makes the source implement publisher.AudioSource as well
 // (R25, docs/28 Decision 12). Empty leaves it video-only, which is not a
 // degraded shape but the one R20 tier-1 asserts continuously — hence the
 // -audio flag defaulting to off.
-func Factory(aus []engine.AccessUnit, fps int, packets [][]byte) engine.MediaSourceFactory {
-	return func(_ engine.MediaConfig, clock engine.Clock, _ *slog.Logger) (engine.MediaSource, error) {
+func Factory(aus []publisher.AccessUnit, fps int, packets [][]byte) publisher.MediaSourceFactory {
+	return func(_ publisher.MediaConfig, clock publisher.Clock, _ *slog.Logger) (publisher.MediaSource, error) {
 		s, err := NewSource(aus, fps, clock)
 		if err != nil {
 			return nil, err
@@ -78,23 +78,23 @@ func Factory(aus []engine.AccessUnit, fps int, packets [][]byte) engine.MediaSou
 type audioSource struct {
 	*Source
 	packets [][]byte
-	audio   chan engine.AudioPacket
+	audio   chan publisher.AudioPacket
 }
 
-// Start begins both lanes. Audio is paced at engine.AudioFrameMs from the
+// Start begins both lanes. Audio is paced at publisher.AudioFrameMs from the
 // **same clock instance** the access units use, so pubsim cannot weaken
 // docs/28 Decision 5's one-timeline invariant just because its packets are
 // canned — exactly what this package's doc comment already promises about
 // video stamps.
-func (s *audioSource) Start(ctx context.Context) (<-chan engine.AccessUnit, error) {
+func (s *audioSource) Start(ctx context.Context) (<-chan publisher.AccessUnit, error) {
 	frames, err := s.Source.Start(ctx)
 	if err != nil {
 		return nil, err
 	}
-	s.audio = make(chan engine.AudioPacket, 8)
+	s.audio = make(chan publisher.AudioPacket, 8)
 	go func() {
 		defer close(s.audio)
-		tick := time.NewTicker(engine.AudioFrameMs * time.Millisecond)
+		tick := time.NewTicker(publisher.AudioFrameMs * time.Millisecond)
 		defer tick.Stop()
 		for i := 0; ; i = (i + 1) % len(s.packets) {
 			select {
@@ -104,7 +104,7 @@ func (s *audioSource) Start(ctx context.Context) (<-chan engine.AccessUnit, erro
 				return
 			case <-tick.C:
 			}
-			p := engine.AudioPacket{Data: s.packets[i], TimestampUs: s.clock.NowUs()}
+			p := publisher.AudioPacket{Data: s.packets[i], TimestampUs: s.clock.NowUs()}
 			select {
 			case s.audio <- p:
 			case <-s.stop:
@@ -117,27 +117,27 @@ func (s *audioSource) Start(ctx context.Context) (<-chan engine.AccessUnit, erro
 	return frames, nil
 }
 
-func (s *audioSource) Audio() <-chan engine.AudioPacket { return s.audio }
+func (s *audioSource) Audio() <-chan publisher.AudioPacket { return s.audio }
 
-func (s *audioSource) AudioFormat() (engine.AudioFormat, bool) {
-	return engine.DefaultAudioFormat("fixture"), true
+func (s *audioSource) AudioFormat() (publisher.AudioFormat, bool) {
+	return publisher.DefaultAudioFormat("fixture"), true
 }
 
-// Source is an engine.MediaSource that replays a fixed AU sequence in a loop
+// Source is an publisher.MediaSource that replays a fixed AU sequence in a loop
 // at a steady rate, forever, stamping each AU with the live clock at emit
 // time. The fixture's own timeline never leaks: live-edge drift and the
 // ClockMapping math on the viewer side read TimestampUs, and replayed stamps
 // from a 2-second file would wrap those instruments around nonsense.
 type Source struct {
-	aus      []engine.AccessUnit
-	clock    engine.Clock
+	aus      []publisher.AccessUnit
+	clock    publisher.Clock
 	interval time.Duration
 
 	// tick, when non-nil, replaces the real ticker — the test seam that
 	// makes the loop/timestamp logic deterministic.
 	tick <-chan time.Time
 
-	frames  chan engine.AccessUnit
+	frames  chan publisher.AccessUnit
 	stop    chan struct{}
 	done    chan struct{}
 	started bool
@@ -146,7 +146,7 @@ type Source struct {
 
 // NewSource builds a Source pacing aus at fps. The keyframe cadence follows
 // the fixture (every 15 AUs → 500 ms at 30 fps; other rates scale it).
-func NewSource(aus []engine.AccessUnit, fps int, clock engine.Clock) (*Source, error) {
+func NewSource(aus []publisher.AccessUnit, fps int, clock publisher.Clock) (*Source, error) {
 	if len(aus) == 0 {
 		return nil, errors.New("pubsim: no access units")
 	}
@@ -157,13 +157,13 @@ func NewSource(aus []engine.AccessUnit, fps int, clock engine.Clock) (*Source, e
 		aus:      aus,
 		clock:    clock,
 		interval: time.Second / time.Duration(fps),
-		frames:   make(chan engine.AccessUnit, 4),
+		frames:   make(chan publisher.AccessUnit, 4),
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
 	}, nil
 }
 
-func (s *Source) Start(ctx context.Context) (<-chan engine.AccessUnit, error) {
+func (s *Source) Start(ctx context.Context) (<-chan publisher.AccessUnit, error) {
 	s.mu.Lock()
 	s.started = true
 	s.mu.Unlock()

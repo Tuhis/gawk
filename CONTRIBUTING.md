@@ -171,6 +171,14 @@ carries a commit touching `gawk-admin/` **and** one touching
 pinned by golden values on purpose: changing it moves every live broadcast
 to a different sampler on the next rollout and resets its window.
 
+**`gawk-server/publisher/` is compiled into `gawk-whip-gateway`.** The Go
+publisher engine (R33, docs/83 OD1) is public so the WHIP gateway reuses it
+rather than mirroring it, and release-please attributes by path, so a change
+there releases the relay and never the gateway. A semantic change to it
+carries a commit touching `gawk-whip-gateway/` in the same PR, with a
+releasing PR title; the gateway's CI already runs on any `gawk-server/`
+change.
+
 **`common-ts/` holds shared TypeScript, and its consumers are locked to it.**
 `common-ts/<pkg>` is a repo-internal npm package (no build step, never
 published) that an operator SPA depends on as `file:../../common-ts/<pkg>`;

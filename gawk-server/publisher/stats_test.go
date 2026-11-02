@@ -1,4 +1,4 @@
-package engine
+package publisher
 
 import (
 	"encoding/json"

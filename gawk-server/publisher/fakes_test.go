@@ -1,4 +1,4 @@
-package engine
+package publisher
 
 import (
 	"bytes"
@@ -49,6 +49,7 @@ type fakeSession struct {
 	receiveDatagrams chan []byte
 
 	closed     bool
+	closeCode  webtransport.SessionErrorCode
 	closeCalls int
 
 	ctx    context.Context
@@ -130,6 +131,7 @@ func (f *fakeSession) CloseWithError(code webtransport.SessionErrorCode, msg str
 	f.mu.Lock()
 	f.closed = true
 	f.closeCalls++
+	f.closeCode = code
 	f.mu.Unlock()
 	f.cancel()
 	return nil
@@ -144,6 +146,12 @@ func (f *fakeSession) closedByRelay(code uint32) {
 	f.closeErr = &webtransport.SessionError{ErrorCode: webtransport.SessionErrorCode(code)}
 	f.mu.Unlock()
 	f.cancel()
+}
+
+func (f *fakeSession) lastCloseCode() webtransport.SessionErrorCode {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closeCode
 }
 
 func (f *fakeSession) isClosed() bool {

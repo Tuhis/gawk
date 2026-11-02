@@ -1,4 +1,4 @@
-package engine
+package publisher
 
 import (
 	"context"
@@ -154,23 +154,22 @@ func dialRelay(ctx context.Context, rawURL, origin string, insecure bool) (Relay
 // room control session use — same TLS posture, same QUIC config, same
 // Origin — so a relay that accepts one accepts the other.
 func dialWebTransport(ctx context.Context, rawURL, origin string, insecure bool) (*webtransport.Session, int, error) {
-	d := &webtransport.Transport{
-		TLSClientConfig: &tls.Config{
-			// A native client trusts the homelab CA directly, so the
-			// browser's serverCertificateHashes 14-day certificate dance
-			// (docs/02) simply does not apply here. -insecure exists for the
-			// dev cert only.
-			InsecureSkipVerify: insecure, //nolint:gosec // opt-in via -insecure, dev certs only
-			NextProtos:         []string{http3.NextProtoH3},
-		},
-		QUICConfig: &quic.Config{
-			EnableDatagrams:                  true,
-			EnableStreamResetPartialDelivery: true,
-			// Keep the session alive across idle gaps the same way the relay
-			// does for viewers (D1): a broadcaster mid-menu can go seconds
-			// without a keyframe worth sending.
-			KeepAlivePeriod: 10 * time.Second,
-		},
+	d := &webtransport.Transport{}
+	tlsConf := &tls.Config{
+		// A native client trusts the homelab CA directly, so the
+		// browser's serverCertificateHashes 14-day certificate dance
+		// (docs/02) simply does not apply here. -insecure exists for the
+		// dev cert only.
+		InsecureSkipVerify: insecure, //nolint:gosec // opt-in via -insecure, dev certs only
+		NextProtos:         []string{http3.NextProtoH3},
+	}
+	quicConf := &quic.Config{
+		EnableDatagrams:                  true,
+		EnableStreamResetPartialDelivery: true,
+		// Keep the session alive across idle gaps the same way the relay
+		// does for viewers (D1): a broadcaster mid-menu can go seconds
+		// without a keyframe worth sending.
+		KeepAlivePeriod: 10 * time.Second,
 	}
 	// Send the Origin header. The browser sends this automatically and cannot
 	// change it; here it is explicit, so a relay with -allowed-origins accepts
@@ -179,13 +178,50 @@ func dialWebTransport(ctx context.Context, rawURL, origin string, insecure bool)
 	if origin != "" {
 		reqHdr = http.Header{"Origin": []string{origin}}
 	}
-	rsp, sess, err := d.Dial(ctx, rawURL, reqHdr)
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, 0, err
+	}
+	// The QUIC connection is dialled here rather than by Transport.Dial,
+	// because Transport.Dial closes the connection the instant the session's
+	// context ends, which is the instant CloseWithError has queued its
+	// WT_CLOSE_SESSION capsule, not when the capsule has left. The relay then
+	// often tore the connection down before it parsed the capsule, so a
+	// StopBroadcast's 4014 read as a drop and the broadcast sat in grace
+	// (docs/83 WG1; flaked 1 in 2 on loopback). Owning the connection lets it
+	// linger until the relay closes it in answer, bounded by closeLinger.
+	qconn, err := quic.DialAddrEarly(ctx, u.Host, tlsConf, quicConf)
+	if err != nil {
+		return nil, 0, err
+	}
+	cc, err := d.NewClientConn(qconn)
+	if err != nil {
+		_ = qconn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeNoError), "")
+		return nil, 0, err
+	}
+	rsp, sess, err := cc.Dial(ctx, rawURL, reqHdr)
 	status := 0
 	if rsp != nil {
 		status = rsp.StatusCode
 	}
 	if err != nil {
+		_ = qconn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeNoError), "")
 		return nil, status, err
 	}
+	context.AfterFunc(sess.Context(), func() {
+		t := time.NewTimer(closeLinger)
+		defer t.Stop()
+		select {
+		case <-qconn.Context().Done():
+		case <-t.C:
+		}
+		_ = qconn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeNoError), "")
+	})
 	return sess, status, nil
 }
+
+// closeLinger bounds how long a closed session's QUIC connection waits for
+// the relay to close it, so the close capsule (and its code) is delivered
+// first. The relay closes its side as soon as it has read the capsule, so on
+// a live path this is one round trip; the bound only matters on a dead one.
+const closeLinger = 2 * time.Second

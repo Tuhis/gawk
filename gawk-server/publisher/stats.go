@@ -1,4 +1,4 @@
-package engine
+package publisher
 
 // Stats is what the engine can honestly see, mirroring the browser's
 // BroadcastStats where the two overlap so a native diagnostics dump can be

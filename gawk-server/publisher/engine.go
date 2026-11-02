@@ -1,8 +1,10 @@
-// Package engine publishes encoded media to the relay using the same
+// Package publisher publishes encoded media to the relay using the same
 // publisher protocol the browser broadcaster speaks — byte for byte, via the
 // shared gawk-server/wire package. It was the Go Linux broadcaster's engine
-// (R14, docs/19); since that app's removal (R56 LX9, docs/58 D15) its one
-// consumer is gawk-pubsim, which feeds it a committed fixture.
+// (R14, docs/19); since that app's removal (R56 LX9, docs/58 D15) it feeds
+// gawk-pubsim's committed fixture, and since R33 (docs/83 OD1) it is public so
+// gawk-whip-gateway can republish OBS's WHIP ingest through it. A semantic
+// change here is a gawk-whip-gateway change too (CONTRIBUTING.md).
 //
 // The surface deliberately mirrors the TypeScript BroadcastSessionLike
 // (start/stop) and BroadcastCallbacks (onBroadcastId/onStats/onError/onEnded)
@@ -12,7 +14,7 @@
 //
 // No package globals, no os.Exit, no direct stdio anywhere in this package:
 // the shells that consume it own all of that.
-package engine
+package publisher
 
 import (
 	"context"
@@ -300,8 +302,12 @@ type Session struct {
 	mu      sync.Mutex
 	started bool
 	stopped bool
-	cancel  context.CancelFunc
-	media   MediaSource
+	// closeCode is what teardown closes the relay session with: 0 (a drop,
+	// the broadcast waits in the relay's grace) unless StopBroadcast set
+	// wire.CloseCodeBroadcasterStopped first (guarded by mu).
+	closeCode webtransport.SessionErrorCode
+	cancel    context.CancelFunc
+	media     MediaSource
 
 	// relayCur is the session frames are travelling on right now. It changes
 	// under the supervisor when auto-resume reclaims the broadcast, so it has
@@ -919,7 +925,29 @@ func (s *Session) BroadcastID() string {
 }
 
 // Stop ends the session. Idempotent, and safe to call before Start.
+//
+// The relay session closes with code 0, which the relay reads as the
+// publisher dropping: the broadcast waits out its grace period, and a reclaim
+// with the resume token picks it back up. StopBroadcast is the deliberate end.
 func (s *Session) Stop() error {
+	s.teardown()
+	s.wg.Wait()
+	s.finish()
+	return nil
+}
+
+// StopBroadcast ends the session and the broadcast with it: the relay session
+// closes with wire.CloseCodeBroadcasterStopped (4014, R78, docs/79), so the
+// relay ends the broadcast at once instead of holding it in grace, and closes
+// its viewers with 4014 (they wait on the code). gawk-whip-gateway calls it
+// for a WHIP DELETE (docs/83 D8). Idempotent like Stop; once either has run,
+// the other is a no-op, since the session is already closed.
+func (s *Session) StopBroadcast() error {
+	s.mu.Lock()
+	if !s.stopped {
+		s.closeCode = webtransport.SessionErrorCode(wire.CloseCodeBroadcasterStopped)
+	}
+	s.mu.Unlock()
 	s.teardown()
 	s.wg.Wait()
 	s.finish()
@@ -936,7 +964,7 @@ func (s *Session) teardown() {
 		return
 	}
 	s.stopped = true
-	cancel, media := s.cancel, s.media
+	cancel, media, code := s.cancel, s.media, s.closeCode
 	s.mu.Unlock()
 	relay := s.currentRelay()
 
@@ -961,7 +989,8 @@ func (s *Session) teardown() {
 	if relay != nil {
 		// Closing the session releases the publisher slot server-side. Without
 		// it the relay holds the broadcast ID until its grace period expires.
-		if err := relay.CloseWithError(webtransport.SessionErrorCode(0), ""); err != nil {
+		// A 4014 (StopBroadcast) ends the broadcast; 0 leaves it in grace.
+		if err := relay.CloseWithError(code, ""); err != nil {
 			s.log.Debug("relay close failed", "err", err)
 		}
 	}
