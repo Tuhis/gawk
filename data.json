@@ -66,9 +66,9 @@
     },
     "gawk-whip-gateway": {
       "component": "gawk-whip-gateway",
-      "covered": 1799,
+      "covered": 1797,
       "label": "WHIP gateway",
-      "pct": 86.8,
+      "pct": 86.7,
       "total": 2073,
       "unit": "statements"
     }
