@@ -20,6 +20,11 @@
 #   docker compose --profile rooms up add two synthetic broadcasters in the
 #                                     static room `devroom` (R42):
 #                                     http://localhost:8080/#/room/devroom
+#   docker compose --profile whip up  add the R33 WHIP gateway and a sender
+#                                     streaming a test pattern through it, in
+#                                     the static room `devroom`:
+#                                     http://localhost:8080/#/room/devroom
+#                                     (OBS on this host: docs/obs-setup.md)
 #   ADMIN_ROOMS=1 docker compose up   also serve the portal's Rooms view, for
 #                                     working on it (R42/R48). See the admin
 #                                     service for what it does and does not
@@ -146,6 +151,17 @@ services:
       # it is GAWK_ADMIN_RELAY_ADMIN_TOKEN below, same value. A fixed default
       # is fine where both listeners are loopback-published dev surfaces.
       GAWK_ADMIN_API_TOKEN: "${RELAY_ADMIN_TOKEN:-gawk-dev-admin-token}"
+      # R33 (docs/83 D4, D12): what the `whip` profile's gateway needs from
+      # the relay, set in every lane because a profile can add services but
+      # cannot change this one. The proxy token lets the gateway name its
+      # OBS client's address (Gawk-Publisher-Ip); the relay refuses it
+      # without an explicit resume-token key, and that key also keeps every
+      # broadcast's resume token valid across a relay restart, which a dev
+      # loop only gains from. Both are throwaway dev values, like the admin
+      # token above; the gateway's GAWK_WHIP_RELAY_PUBLISH_PROXY_TOKEN below
+      # must match.
+      GAWK_PUBLISH_PROXY_TOKEN: "${WHIP_PROXY_TOKEN:-gawk-dev-whip-proxy-token}"
+      GAWK_RESUME_TOKEN_KEY: "${RESUME_TOKEN_KEY:-6761776b2d6465762d726573756d652d746f6b656e2d6b65792d6e6f742d6f6b}"
     healthcheck:
       # Exec form is mandatory — the relay image is distroless and has no
       # shell. No -cert-hash (empty skips verification) and no -origin (the
@@ -205,6 +221,11 @@ services:
     depends_on:
       config-gen:
         condition: service_completed_successfully
+      # The `whip` profile's config.js (whipGatewayUrl set). required: false,
+      # so every other lane starts without it.
+      whip-config-gen:
+        condition: service_completed_successfully
+        required: false
 
   # ── The R39 moderation portal (docs/41 §4.8) ──────────────────────────────
   # Default-on, because the simplest getting-started experience includes the
@@ -459,6 +480,111 @@ services:
       relay:
         condition: service_healthy
     restart: unless-stopped
+
+  # "I want to see an OBS-style WHIP stream go through the gateway."
+  #     docker compose --profile whip up
+  # The R33 WHIP gateway (docs/83) and gawk-whipsim, a sender that mints a
+  # stream key the way the OBS page does (CONNECT /publish?mint=1), streams
+  # an FFmpeg test pattern (H.264, 1 s keyframe interval, Opus tone) over
+  # WHIP, attaches the broadcast to the static room `devroom` and checks the
+  # round trip as a viewer. Open ${APP_ORIGIN}/#/room/devroom: nothing to
+  # copy. Its log also prints the key (GAWK_WHIPSIM_KEY=…), for the OBS
+  # page's "Paste a key", and the broadcast's own #/view/ link.
+  #
+  # Real OBS on this host works too: Settings → Stream → Service WHIP,
+  # Server http://localhost:${WHIP_PORT:-8180}/whip, the Bearer Token from
+  # the OBS page's Create stream key (docs/obs-setup.md). The media port is
+  # published on ${BIND_ADDR}; with the stack on a LAN address, set
+  # WHIP_PUBLIC_ADDRESS to that address, since it is the one ICE candidate
+  # OBS is given.
+  whip-gateway:
+    profiles: ["whip"]
+    build: &whip-build
+      # Repo root: the gateway compiles gawk-server/publisher and
+      # gawk-server/wire through a local replace.
+      context: .
+      dockerfile: gawk-whip-gateway/deploy/Dockerfile
+    ports:
+      # WHIP over plain HTTP: the chart puts TLS at the Ingress, and a
+      # loopback dev stack has neither. 8180 because the app has 8080.
+      - "${BIND_ADDR:-127.0.0.1}:${WHIP_PORT:-8180}:8080"
+      # Media: ICE over UDP and the passive ICE-TCP fallback, one port
+      # (ordinal 0 of -media-base-port).
+      - "${BIND_ADDR:-127.0.0.1}:${WHIP_MEDIA_PORT:-8189}:8189/udp"
+      - "${BIND_ADDR:-127.0.0.1}:${WHIP_MEDIA_PORT:-8189}:8189/tcp"
+      # The ops listener (/healthz, /readyz, /metrics): loopback in every
+      # lane, never the LAN bind address (docs/41 D14).
+      - "127.0.0.1:2114:9090"
+    environment:
+      GAWK_WHIP_RELAY_URL: https://relay:4433
+      # The relay's dev certificate names localhost, not `relay`; the
+      # gateway has no CA option, and this is pubsim's -insecure rationale
+      # (docs/41 §5): an in-container client on the compose network.
+      GAWK_WHIP_RELAY_INSECURE: "true"
+      GAWK_WHIP_RELAY_PUBLISH_PROXY_TOKEN: "${WHIP_PROXY_TOKEN:-gawk-dev-whip-proxy-token}"
+      # The one host candidate in every SDP answer (D10). 127.0.0.1 reaches
+      # the published media port from this host, and gawk-whipsim shares
+      # this container's network namespace, so it is right there too.
+      GAWK_WHIP_PUBLIC_ADDRESS: "${WHIP_PUBLIC_ADDRESS:-127.0.0.1}"
+      GAWK_WHIP_MEDIA_BASE_PORT: "8189"
+      # The OBS page reads /whip/status cross-origin (D9).
+      GAWK_WHIP_ALLOWED_ORIGINS: "${APP_ORIGIN:-http://localhost:8080}"
+      # Everything reaches the gateway from one address here (Docker's
+      # gateway, or the sender over loopback), so the per-IP POST limit is
+      # roomy, as the relay's is above. The chart keeps the production 1/s.
+      GAWK_WHIP_POST_RATE: "10"
+      GAWK_WHIP_POST_BURST: "50"
+      GAWK_WHIP_LOG_LEVEL: "${LOG_LEVEL:-info}"
+    depends_on:
+      relay:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # The sender. Its network namespace is the gateway's
+  # (network_mode: service:), so 127.0.0.1:8080 is the gateway and the
+  # 127.0.0.1 candidate is reachable, exactly as from the host. The relay is
+  # still `relay`: the namespace is on the compose network. -insecure for
+  # the reason given at whip-gateway.
+  whipsim:
+    profiles: ["whip"]
+    build:
+      <<: *whip-build
+      target: whipsim
+    network_mode: "service:whip-gateway"
+    command:
+      - "-relay-url=https://relay:4433"
+      - "-insecure"
+      - "-whip-url=http://127.0.0.1:8080/whip"
+      - "-room=devroom"
+      - "-app-url=${APP_ORIGIN:-http://localhost:8080}"
+    depends_on:
+      relay:
+        condition: service_healthy
+      whip-gateway:
+        condition: service_started
+    restart: unless-stopped
+
+  # config.js with whipGatewayUrl set, so the broadcaster page shows the way
+  # in to the OBS page and the OBS page polls this gateway. The same script
+  # as config-gen, run after it; `app` waits for it when the profile is on.
+  # A later `up` without the profile rewrites config.js without the key.
+  whip-config-gen:
+    profiles: ["whip"]
+    image: alpine:3.24
+    entrypoint: ["/bin/sh", "/dev-scripts/config-gen.sh"]
+    volumes:
+      - ./certs:/certs:ro
+      - ./dev:/dev-scripts:ro
+      - ./dev/generated:/out
+    environment:
+      RELAY_URL: "${RELAY_URL:-https://127.0.0.1:4433}"
+      CERT_MODE: "${CERT_MODE:-devcert}"
+      APP_URL: "${APP_URL:-http://localhost:8080}"
+      WHIP_GATEWAY_URL: "${WHIP_GATEWAY_URL:-http://localhost:${WHIP_PORT:-8180}}"
+      OUT: /out/config.js
+    depends_on:
+      config-gen:
+        condition: service_completed_successfully
 
   # "I'm working on telemetry."
   #     docker compose --profile telemetry up
