@@ -2,7 +2,7 @@
   "components": {
     "gawk-admin": {
       "component": "gawk-admin",
-      "covered": 4921,
+      "covered": 4919,
       "label": "admin",
       "pct": 80.7,
       "total": 6097,
@@ -34,9 +34,9 @@
     },
     "gawk-mumble-bridge": {
       "component": "gawk-mumble-bridge",
-      "covered": 1814,
+      "covered": 1813,
       "label": "voice bridge",
-      "pct": 86.3,
+      "pct": 86.2,
       "total": 2103,
       "unit": "statements"
     },
