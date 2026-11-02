@@ -23,10 +23,12 @@ OBS ──POST /whip (SDP offer, Bearer gawk1_<ID>_<token>)──▶ gateway :80
 - **WebRTC** is [pion](https://github.com/pion/webrtc): ICE-lite, one UDP mux
   port per pod plus a passive ICE-TCP candidate on the same port number, host
   candidates rewritten to the shared public address (D10). The answer accepts
-  one H.264 packetization-mode 1 layer and Opus; HEVC, AV1 and simulcast are
+  one H.264 packetization-mode 1 layer whose profile-level-id viewers decode
+  (Constrained Baseline, Main or High up to level 5.2) and Opus; HEVC, AV1 and simulcast are
   refused with `406` (D5). No trickle ICE.
 - **The media adapter** rebuilds H.264 access units from RTP (single NAL,
-  STAP-A, FU-A) in a reorder window of about one round trip (D6), drops a
+  STAP-A, FU-A) in a reorder window of about one round trip (D6; a hole is
+  NACKed once it has been missing for the reorder tolerance), drops a
   frame whose window closes and the deltas after it until the next IDR,
   refuses B-frames and streams it can't read, measures the keyframe interval
   (D7) and maps RTP/RTCP sender-report time onto the engine's clock, then
@@ -42,10 +44,10 @@ OBS ──POST /whip (SDP offer, Bearer gawk1_<ID>_<token>)──▶ gateway :80
 | Route | What it does |
 |---|---|
 | `POST /whip` | SDP offer (`Content-Type: application/sdp`, `Authorization: Bearer <key>`) → `201` + answer + `Location: /whip/session/<id>` |
-| `DELETE /whip/session/<id>` | OBS's Stop Streaming (same bearer key) → `200`; ends the broadcast (close 4014) |
+| `DELETE /whip/session/<id>` | OBS's Stop Streaming (same bearer key) → `200`; ends the broadcast (close 4014). OBS closes its PeerConnection first, so a session the sender closed waits 2 s for this DELETE before it counts as `lost` |
 | `PATCH /whip/session/<id>` | `405`: no trickle ICE |
 | `OPTIONS` on each route | WHIP/CORS preflight (`Accept-Post: application/sdp`) |
-| `GET /whip/status` | D9's status for the presenting key (JSON, CORS for `-allowed-origins`) |
+| `GET /whip/status` | D9's status for the presenting key (JSON, CORS for `-allowed-origins`); rate-limited per client IP (`429`) |
 | `DELETE /whip/status` | "Retry now": clears D7's backoff and the reason that started it → `204` |
 | `GET /healthz` | liveness |
 
@@ -118,6 +120,7 @@ OBS (WG0).
 | `-allowed-origins` | any | Origins allowed to read `/whip/status` cross-origin |
 | `-trusted-proxy-cidrs` | — | the proxy that writes `X-Forwarded-For` (D4) |
 | `-post-rate`, `-post-burst` | `1`, `5` | `POST /whip` per client IP: per second sustained, at once |
+| `-status-rate`, `-status-burst` | `2`, `10` | `GET`/`DELETE /whip/status` per client IP (`429` + `Retry-After` past it; `0` disables) |
 | `-max-sessions` | `20` | per pod, for a new key (*WG0*) |
 | `-max-sessions-hard` | `ceil(1.25 × max)` | per pod, even for an exempt reconnect |
 | `-full-retry-after` | `30s` | `Retry-After` of a `503` at the cap |
@@ -125,7 +128,8 @@ OBS (WG0).
 | `-reorder-initial-rtt` | `50ms` | D6 (*WG0*) |
 | `-reorder-window-floor`, `-reorder-window-cap` | `20ms`, `150ms` | D6 (*WG0*) |
 | `-reorder-window-multiplier`, `-reorder-window-offset` | `1.25`, `5ms` | window = m × RTT + offset (*WG0*) |
-| `-reorder-max-packets` | `4096` | buffer bound; past it the head frame drops at once |
+| `-reorder-nack-delay` | `3ms` | reorder tolerance: a hole is NACKed only if still missing this long, so a merely reordered packet is never NACKed or RTT-sampled; below the window floor (*WG0*) |
+| `-reorder-max-packets` | `4096` | buffer bound, and the largest head-to-newest span; past it the head frame drops at once, or the window resyncs on the new packet (a loss: the next frame needs an IDR) |
 | `-gop-warn`, `-gop-max` | `1.1s`, `2.2s` | D7 bounds (OD5) |
 | `-gop-early-gap`, `-gop-samples` | `4.5s`, `5` | D7's early rule and median width |
 | `-backoff-initial`, `-backoff-max` | `30s`, `10m` | D7's backoff ladder |

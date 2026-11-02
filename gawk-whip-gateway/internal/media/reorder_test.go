@@ -70,13 +70,15 @@ func TestD6NACKedPacketReturningWithinWindowRecoversFrame(t *testing.T) {
 	if len(res.Frames) != 0 {
 		t.Fatal("incomplete frame released")
 	}
+	// NACKed once the reorder tolerance (3 ms) has passed.
+	res = r.Tick(t0.Add(3 * time.Millisecond))
 	if len(res.NACK) != 1 || res.NACK[0] != lost.Seq {
 		t.Fatalf("NACK = %v, want [%d]", res.NACK, lost.Seq)
 	}
 	if w := r.Window(); w != ms(67.5) {
 		t.Fatalf("pre-sample window = %v, want 67.5ms (D6)", w)
 	}
-	got := r.Push(lost, t0.Add(30*time.Millisecond))
+	got := r.Push(lost, t0.Add(33*time.Millisecond))
 	if len(got.Frames) != 1 || got.Dropped != 0 || got.Frames[0].AfterGap {
 		t.Fatalf("retransmit within window did not recover the frame: %+v", got)
 	}
@@ -205,7 +207,8 @@ func TestD6WindowFollowsMeasuredRTTWithinClamp(t *testing.T) {
 	fs := &frameStream{}
 	a := fs.packets(bigP(1))
 	pushAll(r, append([]Packet{a[0]}, a[2:]...), t0)
-	r.Push(a[1], t0.Add(100*time.Millisecond))
+	r.Tick(t0.Add(3 * time.Millisecond)) // the NACK
+	r.Push(a[1], t0.Add(103*time.Millisecond))
 	if r.Window() != 130*time.Millisecond {
 		t.Fatalf("reorder window %v after a 100ms retransmit, want 130ms", r.Window())
 	}
@@ -218,8 +221,9 @@ func TestD6LateRetransmitStillSamplesRTT(t *testing.T) {
 	fs := &frameStream{}
 	a := fs.packets(bigP(1))
 	pushAll(r, append([]Packet{a[0]}, a[2:]...), t0)
-	r.Tick(t0.Add(ms(67.5)))
-	r.Push(a[1], t0.Add(200*time.Millisecond))
+	r.Tick(t0.Add(3 * time.Millisecond)) // the NACK
+	r.Tick(t0.Add(ms(67.5)))             // the frame drops
+	r.Push(a[1], t0.Add(203*time.Millisecond))
 	if r.RTT().RTT() != 200*time.Millisecond {
 		t.Fatalf("late retransmit not sampled: %v", r.RTT().RTT())
 	}

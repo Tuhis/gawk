@@ -43,7 +43,11 @@ const (
 	DefaultMaxSessions    = 20 // provisional until WG0 (D10)
 	DefaultPOSTRate       = 1.0
 	DefaultPOSTBurst      = 5
-	DefaultMaxRecords     = 4096
+	// The status limit: the OBS page polls every 2 s (U7), and a few tabs
+	// or a broadcaster page's one read on load fit the burst.
+	DefaultStatusRate  = 2.0
+	DefaultStatusBurst = 10
+	DefaultMaxRecords  = 4096
 )
 
 // Config is the fully resolved configuration.
@@ -75,6 +79,8 @@ type Config struct {
 	TrustedProxyCIDRs   []string
 	POSTRate            float64
 	POSTBurst           int
+	StatusRate          float64
+	StatusBurst         int
 	MaxSessions         int
 	MaxSessionsHard     int
 	FullRetryAfter      time.Duration
@@ -82,6 +88,7 @@ type Config struct {
 
 	Window     media.WindowConfig
 	MaxPackets int
+	NACKDelay  time.Duration
 	GOP        media.GOPConfig
 	Backoff    status.BackoffPolicy
 	RecordTTL  time.Duration
@@ -170,6 +177,8 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 	trusted := str("trusted-proxy-cidrs", "", "comma-separated CIDRs of the proxy that writes X-Forwarded-For (the ingress controller's pods, or exact node addresses under hostNetwork) (D4); empty uses the peer address only")
 	postRate := str("post-rate", strconv.FormatFloat(DefaultPOSTRate, 'g', -1, 64), "POST /whip per client IP per second, sustained; 0 disables the gateway's own limit")
 	postBurst := str("post-burst", strconv.Itoa(DefaultPOSTBurst), "POST /whip per client IP at once")
+	statusRate := str("status-rate", strconv.FormatFloat(DefaultStatusRate, 'g', -1, 64), "GET/DELETE /whip/status per client IP per second, sustained; 0 disables it")
+	statusBurst := str("status-burst", strconv.Itoa(DefaultStatusBurst), "GET/DELETE /whip/status per client IP at once")
 	maxSessions := str("max-sessions", strconv.Itoa(DefaultMaxSessions), "sessions per pod for a new key (D10; provisional until WG0)")
 	maxHard := str("max-sessions-hard", "0", "hard per-pod ceiling, even for a reconnect whose session is on a peer (D10); 0 is ceil(1.25 × max-sessions)")
 	fullRetry := dur("full-retry-after", 30*time.Second, "Retry-After of a 503 at the cap (D8)")
@@ -181,6 +190,7 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 	wCap := dur("reorder-window-cap", defW.Cap, "reorder window cap: no frame waits longer (D6; provisional until WG0)")
 	wMult := str("reorder-window-multiplier", strconv.FormatFloat(defW.Multiplier, 'g', -1, 64), "window = multiplier × RTT + offset (D6; provisional until WG0)")
 	wOff := dur("reorder-window-offset", defW.Offset, "window = multiplier × RTT + offset (D6; provisional until WG0)")
+	nackDelay := dur("reorder-nack-delay", media.DefaultReorderConfig().NACKDelay, "a hole is NACKed only if still missing this long, so a merely reordered packet is never NACKed or RTT-sampled (D6; below the window floor; provisional until WG0)")
 	maxPkts := str("reorder-max-packets", "4096", "packets the reorder window may hold before it drops without waiting")
 
 	defG := media.DefaultGOPConfig()
@@ -253,6 +263,7 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 		{"-reorder-window-floor", *wFloor, &c.Window.Floor, false},
 		{"-reorder-window-cap", *wCap, &c.Window.Cap, false},
 		{"-reorder-window-offset", *wOff, &c.Window.Offset, true},
+		{"-reorder-nack-delay", *nackDelay, &c.NACKDelay, true},
 		{"-gop-warn", *gopWarn, &c.GOP.WarnAbove, false},
 		{"-gop-max", *gopMax, &c.GOP.EndAbove, false},
 		{"-gop-early-gap", *gopEarly, &c.GOP.EarlyGap, false},
@@ -274,6 +285,9 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 	if c.Window.Floor > c.Window.Cap {
 		return Config{}, errors.New("-reorder-window-floor must not exceed -reorder-window-cap")
 	}
+	if c.NACKDelay >= c.Window.Floor {
+		return Config{}, errors.New("-reorder-nack-delay must be below -reorder-window-floor, or a NACK could never be answered within the window")
+	}
 	if c.GOP.WarnAbove > c.GOP.EndAbove {
 		return Config{}, errors.New("-gop-warn must not exceed -gop-max")
 	}
@@ -283,6 +297,9 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 	if c.POSTRate, err = strconv.ParseFloat(strings.TrimSpace(*postRate), 64); err != nil || c.POSTRate < 0 || math.IsInf(c.POSTRate, 0) {
 		return Config{}, fmt.Errorf("invalid -post-rate %q", *postRate)
 	}
+	if c.StatusRate, err = strconv.ParseFloat(strings.TrimSpace(*statusRate), 64); err != nil || c.StatusRate < 0 || math.IsInf(c.StatusRate, 0) {
+		return Config{}, fmt.Errorf("invalid -status-rate %q", *statusRate)
+	}
 	ints := []struct {
 		name string
 		v    string
@@ -290,6 +307,7 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 		min  int
 	}{
 		{"-post-burst", *postBurst, &c.POSTBurst, 1},
+		{"-status-burst", *statusBurst, &c.StatusBurst, 1},
 		{"-max-sessions", *maxSessions, &c.MaxSessions, 1},
 		{"-max-sessions-hard", *maxHard, &c.MaxSessionsHard, 0},
 		{"-media-base-port", *basePort, &c.MediaBasePort, 1},
@@ -386,6 +404,7 @@ func (c Config) Options(version string, log *slog.Logger) gateway.Options {
 	ro := media.DefaultReorderConfig()
 	ro.Window = c.Window
 	ro.MaxPackets = c.MaxPackets
+	ro.NACKDelay = c.NACKDelay
 	return gateway.Options{
 		Relay: gateway.RelayOptions{
 			URL:               c.RelayURL,
@@ -405,6 +424,8 @@ func (c Config) Options(version string, log *slog.Logger) gateway.Options {
 		TrustedProxyCIDRs:      c.TrustedProxyCIDRs,
 		POSTRate:               c.POSTRate,
 		POSTBurst:              c.POSTBurst,
+		StatusRate:             c.StatusRate,
+		StatusBurst:            c.StatusBurst,
 		MaxSessions:            c.MaxSessions,
 		MaxSessionsHard:        c.MaxSessionsHard,
 		FullRetryAfter:         c.FullRetryAfter,
@@ -433,12 +454,12 @@ func (c Config) LogAttrs() []any {
 		"public_address", c.PublicAddress, "media_bind", c.MediaBind, "media_port", c.MediaPort, "ordinal", c.Ordinal,
 		"ice_disconnected_timeout", c.ICEDisconnected, "ice_failed_timeout", c.ICEFailed, "ice_keepalive", c.ICEKeepalive,
 		"allowed_origins", c.AllowedOrigins, "trusted_proxy_cidrs", c.TrustedProxyCIDRs,
-		"post_rate", c.POSTRate, "post_burst", c.POSTBurst,
+		"post_rate", c.POSTRate, "post_burst", c.POSTBurst, "status_rate", c.StatusRate, "status_burst", c.StatusBurst,
 		"max_sessions", c.MaxSessions, "max_sessions_hard", c.MaxSessionsHard,
 		"full_retry_after", c.FullRetryAfter, "relay_busy_retry_after", c.RelayBusyRetryAfter,
 		"reorder_initial_rtt", c.Window.InitialRTT, "reorder_window_floor", c.Window.Floor,
 		"reorder_window_cap", c.Window.Cap, "reorder_window_multiplier", c.Window.Multiplier,
-		"reorder_window_offset", c.Window.Offset, "reorder_max_packets", c.MaxPackets,
+		"reorder_window_offset", c.Window.Offset, "reorder_nack_delay", c.NACKDelay, "reorder_max_packets", c.MaxPackets,
 		"gop_warn", c.GOP.WarnAbove, "gop_max", c.GOP.EndAbove, "gop_early_gap", c.GOP.EarlyGap, "gop_samples", c.GOP.Samples,
 		"backoff_initial", c.Backoff.Initial, "backoff_max", c.Backoff.Max,
 		"record_ttl", c.RecordTTL, "max_records", c.MaxRecords,

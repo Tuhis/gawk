@@ -45,8 +45,16 @@ type ReorderConfig struct {
 	// MaxJump is the largest forward sequence jump treated as loss; a larger
 	// one is a sender restart and resets the buffer.
 	MaxJump int
-	// MaxNACK bounds the sequence numbers one burst NACKs.
+	// MaxNACK bounds the holes the window tracks (and so NACKs) at once.
+	// A gap past it is a burst no retransmit budget recovers: its untracked
+	// sequence numbers are given up on as soon as the head reaches them.
 	MaxNACK int
+	// NACKDelay is the reorder tolerance: a hole is NACKed only if still
+	// missing this long after it appeared, so a packet that is merely
+	// reordered is never NACKed and never becomes an RTT sample (D6 measures
+	// NACK → retransmit). It must stay below the window floor. Provisional
+	// until WG0.
+	NACKDelay time.Duration
 	// FrameStart reports whether a payload can open a frame; nil uses
 	// PacketStartsFrame.
 	FrameStart func([]byte) bool
@@ -59,6 +67,7 @@ func DefaultReorderConfig() ReorderConfig {
 		MaxPackets: 4096,
 		MaxJump:    3000,
 		MaxNACK:    512,
+		NACKDelay:  3 * time.Millisecond,
 	}
 }
 
@@ -105,6 +114,10 @@ type Reorder struct {
 	skipTS   uint32
 	// gapPending: a gap since the last emitted frame.
 	gapPending bool
+
+	// pending holds hole sequence numbers in the order they appeared, for
+	// their NACK once NACKDelay has passed.
+	pending []int64
 
 	nacksSent uint64
 	lost      uint64
@@ -161,7 +174,7 @@ func (r *Reorder) Push(p Packet, now time.Time) ReorderResult {
 	switch {
 	case ext-r.highest > int64(r.cfg.MaxJump):
 		// A sender restart (or a burst no window could recover): start over.
-		r.reset(ext)
+		res.Dropped += r.reset(ext)
 		res.Gap = true
 		r.gapPending = true
 	case ext < r.next:
@@ -175,6 +188,17 @@ func (r *Reorder) Push(p Packet, now time.Time) ReorderResult {
 	case r.buf[ext] != nil:
 		return res // duplicate
 	}
+	if ext-r.next > int64(r.cfg.MaxPackets) {
+		// The span from the head to the newest packet is past what the
+		// buffer may hold: whatever is between can't be waited for. Resync
+		// on this packet, as a loss (the next frame needs an IDR). This is
+		// what bounds the work an adversarial sequence (jumps just under
+		// MaxJump, packet after packet) can cause.
+		r.lost += uint64(ext - r.highest - 1)
+		res.Dropped += r.reset(ext)
+		res.Gap = true
+		r.gapPending = true
+	}
 	if h, ok := r.holes[ext]; ok {
 		if h.nacks == 1 {
 			r.rtt.Sample(now.Sub(h.nackedAt))
@@ -182,14 +206,15 @@ func (r *Reorder) Push(p Packet, now time.Time) ReorderResult {
 		delete(r.holes, ext)
 	}
 	if ext > r.highest {
-		for s := r.highest + 1; s < ext; s++ {
-			h := &hole{seenAt: now}
-			if len(res.NACK) < r.cfg.MaxNACK {
-				h.nackedAt, h.nacks = now, 1
-				res.NACK = append(res.NACK, uint16(s))
-				r.nacksSent++
-			}
-			r.holes[s] = h
+		// Track at most MaxNACK holes; the rest of a larger gap has no entry
+		// and is given up on as soon as the head reaches it (expired).
+		n := ext - r.highest - 1
+		if room := int64(r.cfg.MaxNACK - len(r.holes)); n > room {
+			n = max(room, 0)
+		}
+		for s := r.highest + 1; s <= r.highest+n; s++ {
+			r.holes[s] = &hole{seenAt: now}
+			r.pending = append(r.pending, s)
 		}
 		r.highest = ext
 	}
@@ -207,11 +232,54 @@ func (r *Reorder) Tick(now time.Time) ReorderResult {
 	return res
 }
 
-// Deadline is when the head frame's window closes, if it waits on a hole.
+// flushNACKs NACKs every hole that has stayed missing for NACKDelay.
+func (r *Reorder) flushNACKs(now time.Time, res *ReorderResult) {
+	for len(r.pending) > 0 {
+		s := r.pending[0]
+		h := r.holes[s]
+		if h != nil && h.nacks == 0 {
+			if now.Before(h.seenAt.Add(r.cfg.NACKDelay)) {
+				break
+			}
+			h.nackedAt, h.nacks = now, 1
+			res.NACK = append(res.NACK, uint16(s))
+			r.nacksSent++
+		}
+		r.pending = r.pending[1:]
+	}
+	if len(r.pending) == 0 {
+		r.pending = nil // let the backing array go
+	}
+}
+
+// nextNACK is when the oldest un-NACKed hole is due.
+func (r *Reorder) nextNACK() (time.Time, bool) {
+	for _, s := range r.pending {
+		if h := r.holes[s]; h != nil && h.nacks == 0 {
+			return h.seenAt.Add(r.cfg.NACKDelay), true
+		}
+	}
+	return time.Time{}, false
+}
+
+// Deadline is when Tick next has work: a NACK falling due, or the head
+// frame's window closing on a hole.
 func (r *Reorder) Deadline() (time.Time, bool) {
 	if !r.started {
 		return time.Time{}, false
 	}
+	nack, nackOK := r.nextNACK()
+	win, winOK := r.windowDeadline()
+	switch {
+	case nackOK && (!winOK || nack.Before(win)):
+		return nack, true
+	case winOK:
+		return win, true
+	}
+	return time.Time{}, false
+}
+
+func (r *Reorder) windowDeadline() (time.Time, bool) {
 	// Drain stops only on a hole whose window is open, or on a frame still
 	// arriving with no hole at all; the first hole from next is therefore the
 	// one everything waits on.
@@ -226,15 +294,23 @@ func (r *Reorder) Deadline() (time.Time, bool) {
 	return time.Time{}, false
 }
 
-func (r *Reorder) reset(ext int64) {
+// reset starts over at ext and returns how many buffered frames it threw
+// away.
+func (r *Reorder) reset(ext int64) int {
+	frames := map[uint32]bool{}
+	for _, p := range r.buf {
+		frames[p.ts] = true
+	}
 	r.buf = make(map[int64]*bufPkt)
 	r.holes = make(map[int64]*hole)
 	r.late = make(map[int64]time.Time)
+	r.pending = nil
 	expected := int64(r.Expected())
 	r.next, r.highest = ext, ext
 	r.first = ext - expected // keep Expected monotonic across a reset
 	r.boundary = false
 	r.skipping = false
+	return len(frames)
 }
 
 // expired reports whether the hole at s has outlived its window (or the
@@ -308,6 +384,7 @@ func (r *Reorder) startSkip(ts uint32, res *ReorderResult) {
 }
 
 func (r *Reorder) drain(now time.Time, res *ReorderResult) {
+	r.flushNACKs(now, res)
 	for r.next <= r.highest {
 		p := r.buf[r.next]
 		if r.skipping {

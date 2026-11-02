@@ -86,6 +86,10 @@ type Options struct {
 	// <= 0 disables it.
 	POSTRate  float64
 	POSTBurst int
+	// StatusRate and StatusBurst: the per-client-IP GET/DELETE /whip/status
+	// limit; StatusRate <= 0 disables it.
+	StatusRate  float64
+	StatusBurst int
 
 	// MaxSessions and MaxSessionsHard: D10's per-pod caps.
 	MaxSessions     int
@@ -135,6 +139,11 @@ type Hooks struct {
 	SkipTakeoverAck bool
 	// EngineConfig sees each session's engine configuration.
 	EngineConfig func(publisher.Config)
+
+	// capChecked runs right after a POST passed the session caps.
+	capChecked func()
+	// beforeLiveRecord runs in goLive between its check and its record write.
+	beforeLiveRecord func(*session)
 }
 
 // Server is one gateway pod.
@@ -146,7 +155,10 @@ type Server struct {
 	table   *status.Table
 	ips     *clientip.Resolver
 	limiter *ratelimit.Limiter
-	peers   *peerClient
+	// statusLimiter is the per-client-IP GET/DELETE /whip/status limit: each
+	// request for a key this pod doesn't hold asks every peer (D10).
+	statusLimiter *ratelimit.Limiter
+	peers         *peerClient
 
 	udp      net.PacketConn
 	tcp      net.Listener
@@ -208,16 +220,18 @@ func New(o Options) (*Server, error) {
 		return nil, fmt.Errorf("gateway: trusted proxy CIDRs: %w", err)
 	}
 	s := &Server{
-		opts:     o,
-		log:      o.Log,
-		m:        o.Metrics,
-		now:      o.Now,
-		table:    status.NewTable(o.MaxRecords, o.RecordTTL),
-		ips:      ips,
-		limiter:  ratelimit.New(o.POSTRate, o.POSTBurst, 65536),
-		sessions: make(map[string]*session),
-		byKey:    make(map[status.Hash]*session),
-		keyLocks: make(map[status.Hash]*keyLock),
+		opts:    o,
+		log:     o.Log,
+		m:       o.Metrics,
+		now:     o.Now,
+		table:   status.NewTable(o.MaxRecords, o.RecordTTL),
+		ips:     ips,
+		limiter: ratelimit.New(o.POSTRate, o.POSTBurst, 65536),
+
+		statusLimiter: ratelimit.New(o.StatusRate, o.StatusBurst, 65536),
+		sessions:      make(map[string]*session),
+		byKey:         make(map[status.Hash]*session),
+		keyLocks:      make(map[status.Hash]*keyLock),
 	}
 	s.peers = newPeerClient(o.Peers, o.InternalToken, o.PeerTimeout, s.m)
 	if err := s.listenMedia(); err != nil {
@@ -351,16 +365,28 @@ func (s *Server) liveSession(h status.Hash) *session {
 	return s.byKey[h]
 }
 
-// sessionCount is this pod's load for the caps: sessions plus admitted POSTs.
-func (s *Server) sessionCount() int {
+// admit checks D10's caps and reserves a slot in one critical section, so
+// two POSTs racing at maxSessions-1 can't both pass the check before either
+// reserves. The load is sessions plus admitted POSTs. A same-pod replacement
+// (exempt) doesn't grow the count; a reconnect whose session is on a peer
+// (peerExempt) is held to maxSessionsHard; anything else to maxSessions.
+// release undoes the reservation.
+func (s *Server) admit(exempt, peerExempt bool) (release func(), ok bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.sessions) + s.pending
-}
-
-// reserve admits one POST against the cap; release undoes it.
-func (s *Server) reserve() (release func()) {
-	s.mu.Lock()
+	n := len(s.sessions) + s.pending
+	switch {
+	case exempt:
+	case peerExempt:
+		if n >= s.opts.MaxSessionsHard {
+			s.mu.Unlock()
+			return nil, false
+		}
+	default:
+		if n >= s.opts.MaxSessions {
+			s.mu.Unlock()
+			return nil, false
+		}
+	}
 	s.pending++
 	s.mu.Unlock()
 	var once sync.Once
@@ -370,7 +396,7 @@ func (s *Server) reserve() (release func()) {
 			s.pending--
 			s.mu.Unlock()
 		})
-	}
+	}, true
 }
 
 // recordRefusal records a POST refused before a session existed (D9).

@@ -209,7 +209,3 @@ func (m *Meter) Sample(now time.Time, c Counters) Rates {
 	}
 	return r
 }
-
-// Lost records that frames were lost after the pipeline (the engine fell
-// behind): deltas wait for the next IDR.
-func (p *Pipeline) Lost() { p.asm.Dropped() }

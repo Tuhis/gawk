@@ -194,24 +194,16 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 		}
 		peerExempt = ok && best.snap.Live
 	}
-	// D10's caps.
-	n := s.sessionCount()
-	switch {
-	case exempt:
-		// Replaces a session on this pod: the count doesn't grow.
-	case peerExempt:
-		if n >= s.opts.MaxSessionsHard {
-			s.refuse(w, r, &key, httpRefusal{status: http.StatusServiceUnavailable, reason: status.ReasonGatewayFull, msg: "gateway full"})
-			return
-		}
-	default:
-		if n >= s.opts.MaxSessions {
-			s.refuse(w, r, &key, httpRefusal{status: http.StatusServiceUnavailable, reason: status.ReasonGatewayFull, msg: "gateway full"})
-			return
-		}
+	// D10's caps, checked and reserved in one step.
+	release, ok := s.admit(exempt, peerExempt)
+	if !ok {
+		s.refuse(w, r, &key, httpRefusal{status: http.StatusServiceUnavailable, reason: status.ReasonGatewayFull, msg: "gateway full"})
+		return
 	}
-	release := s.reserve()
 	defer release()
+	if h := s.opts.Hooks.capChecked; h != nil {
+		h()
+	}
 
 	// D5.
 	off, ref, err := inspectOffer(body)
@@ -302,6 +294,8 @@ func (s *Server) startSession(ctx context.Context, key streamkey.Key, ip netip.A
 	// From here the relay holds our publish: every failure must release it
 	// (CODE-REVIEW.md, "Error paths must release what they acquired").
 	fail := func() (*session, string, *httpRefusal) {
+		// Never registered: the engine's OnEnded must not run end() for it.
+		ss.abandon()
 		_ = ss.eng.Stop()
 		_ = pc.Close()
 		ss.src.stop()
@@ -388,6 +382,9 @@ func (s *Server) deleteLocal(id string, h status.Hash) bool {
 func (s *Server) handleStatusGet(w http.ResponseWriter, r *http.Request) {
 	s.cors(w, r, "OPTIONS, GET, DELETE")
 	w.Header().Set("Cache-Control", "no-store")
+	if !s.statusAllowed(w, r) {
+		return
+	}
 	key, err := streamkey.FromAuthorization(r.Header.Get("Authorization"))
 	if err != nil {
 		http.Error(w, "malformed stream key", http.StatusUnauthorized)
@@ -404,6 +401,9 @@ func (s *Server) handleStatusGet(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleStatusDelete(w http.ResponseWriter, r *http.Request) {
 	s.cors(w, r, "OPTIONS, GET, DELETE")
+	if !s.statusAllowed(w, r) {
+		return
+	}
 	key, err := streamkey.FromAuthorization(r.Header.Get("Authorization"))
 	if err != nil {
 		http.Error(w, "malformed stream key", http.StatusUnauthorized)
@@ -491,4 +491,29 @@ func redact(err error, key streamkey.Key, r RelayOptions) string {
 		}
 	}
 	return msg
+}
+
+// statusAllowed applies the per-client-IP status limit (the client IP by
+// D4's rules). It is generous, since the OBS page polls every 2 s while its
+// tab is visible (U7), but bounded, because a key this pod doesn't hold
+// costs one request to every peer. A refusal is 429 + Retry-After and
+// records nothing. When a trusted proxy names no client the status is still
+// answered, keyed on the proxy's own address: that misconfiguration is what
+// the page has to be able to report (lastError client_ip_unknown).
+func (s *Server) statusAllowed(w http.ResponseWriter, r *http.Request) bool {
+	ip, _, err := s.ips.Resolve(r)
+	if err != nil {
+		ap, perr := netip.ParseAddrPort(r.RemoteAddr)
+		if perr != nil {
+			http.Error(w, "client address unknown", http.StatusBadRequest)
+			return false
+		}
+		ip = ap.Addr().Unmap()
+	}
+	if ok, wait := s.statusLimiter.Allow(ip, s.now()); !ok {
+		retryAfter(w, wait)
+		http.Error(w, "too many requests", http.StatusTooManyRequests)
+		return false
+	}
+	return true
 }

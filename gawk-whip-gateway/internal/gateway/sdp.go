@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"strconv"
 	"strings"
@@ -80,8 +81,11 @@ func inspectOffer(raw []byte) (offer, *refusal, error) {
 	if video == nil {
 		return offer{}, &refusal{reason: status.ReasonCodec}, nil
 	}
+	// The first payload type that is packetization-mode 1 and names a
+	// profile and level the viewers decode; an offer listing several (a
+	// High 4:2:2 first, then Constrained Baseline) gets the decodable one.
 	c, ok := findCodec(video, "h264", func(fmtp map[string]string) bool {
-		return fmtp["packetization-mode"] == "1"
+		return fmtp["packetization-mode"] == "1" && decodableProfileLevel(fmtp["profile-level-id"])
 	})
 	if !ok {
 		ref := &refusal{reason: status.ReasonCodec}
@@ -157,4 +161,27 @@ func parseFmtp(line string) map[string]string {
 		}
 	}
 	return m
+}
+
+// decodableProfileLevel reports whether an SDP profile-level-id names what
+// D5 accepts: Constrained Baseline, Main or High, up to level 5.2. Plain
+// Baseline passes too, as in media.SPS.Supported (real encoders never use the
+// tools that separate it from Constrained Baseline). Absent, RFC 6184 §8.1
+// defaults it to 42000A (Baseline 1.0), which passes. The in-band SPS is
+// checked again on every keyframe; this only refuses an offer that says up
+// front the stream can't be played.
+func decodableProfileLevel(plid string) bool {
+	if plid == "" {
+		return true
+	}
+	b, err := hex.DecodeString(plid)
+	if err != nil || len(b) != 3 {
+		return false
+	}
+	switch b[0] {
+	case 0x42, 0x4d, 0x64:
+	default:
+		return false
+	}
+	return b[2] <= 52
 }

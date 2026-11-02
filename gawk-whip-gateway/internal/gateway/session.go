@@ -27,6 +27,17 @@ import (
 // first connectivity check before it counts as lost. Provisional until WG0.
 const iceConnectTimeout = 30 * time.Second
 
+// remoteCloseGrace is how long a PeerConnection the sender closed waits for
+// its WHIP DELETE before the session counts as lost. OBS's Stop Streaming
+// (WHIPOutput::StopThread) closes the PeerConnection, which sends DTLS
+// close_notify, and only then sends the DELETE: milliseconds apart, one
+// request through the Ingress on a connection OBS already holds. Without the
+// wait every normal stop read as OBS vanishing (code 0, grace) instead of
+// D8's 4014. 2 s is several Ingress round trips of headroom; a crashed OBS
+// sends no close_notify (that is the ICE-failure path), so the wait only
+// delays the lost of a sender that closed cleanly and never said DELETE.
+const remoteCloseGrace = 2 * time.Second
+
 type endKind int
 
 const (
@@ -100,6 +111,15 @@ type session struct {
 	snap      status.Snapshot
 	engineErr error
 	meter     *media.Meter
+
+	// recMu orders goLive's and end's record writes (see goLive).
+	recMu sync.Mutex
+	// awaitIDR: the engine refused an AU; deltas wait for the next pushed
+	// keyframe. Loop-owned.
+	awaitIDR bool
+
+	// push hands one AU to the engine (src.pushFrame; a seam for tests).
+	pushAU func(publisher.AccessUnit) bool
 }
 
 func newSessionID() string {
@@ -121,6 +141,7 @@ func newSession(srv *Server, key streamkey.Key, o offer) *session {
 	}
 	ss.log = srv.log.With("session", ss.id[:8], "key", hex.EncodeToString(key.Hash[:4]))
 	ss.src = newSource(o.audio != nil)
+	ss.pushAU = ss.src.pushFrame
 	if o.sps != nil {
 		ss.pipe.SetParameterSets(o.sps, o.pps)
 	}
@@ -265,14 +286,29 @@ func (ss *session) onConnectionState(st webrtc.PeerConnectionState) {
 	switch st {
 	case webrtc.PeerConnectionStateConnected:
 		ss.goLive()
-	case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
+	case webrtc.PeerConnectionStateFailed:
 		go ss.end(endCause{kind: endLost, reason: status.ReasonLost})
+	case webrtc.PeerConnectionStateClosed:
+		ss.mu.Lock()
+		ours := ss.ending // end() closing it, not the sender
+		ss.mu.Unlock()
+		if !ours {
+			// The sender closed it (DTLS close_notify): its DELETE is on the
+			// way; keep the session (and the relay publish) findable until it
+			// arrives, then end as lost.
+			time.AfterFunc(remoteCloseGrace, func() { ss.end(endCause{kind: endLost, reason: status.ReasonLost}) })
+		}
 	}
 }
 
 // goLive marks the session live: D9's "a session that goes live clears the
 // key's lastError".
 func (ss *session) goLive() {
+	// recMu makes "check not ending, write live" one step against end's
+	// record write: whichever writes second wins, and end always writes
+	// after it has set ending, so a live record can't outlive its session.
+	ss.recMu.Lock()
+	defer ss.recMu.Unlock()
 	ss.mu.Lock()
 	if ss.live || ss.ending {
 		ss.mu.Unlock()
@@ -281,6 +317,9 @@ func (ss *session) goLive() {
 	ss.live = true
 	snap := ss.snap
 	ss.mu.Unlock()
+	if h := ss.srv.opts.Hooks.beforeLiveRecord; h != nil {
+		h(ss)
+	}
 	ss.log.Info("session live")
 	ss.srv.updateRecordFor(ss, func(r *status.Record) {
 		r.State = status.StateLive
@@ -382,7 +421,9 @@ func (ss *session) apply(out media.Output) {
 		ssrc := ss.videoSSRC
 		ss.mu.Unlock()
 		m.nacks.Add(float64(len(out.NACK)))
-		if err := ss.pc.WriteRTCP([]rtcp.Packet{&rtcp.TransportLayerNack{
+		if ss.pc == nil {
+			// Not yet (or never) answered: nothing to send it on.
+		} else if err := ss.pc.WriteRTCP([]rtcp.Packet{&rtcp.TransportLayerNack{
 			MediaSSRC: ssrc, Nacks: rtcp.NackPairsFromSequenceNumbers(out.NACK),
 		}}); err != nil {
 			ss.log.Debug("NACK send failed", "err", err)
@@ -394,21 +435,24 @@ func (ss *session) apply(out media.Output) {
 	if out.IDRWaitDrops > 0 {
 		m.framesDropped.WithLabelValues(dropAwaitingIDR).Add(float64(out.IDRWaitDrops))
 	}
-	backpressured := false
 	for _, au := range out.AUs {
-		if backpressured && !au.Keyframe {
+		if ss.awaitIDR && !au.Keyframe {
 			m.framesDropped.WithLabelValues(dropBackpressure).Inc()
 			continue
 		}
-		if !ss.src.pushFrame(au) {
-			// The engine fell behind: drop, and the deltas after it, until
-			// the next IDR, exactly like a loss.
-			backpressured = true
-			ss.pipe.Lost()
+		if !ss.pushAU(au) {
+			// The engine fell behind: drop it, and the deltas after it until
+			// a keyframe actually reaches the engine. Tracked here, at the
+			// push, not in the assembler: frames already assembled behind
+			// this one (a batch a filled hole released) include that
+			// keyframe, and the deltas after it are good.
+			ss.awaitIDR = true
 			m.framesDropped.WithLabelValues(dropBackpressure).Inc()
 			continue
 		}
-		backpressured = false
+		if au.Keyframe {
+			ss.awaitIDR = false
+		}
 		m.frames.Inc()
 	}
 	if v := out.Violation; v != nil {
@@ -516,6 +560,8 @@ func (ss *session) end(c endCause) {
 	ss.srv.m.ended.WithLabelValues(c.metricReason()).Inc()
 
 	if c.kind != endReplaced && c.kind != endShutdown {
+		ss.recMu.Lock()
+		defer ss.recMu.Unlock()
 		ss.srv.updateRecordFor(ss, func(r *status.Record) {
 			r.State = status.StateEnded
 			r.Session = &snap
@@ -536,13 +582,15 @@ func (ss *session) end(c endCause) {
 	ss.srv.removeSession(ss)
 }
 
-// updateRecordFor updates the key's record on behalf of ss, unless a newer
-// session for the key has taken it over on this pod.
+// updateRecordFor updates the key's record on behalf of ss, only while ss
+// is the key's registered session on this pod: not after a newer one took
+// over, and never for one that was never registered (a POST that failed
+// after its relay dial must not wipe the key's lastError).
 func (srv *Server) updateRecordFor(ss *session, fn func(*status.Record)) {
 	srv.mu.Lock()
 	cur := srv.byKey[ss.key.Hash]
 	srv.mu.Unlock()
-	if cur != nil && cur != ss {
+	if cur != ss {
 		return
 	}
 	srv.table.Update(ss.key.Hash, srv.now(), fn)
@@ -650,5 +698,17 @@ func (s *source) pushAudio(p publisher.AudioPacket) {
 	select {
 	case s.audio <- p:
 	default: // the engine fell behind; audio is subordinate
+	}
+}
+
+// abandon retires a session that was never registered (a POST failing after
+// its relay dial): end() becomes a no-op for it and its readers stop.
+func (ss *session) abandon() {
+	ss.mu.Lock()
+	already := ss.ending
+	ss.ending = true
+	ss.mu.Unlock()
+	if !already {
+		close(ss.done)
 	}
 }
