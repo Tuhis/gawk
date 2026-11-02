@@ -2826,3 +2826,16 @@ entries still describe code `gawk-pubsim` runs (now
   `whipGatewayUrl` comes from a second run of `dev/config-gen.sh`
   (`whip-config-gen`) that `app` waits for with `required: false`.
   ([docs/41](41-local-dev-stack.md))
+- **Gateway API has no standard way to hash on a header.** ingress-nginx's
+  `upstream-hash-by` has no HTTPRoute field, so the WHIP gateway's D10 key
+  hash is an implementation policy: on Envoy Gateway a `BackendTrafficPolicy`
+  with `loadBalancer.type: ConsistentHash` and `consistentHash.type: Headers`
+  on `Authorization`. An implementation without one (Cilium's, say) holds
+  the gateway at one replica. ([docs/83](83-whip-gateway.md) §12.5,
+  self-hosting §16)
+- **An Envoy Gateway `BackendTrafficPolicy` on a route replaces the
+  Gateway's one for that route, unless it sets `mergeType`.** Without it the
+  most specific policy wins outright, so a route-level hash policy silently
+  drops the Gateway-wide timeouts (ioio's sets `requestTimeout: 0s` and a
+  300 s stream idle timeout). The WHIP gateway's policy sets
+  `mergeType: StrategicMerge`. ([docs/83](83-whip-gateway.md) §12.5)

@@ -1,5 +1,6 @@
-# The WHIP endpoint behind the Ingress (TLS there). ClusterIP: the public
-# way in is the Ingress, which must hash on the bearer key (ingress.yaml).
+# The WHIP endpoint behind the HTTPRoute or Ingress (TLS there). ClusterIP:
+# the public way in is the route, which must hash on the bearer key
+# (httproute.yaml, ingress.yaml).
 apiVersion: v1
 kind: Service
 metadata:

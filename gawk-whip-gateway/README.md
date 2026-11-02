@@ -35,8 +35,9 @@ OBS ──POST /whip (SDP offer, Bearer gawk1_<ID>_<token>)──▶ gateway :80
   feeds [`gawk-server/publisher`](../gawk-server/publisher), the shared Go
   publisher engine (chunking, keyframes on reliable streams, parity,
   TimeSync, auto-resume across relay drains).
-- **Several replicas** (D10): a StatefulSet, the Ingress hashing on the
-  `Authorization` header, and an internal peer lookup for a key whose
+- **Several replicas** (D10): a StatefulSet, the public route hashing on
+  the `Authorization` header (a Gateway API HTTPRoute with Envoy Gateway's
+  consistent hash, or an ingress-nginx Ingress), and an internal peer lookup for a key whose
   session or records sit on another pod after a rescale or a rollout.
 
 ### HTTP API (public listener)
@@ -81,7 +82,7 @@ warning `gop_long`; lastError `lost`, `gop_too_long`, `bframes`,
 
 | Port | Default | Exposure |
 |---|---|---|
-| Public HTTP (`-listen`) | `:8080` | behind the public Ingress (TLS there), hashed on `Authorization` |
+| Public HTTP (`-listen`) | `:8080` | behind the public HTTPRoute or Ingress (TLS there), hashed on `Authorization` |
 | Media UDP + ICE-TCP (`-media-base-port` + ordinal) | `8189` + N | one LoadBalancer Service per pod, shared address |
 | Internal peer listener (`-internal-listen`) | `:8081` | other gateway pods only; never routed publicly |
 | Ops (`-ops-listen`): `/healthz`, `/readyz`, `/metrics` | `:9090` | cluster only (ServiceMonitor) |
@@ -103,7 +104,7 @@ OBS (WG0).
 | `-listen` | `:8080` | public HTTP listener |
 | `-internal-listen` | `:8081` | D10 peer listener |
 | `-ops-listen` | `:9090` | `/healthz`, `/readyz`, `/metrics` |
-| `-tls-cert-file`, `-tls-key-file` | — | serve the public listener over TLS directly (no Ingress) |
+| `-tls-cert-file`, `-tls-key-file` | — | serve the public listener over TLS directly (no Gateway or Ingress) |
 | `-relay-url` | **required** | the relay, `https://host:port` |
 | `-relay-publish-secret` | — | the relay's `-publish-secret` (prefer the env) |
 | `-relay-publish-proxy-token` | — | the relay's `-publish-proxy-token` (D4; prefer the env) |
@@ -154,11 +155,12 @@ script probing keys or burning SDP-parse CPU is held to one attempt a second.
 - `-publish-proxy-token` on the relay, the same value as the gateway's
   `-relay-publish-proxy-token`, so the relay's bans and rate limits see OBS
   users' addresses instead of the gateway pod's (D4).
-- Behind an Ingress: `-trusted-proxy-cidrs` lists only the ingress
-  controller's addresses (exact node addresses under `hostNetwork`, both
-  families on dual-stack), and the ingress controller must see real client
-  IPs (`externalTrafficPolicy: Local` or PROXY protocol). An empty list
-  behind an Ingress puts every user in one rate-limit bucket.
+- Behind a proxy (a Gateway's Envoy pods, an ingress controller):
+  `-trusted-proxy-cidrs` lists only the proxy's addresses (exact node
+  addresses under `hostNetwork`, both families on dual-stack), and the proxy
+  must see real client IPs (`externalTrafficPolicy: Local` or PROXY
+  protocol). An empty list behind a proxy puts every user in one rate-limit
+  bucket.
 
 ## Running it locally
 

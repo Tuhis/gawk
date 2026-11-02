@@ -341,9 +341,10 @@ Re-deriving them costs a cycle and has happened before.
 
 ## Deployment & CI (locked in — decided 2026-07-12)
 - **Helm charts, one per component**, separately versioned; **chart version ==
-  appVersion == image tag** always. The frontend is deployed too (nginx behind
-  Ingress class `nginx-int`); the relay is a UDP LoadBalancer (nginx ingress
-  can't proxy WebTransport).
+  appVersion == image tag** always. The frontend is deployed too, behind the
+  cluster's HTTP proxy (on the reference deployment Gateway API with Envoy
+  Gateway, routes managed in `Tuhis/ioio`; ingress-nginx is gone there); the
+  relay is a UDP LoadBalancer (an HTTP proxy can't carry WebTransport).
 - **Versioning**: SemVer 2 from conventional commits via release-please
   (monorepo manifest mode, **one combined release PR** — separate PRs conflicted
   on the shared manifest, don't switch back; tags stay per-component:

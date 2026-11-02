@@ -2100,17 +2100,27 @@ the OBS page only while that relay is the selected server (docs/83 OD4).
   `publishProxy.tokenSecretRef` and an explicit `config.resumeTokenKeyRef`.
   Setting the key for the first time revokes every resume token in use once;
   §6 says how to do it between broadcasts.
-- **ingress-nginx in front of the WHIP endpoint**, hashing on the bearer key.
-  The chart's Ingress always sets
-  `nginx.ingress.kubernetes.io/upstream-hash-by: "$http_authorization"`, so
-  every request for a key (OBS's `POST` and `DELETE`, the OBS page's status
-  reads) reaches the pod holding that key's session. A controller that
-  can't hash on a header isn't supported. Without the hash a stop and the
-  status land on pods that never saw the session (a peer lookup between the
-  pods covers rescales and rollouts, not a missing hash).
-- **The ingress controller must see real client IPs**: its own Service on
-  `externalTrafficPolicy: Local`, or PROXY protocol. The gateway rate-limits
-  `POST /whip` per OBS user and passes that address to the relay.
+- **A route in front of the WHIP endpoint that hashes on the bearer key**,
+  so every request for a key (OBS's `POST` and `DELETE`, the OBS page's
+  status reads) reaches the pod holding that key's session. The chart
+  renders one of two:
+  - **Gateway API** (`httpRoute`): an `HTTPRoute` on your Gateway's HTTPS
+    listener for the WHIP host. Gateway API has no standard header hash, so
+    the hash is the implementation's: with `httpRoute.keyHash:
+    envoy-gateway` (the default) the chart adds an Envoy Gateway
+    `BackendTrafficPolicy` with a consistent hash on `Authorization`.
+  - **ingress-nginx** (`ingress`): the Ingress always sets
+    `nginx.ingress.kubernetes.io/upstream-hash-by: "$http_authorization"`.
+
+  On anything else (a Gateway API implementation without a header hash,
+  another Ingress controller), run `replicas: 1`: with `httpRoute.keyHash:
+  none` for an HTTPRoute, or with your own route to the chart's Service. Without the hash a stop and the status land on pods that never saw
+  the session (a peer lookup between the pods covers rescales and rollouts,
+  not a missing hash).
+- **The proxy must see real client IPs**: the Gateway's or controller's own
+  Service on `externalTrafficPolicy: Local`, or PROXY protocol. The gateway
+  rate-limits `POST /whip` per OBS user and passes that address to the
+  relay.
 - **A shared address for media and a port per pod.** Pod N answers ICE on
   `media.basePort + N` (default 8189), UDP and ICE-TCP, through its own
   LoadBalancer Service; all of them share `publicAddress`. On MetalLB the
@@ -2126,15 +2136,20 @@ the OBS page only while that relay is the selected server (docs/83 OD4).
 The gateway reads the OBS user's address from `X-Forwarded-For` only when
 the request arrives from an address in `trustedProxyCidrs`:
 
-- List **only the proxy that writes the header**: the ingress controller's
-  pod range, or, when it runs on `hostNetwork`, the exact node addresses
-  (`/32`, `/128`). Never a subnet clients share; on a homelab the node subnet
-  is often the broadcaster's own LAN. Never a kube-proxy SNAT hop in front
-  of the controller.
+- List **only the proxy that writes the header**: the Gateway's proxy pods
+  (on Envoy Gateway, the `envoy` pods' range) or the ingress controller's,
+  or, when it runs on `hostNetwork`, the exact node addresses (`/32`,
+  `/128`). Never a subnet clients share; on a homelab the node subnet is
+  often the broadcaster's own LAN. Never a kube-proxy SNAT hop in front of
+  the proxy. Envoy and ingress-nginx both append the address they received
+  the request from, which is what the gateway's right-to-left walk needs.
+- A pod range is shared with every other pod in the cluster, so with
+  `networkPolicy.enabled` set `networkPolicy.httpProxy` to the proxy's
+  pods: then nothing else can reach the WHIP port to forge the header.
 - On a dual-stack cluster, list both address families.
-- **Left empty behind an Ingress, every OBS user shares one rate-limit
+- **Left empty behind a proxy, every OBS user shares one rate-limit
   bucket**, on the gateway and on the relay. The chart's install notes warn
-  about it. A list that misses the controller's real address is counted in
+  about it. A list that misses the proxy's real address is counted in
   `gawk_whip_xff_misconfigured_total`, and the OBS page tells the user the
   server "can't see where your stream comes from" when the header is
   unusable.
@@ -2157,7 +2172,35 @@ media:
   loadBalancerIP: 203.0.113.20
 internalTokenRef: {name: gawk-whip, key: internalToken}
 allowedOrigins: [https://gawk.example.com]     # the web app, for the OBS page's status reads
-trustedProxyCidrs: [10.42.0.0/16]              # the ingress controller's pods (16.2)
+trustedProxyCidrs: [10.42.0.0/16]              # the Gateway's proxy pods (16.2)
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: gw-ext                             # your Gateway
+      namespace: envoy-gateway-system
+      sectionName: whip                        # its HTTPS listener for whip.example.com
+  hostnames: [whip.example.com]
+  keyHash: envoy-gateway
+networkPolicy:
+  enabled: true
+  httpProxy:
+    namespaceSelector: {kubernetes.io/metadata.name: envoy-gateway-system}
+    podSelector: {app.kubernetes.io/name: envoy, app.kubernetes.io/component: proxy}
+```
+
+The Gateway's listener is yours, not the chart's: an HTTPS listener for the
+WHIP host with its certificate, whose `allowedRoutes` admits the gateway's
+namespace. The hash policy sets `mergeType: StrategicMerge`, so a
+`BackendTrafficPolicy` you attach to the whole Gateway (timeouts, say) still
+applies to this route. Check that the policy is `Accepted`:
+`kubectl get backendtrafficpolicy gawk-whip-gateway -o jsonpath='{.status}'`.
+
+On ingress-nginx, replace `httpRoute` with the Ingress, and point
+`networkPolicy.httpProxy` at the controller (or leave it empty: the chart
+falls back to `networkPolicy.ingressController`, whose default is
+ingress-nginx):
+
+```yaml
 ingress:
   enabled: true
   className: nginx
