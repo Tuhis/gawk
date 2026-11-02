@@ -22,8 +22,10 @@ spec:
   policyTypes: [Ingress, Egress]
   ingress:
     # WHIP over HTTP: from the HTTP proxy only (Gateway or Ingress).
-    # A peer is rendered only for a selector that names something: an empty
-    # podSelector would admit every pod in the namespace.
+    # A peer is rendered only when a selector names something: a bare
+    # podSelector {} with no namespaceSelector would admit the whole
+    # namespace. With a namespaceSelector, podSelector {} means every pod
+    # in the namespaces it selects.
     - from:
         {{- if or $proxy.podSelector $proxy.namespaceSelector }}
         - podSelector:

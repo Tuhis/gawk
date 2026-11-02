@@ -2684,11 +2684,21 @@ jobs:
           # A proxy that names nothing (httpProxy empty, the 1.0 defaults
           # nulled) would render a peerless from, which admits every source:
           # refused (PR #689 review).
-          if helm template gawk-whip-gateway "$chart" --set networkPolicy.enabled=true \
-               --set networkPolicy.ingressController.podSelector=null \
-               --set networkPolicy.ingressController.namespaceSelector=null >/dev/null 2>&1; then
-            echo "::error::a NetworkPolicy whose HTTP proxy names nothing rendered (admits every source)"; exit 1
-          fi
+          # Pinned to the refusal's own message, so an unrelated render error
+          # can't pass it. ingressController=null is the obvious way to drop
+          # ingress-nginx; httpProxy=null still falls back to it.
+          for none in "--set networkPolicy.ingressController.podSelector=null --set networkPolicy.ingressController.namespaceSelector=null" \
+                      "--set networkPolicy.ingressController=null"; do
+            # shellcheck disable=SC2086
+            if err=$(helm template gawk-whip-gateway "$chart" --set networkPolicy.enabled=true $none 2>&1 >/dev/null); then
+              echo "::error::a NetworkPolicy whose HTTP proxy names nothing rendered with $none (admits every source)"; exit 1
+            fi
+            grep -q 'a from with no peers' <<<"$err" || { echo "::error::$none refused for the wrong reason: $err"; exit 1; }
+          done
+          np=$(helm template gawk-whip-gateway "$chart" --set networkPolicy.enabled=true \
+                 --set networkPolicy.httpProxy=null --show-only templates/networkpolicy.yaml)
+          grep -q 'app.kubernetes.io/name: ingress-nginx' <<<"$np" || {
+            echo "::error::httpProxy=null did not fall back to ingressController"; exit 1; }
 
           # Gateway API (D10 amended 2026-11-02): the HTTPRoute attaches to
           # the named listener and routes /whip to the http Service, and for
