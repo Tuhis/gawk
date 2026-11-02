@@ -302,3 +302,66 @@ func TestD6SenderRestartResets(t *testing.T) {
 		t.Fatalf("got %+v", res)
 	}
 }
+
+// D6, PR #688 review round 1: a hole met while dropping a frame can also
+// cover the head of the next one. It gets its own window, as any hole does:
+// here A loses a middle packet at t0 and, in a later burst, its tail and the
+// head of the IDR behind it. When A's window closes, the burst's retransmits
+// are still in flight, and they must still recover B.
+func TestD6SkippedFrameWaitsOnAHoleThatCoversTheNextFrame(t *testing.T) {
+	r := NewReorder(DefaultReorderConfig())
+	fs := &frameStream{s: testmedia.Stream{FPS: 60}}
+	a := fs.packets(testmedia.P(5000, 1))
+	b := fs.packets(testmedia.IDR(testmedia.SPS(testmedia.SPSOptions{}), 5000))
+	if len(a) < 4 || len(b) < 3 {
+		t.Fatalf("want multi-packet frames, got %d and %d", len(a), len(b))
+	}
+	last := len(a) - 1
+	pushAll(r, append([]Packet{a[0]}, a[2:last]...), t0) // a[1] lost at t0
+	r.Tick(t0.Add(ms(3)))                                // its NACK
+	pushAll(r, b[2:], t0.Add(ms(50)))                    // a[last], b[0] and b[1] lost at t0+50
+	r.Tick(t0.Add(ms(53)))                               // their NACKs
+	res := r.Tick(t0.Add(r.Window()))                    // A's window closes
+	if res.Dropped != 1 || len(res.Frames) != 0 {
+		t.Fatalf("at A's deadline: dropped %d, %d frames; want A dropped and nothing emitted", res.Dropped, len(res.Frames))
+	}
+	res = pushAll(r, []Packet{a[last], b[0], b[1]}, t0.Add(ms(70))) // retransmits, in their window
+	if len(res.Frames) != 1 || res.Frames[0].Timestamp != b[0].Timestamp || len(res.Frames[0].Payloads) != len(b) {
+		t.Fatalf("after the retransmits: %d frames, dropped %d; want the whole IDR B emitted", len(res.Frames), res.Dropped)
+	}
+}
+
+// D6's bound, PR #688 review round 1: with holes in consecutive frames, the
+// frame behind them still waits at most one window from its own arrival. A
+// hole's window runs from when it was seen, which is when the first packet
+// past it arrived, so no hole ahead of a frame is seen after that frame
+// arrives. Measured from the first hole, the chain is longer; no frame waits
+// longer.
+func TestD6ChainedHolesHoldAFrameAtMostOneWindowFromItsArrival(t *testing.T) {
+	r := NewReorder(DefaultReorderConfig())
+	fs := &frameStream{s: testmedia.Stream{FPS: 60}}
+	f1, f2, f3 := fs.packets(bigP(1)), fs.packets(bigP(2)), fs.packets(bigP(3))
+	pushAll(r, append([]Packet{f1[0]}, f1[2:]...), t0) // F1's hole, seen at t0
+	arrive := t0.Add(ms(60))
+	pushAll(r, append([]Packet{f2[0]}, f2[2:]...), arrive) // F2's hole, seen at t0+60
+	pushAll(r, f3, arrive)                                 // F3 whole, behind both
+	w := r.Window()
+	var released time.Time
+	for now := t0; now.Before(t0.Add(ms(400))); now = now.Add(time.Millisecond) {
+		res := r.Tick(now)
+		for _, f := range res.Frames {
+			if f.Timestamp == f3[0].Timestamp {
+				released = now
+			}
+		}
+		if !released.IsZero() {
+			break
+		}
+	}
+	if released.IsZero() {
+		t.Fatal("F3 was never released")
+	}
+	if waited := released.Sub(arrive); waited > w+time.Millisecond {
+		t.Fatalf("F3 waited %v from its arrival, more than one window %v", waited, w)
+	}
+}

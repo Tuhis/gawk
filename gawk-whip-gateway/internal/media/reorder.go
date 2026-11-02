@@ -89,7 +89,10 @@ type hole struct {
 // hole's window closes (window = clamp(1.25 × RTT + 5 ms, 20, 150 ms),
 // measured from when the hole was first seen) and is then dropped, along
 // with the knowledge that whatever follows needs an IDR. Frames queued behind
-// it wait with it, so none waits longer than one window.
+// it wait with it, so none waits longer than one window from its own
+// arrival: a hole is seen when the first packet past it arrives, so no hole
+// ahead of a frame is seen after the frame arrives. A hole met while dropping
+// a frame waits its window too, since it may hold the next frame's head.
 //
 // Holes are NACKed once, the moment they're seen; the time to the
 // retransmit's arrival is the RTT sample (RTTEstimator).
@@ -390,7 +393,12 @@ func (r *Reorder) drain(now time.Time, res *ReorderResult) {
 		if r.skipping {
 			switch {
 			case p == nil:
-				// A hole inside the frame being dropped: nothing to wait for.
+				// A hole met while dropping a frame may also hold the head
+				// of the next one (we can't tell which frame a missing
+				// packet was in), so it gets its own window like any hole.
+				if !r.expired(r.next, now) {
+					return
+				}
 				r.giveUpHole(res)
 				continue
 			case p.ts == r.skipTS:
