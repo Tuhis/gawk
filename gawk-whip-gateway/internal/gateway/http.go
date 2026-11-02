@@ -356,8 +356,13 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	// D10: the session may be on the pod the key hashed to before.
+	// D10: the session may be on the pod the key hashed to before. Asking
+	// costs one request to every peer, so this half is rate-limited like a
+	// status read; a local session's DELETE (OBS's Stop) never is.
 	if s.peers.enabled() {
+		if !s.statusAllowed(w, r) {
+			return
+		}
 		if best, ok := s.peers.best(r.Context(), key.Hash); ok && best.snap.Live && best.snap.SessionID == id {
 			if s.peers.deleteSession(r.Context(), best.peer, id, key.Hash) {
 				w.WriteHeader(http.StatusOK)
@@ -499,7 +504,8 @@ func redact(err error, key streamkey.Key, r RelayOptions) string {
 // statusAllowed applies the per-client-IP status limit (the client IP by
 // D4's rules). It is generous, since the OBS page polls every 2 s while its
 // tab is visible (U7), but bounded, because a key this pod doesn't hold
-// costs one request to every peer. A refusal is 429 + Retry-After and
+// costs one request to every peer (and so does a DELETE for a session it
+// doesn't hold, which shares the limit). A refusal is 429 + Retry-After and
 // records nothing. When a trusted proxy names no client the status is still
 // answered, keyed on the proxy's own address: that misconfiguration is what
 // the page has to be able to report (lastError client_ip_unknown).

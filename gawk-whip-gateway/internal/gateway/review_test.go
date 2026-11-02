@@ -244,3 +244,21 @@ func TestWG7StatusIsRateLimitedPerClientIP(t *testing.T) {
 		t.Fatalf("15 status requests at once: no 429 + Retry-After (got %d)", limited.code)
 	}
 }
+
+// PR #688 review round 1 finding 4: a DELETE for a session this pod doesn't
+// hold asks every peer, so it is rate-limited per client IP like a status
+// read. A DELETE for a local session is never limited: it is OBS's Stop.
+func TestWG7UnknownSessionDeletesAreRateLimitedPerClientIP(t *testing.T) {
+	a, _ := pair(t, newFakeRelay(), func(o *Options) { o.StatusRate, o.StatusBurst = 2, 10 })
+	var limited resp
+	for i := 0; i < 15; i++ {
+		r := do(t, http.MethodDelete, a.public.URL+"/whip/session/nosuchsession", newKey(t).String(), "", "", nil)
+		if r.code == http.StatusTooManyRequests {
+			limited = r
+			break
+		}
+	}
+	if limited.code != http.StatusTooManyRequests || limited.hdr.Get("Retry-After") == "" {
+		t.Fatalf("15 unknown-session DELETEs at once: no 429 + Retry-After (got %d)", limited.code)
+	}
+}
