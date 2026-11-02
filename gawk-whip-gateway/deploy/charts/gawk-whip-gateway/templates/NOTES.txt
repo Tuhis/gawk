@@ -17,10 +17,15 @@ gawk-whip-gateway {{ .Chart.AppVersion }}: WHIP ingest for OBS (docs/83).
   it (or internalTokenRef) is set.
 {{- end }}
 
+{{- $host := .Values.ingress.host }}
+{{- if and .Values.httpRoute.enabled .Values.httpRoute.hostnames }}
+{{- $host = first .Values.httpRoute.hostnames }}
+{{- end }}
+
 OBS users enter, in Settings → Stream (Service: WHIP):
-  Server:       https://{{ .Values.ingress.host }}/whip
+  Server:       https://{{ $host }}/whip
   Bearer Token: the gawk1_… key the web app's OBS page creates
-The frontend chart's config.whipGatewayUrl must be https://{{ .Values.ingress.host }},
+The frontend chart's config.whipGatewayUrl must be https://{{ $host }},
 and allowedOrigins here must list the frontend's origin.
 
 Requirements (docs/83 D4, D10, D12; docs/self-hosting.md):
@@ -30,19 +35,36 @@ Requirements (docs/83 D4, D10, D12; docs/self-hosting.md):
    Setting the key on a relay that had none revokes every resume token in
    use, once.
 
-2. The Ingress must hash on the Authorization header. This chart sets
+2. Every request for a key must reach the pod holding its session (D10).
+{{- if .Values.httpRoute.enabled }}
+{{- if eq .Values.httpRoute.keyHash "envoy-gateway" }}
+   The HTTPRoute's BackendTrafficPolicy hashes on Authorization (Envoy
+   Gateway). Check that it is Accepted:
+   kubectl get backendtrafficpolicy {{ $full }} -o jsonpath='{.status}'
+{{- else }}
+   httpRoute.keyHash is none, which holds only at replicas: 1.
+{{- end }}
+   The Gateway needs an HTTPS listener for the WHIP host that allows this
+   namespace's routes.
+{{- else if .Values.ingress.enabled }}
+   The Ingress hashes on Authorization through
    nginx.ingress.kubernetes.io/upstream-hash-by: "$http_authorization";
-   ingress-nginx is the only controller supported. Without the hash a
-   key's DELETE and status reads land on pods that never saw its session.
+   ingress-nginx is the only Ingress controller supported.
+{{- else }}
+   Neither httpRoute nor ingress is enabled: route the WHIP host to Service
+   {{ $full }} with a hash on the Authorization header yourself, or keep
+   replicas: 1.
+{{- end }}
 
 3. trustedProxyCidrs (now: {{ if .Values.trustedProxyCidrs }}{{ join ", " .Values.trustedProxyCidrs }}{{ else }}empty{{ end }}) lists ONLY the proxy
-   that writes X-Forwarded-For: the ingress controller's pod range, or
-   under hostNetwork its exact node addresses (/32, /128). Never a subnet
+   that writes X-Forwarded-For: the Gateway's proxy pods or the ingress
+   controller's pod range, or under hostNetwork its exact node addresses
+   (/32, /128). Never a subnet
    clients share, never a kube-proxy SNAT hop in front of it; both families
-   on dual-stack. The ingress controller must see real client IPs
+   on dual-stack. The proxy must see real client IPs
    (externalTrafficPolicy: Local on its Service, or PROXY protocol).
-{{- if and .Values.ingress.enabled (not .Values.trustedProxyCidrs) }}
-   WARNING: the Ingress is enabled and trustedProxyCidrs is empty, so
+{{- if and (or .Values.ingress.enabled .Values.httpRoute.enabled) (not .Values.trustedProxyCidrs) }}
+   WARNING: a route is enabled and trustedProxyCidrs is empty, so
    every OBS user shares ONE rate-limit bucket on the gateway and on the
    relay.
 {{- end }}

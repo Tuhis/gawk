@@ -2666,6 +2666,49 @@ jobs:
           np=$(helm template gawk-whip-gateway "$chart" --set replicas=3 --set networkPolicy.enabled=true --show-only templates/networkpolicy.yaml)
           [ "$(grep -c 'endPort: 8191$' <<<"$np")" = 2 ]
           for port in 8080 8081 9090 4433 53; do grep -qE "port: $port$" <<<"$np"; done
+          # The WHIP port admits only the HTTP proxy: 1.0's ingress-nginx
+          # default until httpProxy names one, then only that (Envoy Gateway
+          # here), and an httpProxy of only cidrs renders no pod peer, which
+          # would admit every pod in the namespace.
+          grep -q 'app.kubernetes.io/name: ingress-nginx' <<<"$np"
+          np=$(helm template gawk-whip-gateway "$chart" --set networkPolicy.enabled=true \
+                 --set-json 'networkPolicy.httpProxy.namespaceSelector={"kubernetes.io/metadata.name":"envoy-gateway-system"}' \
+                 --set-json 'networkPolicy.httpProxy.podSelector={"app.kubernetes.io/name":"envoy"}' --show-only templates/networkpolicy.yaml)
+          grep -q 'kubernetes.io/metadata.name: envoy-gateway-system' <<<"$np" && ! grep -q ingress-nginx <<<"$np" || {
+            echo "::error::httpProxy did not replace the ingress-nginx default"; echo "$np"; exit 1; }
+          np=$(helm template gawk-whip-gateway "$chart" --set networkPolicy.enabled=true \
+                 --set 'networkPolicy.httpProxy.cidrs={192.0.2.1/32}' --show-only templates/networkpolicy.yaml)
+          www=$(sed -n '/WHIP over HTTP/,/port: 8080$/p' <<<"$np")
+          grep -q 'cidr: 192.0.2.1/32' <<<"$www" && ! grep -q -- '- podSelector:' <<<"$www" || {
+            echo "::error::a cidrs-only httpProxy rendered a pod peer"; echo "$www"; exit 1; }
+
+          # Gateway API (D10 amended 2026-11-02): the HTTPRoute attaches to
+          # the named listener and routes /whip to the http Service, and for
+          # Envoy Gateway a BackendTrafficPolicy hashes on Authorization,
+          # merged into the Gateway's own policy. keyHash none is refused
+          # above one replica, and so is a route plus an Ingress.
+          gw=(--set httpRoute.enabled=true --set 'httpRoute.parentRefs[0].name=gw-ext'
+              --set 'httpRoute.parentRefs[0].namespace=envoy-gateway-system'
+              --set 'httpRoute.parentRefs[0].sectionName=whip' --set 'httpRoute.hostnames={whip.example.com}')
+          hr=$(helm template gawk-whip-gateway "$chart" "${gw[@]}" --show-only templates/httproute.yaml)
+          [ "$(kinds <<<"$hr")" = " 1 kind: BackendTrafficPolicy; 1 kind: HTTPRoute;" ] || {
+            echo "::error::httpRoute render: $(kinds <<<"$hr")"; exit 1; }
+          grep -q 'sectionName: whip$' <<<"$hr" && grep -q -- '- whip.example.com$' <<<"$hr"
+          grep -q 'value: /whip$' <<<"$hr" && grep -q 'port: 80$' <<<"$hr"
+          grep -A6 'type: ConsistentHash$' <<<"$hr" | grep -q -- '- name: Authorization$' || {
+            echo "::error::the BackendTrafficPolicy does not hash on Authorization"; echo "$hr"; exit 1; }
+          grep -q 'mergeType: StrategicMerge$' <<<"$hr"
+          one=$(helm template gawk-whip-gateway "$chart" "${gw[@]}" --set httpRoute.keyHash=none --set replicas=1)
+          if grep -q 'kind: BackendTrafficPolicy' <<<"$one"; then echo "::error::keyHash none rendered a hash policy"; exit 1; fi
+          for bad in "--set httpRoute.keyHash=none" "--set ingress.enabled=true" "--set httpRoute.keyHash=nginx"; do
+            # shellcheck disable=SC2086
+            if helm template gawk-whip-gateway "$chart" "${gw[@]}" $bad >/dev/null 2>&1; then
+              echo "::error::httpRoute rendered with $bad"; exit 1
+            fi
+          done
+          if helm template gawk-whip-gateway "$chart" --set httpRoute.enabled=true >/dev/null 2>&1; then
+            echo "::error::httpRoute rendered with no parentRefs"; exit 1
+          fi
 
           # Every value reaches its GAWK_WHIP_* env as written, and the
           # secrets render through the Ref form without the literal.

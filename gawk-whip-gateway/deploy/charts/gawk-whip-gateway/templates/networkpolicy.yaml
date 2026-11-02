@@ -1,5 +1,9 @@
 {{- if .Values.networkPolicy.enabled }}
 {{- $np := .Values.networkPolicy }}
+{{- $proxy := $np.httpProxy }}
+{{- if not (or $proxy.podSelector $proxy.namespaceSelector $proxy.cidrs) }}
+{{- $proxy = $np.ingressController }}
+{{- end }}
 {{- $base := int .Values.media.basePort }}
 {{- $last := add $base (int .Values.replicas) -1 }}
 apiVersion: networking.k8s.io/v1
@@ -14,17 +18,25 @@ spec:
       {{- include "gawk-whip-gateway.selectorLabels" . | nindent 6 }}
   policyTypes: [Ingress, Egress]
   ingress:
-    # WHIP over HTTP: from the ingress controller only.
+    # WHIP over HTTP: from the HTTP proxy only (Gateway or Ingress).
+    # A peer is rendered only for a selector that names something: an empty
+    # podSelector would admit every pod in the namespace.
     - from:
+        {{- if or $proxy.podSelector $proxy.namespaceSelector }}
         - podSelector:
+            {{- with $proxy.podSelector }}
             matchLabels:
-              {{- toYaml $np.ingressController.podSelector | nindent 14 }}
-          {{- with $np.ingressController.namespaceSelector }}
+              {{- toYaml . | nindent 14 }}
+            {{- else }}
+            {}
+            {{- end }}
+          {{- with $proxy.namespaceSelector }}
           namespaceSelector:
             matchLabels:
               {{- toYaml . | nindent 14 }}
           {{- end }}
-        {{- range $np.ingressController.cidrs }}
+        {{- end }}
+        {{- range $proxy.cidrs }}
         - ipBlock:
             cidr: {{ . }}
         {{- end }}

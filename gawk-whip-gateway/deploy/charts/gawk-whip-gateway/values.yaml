@@ -17,11 +17,12 @@
 #     Setting it on a relay that had none revokes every resume token in use
 #     once: docs/self-hosting.md §6.
 #   * the relay's publish secret, if it has one, in relay.publishSecret.
-# Then the frontend chart's config.whipGatewayUrl (https://<ingress.host>),
+# Then the frontend chart's config.whipGatewayUrl (https://<the WHIP host>),
 # and allowedOrigins here listing the frontend's origin.
 #
 # NOTES.txt (printed by `helm install`) and docs/self-hosting.md carry the
-# operator requirements: the Ingress must hash on Authorization, the
+# operator requirements: the HTTPRoute or Ingress must hash on
+# Authorization, the
 # trustedProxyCidrs rules, the media port range in the firewall.
 
 image:
@@ -109,18 +110,52 @@ media:
   annotations: {}
 
 # The public WHIP endpoint: POST/DELETE/OPTIONS /whip…, GET/DELETE
-# /whip/status. TLS at the Ingress; the Service behind it is plain HTTP.
+# /whip/status. TLS at the Gateway listener or Ingress; the Service behind it
+# is plain HTTP.
 service:
   port: 80
   annotations: {}
 
+# Route the public endpoint with ONE of httpRoute (Gateway API) or ingress
+# (ingress-nginx). Whichever it is must send every request for a key to the
+# pod holding its session (D10): the routes hash on the Authorization header,
+# which carries the stream key.
+
+# Gateway API. The Gateway and its HTTPS listener for the WHIP host are the
+# cluster's own; this chart adds the HTTPRoute and, for Envoy Gateway, the
+# hash policy.
+httpRoute:
+  enabled: false
+  parentRefs: []
+  #  - name: gw-ext
+  #    namespace: envoy-gateway-system
+  #    sectionName: whip      # the listener for the WHIP host
+  hostnames: []
+  #  - whip.example.com      # CHANGEME: the gateway's public name
+  labels: {}
+  annotations: {}
+  # How the route hashes on the key. Gateway API has no standard way to
+  # hash on a header, so this is the implementation's own policy:
+  #   envoy-gateway  a BackendTrafficPolicy with a consistent hash on the
+  #                  Authorization header (Envoy Gateway's CRDs must be
+  #                  installed; v1.9 checked).
+  #   none           no hash. Only with replicas: 1; the chart refuses
+  #                  anything else.
+  keyHash: envoy-gateway
+  envoyGateway:
+    # Merge the hash policy into a Gateway-level BackendTrafficPolicy
+    # instead of replacing it for this route (StrategicMerge or JSONMerge;
+    # empty: no merge). Unmerged, the route loses that policy's timeouts and
+    # the rest.
+    mergeType: StrategicMerge
+
+# ingress-nginx. The Ingress always hashes on the bearer key
+# (nginx.ingress.kubernetes.io/upstream-hash-by: "$http_authorization", D10),
+# so another Ingress controller isn't supported: one that cannot hash on a
+# header puts a key's DELETE and status reads on pods that never saw its
+# session.
 ingress:
   enabled: false
-  # ingress-nginx is the only controller v1 supports: the Ingress MUST hash
-  # on the bearer key, which this chart always sets
-  # (nginx.ingress.kubernetes.io/upstream-hash-by: "$http_authorization",
-  # D10). An Ingress that cannot hash on a header puts a key's DELETE and
-  # status reads on pods that never saw its session.
   className: nginx
   host: whip.example.com # CHANGEME: the gateway's public name
   tls:
@@ -132,8 +167,8 @@ ingress:
 
 # Serve the public listener over TLS in the pod itself, for a deployment
 # without an Ingress: an existing kubernetes.io/tls Secret. Empty (the
-# default) serves plain HTTP for the TLS-terminating Ingress. Without an
-# Ingress nothing hashes on the key, so keep replicas: 1 then.
+# default) serves plain HTTP for the TLS-terminating Gateway or Ingress.
+# Without either nothing hashes on the key, so keep replicas: 1 then.
 tls:
   secretName: ""
 
@@ -143,14 +178,14 @@ tls:
 allowedOrigins: []
 
 # D4: the CIDRs of the proxy that WRITES X-Forwarded-For, and only those —
-# the ingress controller's pod range, or under hostNetwork its exact node
-# addresses (/32, /128), never a subnet clients share and never a
-# kube-proxy SNAT hop in front of it. Dual-stack clusters list both
-# families. The ingress controller must see real client IPs
-# (externalTrafficPolicy: Local on its Service, or PROXY protocol).
-# Empty (the default) uses the peer address only: behind an Ingress that
-# puts every OBS user in ONE rate-limit bucket on the gateway and on the
-# relay. A list that misses the controller's real address is counted in
+# the Gateway's proxy pods (Envoy Gateway: the envoy pods' range) or the
+# ingress controller's, or under hostNetwork its exact node addresses
+# (/32, /128). Never a subnet clients share and never a kube-proxy SNAT hop
+# in front of it. Dual-stack clusters list both families. The proxy must see
+# real client IPs (externalTrafficPolicy: Local on its Service, or PROXY
+# protocol). Empty (the default) uses the peer address only: behind a proxy
+# that puts every OBS user in ONE rate-limit bucket on the gateway and on
+# the relay. A list that misses the proxy's real address is counted in
 # gawk_whip_xff_misconfigured_total.
 trustedProxyCidrs: []
 
@@ -252,19 +287,31 @@ metrics:
     interval: 30s
     scrapeTimeout: 10s
 
-# Ingress: WHIP HTTP from the ingress controller, media from anywhere, the
-# internal port from the other gateway pods only, ops from the monitoring
-# namespace. Egress: the relay's UDP port, the other gateway pods' internal
-# port, DNS. Media replies to OBS are replies, which a NetworkPolicy allows.
+# Ingress: WHIP HTTP from the HTTP proxy only (the Gateway's proxy pods or
+# the ingress controller), media from anywhere, the internal port from the
+# other gateway pods only, ops from the monitoring namespace. Egress: the
+# relay's UDP port, the other gateway pods' internal port, DNS. Media replies
+# to OBS are replies, which a NetworkPolicy allows.
 networkPolicy:
   enabled: false
+  # The proxy in front of the public endpoint: the Gateway's proxy pods or
+  # the ingress controller. For Envoy Gateway:
+  #   namespaceSelector: {kubernetes.io/metadata.name: envoy-gateway-system}
+  #   podSelector: {app.kubernetes.io/name: envoy, app.kubernetes.io/component: proxy}
+  # A proxy on hostNetwork reaches the pod from its node addresses, which no
+  # pod selector matches: list them in cidrs. Naming nothing here falls back
+  # to ingressController below.
+  httpProxy:
+    namespaceSelector: {}
+    podSelector: {}
+    cidrs: []
+  # 1.0's name for the same thing, with its ingress-nginx default. Used
+  # only while httpProxy names nothing.
   ingressController:
     namespaceSelector:
       kubernetes.io/metadata.name: ingress-nginx
     podSelector:
       app.kubernetes.io/name: ingress-nginx
-    # A controller on hostNetwork reaches the pod from its node addresses,
-    # which no pod selector matches: list them here.
     cidrs: []
   relay:
     podSelector:
