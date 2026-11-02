@@ -2681,6 +2681,14 @@ jobs:
           www=$(sed -n '/WHIP over HTTP/,/port: 8080$/p' <<<"$np")
           grep -q 'cidr: 192.0.2.1/32' <<<"$www" && ! grep -q -- '- podSelector:' <<<"$www" || {
             echo "::error::a cidrs-only httpProxy rendered a pod peer"; echo "$www"; exit 1; }
+          # A proxy that names nothing (httpProxy empty, the 1.0 defaults
+          # nulled) would render a peerless from, which admits every source:
+          # refused (PR #689 review).
+          if helm template gawk-whip-gateway "$chart" --set networkPolicy.enabled=true \
+               --set networkPolicy.ingressController.podSelector=null \
+               --set networkPolicy.ingressController.namespaceSelector=null >/dev/null 2>&1; then
+            echo "::error::a NetworkPolicy whose HTTP proxy names nothing rendered (admits every source)"; exit 1
+          fi
 
           # Gateway API (D10 amended 2026-11-02): the HTTPRoute attaches to
           # the named listener and routes /whip to the http Service, and for

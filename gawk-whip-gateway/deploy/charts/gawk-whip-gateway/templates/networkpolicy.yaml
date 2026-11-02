@@ -4,6 +4,9 @@
 {{- if not (or $proxy.podSelector $proxy.namespaceSelector $proxy.cidrs) }}
 {{- $proxy = $np.ingressController }}
 {{- end }}
+{{- if not (or $proxy.podSelector $proxy.namespaceSelector $proxy.cidrs) }}
+{{- fail "networkPolicy: httpProxy (or ingressController) must name a podSelector, namespaceSelector or cidrs; a from with no peers would admit every source to the WHIP port" }}
+{{- end }}
 {{- $base := int .Values.media.basePort }}
 {{- $last := add $base (int .Values.replicas) -1 }}
 apiVersion: networking.k8s.io/v1
