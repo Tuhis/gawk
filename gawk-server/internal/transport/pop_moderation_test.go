@@ -30,6 +30,7 @@ import (
 // /echo the bit too; turning it off again restores the -screening-notice=off
 // shape (no identity on publish, no notices byte on /echo).
 func TestScreeningNoticeOverrideMirrorsHome(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	port, clientTLS, _, _, srv := startTestServerCfgLogSrv(t, ctx, noticeConfig(false), discardLog)
@@ -61,6 +62,7 @@ func TestScreeningNoticeOverrideMirrorsHome(t *testing.T) {
 // A relay's own -screening-notice stays on whatever home says: the override
 // only ever adds the disclosure, never removes the host's.
 func TestScreeningNoticeOverrideNeverClearsTheRelaysOwn(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	port, clientTLS, _, _, srv := startTestServerCfgLogSrv(t, ctx, noticeConfig(true), discardLog)

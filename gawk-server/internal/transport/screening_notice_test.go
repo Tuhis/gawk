@@ -33,6 +33,7 @@ func noticeConfig(notice bool) config.Config {
 // carrying the screening bit and the same version and name /echo advertises;
 // a subscribe session on the same broadcast receives none.
 func TestScreeningNoticeOnPublishSessionOnly(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	port, clientTLS, _, _ := startTestServerCfg(t, ctx, noticeConfig(true))
@@ -69,6 +70,7 @@ func TestScreeningNoticeOnPublishSessionOnly(t *testing.T) {
 // RelayIdentity at all — byte-identical to a pre-R40 relay — and /echo's
 // identity carries no notices byte.
 func TestScreeningNoticeOffLeavesPublishSessionsAlone(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	port, clientTLS, _, _ := startTestServerCfg(t, ctx, noticeConfig(false))
@@ -101,6 +103,7 @@ func TestScreeningNoticeOffLeavesPublishSessionsAlone(t *testing.T) {
 // An edge is plumbing, not a broadcaster: its /internal/subscribe session
 // gets no notice even from a pod that advertises one.
 func TestScreeningNoticeNotSentToInternalSubscribe(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cs := fake.NewClientset()

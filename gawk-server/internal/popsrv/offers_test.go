@@ -330,6 +330,7 @@ func TestOffersAreCounted(t *testing.T) {
 // the candidate; the link-home pod's /internal/admin/pops row counts it;
 // autoSwitch false stops it.
 func TestAMatchingGuestGetsTheOfferFromEveryPod(t *testing.T) {
+	t.Parallel()
 	rolling, err := tlsutil.NewRolling(tlsutil.RollingOptions{Dir: t.TempDir(), Hosts: func() []string { return []string{"localhost"} }})
 	if err != nil {
 		t.Fatal(err)

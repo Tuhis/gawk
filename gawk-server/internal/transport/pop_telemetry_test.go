@@ -291,6 +291,7 @@ func TestHomeMintsOnlyWithinScopeAndRate(t *testing.T) {
 // docs/78 D6: a home that collects no telemetry tells its PoP nothing, and
 // the PoP's sessions get no hello — R74's behaviour, unchanged.
 func TestAPopOfAHomeWithoutTelemetrySendsNoHello(t *testing.T) {
+	t.Parallel()
 	u := startUplinkFleet(t, 1, fleetOpts{})
 	u.pair(t)
 	if cfg := u.pop.Client.State().Config; cfg.Telemetry != nil {

@@ -105,6 +105,7 @@ func readDatagramsUntil(ctx context.Context, sess *webtransport.Session, until t
 // none of the viewer-facing extras (ack datagrams, capability streams,
 // keyframes).
 func TestStripeLegEndToEnd(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	port, clientTLS, r, _ := startTestServerCfg(t, ctx, stripedTestConfig(15))
@@ -270,6 +271,7 @@ func TestStripeLegEndToEnd(t *testing.T) {
 // bit; striping off with parity on keeps R29's exact bytes; both off sends
 // no capabilities at all (pre-R29 wire).
 func TestStripeCapabilityBit(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		striped   bool

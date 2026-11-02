@@ -264,11 +264,22 @@ Add to it when a new gotcha lands in `docs/`.
   `GO_SHARED_CACHE`, and any new one must be too. And a warm GOCACHE would
   answer `go test` with `(cached)` even when the real input changed — the broadcast relay
   integration test shells out to `go build`, whose inputs Go cannot see — so
-  the action adds `-count=1` to GOFLAGS. Builds stay cached; test results
-  never are. Go's own 5-day trim is far too slow for this volume (a Renovate
+  the action adds `-count=1` to GOFLAGS by default. Builds stay cached; test
+  results are not, except in a job that opts in with `test-results: cached`
+  and then runs every such package under its own `-count=1` (`server` and
+  `server-coverage` do, for `internal/pubsim/engine`). A new test that execs
+  `go build`, or reads anything Go's test cache cannot see (a service, a
+  binary off `PATH`), in gawk-server belongs on that fresh list. Go's own 5-day trim is far too slow for this volume (a Renovate
   wave of one-line go.mod bumps recompiles everything above each, per node,
   and filled 120Gi in a day), so the action also deletes GOCACHE entries
   unused for 48h, in the background, once per node every 6h (`trim.sh`).
+- **A BuildKit `cache-to` export fails the BUILD when the registry is down**,
+  unlike `cache-from`, whose failure is only a miss. The in-cluster zot that
+  carries the sampler's ffmpeg layer cache (`dev-stack-screening` in
+  `ci.yml`) has returned 503 on every request for an hour before (ioio
+  `registry-cache.yaml`, 2026-10-15), so every `cache_to`/`cache-to` there
+  carries `ignore-error=true`. And export only from the wide runs: the
+  `docker` job's A/B measured an export at 30-145 s, which a PR should not pay.
 - **A CI staging directory named after one the checkout already has is a
   release with no binaries** — and it fails *after* the release exists, so the
   tag is already published. Both attach jobs staged their assets in `assets/`

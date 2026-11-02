@@ -50,6 +50,7 @@ func writePopsFile(t *testing.T, path, credSHA string) {
 // hash is the credential; a "gawk-cred:" string links with it; editing
 // the hash ends the link (rotating means editing the file).
 func TestPopsFileCredentialsLinkWithoutPairing(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	log := harnessLog(t)

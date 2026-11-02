@@ -41,7 +41,6 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	clientfeatures "k8s.io/client-go/features"
-	clientfeaturestesting "k8s.io/client-go/features/testing"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
@@ -212,7 +211,7 @@ func StartHomeAndPop(t testing.TB, n int, opts ...HarnessOption) (*HomeFleet, *P
 	}
 	// client-go defaults WatchListClient on; the fake tracker speaks plain
 	// LIST+WATCH (popsrc's k8s tests explain).
-	clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.WatchListClient, false)
+	DisableWatchListClient(t)
 
 	cert, err := tlsutil.GenerateDevCert([]string{"localhost", "127.0.0.1"}, time.Hour)
 	if err != nil {
@@ -566,6 +565,39 @@ func (f *HomeFleet) LinkHolder(name string) *HomePod {
 }
 
 var uidSeq atomic.Uint64
+
+var watchListOff struct {
+	once sync.Once
+	err  error
+}
+
+// DisableWatchListClient turns client-go's WatchListClient gate off for the
+// rest of the test process, so the reflectors speak the plain LIST+WATCH the
+// fake trackers implement.
+//
+// It replaces clientfeaturestesting.SetFeatureDuringTest, which takes the
+// gate for ONE test at a time: a second test overriding it while the first
+// still runs fails at once ("is currently overridden by ... test"), so every
+// fleet test had to run serially. Every informer in the test binaries that
+// boot this harness runs over a fake that needs the gate off, so nothing
+// there wants it restored. The value is set once and never flipped back, so
+// parallel fleets never see it change under them.
+func DisableWatchListClient(tb testing.TB) {
+	tb.Helper()
+	watchListOff.once.Do(func() {
+		gates, ok := clientfeatures.FeatureGates().(interface {
+			SetForTesting(clientfeatures.Feature, bool) error
+		})
+		if !ok {
+			watchListOff.err = fmt.Errorf("client-go feature gates %T cannot be set for testing", clientfeatures.FeatureGates())
+			return
+		}
+		watchListOff.err = gates.SetForTesting(clientfeatures.WatchListClient, false)
+	})
+	if watchListOff.err != nil {
+		tb.Fatalf("disable client-go WatchListClient: %v", watchListOff.err)
+	}
+}
 
 // PopObject converts a Pop to the unstructured shape the dynamic fake holds.
 func PopObject(p *pops.Pop) *unstructured.Unstructured {

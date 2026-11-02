@@ -330,6 +330,7 @@ func (c chunkID) before(o chunkID) bool {
 // designated drop point, so the test only means something if a rotation
 // happens while the link is lossy.
 func TestReliableCarrierRecoversDeltasLostOnALossyDownlink(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	port, clientTLS, r, _ := startTestServer(t, ctx, 15)

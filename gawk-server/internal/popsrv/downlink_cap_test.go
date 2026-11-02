@@ -44,6 +44,7 @@ func capFleet(t *testing.T, n int) (*HomeFleet, *PoP, []string) {
 // pulled through one pod still fits on another (it counts once), and a
 // leg's end gives its slot back.
 func TestDownlinkLegCapIsFleetWide(t *testing.T) {
+	t.Parallel()
 	max := pops.DefaultMaxDownlinkStreams
 	f, pop, ids := capFleet(t, max+1)
 	home := f.Pods[0]
@@ -89,6 +90,7 @@ func TestDownlinkLegCapIsFleetWide(t *testing.T) {
 // No link, no leg: a pod that cannot reach the count refuses (fail
 // closed), with the cap's own 429.
 func TestDownlinkLegCapFailsClosedWithoutALink(t *testing.T) {
+	t.Parallel()
 	f, pop, ids := capFleet(t, 1)
 	pop.Stop(t)
 	WaitFor(t, "the link gone from the fleet", func() bool {
@@ -110,6 +112,7 @@ func TestDownlinkLegCapFailsClosedWithoutALink(t *testing.T) {
 // not hold its slots forever: they are tied to its /internal/pop session,
 // which the link home ends at the QUIC idle timeout.
 func TestDownlinkLegSlotsOfACrashedPodExpire(t *testing.T) {
+	t.Parallel()
 	f, _, ids := capFleet(t, 1)
 	home := f.Pods[0]
 	_, gen, ok := home.Manager.LinkHolder(popName)
@@ -156,6 +159,7 @@ func TestDownlinkLegSlotsOfACrashedPodExpire(t *testing.T) {
 // the surviving pods re-acquire their slots at the new link home, so the
 // new count starts from the legs that are live, not from zero.
 func TestDownlinkLegSlotsFollowTheLink(t *testing.T) {
+	t.Parallel()
 	f, pop, ids := capFleet(t, 4)
 	for i, id := range ids {
 		if _, status, reason := rawLeg(t, f, f.Pods[1+i%2], pop, id, nil); status != http.StatusOK {

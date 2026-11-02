@@ -326,6 +326,7 @@ func startResetServer(t *testing.T, ctx context.Context, key []byte) (*net.UDPAd
 // within ~1 RTT of its next packets; with a mismatched key it hangs until the
 // idle timeout (docs/22 Decision 3).
 func TestStatelessResetDetectsDeadConnection(t *testing.T) {
+	t.Parallel()
 	sharedKey := make([]byte, 32)
 	for i := range sharedKey {
 		sharedKey[i] = byte(i + 1)

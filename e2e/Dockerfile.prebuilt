@@ -1,5 +1,6 @@
 # TEST-ONLY images for ci.yml's e2e-cluster job and the fast path of its
-# dev-stack job: the relay, gawk-admin and the fake IdP, packaged from
+# dev-stack jobs (.github/scripts/dev-stack-prebuilt.sh): the relay,
+# gawk-admin, the fake IdP and the screening lane's fixture publisher, packaged from
 # binaries the job has ALREADY compiled on the runner. Never published, and
 # never the thing a release ships: the published images come from
 # gawk-server/deploy/Dockerfile and gawk-admin/deploy/Dockerfile, which the
@@ -19,6 +20,9 @@
 # The job copies this file into the build context as Dockerfile:
 #
 #   e2e/out/prebuilt/{Dockerfile,gawk-server,gawk-echo,gawk-admin,gawk-fakeidp}
+#
+# (plus gawk-pubsim for the `pubsim` stage, which only the screening lane
+# builds: its real counterpart is dev/Dockerfile.pubsim).
 
 FROM gcr.io/distroless/static-debian12:nonroot AS relay
 COPY gawk-server /gawk-server
@@ -37,3 +41,7 @@ ENTRYPOINT ["/gawk-admin"]
 FROM gcr.io/distroless/static-debian12:nonroot AS fakeidp
 COPY gawk-fakeidp /gawk-fakeidp
 ENTRYPOINT ["/gawk-fakeidp"]
+
+FROM gcr.io/distroless/static-debian12:nonroot AS pubsim
+COPY gawk-pubsim /gawk-pubsim
+ENTRYPOINT ["/gawk-pubsim"]

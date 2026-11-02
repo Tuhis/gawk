@@ -166,6 +166,7 @@ func rawLeg(t *testing.T, f *HomeFleet, pod *HomePod, pop *PoP, id string, q url
 // and at the PoP), and home's G includes them — also when the leg lands on
 // an edge pod, which must report the PoP's viewers upstream.
 func TestDownlinkTenPartyViewersShareOneLegAndCountInG(t *testing.T) {
+	t.Parallel()
 	f, pop := StartHomeAndPop(t, 2, WithPopConfig(func(c *config.Config) { c.MaxSubscribers = 16 }))
 	f.Route(0)
 	pairLinked(t, f, pop)
@@ -219,6 +220,7 @@ func TestDownlinkTenPartyViewersShareOneLegAndCountInG(t *testing.T) {
 // distinct broadcast; the party viewer reads 429. A second viewer of a
 // broadcast already pulled still joins.
 func TestDownlinkLegCapRefusesThe21stBroadcast(t *testing.T) {
+	t.Parallel()
 	f, pop := StartHomeAndPop(t, 1)
 	pairLinked(t, f, pop)
 	var ids []string

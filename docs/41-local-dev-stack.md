@@ -524,10 +524,12 @@ discover their token endpoint from is the portal's own origin
 (`localhost:8088/idp`, §4.8's one-URL trick), which only resolves to the
 portal from inside it; their metrics are published from there on loopback
 (`127.0.0.1:9190`, `:9191`). `e2e/screening-assert.sh` walks the whole flag
-path against it, and the `dev-stack` CI job runs both on every change that
-can break the stack. The sampler always builds from its own Dockerfile —
-it is cgo with ffmpeg and ONNX Runtime beside it, so CI's prebuilt fast path
-has nothing to offer it.
+path against it. CI runs both in their own job, `dev-stack-screening`: on a
+PR when the flag path can have moved (`ci.yml`'s `changes` job lists the
+paths), and on every main push and release PR that touches the stack. The
+sampler always builds from its own Dockerfile — it is cgo with ffmpeg and
+ONNX Runtime beside it, so CI's prebuilt fast path has nothing to offer it;
+its ffmpeg stage is the one layer CI caches, in the in-cluster registry.
 
 **The compose stack is not a replacement for the editor loop, and the docs
 say so.** Relay work stays `go run ./cmd/gawk-server` on the host — now

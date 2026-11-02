@@ -200,6 +200,7 @@ func TestAKillReachesAPartyOnlyBroadcastTheLinkNamed(t *testing.T) {
 // more, because a restarted PoP may have lost it. An expired record and an
 // ID ban on a home broadcast never reach the PoP.
 func TestForwardedBansAreIdempotentAcrossResyncs(t *testing.T) {
+	t.Parallel()
 	h := startModerated(t, 2)
 	pairLinked(t, h.f, h.pop)
 	const id = "ABC234"
@@ -241,6 +242,7 @@ func TestForwardedBansAreIdempotentAcrossResyncs(t *testing.T) {
 // keep refusing the ID's reclaims there until the relay restarts. A ban
 // the host set itself stays.
 func TestLiftingAForwardedBanAtHomeLiftsItAtThePoP(t *testing.T) {
+	t.Parallel()
 	h := startModerated(t, 1)
 	pairLinked(t, h.f, h.pop)
 	const id, own = "ABC234", "ABC235"
@@ -287,6 +289,7 @@ func TestLiftingAForwardedBanAtHomeLiftsItAtThePoP(t *testing.T) {
 // waiting on one gets 4000 and a new dial 404; the PoP is no longer in
 // Linked (so no offer names it), and it keeps serving its LAN standalone.
 func TestARevokeReleasesTheReservationsAndLeavesThePoPStandalone(t *testing.T) {
+	t.Parallel()
 	h := startModerated(t, 2)
 	pairLinked(t, h.f, h.pop)
 	_, id := popPublisher(t, h)
@@ -340,6 +343,7 @@ func TestARevokeReleasesTheReservationsAndLeavesThePoPStandalone(t *testing.T) {
 // notice is on, and drops it once revoked; a home with it off leaves the
 // PoP's identity bare.
 func TestThePoPsIdentityMirrorsHomesScreeningNotice(t *testing.T) {
+	t.Parallel()
 	h := startModerated(t, 1, WithHomeConfig(func(c *config.Config) { c.ScreeningNotice = true }))
 	if n := popEchoNotices(t, h); n != 0 {
 		t.Fatalf("an unpaired PoP's identity notices = %#x, want none", n)

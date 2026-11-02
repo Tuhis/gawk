@@ -167,6 +167,7 @@ func TestTelemetryHelloJoinsBothSidesOfASession(t *testing.T) {
 // exactly as before. This is the "an install that never enables it is
 // byte-identical to today" claim (D12), asserted rather than asserted-about.
 func TestTelemetryDisabledSendsNoHello(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cfg := telemetryCfg()

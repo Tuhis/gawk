@@ -120,6 +120,7 @@ func (p *roomProbe) waitEvent(t *testing.T, what string, want func(wire.RoomEven
 // participant's RoomState lists. Then the broadcaster stopping: the attachment stays,
 // flagged away (live=false), for the grace — never removed by a stop.
 func TestRoomMintAttachDetachAgainstRealRelay(t *testing.T) {
+	t.Parallel()
 	relayURL, _ := startRelay(t, "-rooms")
 
 	src := newFixtureSource(t, engine.NewClock())
@@ -204,6 +205,7 @@ func TestRoomMintAttachDetachAgainstRealRelay(t *testing.T) {
 // A static room with an attach secret (the -rooms-file source): the wrong
 // secret is refused pre-upgrade as a typed 403, the right one attaches.
 func TestRoomStaticAttachSecretAgainstRealRelay(t *testing.T) {
+	t.Parallel()
 	roomsFile := filepath.Join(t.TempDir(), "rooms.json")
 	if err := os.WriteFile(roomsFile, []byte(`[{"code":"TuhisRoom","attachSecret":"k"}]`), 0o600); err != nil {
 		t.Fatal(err)

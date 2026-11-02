@@ -476,6 +476,7 @@ func TestPopAddrRecordsThePublicAddress(t *testing.T) {
 // With home's -rooms off, /room/new on a linked PoP mints a local room:
 // config says home runs no rooms, and room control stays on the PoP.
 func TestHomeRoomsOffKeepsRoomsLocalToTheLinkedPoP(t *testing.T) {
+	t.Parallel()
 	f, pop := StartHomeAndPop(t, 1, WithHomeConfig(func(c *config.Config) { c.Rooms = false }))
 	pairLinked(t, f, pop)
 	if cfg := pop.Client.State().Config; cfg == nil || cfg.HomeRooms {
