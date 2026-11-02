@@ -129,5 +129,11 @@
       ],
       allowedVersions: "/^24\\.04$/",
     },
+    {
+      description: "The voice compose lane stays on mumble-server 1.5 on purpose (the comment above its image line in dev/compose.voice.yml, and docs/gotchas.md): the 1.6.870 image honours MUMBLE_SUPERUSER_PASSWORD only on its first start, and the compose lane should not need the docker exec workaround that gawk-mumble-bridge/testdata/murmur.sh uses. Without this rule Renovate keeps proposing the 1.6 bump (PR #625). 1.6 is still covered: CI's bridge job runs murmur.sh against both 1.5 and 1.6, and murmur.sh's pins are not Renovate-managed. Lift this rule together with that compose comment once a 1.6 image honours the variable on every start.",
+      matchFileNames: ["dev/compose.voice.yml"],
+      matchPackageNames: ["mumblevoip/mumble-server"],
+      allowedVersions: "<1.6",
+    },
   ],
 }
