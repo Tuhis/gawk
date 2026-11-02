@@ -322,10 +322,10 @@ func TestWG5D8RelayRefusals(t *testing.T) {
 	}{
 		{451, 451, status.ReasonBanned, ""},
 		{409, 409, status.ReasonReserved, ""},
-		{429, 429, status.ReasonRelayBusy, "30"},
+		{429, 429, status.ReasonRelayBusy, "10"},
 		{401, 401, status.ReasonRejected, ""},
 		{403, 403, status.ReasonRejected, ""},
-		{500, 503, status.ReasonRelayBusy, "30"},
+		{500, 503, status.ReasonRelayBusy, "10"},
 	}
 	for _, c := range cases {
 		key := newKey(t)

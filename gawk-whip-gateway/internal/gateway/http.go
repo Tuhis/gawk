@@ -129,7 +129,10 @@ func (s *Server) refuse(w http.ResponseWriter, r *http.Request, key *streamkey.K
 	if ref.reason != "" && key != nil {
 		s.recordRefusal(key.Hash, ref.reason, ref.codec)
 	}
-	if ref.status == http.StatusTooManyRequests && ref.retryAfter == 0 {
+	// A relay 429 and an unreachable relay (a 503 with ReasonRelayBusy) take
+	// RelayBusyRetryAfter; only the gateway's own capacity 503 takes
+	// FullRetryAfter.
+	if (ref.status == http.StatusTooManyRequests || ref.reason == status.ReasonRelayBusy) && ref.retryAfter == 0 {
 		ref.retryAfter = s.opts.RelayBusyRetryAfter
 	}
 	if ref.status == http.StatusServiceUnavailable && ref.retryAfter == 0 {

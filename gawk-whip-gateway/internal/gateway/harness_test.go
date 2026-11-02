@@ -298,7 +298,7 @@ func baseOptions(t *testing.T, relay *fakeRelay) Options {
 		MaxSessions:            20,
 		MaxSessionsHard:        25,
 		FullRetryAfter:         30 * time.Second,
-		RelayBusyRetryAfter:    30 * time.Second,
+		RelayBusyRetryAfter:    10 * time.Second, // distinct from FullRetryAfter, so a test can tell them apart
 		Reorder:                reorder,
 		GOP:                    media.DefaultGOPConfig(),
 		Backoff:                status.BackoffPolicy{Initial: 30 * time.Second, Max: 10 * time.Minute},
