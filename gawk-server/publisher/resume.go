@@ -212,16 +212,28 @@ func terminalForPublisher(code uint32) bool {
 	return false
 }
 
+// CloseError is the error OnError reports when the relay closed the session
+// with a code that ends it for good (terminalForPublisher). Code is the
+// relay's close code, so a shell can act on it without reading the message:
+// gawk-whip-gateway maps 4004 and 4006 onto its own status (docs/83 D8).
+type CloseError struct {
+	Code uint32
+	msg  string
+}
+
+func (e *CloseError) Error() string { return e.msg }
+
 func closeCodeError(code uint32) error {
+	msg := fmt.Sprintf("the relay closed this session (code %d)", code)
 	switch code {
 	case wire.CloseCodePublisherSuperseded:
-		return errors.New("another broadcaster took over this code — this session has been superseded")
+		msg = "another broadcaster took over this code — this session has been superseded"
 	case wire.CloseCodeBroadcastEnded:
-		return errors.New("the relay ended this broadcast")
+		msg = "the relay ended this broadcast"
 	case wire.CloseCodeTerminatedByOperator:
-		return errors.New("this broadcast was terminated by the server operator")
+		msg = "this broadcast was terminated by the server operator"
 	}
-	return fmt.Errorf("the relay closed this session (code %d)", code)
+	return &CloseError{Code: code, msg: msg}
 }
 
 // resumeTerminal reports whether a reclaim's HTTP status means retrying can

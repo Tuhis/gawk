@@ -12,10 +12,10 @@ import (
 	"github.com/Tuhis/gawk/gawk-whip-gateway/internal/status"
 )
 
-// The publisher engine reports a relay close code only through its error
-// text (resume.go closeCodeError). This pins classifyEngineEnd against the
-// real engine, so a rewording there fails here instead of silently turning
-// a 4006 into relay_busy or a 4004 into an end the gateway records.
+// The publisher engine reports a terminal relay close as a *CloseError
+// (resume.go closeCodeError). This pins classifyEngineEnd against the real
+// engine, so a change there fails here instead of silently turning a 4006
+// into relay_busy or a 4004 into an end the gateway records.
 func TestEngineCloseCodesClassify(t *testing.T) {
 	cases := []struct {
 		code       uint32

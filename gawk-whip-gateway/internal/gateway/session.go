@@ -4,10 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/netip"
-	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +16,7 @@ import (
 	"github.com/pion/webrtc/v4"
 
 	"github.com/Tuhis/gawk/gawk-server/publisher"
+	"github.com/Tuhis/gawk/gawk-server/wire"
 
 	"github.com/Tuhis/gawk/gawk-whip-gateway/internal/media"
 	"github.com/Tuhis/gawk/gawk-whip-gateway/internal/status"
@@ -177,24 +178,23 @@ func (ss *session) callbacks() publisher.Callbacks {
 
 // classifyEngineEnd maps why the engine ended itself onto D8/D9.
 //
-// The publisher package reports a relay close code only as the error text
-// of its closeCodeError (resume.go); there is no typed error to match. The
-// three strings below are pinned against the real engine by
-// TestEngineCloseCodesClassify, which fails if publisher rewords them. A
-// typed close-code error in publisher would replace this; see the module
-// README's gaps.
+// A terminal relay close reaches OnError as a *publisher.CloseError carrying
+// the code; TestEngineCloseCodesClassify pins the mapping against the real
+// engine.
 func classifyEngineEnd(err error) (reason string, superseded bool) {
 	if err == nil {
 		return "", false
 	}
-	msg := err.Error()
-	switch {
-	case strings.Contains(msg, "another broadcaster took over this code"): // 4004
-		return "", true
-	case strings.Contains(msg, "terminated by the server operator"): // 4006
-		return status.ReasonKilled, false
-	case strings.Contains(msg, "the relay ended this broadcast"): // 4000
-		return "", false
+	var ce *publisher.CloseError
+	if errors.As(err, &ce) {
+		switch ce.Code {
+		case wire.CloseCodePublisherSuperseded:
+			return "", true
+		case wire.CloseCodeTerminatedByOperator:
+			return status.ReasonKilled, false
+		case wire.CloseCodeBroadcastEnded:
+			return "", false
+		}
 	}
 	if se, ok := publisher.AsStartError(err); ok {
 		if r := relayRefusal(se.Status); r.reason != "" {

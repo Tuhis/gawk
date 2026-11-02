@@ -452,3 +452,14 @@ func TestStopDuringResumeReturnsPromptly(t *testing.T) {
 		t.Error("Stop() left capture running")
 	}
 }
+
+// A terminal close reaches OnError typed, with the relay's code, so a shell
+// (gawk-whip-gateway, docs/83 D8) never has to match the message.
+func TestCloseCodeErrorIsTypedWithItsCode(t *testing.T) {
+	for _, code := range []uint32{wire.CloseCodeBroadcastEnded, wire.CloseCodePublisherSuperseded, wire.CloseCodeTerminatedByOperator, 4999} {
+		var ce *CloseError
+		if err := closeCodeError(code); !errors.As(err, &ce) || ce.Code != code || ce.Error() == "" {
+			t.Errorf("closeCodeError(%d) = %v, want a *CloseError with that code", code, err)
+		}
+	}
+}
