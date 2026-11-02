@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
@@ -65,6 +66,12 @@ type Config struct {
 	Origin string
 	// Insecure skips TLS verification (the dev cert only).
 	Insecure bool
+	// Header is sent on every publish CONNECT (the first dial and each
+	// auto-resume) beside Origin, which it never overrides. gawk-whip-gateway
+	// sets the relay's publish-proxy credential and the OBS client's address
+	// here (docs/83 D4). It is used only by the default dialer; a test's
+	// Options.Dial ignores it.
+	Header http.Header
 	// Media is the capture/encode configuration.
 	Media MediaConfig
 
@@ -268,7 +275,7 @@ func (c Callbacks) viewerCount(count uint32) {
 type Options struct {
 	// Clock defaults to NewClock(). Tests inject FakeClock.
 	Clock Clock
-	// Dial defaults to dialRelay. Tests inject a fake session.
+	// Dial defaults to dialRelayWithHeader (with Config.Header). Tests inject a fake session.
 	Dial DialFunc
 	// RoomDial defaults to dialRoom (R42). Tests inject a fake room session.
 	RoomDial RoomDialFunc
@@ -365,7 +372,10 @@ func New(cfg Config, cb Callbacks, opts Options) *Session {
 		s.clock = NewClock()
 	}
 	if s.dial == nil {
-		s.dial = dialRelay
+		hdr := cfg.Header.Clone()
+		s.dial = func(ctx context.Context, url, origin string, insecure bool) (RelaySession, int, error) {
+			return dialRelayWithHeader(ctx, url, origin, insecure, hdr)
+		}
 	}
 	if s.roomDial == nil {
 		s.roomDial = dialRoom

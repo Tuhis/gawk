@@ -97,7 +97,7 @@ func (w wtSession) Context() context.Context { return w.s.Context() }
 const DefaultOrigin = "gawk-broadcast://native"
 
 // DialFunc dials the relay. Injectable so tests can supply a fake session
-// without a QUIC stack; the default is dialRelay below.
+// without a QUIC stack; the default is dialRelayWithHeader below.
 //
 // It returns the HTTP status separately from the error because that is the
 // whole point of Decision 10: webtransport-go surfaces the status the browser
@@ -141,9 +141,10 @@ func PublishURL(relayURL, broadcastID, secret, resumeToken string) (string, erro
 	return u.String(), nil
 }
 
-// dialRelay is the production DialFunc.
-func dialRelay(ctx context.Context, rawURL, origin string, insecure bool) (RelaySession, int, error) {
-	sess, status, err := dialWebTransport(ctx, rawURL, origin, insecure)
+// dialRelayWithHeader is the production DialFunc, closed over Config.Header
+// by New.
+func dialRelayWithHeader(ctx context.Context, rawURL, origin string, insecure bool, extra http.Header) (RelaySession, int, error) {
+	sess, status, err := dialWebTransportHeader(ctx, rawURL, origin, insecure, extra)
 	if err != nil {
 		return nil, status, err
 	}
@@ -154,6 +155,12 @@ func dialRelay(ctx context.Context, rawURL, origin string, insecure bool) (Relay
 // room control session use — same TLS posture, same QUIC config, same
 // Origin — so a relay that accepts one accepts the other.
 func dialWebTransport(ctx context.Context, rawURL, origin string, insecure bool) (*webtransport.Session, int, error) {
+	return dialWebTransportHeader(ctx, rawURL, origin, insecure, nil)
+}
+
+// dialWebTransportHeader is dialWebTransport with extra request headers.
+// Origin is always the origin argument's, whatever extra says.
+func dialWebTransportHeader(ctx context.Context, rawURL, origin string, insecure bool, extra http.Header) (*webtransport.Session, int, error) {
 	d := &webtransport.Transport{}
 	tlsConf := &tls.Config{
 		// A native client trusts the homelab CA directly, so the
@@ -174,9 +181,13 @@ func dialWebTransport(ctx context.Context, rawURL, origin string, insecure bool)
 	// Send the Origin header. The browser sends this automatically and cannot
 	// change it; here it is explicit, so a relay with -allowed-origins accepts
 	// the native broadcaster once its origin is whitelisted (see DefaultOrigin).
-	var reqHdr http.Header
+	reqHdr := extra.Clone()
+	if reqHdr == nil {
+		reqHdr = http.Header{}
+	}
+	reqHdr.Del("Origin")
 	if origin != "" {
-		reqHdr = http.Header{"Origin": []string{origin}}
+		reqHdr.Set("Origin", origin)
 	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
