@@ -11,6 +11,8 @@
 [![Telemetry](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-telemetry*&label=telemetry)](https://github.com/Tuhis/gawk/releases)
 [![Admin](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-admin*&label=admin)](https://github.com/Tuhis/gawk/releases)
 [![Sampler](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-sampler*&label=sampler)](https://github.com/Tuhis/gawk/releases)
+[![Mumble bridge](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-mumble-bridge*&label=mumble-bridge)](https://github.com/Tuhis/gawk/releases)
+[![iOS](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-ios*&label=ios)](https://github.com/Tuhis/gawk/releases)
 
 Self-hosted, low-latency live game streaming for the browser. A broadcaster
 shares their screen; viewers join with a 6-character code and watch at
@@ -253,9 +255,13 @@ mode, verification, and upgrades.
 | [`gawk-telemetry/`](gawk-telemetry/) | Optional per-session diagnostics — ingest, history, dashboard, MCP. Off by default. Image + Helm chart. |
 | [`gawk-admin/`](gawk-admin/) | Optional moderation portal — fleet-wide kill, durable ID/IP bans, OIDC-gated operator SPA, signed webhooks. Off by default. Image + Helm chart. |
 | [`gawk-sampler/`](gawk-sampler/) | Optional content screening — scores each live broadcast's keyframe for explicit content and raises content flags in the portal for a person to judge. Off by default; ships observing, not paging. Image + Helm chart. |
+| [`gawk-mumble-bridge/`](gawk-mumble-bridge/) | Optional room voice through your own Mumble server — each participant is their own Mumble user, Opus passed through untouched. Off by default. Image + Helm chart. |
+| [`gawk-ios/`](gawk-ios/) | The iOS app (iOS 27+) — broadcaster and native viewer in one, SwiftUI over the desktop broadcasters' Rust crates. |
+| [`common-ts/`](common-ts/) | Shared TypeScript for the operator SPAs (the OIDC session flow). |
+| [`site/`](site/) | The project landing page and docs map, published to GitHub Pages. |
 | [`e2e/`](e2e/) | Browser E2E harness — headless Chrome decoding real relayed frames, plus a kind cluster tier. |
 | [`docs/`](docs/README.md) | Numbered design docs, one per milestone — decisions, rejected alternatives, acceptance criteria. |
-| [`tools/`](tools/) | Repo tooling (third-party license notice generation). |
+| [`tools/`](tools/) | Repo tooling — third-party licence notices, icon generation, coverage, release manifests. |
 
 ## Gotchas
 
