@@ -136,14 +136,18 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           # A branch name is text someone else chose: env, never inlined.
           HEAD_REF: ${{ github.head_ref }}
+          # The SHAs ride env too: a `run:` holding any expression is one
+          # expression to GitHub, capped at 21000 characters, and this
+          # script outgrew it (R33). Keep expressions out of this script.
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
           # On a pull_request, the base the merge ref was built on, not the
           # event's base.sha, which can be older (diff-base.sh says why).
-          base=$(./.github/scripts/diff-base.sh "${{ github.event_name }}" \
-            "${{ github.event.pull_request.base.sha }}" \
-            "${{ github.event.pull_request.head.sha }}" \
-            "${{ github.event.before }}")
+          base=$(./.github/scripts/diff-base.sh "$EVENT_NAME" \
+            "$BASE_SHA" "$HEAD_SHA" "$BEFORE_SHA")
 
           all=false
           changed="$RUNNER_TEMP/changed.txt"
@@ -328,7 +332,7 @@ jobs:
           # sections or the fake IdP's Dockerfile. Deliberately NOT forced by
           # `all`: a CI edit changes neither, and forcing it would leave the
           # fast path unexercised by the very PR that changes it.
-          if [ "${{ github.event_name }}" != workflow_dispatch ] \
+          if [ "$EVENT_NAME" != workflow_dispatch ] \
             && ! grep -qE '^(docker-compose\.yml|dev/Dockerfile\.)' "$changed"; then
             echo "dev_stack_images=false" >> "$GITHUB_OUTPUT"
           else
