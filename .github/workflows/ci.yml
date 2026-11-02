@@ -4090,10 +4090,6 @@ jobs:
           done
           [ "$rc" = 0 ] || exit 1
           ls -l ../relay-dist
-      # docs/76 §11 PP4: `go install …@version` is no distribution, because it
-      # refuses a module with a `replace` — so the binaries are the only way
-      # the vendored quic-go (its 512-deep datagram queue, docs/75 D7) reaches
-      # a party. Each one must say it was built against it.
       # What a narrow PR (relay_full false) would otherwise not see: a change
       # to a non-portable package — internal/transport, internal/hub, most
       # relay PRs — that compiles on Linux only (a golang.org/x/sys/unix
@@ -4104,16 +4100,28 @@ jobs:
       # five parallel builds could not speed up. Same flags as the full
       # build's windows/amd64, so main's runs keep its packages warm in the
       # shared Go cache: 0.4 s warm, 72 s cold (662 packages, 2026-11-02).
+      # The main package is left out of the build (it would link) and
+      # type-checked by `go vet` instead, against the export data the build
+      # just cached: a narrow PR whose main.go starts using a symbol that a
+      # non-portable package defines for Linux only would otherwise pass here
+      # (review round 2 on #675). `go list` gets the build's own GOOS, GOARCH
+      # and CGO_ENABLED, so the two cannot select different files.
       - name: Every relay package compiles for Windows (narrow PRs)
         if: needs.changes.outputs.relay_full != 'true'
         working-directory: gawk-server
         run: |
           set -euo pipefail
-          mapfile -t pkgs < <(GOOS=windows go list -deps -f '{{if and (not .Standard) (ne .Name "main")}}{{.ImportPath}}{{end}}' ./cmd/gawk-relay)
+          export GOOS=windows GOARCH=amd64 CGO_ENABLED=0
+          mapfile -t pkgs < <(go list -deps -f '{{if and (not .Standard) (ne .Name "main")}}{{.ImportPath}}{{end}}' ./cmd/gawk-relay)
           # A failed `go list` inside <( ) does not trip set -e; an empty list must.
           [ "${#pkgs[@]}" -gt 0 ] || { echo "::error::no packages to compile for GOOS=windows"; exit 1; }
-          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath "${pkgs[@]}"
-          echo "GOOS=windows: ${#pkgs[@]} packages compile"
+          go build -trimpath "${pkgs[@]}"
+          go vet -trimpath ./cmd/gawk-relay
+          echo "GOOS=windows: ${#pkgs[@]} packages compile, and gawk-relay's main type-checks"
+      # docs/76 §11 PP4: `go install …@version` is no distribution, because it
+      # refuses a module with a `replace` — so the binaries are the only way
+      # the vendored quic-go (its 512-deep datagram queue, docs/75 D7) reaches
+      # a party. Each one must say it was built against it.
       - name: Every binary carries the vendored quic-go
         run: |
           set -euo pipefail
