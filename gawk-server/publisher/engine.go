@@ -313,8 +313,12 @@ type Session struct {
 	// the broadcast waits in the relay's grace) unless StopBroadcast set
 	// wire.CloseCodeBroadcasterStopped first (guarded by mu).
 	closeCode webtransport.SessionErrorCode
-	cancel    context.CancelFunc
-	media     MediaSource
+	// stopDelivered records that a StopBroadcast's 4014 went out on a live
+	// session, from teardown or from a reclaim supervise finished after it
+	// (guarded by mu). Without it StopBroadcast makes one reclaim to say it.
+	stopDelivered bool
+	cancel        context.CancelFunc
+	media         MediaSource
 
 	// relayCur is the session frames are travelling on right now. It changes
 	// under the supervisor when auto-resume reclaims the broadcast, so it has
@@ -957,11 +961,50 @@ func (s *Session) StopBroadcast() error {
 	if !s.stopped {
 		s.closeCode = webtransport.SessionErrorCode(wire.CloseCodeBroadcasterStopped)
 	}
+	ours := s.closeCode == webtransport.SessionErrorCode(wire.CloseCodeBroadcasterStopped)
 	s.mu.Unlock()
 	s.teardown()
 	s.wg.Wait()
+	if ours {
+		s.deliverStop()
+	}
 	s.finish()
 	return nil
+}
+
+// stopReclaimTimeout bounds deliverStop's one reclaim.
+const stopReclaimTimeout = 5 * time.Second
+
+// deliverStop sends the 4014 a StopBroadcast owes the relay when there was no
+// live session to send it on: the stop landed while auto-resume was between
+// attempts. One reclaim with the broadcast's token, closed at once with 4014,
+// carries it, as the desktop engine's end() does from Paused. It is best
+// effort and bounded; if it fails, the relay's grace ends the broadcast as
+// it would after Stop.
+func (s *Session) deliverStop() {
+	s.mu.Lock()
+	delivered := s.stopDelivered
+	id, token := s.cfg.BroadcastID, s.cfg.ResumeToken
+	relayURL, secret, insecure, origin := s.cfg.RelayURL, s.cfg.PublishSecret, s.cfg.Insecure, s.cfg.Origin
+	s.mu.Unlock()
+	if delivered || id == "" || token == "" {
+		return
+	}
+	if origin == "" {
+		origin = DefaultOrigin
+	}
+	url, err := PublishURL(relayURL, id, secret, token)
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), stopReclaimTimeout)
+	defer cancel()
+	leg, _, err := s.dial(ctx, url, origin, insecure)
+	if err != nil {
+		s.log.Info("could not deliver the stop; the relay's grace ends the broadcast", "err", err)
+		return
+	}
+	_ = leg.CloseWithError(webtransport.SessionErrorCode(wire.CloseCodeBroadcasterStopped), "")
 }
 
 // teardown releases everything the session holds. Reached by Stop and by every
@@ -1000,6 +1043,13 @@ func (s *Session) teardown() {
 		// Closing the session releases the publisher slot server-side. Without
 		// it the relay holds the broadcast ID until its grace period expires.
 		// A 4014 (StopBroadcast) ends the broadcast; 0 leaves it in grace.
+		// On a session the relay already closed it reaches no one, and
+		// StopBroadcast's deliverStop says it on a reclaim instead.
+		if relay.Context().Err() == nil {
+			s.mu.Lock()
+			s.stopDelivered = true
+			s.mu.Unlock()
+		}
 		if err := relay.CloseWithError(code, ""); err != nil {
 			s.log.Debug("relay close failed", "err", err)
 		}

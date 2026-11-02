@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/quic-go/webtransport-go"
+
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
@@ -461,5 +463,111 @@ func TestCloseCodeErrorIsTypedWithItsCode(t *testing.T) {
 		if err := closeCodeError(code); !errors.As(err, &ce) || ce.Code != code || ce.Error() == "" {
 			t.Errorf("closeCodeError(%d) = %v, want a *CloseError with that code", code, err)
 		}
+	}
+}
+
+// A stop that lands while a reclaim dial is in flight must close the session
+// that dial returns, with the stop's code. Before, supervise attached it
+// after teardown had already run, and nothing ever closed it: a publisher
+// with no media held the slot for the life of the process, and a WHIP
+// DELETE's 4014 never reached the relay (docs/83 D8).
+func TestStopBroadcastDuringAReclaimDialClosesTheResumedSession(t *testing.T) {
+	first, second := newFakeSession(), newFakeSession()
+	media := newFakeMedia()
+	dialing, release := make(chan struct{}), make(chan struct{})
+	calls := 0
+	var mu sync.Mutex
+	dial := func(ctx context.Context, rawURL, origin string, insecure bool) (RelaySession, int, error) {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		if n == 1 {
+			return first, http.StatusOK, nil
+		}
+		if n == 2 {
+			close(dialing)
+			<-release // the dial completes regardless of the stop
+			return second, http.StatusOK, nil
+		}
+		return nil, http.StatusNotFound, errors.New("fake: no more dials")
+	}
+	s := New(Config{RelayURL: "https://relay.example", BroadcastID: "K7M2QP", ResumeToken: "00"},
+		Callbacks{},
+		Options{Clock: &FakeClock{}, Dial: dial, MediaFactory: media.factory(), Log: testLog, StatsInterval: time.Hour})
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	first.cancel()
+	waitSignal(t, dialing, 3*time.Second, "the reclaim dial")
+
+	done := make(chan struct{})
+	go func() { _ = s.StopBroadcast(); close(done) }()
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("StopBroadcast hung")
+	}
+	if !second.isClosed() {
+		t.Fatal("the session the in-flight reclaim returned was never closed")
+	}
+	if got := second.lastCloseCode(); got != webtransport.SessionErrorCode(wire.CloseCodeBroadcasterStopped) {
+		t.Errorf("resumed session closed with %d, want 4014", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 2 {
+		t.Errorf("%d dials, want 2: the stop was delivered on the resumed session, no extra reclaim", calls)
+	}
+}
+
+// A stop while the engine is between reclaim attempts (the relay drained it,
+// say) has no live session to send 4014 on. It makes one bounded reclaim and
+// closes that with 4014 at once, so the broadcast still ends instead of
+// waiting out the grace — what the desktop engine's end() does when paused.
+func TestStopBroadcastWhileResumingDeliversTheStopOnOneReclaim(t *testing.T) {
+	first, stopLeg := newFakeSession(), newFakeSession()
+	media := newFakeMedia()
+	resuming := make(chan struct{}, 8)
+	var mu sync.Mutex
+	var urls []string
+	stopping := false
+	dial := func(ctx context.Context, rawURL, origin string, insecure bool) (RelaySession, int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		urls = append(urls, rawURL)
+		if len(urls) == 1 {
+			return first, http.StatusOK, nil
+		}
+		if stopping {
+			return stopLeg, http.StatusOK, nil
+		}
+		return nil, http.StatusServiceUnavailable, errors.New("fake: relay draining")
+	}
+	s := New(Config{RelayURL: "https://relay.example", BroadcastID: "K7M2QP", ResumeToken: "ab"},
+		Callbacks{OnResuming: func(int, error) { resuming <- struct{}{} }},
+		Options{Clock: &FakeClock{}, Dial: dial, MediaFactory: media.factory(), Log: testLog, StatsInterval: time.Hour})
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	first.closedByRelay(wire.CloseCodeServerDraining)
+	waitSignal(t, resuming, 3*time.Second, "a reclaim attempt")
+
+	mu.Lock()
+	stopping = true
+	mu.Unlock()
+	if err := s.StopBroadcast(); err != nil {
+		t.Fatal(err)
+	}
+	if !stopLeg.isClosed() || stopLeg.lastCloseCode() != webtransport.SessionErrorCode(wire.CloseCodeBroadcasterStopped) {
+		t.Fatalf("stop leg closed=%v code=%d, want closed with 4014", stopLeg.isClosed(), stopLeg.lastCloseCode())
+	}
+	mu.Lock()
+	last := urls[len(urls)-1]
+	mu.Unlock()
+	if !strings.Contains(last, "/publish/K7M2QP") || !strings.Contains(last, "resume=ab") {
+		t.Errorf("stop reclaim dialled %q, want the broadcast's own token reclaim", last)
 	}
 }

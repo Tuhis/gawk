@@ -32,6 +32,15 @@ var errMintDrawExhausted = errors.New("every drawn broadcast ID was in use")
 // handleMintOnly serves CONNECT /publish?mint=1 once handlePublish's shared
 // gates have passed.
 func (s *Server) handleMintOnly(w http.ResponseWriter, r *http.Request, src requestSource) {
+	// A PoP relay (a MintGate installed, docs/76) clears every minted ID with
+	// its home fleet; a mint-only would hand out a key for an ID the home
+	// never checked, and the gateway publishes to its own home relay anyway
+	// (docs/83 OD4, non-goals). So the route doesn't exist on a PoP.
+	if s.mintGate.Load() != nil {
+		s.metrics.Connection("publish", metrics.OutcomeNotFound)
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
 	// At capacity a mint-only is refused like a mint (D3: it passes
 	// CheckPublishNew), although it would take no slot itself: a key minted
 	// on a full relay could not be used now either, and the 429 tells the

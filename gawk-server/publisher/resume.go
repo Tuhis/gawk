@@ -71,6 +71,27 @@ func (s *Session) supervise(ctx context.Context, relay RelaySession) {
 		}
 
 		next, err := s.resume(ctx)
+		if err == nil {
+			// A stop can land while the reclaim dial is in flight: teardown
+			// has already closed the old session and will never see this
+			// one. Close it here with the stop's code, or it would hold the
+			// publisher slot, sending nothing, for the life of the process.
+			// The check and the swap share mu with teardown's `stopped`, so
+			// teardown either sees `next` as the current relay or we see it
+			// stopped; there is no window in which neither closes it.
+			s.mu.Lock()
+			stopped, code := s.stopped, s.closeCode
+			if stopped {
+				s.stopDelivered = true
+			} else {
+				s.setRelay(next)
+			}
+			s.mu.Unlock()
+			if stopped {
+				_ = next.CloseWithError(code, "")
+				return
+			}
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				// Stop() cancelled us mid-reclaim; it owns the ending.

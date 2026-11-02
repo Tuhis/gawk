@@ -339,6 +339,15 @@ func TestMintOnlyPassesEveryPublishGate(t *testing.T) {
 			},
 			want: http.StatusTooManyRequests, outcome: metrics.OutcomeLimitRejected,
 		},
+		{
+			// A PoP relay (a MintGate installed) would draw an ID its home
+			// fleet never checked: no mint-only there (docs/83 §12.1).
+			name: "on a PoP relay", target: "https://relay/publish?mint=1",
+			setup: func(_ *testing.T, srv *Server, _ *hub.Registry) {
+				srv.SetMintGate(&recordingMintGate{localOnly: true})
+			},
+			want: http.StatusNotFound, outcome: metrics.OutcomeNotFound,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv, sm, r := newOutcomeServer(t, tc.cfg, tc.opts)
