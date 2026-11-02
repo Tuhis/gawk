@@ -141,8 +141,11 @@ func (s *Server) handleMintOnly(w http.ResponseWriter, r *http.Request, src requ
 //
 // The residual race — another pod minting the same ID between this check
 // and the client's first reclaim — is the ordinary mint's collision odds
-// (one in ~31^6 per concurrent mint) and ends in a supersede of a broadcast
-// that is seconds old, not in a silent hijack of an established one.
+// (one in ~31^6 per concurrent mint). A minted key also outlives the mint:
+// an OBS key is saved for weeks, and an ordinary mint that later draws the
+// same ID while the key is idle would be superseded by the key's next
+// reclaim. That is the same property any long-lived resume token has, and
+// the odds per mint are the same one in ~31^6.
 func (s *Server) drawMintOnlyID(ctx context.Context, draw func() (string, error)) (string, error) {
 	coord := s.clusterCoord()
 	for range mintRedraws + 1 {

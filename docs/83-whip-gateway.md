@@ -1013,12 +1013,18 @@ so in the code and the chart.
   Lease anywhere in the fleet (asked of the API server, not the informer
   cache), or ID-banned. A PoP relay answers a mint-only `404`: its mint
   gate clears IDs with the home fleet, which a mint-only would skip, and the
-  gateway publishes only to its home relay (OD4).
+  gateway publishes only to its home relay (OD4). The cost of no
+  reservation: an OBS key is saved for weeks, so an ordinary mint that later
+  draws the same ID while the key is idle is superseded (4004) by the key's
+  next Start. The odds are the ordinary mint's one in ~31^6 per mint, the
+  same as for any long-lived resume token.
 - **A stop during auto-resume still ends the broadcast.** If
   `StopBroadcast()` lands while a reclaim dial is in flight, the session that
   dial returns is closed with 4014 instead of attached. If it lands between
   attempts, with no live session, the engine makes one bounded reclaim and
-  closes it with 4014 at once, as the desktop engine does when paused.
+  closes it with 4014 at once, as the desktop engine does when paused. It
+  never does that after a terminal close: a deposed engine (4004) that
+  reclaimed would supersede the newer publisher and end its broadcast.
 - **Proxy (D4).** A bearer that doesn't match the token is ignored, not
   refused: browsers can't send headers on a WebTransport CONNECT and the
   native apps send none, so ignoring it leaves the sender with what it had.
