@@ -374,6 +374,40 @@ broadcaster could compute another's token and take over their broadcast ID.
 The independent key is what prevents that. Confirm
 `config.resumeTokenKey` = `<set:explicit-key>` in the startup log.
 
+**A relay that `gawk-whip-gateway` publishes to (OBS ingest, R33) needs two
+more values.** The gateway is a trusted publish proxy: it presents
+`publishProxy.token` and names each OBS user's address, so the relay's rate
+limit, IP bans and the portal's publisher IP see that user instead of the
+gateway pod ([docs/83](83-whip-gateway.md) D4). Put the token in a Secret
+that only the relay and the gateway read, because whoever holds it can claim
+any publisher IP:
+
+```sh
+kubectl -n gawk create secret generic gawk-publish-proxy-token \
+  --from-literal=token=$(openssl rand -hex 32)
+```
+
+```yaml
+publishProxy:
+  tokenSecretRef: { name: gawk-publish-proxy-token, key: token }
+config:
+  resumeTokenKeyRef: { name: gawk-fleet, key: resumeTokenKey }
+```
+
+The chart refuses to render `publishProxy` without an explicit resume-token
+key, and the relay refuses to start without one (D12): an OBS stream key is a
+resume token, which a key derived from the publish secret lets anyone holding
+the secret compute, and which a per-process key kills on every restart. This
+applies to a single pod as much as to a fleet.
+
+> **Setting the resume-token key for the first time is a one-time
+> migration.** If the relay has been running without `resumeTokenKeyRef`
+> (the chart default derives the key from the publish secret), setting it
+> revokes every resume token in use, including the ones the desktop apps
+> keep on disk. Their next reclaim fails and they mint a new code, so their
+> viewers lose them once. Do it between broadcasts. A deployment that
+> already sets the key is unaffected.
+
 **MetalLB in L2 mode funnels all traffic through one announcing node**, so
 replicas buy fan-out CPU and redundancy but not NIC bandwidth. With BGP mode
 and ECMP on the router, add `service.externalTrafficPolicy: Local` — real

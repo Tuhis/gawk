@@ -144,6 +144,8 @@ type SanitizedConfig struct {
 	VoiceBridgePSK    string `json:"voiceBridgePsk"`
 	VoiceTicketSecret string `json:"voiceTicketSecret"`
 	EventBusCredsFile string `json:"eventBusCredsFile"`
+	// PublishProxyToken (R33): whether a WHIP gateway may name publisher IPs.
+	PublishProxyToken string `json:"publishProxyToken"`
 	// ResumeTokenKey names the mode as well as the presence.
 	ResumeTokenKey string `json:"resumeTokenKey"`
 }
@@ -236,6 +238,7 @@ func (c Config) Sanitized() SanitizedConfig {
 		PublishSecret:     setness(c.PublishSecret != ""),
 		InternalPSK:       setness(c.InternalPSK != ""),
 		StatsKey:          setness(len(c.StatsKey) > 0),
+		PublishProxyToken: setness(c.PublishProxyToken != ""),
 		StatelessResetKey: setness(len(c.StatelessResetKey) > 0),
 		TelemetryKey:      setness(len(c.TelemetryKey) > 0),
 		AdminAPIToken:     setness(c.AdminAPIToken != ""),

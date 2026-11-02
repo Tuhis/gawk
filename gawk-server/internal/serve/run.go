@@ -93,6 +93,12 @@ func Run(ctx context.Context, cfg config.Config, getCert CertFunc, log *slog.Log
 	if o.Identity == "" {
 		o.Identity = "gawk-server"
 	}
+	// docs/83 D12, on the resolved config: gawk-server's ParseFlags refuses
+	// it already, and gawk-relay's state directory has filled the resume key
+	// by now, so this fires only for a Config handed to Run unvalidated.
+	if err := config.ValidatePublishProxy(cfg); err != nil {
+		return err
+	}
 	// Late-bound subsystems. The hub's hooks are built before these exist and
 	// close over the variables; every hook path is nil-safe until assignment
 	// (no publisher can connect before Run anyway).

@@ -101,16 +101,19 @@ func (s *Server) sendSessionNotices(sess *webtransport.Session, r *http.Request,
 			publishID = id
 		}
 	}
-	s.sendNotices(sess, r, k, publishID)
+	s.sendNotices(sess, r, peerSource(r), k, publishID)
 }
 
 // sendPublishSessionNotices is sendSessionNotices for a publish session
-// whose broadcast ID the handler holds (minted or reclaimed).
-func (s *Server) sendPublishSessionNotices(sess *webtransport.Session, r *http.Request, id string) {
-	s.sendNotices(sess, r, kindPublish, id)
+// whose broadcast ID the handler holds (minted or reclaimed). src is the
+// publisher the handler resolved: behind a trusted publish proxy (docs/83
+// D4) a local relay offer is matched against the proxied address, like
+// every other per-IP decision, never against the gateway's.
+func (s *Server) sendPublishSessionNotices(sess *webtransport.Session, r *http.Request, src requestSource, id string) {
+	s.sendNotices(sess, r, src, kindPublish, id)
 }
 
-func (s *Server) sendNotices(sess *webtransport.Session, r *http.Request, k sessionKind, publishID string) {
+func (s *Server) sendNotices(sess *webtransport.Session, r *http.Request, src requestSource, k sessionKind, publishID string) {
 	if p := r.URL.Path; strings.HasPrefix(p, "/internal/") || strings.HasPrefix(p, "/pop/") {
 		return
 	}
@@ -118,7 +121,7 @@ func (s *Server) sendNotices(sess *webtransport.Session, r *http.Request, k sess
 		// Home's screening notice mirrored by a linked PoP (docs/76 item
 		// 32). With the relay's own -screening-notice the publish route
 		// sends it already.
-		go s.sendRelayIdentity(sess, s.log.With("remote", r.RemoteAddr, "route", k.String()))
+		go s.sendRelayIdentity(sess, s.log.With("remote", src.remote, "route", k.String()))
 	}
 	lr := s.localRelay.Load()
 	of := s.offerer.Load()
@@ -128,12 +131,12 @@ func (s *Server) sendNotices(sess *webtransport.Session, r *http.Request, k sess
 	if k != kindPublish {
 		publishID = ""
 	}
-	log := s.log.With("remote", r.RemoteAddr, "route", k.String())
+	log := s.log.With("remote", src.remote, "route", k.String())
 	if lr != nil {
 		go s.sendLocalRelayInfo(sess, lr.p, publishID, log)
 	}
 	if of != nil && r.Header.Get("Origin") != popOrigin {
-		remote := remoteIP(r.RemoteAddr)
+		remote := src.addr
 		follows := r.URL.Query().Get("lr") == "1"
 		go s.sendLocalRelayOffer(sess, of.o, remote, follows, log)
 	}

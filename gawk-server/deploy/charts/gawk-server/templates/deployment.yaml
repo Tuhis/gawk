@@ -36,6 +36,9 @@ spec:
   {{- if and (not .Values.metrics.enabled) (or .Values.screening.token .Values.screening.tokenSecretRef) }}
   {{- fail "screening.token/tokenSecretRef requires metrics.enabled: true — the keyframe route rides the ops listener (see docs/71-content-flagging.md D1)" }}
   {{- end }}
+  {{- if and (or .Values.publishProxy.token .Values.publishProxy.tokenSecretRef) (not (or .Values.config.resumeTokenKey .Values.config.resumeTokenKeyRef)) }}
+  {{- fail "publishProxy.token/tokenSecretRef requires an explicit config.resumeTokenKey or config.resumeTokenKeyRef — a WHIP stream key is a resume token, which a derived key lets the publish secret compute and a random key kills on restart (see docs/83-whip-gateway.md D12; setting the key revokes existing tokens once, docs/self-hosting.md §6)" }}
+  {{- end }}
   {{- if and .Values.pops.enabled (not .Values.config.clusterMode) }}
   {{- fail "pops.enabled requires config.clusterMode: true — the Pop CRs are the chart's PoP source and a PoP's reservations are broadcast Leases (see docs/76-pop-relays.md §9)" }}
   {{- end }}
@@ -416,6 +419,19 @@ spec:
                   key: {{ .Values.screening.tokenSecretRef.key | quote }}
               {{- else }}
               value: {{ .Values.screening.token | quote }}
+              {{- end }}
+            {{- end }}
+            {{- if or .Values.publishProxy.tokenSecretRef .Values.publishProxy.token }}
+            # R33 (docs/83 D4): gawk-whip-gateway's publish-proxy credential;
+            # with it Gawk-Publisher-Ip drives the per-IP decisions.
+            - name: GAWK_PUBLISH_PROXY_TOKEN
+              {{- if .Values.publishProxy.tokenSecretRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.publishProxy.tokenSecretRef.name | quote }}
+                  key: {{ .Values.publishProxy.tokenSecretRef.key | quote }}
+              {{- else }}
+              value: {{ .Values.publishProxy.token | quote }}
               {{- end }}
             {{- end }}
             {{- if .Values.screening.notice }}

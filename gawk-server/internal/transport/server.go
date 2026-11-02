@@ -275,10 +275,10 @@ func remoteIP(remoteAddr string) netip.Addr {
 // "banned"; a browser just sees a dial failure). Warn withholds the ban
 // reason (operator-private) and the raw ID (a join capability); it names the
 // broadcast by its HMAC'd key, and Debug carries both.
-func (s *Server) rejectBanned(w http.ResponseWriter, r *http.Request, rec moderation.Record, broadcastID string) {
+func (s *Server) rejectBanned(w http.ResponseWriter, r *http.Request, src requestSource, rec moderation.Record, broadcastID string) {
 	s.metrics.Connection("publish", metrics.OutcomeBanned)
 	attrs := []any{
-		"remote", r.RemoteAddr, "origin", r.Header.Get("Origin"),
+		"remote", src.remote, "origin", r.Header.Get("Origin"),
 		"target_type", string(rec.Target.Type),
 	}
 	if broadcastID != "" {
@@ -288,7 +288,7 @@ func (s *Server) rejectBanned(w http.ResponseWriter, r *http.Request, rec modera
 	}
 	s.log.Warn("publish rejected: banned", attrs...)
 	s.log.Debug("publish ban detail",
-		"id", broadcastID, "remote", r.RemoteAddr, "target_type", string(rec.Target.Type),
+		"id", broadcastID, "remote", src.remote, "target_type", string(rec.Target.Type),
 		"target", rec.Target.Value, "ban_reason", rec.Reason, "created_by", rec.CreatedBy)
 	w.WriteHeader(http.StatusUnavailableForLegalReasons)
 }
@@ -437,6 +437,12 @@ func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) 
 			// without this bypass every deployment with AllowedOrigins fails its
 			// own probes. Loopback can't be spoofed over QUIC (full handshake).
 			if isLoopbackAddr(r.RemoteAddr) && !s.testHookOriginCheckLoopback.Load() {
+				return true
+			}
+			// R33 (docs/83 D4): the trusted publish proxy is a server, not a
+			// page; its token, on a publish route only, stands in for an
+			// allow-listed Origin.
+			if isPublishPath(r.URL.Path) && s.validProxyToken(r) {
 				return true
 			}
 			origin := r.Header.Get("Origin")
@@ -748,25 +754,60 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	if s.rejectedDraining(w, "publish") {
 		return
 	}
-	if s.rateLimited(r) {
+	// Who the request is from, resolved BEFORE the rate limit (docs/83 D4):
+	// with the publish-proxy token, every per-IP decision below — the
+	// limiter and its exemptions, the IP ban, the publisher-IP bookkeeping,
+	// the logs — keys on Gawk-Publisher-Ip, never on the gateway peer.
+	src, ok := s.publishSource(r)
+	if !ok {
+		s.metrics.Connection("publish", metrics.OutcomeBadRequest)
+		s.log.Warn("publish proxy request rejected: missing or unparsable "+PublisherIPHeader,
+			"proxy", r.RemoteAddr)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if s.rateLimitedSource(r, src) {
 		w.WriteHeader(http.StatusTooManyRequests)
+		return
+	}
+	if src.strayBearer && s.cfg.PublishProxyToken != "" {
+		// Most likely a gateway whose token does not match this relay's: it
+		// now publishes as itself, so every OBS user shares its bucket.
+		s.log.Warn("publish presented a bearer that is not the publish-proxy token; treating it as an unproxied publisher",
+			"remote", src.remote)
+	}
+	// R33 (docs/83 D3): ?mint=1 mints a key and creates no broadcast; it
+	// means nothing on a claim, so a claim carrying it (or any other value)
+	// is malformed rather than silently a publish.
+	q := r.URL.Query()
+	mintOnly := q.Has("mint")
+	if mintOnly && (q.Get("mint") != "1" || r.PathValue("id") != "") {
+		s.metrics.Connection("publish", metrics.OutcomeBadRequest)
+		s.log.Warn("publish rejected: mint=1 is only valid on CONNECT /publish",
+			"remote", src.remote, "origin", r.Header.Get("Origin"))
+		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
 	if s.cfg.PublishSecret != "" &&
-		subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("secret")), []byte(s.cfg.PublishSecret)) != 1 {
+		subtle.ConstantTimeCompare([]byte(q.Get("secret")), []byte(s.cfg.PublishSecret)) != 1 {
 		s.metrics.Connection("publish", metrics.OutcomeUnauthorized)
 		s.log.Warn("publish unauthorized: invalid or missing secret",
-			"remote", r.RemoteAddr, "origin", r.Header.Get("Origin"))
+			"remote", src.remote, "origin", r.Header.Get("Origin"))
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
 
 	// The IP ban gates both mint and claim — an IP is the only handle that
 	// spans a re-mint loop. Pre-upgrade, before any hub state is touched.
-	peer := remoteIP(r.RemoteAddr)
+	peer := src.addr
 	if rec, banned := s.banSet().BannedIP(peer, s.clock()); banned {
-		s.rejectBanned(w, r, rec, "")
+		s.rejectBanned(w, r, src, rec, "")
+		return
+	}
+
+	if mintOnly {
+		s.handleMintOnly(w, r, src)
 		return
 	}
 
@@ -790,7 +831,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			s.metrics.Connection("publish", metrics.OutcomeNotFound)
 			s.log.Warn("publish claim rejected: invalid broadcast ID",
-				"remote", r.RemoteAddr, "origin", r.Header.Get("Origin"))
+				"remote", src.remote, "origin", r.Header.Get("Origin"))
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -798,14 +839,14 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		// HMAC(key, broadcastID), so a killed broadcaster still holds a valid
 		// one and could otherwise resurrect the broadcast on any pod.
 		if rec, banned := s.banSet().BannedID(normID, s.clock()); banned {
-			s.rejectBanned(w, r, rec, normID)
+			s.rejectBanned(w, r, src, rec, normID)
 			return
 		}
 		if !s.resume.verify(normID, r.URL.Query().Get("resume")) {
 			// The token value itself is never logged.
 			s.metrics.Connection("publish", metrics.OutcomeUnauthorized)
 			s.log.Warn("publish claim rejected: invalid or missing resume token",
-				"id", normID, "remote", r.RemoteAddr, "origin", r.Header.Get("Origin"))
+				"id", normID, "remote", src.remote, "origin", r.Header.Get("Origin"))
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
@@ -834,7 +875,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		id, pub, err = s.registry.ResumePublish(normID)
 		if err != nil && !errors.Is(err, hub.ErrPublisherActive) {
 			s.log.Warn("publish claim rejected",
-				"id", normID, "remote", r.RemoteAddr, "origin", r.Header.Get("Origin"), "err", err)
+				"id", normID, "remote", src.remote, "origin", r.Header.Get("Origin"), "err", err)
 			if errors.Is(err, hub.ErrMaxBroadcasts) {
 				s.metrics.Connection("publish", metrics.OutcomeLimitRejected)
 				w.WriteHeader(http.StatusTooManyRequests)
@@ -892,7 +933,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 				if rec, banned := s.bannedPublisher(normID, peer); banned {
 					s.metrics.Connection("publish", metrics.OutcomeBanned)
 					s.log.Warn("publish closed: banned during the upgrade",
-						"broadcast_key", s.broadcastKey(normID), "remote", r.RemoteAddr,
+						"broadcast_key", s.broadcastKey(normID), "remote", src.remote,
 						"target_type", string(rec.Target.Type))
 					closeWithNotice(sess, wire.CloseCodeTerminatedByOperator, terminationReason)
 					return
@@ -910,7 +951,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 					if isReserved(cerr) {
 						s.metrics.Connection("publish", metrics.OutcomeConflict)
 						s.log.Warn("publish takeover refused: broadcast is reserved for a PoP",
-							"broadcast_key", s.broadcastKey(id), "remote", r.RemoteAddr)
+							"broadcast_key", s.broadcastKey(id), "remote", src.remote)
 						sess.CloseWithError(webtransport.SessionErrorCode(http.StatusConflict), "broadcast is reserved for a PoP relay")
 						return
 					}
@@ -927,7 +968,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		if err := s.registry.CheckPublishNew(); err != nil {
 			s.metrics.Connection("publish", metrics.OutcomeLimitRejected)
 			s.log.Warn("publish mint rejected",
-				"remote", r.RemoteAddr, "origin", r.Header.Get("Origin"), "err", err)
+				"remote", src.remote, "origin", r.Header.Get("Origin"), "err", err)
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
@@ -981,9 +1022,9 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	if rec, banned := s.bannedPublisher(id, peer); banned {
 		s.metrics.Connection("publish", metrics.OutcomeBanned)
 		s.log.Warn("publish closed: banned during the upgrade",
-			"broadcast_key", s.broadcastKey(id), "remote", r.RemoteAddr,
+			"broadcast_key", s.broadcastKey(id), "remote", src.remote,
 			"target_type", string(rec.Target.Type))
-		s.log.Debug("publish ban detail", "id", id, "remote", r.RemoteAddr,
+		s.log.Debug("publish ban detail", "id", id, "remote", src.remote,
 			"target_type", string(rec.Target.Type), "target", rec.Target.Value,
 			"ban_reason", rec.Reason, "created_by", rec.CreatedBy)
 		closeWithNotice(sess, wire.CloseCodeTerminatedByOperator, terminationReason)
@@ -1043,13 +1084,16 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	client := clientinfo.FromQuery(r.URL.Query())
 	s.metrics.BroadcastStarted(startKind, client)
 	pub.SetClient(client)
-	log := s.log.With("remote", sess.RemoteAddr(), "route", "publish", "broadcast_id", id)
+	log := s.log.With("remote", src.remote, "route", "publish", "broadcast_id", id)
+	if src.proxied {
+		log = log.With("proxy", sess.RemoteAddr())
+	}
 
 	// Tell the producer whether to emit parity and at what level, and
 	// whether it may open uplink carriers. Best-effort: without it the
 	// producer emits no parity and sends its deltas as datagrams.
 	s.sendRelayCapabilities(sess, log, true)
-	s.sendPublishSessionNotices(sess, r, id)
+	s.sendPublishSessionNotices(sess, r, src, id)
 
 	// Telemetry identity, also recorded on the hub so /statusz's
 	// publisherSessionId joins the broadcaster's reports. Sent last: a

@@ -183,6 +183,18 @@ type Config struct {
 	// set, else a per-process random key.
 	ResumeTokenKey []byte
 
+	// PublishProxyToken makes a CONNECT /publish… that presents it as
+	// `Authorization: Bearer <token>` a trusted publish proxy (R33, docs/83
+	// D4): gawk-whip-gateway, which publishes for OBS users. Such a request
+	// names its client in Gawk-Publisher-Ip, and every per-IP decision —
+	// rate limit (and its loopback/trusted-CIDR exemptions), IP ban, the
+	// admin portal's publisher IP, log fields — uses that address instead of
+	// the gateway's; it is also exempt from the Origin allow-list. Accepted
+	// on publish routes only. Empty (the default) trusts no proxy. Requires
+	// an explicit ResumeTokenKey (D12, ValidatePublishProxy). Compared in
+	// constant time; never logged.
+	PublishProxyToken string
+
 	// TelemetryKey keys the telemetry session token (docs/33 §4.2): 32 bytes
 	// from 64 hex chars, shared by every relay pod AND the gawk-telemetry
 	// service, which verifies tokens statelessly with it. Its presence IS the
@@ -366,7 +378,33 @@ type Config struct {
 // getenv supplies environment lookups, injectable for tests. It is the
 // gawk-server profile; gawk-relay parses with ParseRelayFlags.
 func ParseFlags(args []string, getenv func(string) string) (Config, error) {
-	return parse(args, getenv, ServerProfile, nil)
+	cfg, err := parse(args, getenv, ServerProfile, nil)
+	if err != nil {
+		return Config{}, err
+	}
+	// gawk-server has no key store, so an empty ResumeTokenKey here means no
+	// explicit -resume-token-key. gawk-relay fills its key from the state
+	// directory after parsing (relaystate.ApplyPersistedKeys), a durable
+	// server-side key that already meets D12; serve.Run re-checks the
+	// resolved config for both binaries.
+	if err := ValidatePublishProxy(cfg); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+// ValidatePublishProxy is docs/83 D12: a relay that trusts a publish proxy
+// must key resume tokens with an explicit, server-side key. The gateway's
+// stream keys are resume tokens; with the per-process random key they die on
+// every restart, and with the key derived from the publish secret — which
+// the gateway holds — anything holding that secret could compute every
+// broadcast's key.
+func ValidatePublishProxy(c Config) error {
+	if c.PublishProxyToken != "" && len(c.ResumeTokenKey) == 0 {
+		return fmt.Errorf("-publish-proxy-token requires an explicit -resume-token-key (docs/83 D12): " +
+			"with a derived key the publish secret computes every stream key, with none every key dies on restart")
+	}
+	return nil
 }
 
 // envLookups returns the two env readers every flag default goes through.
@@ -488,6 +526,8 @@ func parse(args []string, getenv func(string) string, p Profile, register func(f
 		"how long the home waits before offering a guest the switch to a PoP")
 	popDemandTimeout := fs.String("pop-demand-timeout", env("GAWK_POP_DEMAND_TIMEOUT", "5s"),
 		"how long an outside viewer's subscribe waits for a PoP to start forwarding a reserved broadcast")
+	publishProxyToken := fs.String("publish-proxy-token", env("GAWK_PUBLISH_PROXY_TOKEN", ""),
+		"bearer token of a trusted publish proxy (gawk-whip-gateway, docs/83 D4): a CONNECT /publish presenting it names its client in Gawk-Publisher-Ip, which then drives the rate limit, IP ban and publisher-IP fields; requires -resume-token-key; empty trusts no proxy")
 	trustedCIDRs := fs.String("trusted-cidrs", env("GAWK_TRUSTED_CIDRS", ""),
 		"comma-separated CIDRs that bypass the per-IP connection rate limiter (node/pod CIDRs under SNAT)")
 	statsKey := fs.String("stats-key", env("GAWK_STATS_KEY", ""),
@@ -581,9 +621,11 @@ func parse(args []string, getenv func(string) string, p Profile, register func(f
 	// 401 for every caller).
 	// The screening token is trimmed for the same reason as the admin one: the
 	// route trims the presented credential.
+	// The publish-proxy token is trimmed for the same reason: a templated
+	// Secret's trailing newline would otherwise match no gateway.
 	for _, p := range []*string{
 		adminAPIToken, adminOIDCIssuer, adminOIDCAudience, adminOIDCRolesClaim, adminOIDCRole,
-		screeningToken,
+		screeningToken, publishProxyToken,
 	} {
 		*p = strings.TrimSpace(*p)
 	}
@@ -591,6 +633,11 @@ func parse(args []string, getenv func(string) string, p Profile, register func(f
 	// portal a frame tap — the least-privilege split docs/71 D1 exists for.
 	if *screeningToken != "" && *screeningToken == *adminAPIToken {
 		return Config{}, fmt.Errorf("screening-token must differ from admin-api-token")
+	}
+	// The publish secret is handed to every broadcaster; as the proxy token it
+	// would let any of them claim an arbitrary publisher IP (docs/83 §9).
+	if *publishProxyToken != "" && *publishProxyToken == *pubSecret {
+		return Config{}, fmt.Errorf("publish-proxy-token must differ from publish-secret")
 	}
 
 	level, err := parseLogLevel(*logLevel)
@@ -891,6 +938,7 @@ func parse(args []string, getenv func(string) string, p Profile, register func(f
 		StatsKey:           statsKeyBytes,
 		ResumeTokenKey:     resumeKey,
 		StatelessResetKey:  resetKey,
+		PublishProxyToken:  *publishProxyToken,
 
 		TelemetryKey:            telemetryKeyBytes,
 		TelemetryReportInterval: telemetryInterval,

@@ -35,6 +35,8 @@ var (
 		// R79: both voice links' PSK and the ticket HMAC key.
 		"VoiceBridgePSK",
 		"VoiceTicketSecret",
+		// R33: the trusted publish proxy's bearer token.
+		"PublishProxyToken",
 	}
 	publicFields = []string{
 		"Addr", "CertFile", "KeyFile", "DevCert", "DevCertHosts",
@@ -85,6 +87,7 @@ func TestSanitizedLeaksNoSecretValue(t *testing.T) {
 		sentinelScreen = "SENTINEL-screening-token-xyzzy"
 		sentinelVPSK   = "SENTINEL-voice-psk-xyzzy"
 		sentinelVKey   = "SENTINEL-voice-ticket-secret-xyzzy"
+		sentinelProxy  = "SENTINEL-publish-proxy-token-xyzzy"
 	)
 	// Distinct 32-byte keys, so a swapped assignment shows up as a leak of
 	// the wrong one rather than passing by coincidence.
@@ -104,6 +107,7 @@ func TestSanitizedLeaksNoSecretValue(t *testing.T) {
 		StatelessResetKey: resetKey,
 		VoiceBridgePSK:    sentinelVPSK,
 		VoiceTicketSecret: sentinelVKey,
+		PublishProxyToken: sentinelProxy,
 		// Non-secret fields too: the redaction must not be achieved by
 		// dropping half the struct.
 		Addr:             ":4433",
@@ -118,7 +122,7 @@ func TestSanitizedLeaksNoSecretValue(t *testing.T) {
 	}
 	out := string(body)
 
-	for _, secret := range []string{sentinelSecret, sentinelPSK, sentinelToken, sentinelScreen, "SENTINEL", "xyzzy"} {
+	for _, secret := range []string{sentinelSecret, sentinelPSK, sentinelToken, sentinelScreen, sentinelProxy, "SENTINEL", "xyzzy"} {
 		if strings.Contains(out, secret) {
 			t.Errorf("sanitized config leaked %q:\n%s", secret, out)
 		}
@@ -147,6 +151,7 @@ func TestSanitizedLeaksNoSecretValue(t *testing.T) {
 		"screeningToken":    san.ScreeningToken,
 		"voiceBridgePsk":    san.VoiceBridgePSK,
 		"voiceTicketSecret": san.VoiceTicketSecret,
+		"publishProxyToken": san.PublishProxyToken,
 	} {
 		if got != secretSet {
 			t.Errorf("%s = %q, want %q", name, got, secretSet)
@@ -173,6 +178,7 @@ func TestSanitizedReportsUnsetSecrets(t *testing.T) {
 		"telemetryKey":      san.TelemetryKey,
 		"adminApiToken":     san.AdminAPIToken,
 		"screeningToken":    san.ScreeningToken,
+		"publishProxyToken": san.PublishProxyToken,
 	} {
 		if got != secretUnset {
 			t.Errorf("%s = %q, want %q", name, got, secretUnset)

@@ -264,6 +264,29 @@ screening:
   # notice, never a gate.
   notice: false
 
+# R33 (docs/83 D4): trust gawk-whip-gateway, the OBS (WHIP) ingest, as a
+# publish proxy. A CONNECT /publish that presents this token as
+# `Authorization: Bearer` names its publisher in a Gawk-Publisher-Ip header,
+# and the relay's rate limit, IP bans and the admin portal's publisher IP all
+# use that address instead of the gateway pod's (without it, one abusive OBS
+# key would get the gateway banned, and a gateway inside trustedCidrs would
+# skip the rate limit for everyone). It also exempts the gateway from
+# allowedOrigins. Accepted on publish routes only. Empty (the default) trusts
+# no proxy. MUST equal the gawk-whip-gateway chart's relay publish-proxy
+# token, and must differ from config.publishSecret. Lives only in the relay's
+# and the gateway's Secrets — it lets its holder claim any publisher IP.
+#
+# REQUIRES an explicit config.resumeTokenKey/resumeTokenKeyRef (docs/83 D12):
+# the chart refuses to render without one. Setting that key for the first
+# time revokes every resume token in use (docs/self-hosting.md §6).
+# Generate once:
+#   kubectl -n gawk create secret generic gawk-publish-proxy-token \
+#     --from-literal=token=$(openssl rand -hex 32)
+# then set: tokenSecretRef: {name: gawk-publish-proxy-token, key: token}
+publishProxy:
+  token: ""
+  tokenSecretRef: {}
+
 # R50 (docs/51): publish broadcast and room lifecycle events to an
 # operator-provided NATS JetStream. OPTIONAL and OFF by default — with url
 # empty the relay builds no client, starts no goroutine and is byte-identical
