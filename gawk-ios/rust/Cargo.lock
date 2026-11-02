@@ -877,7 +877,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-audio"
-version = "2.13.1"
+version = "2.14.0"
 dependencies = [
  "gawk-engine",
  "gstreamer",
@@ -891,7 +891,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-broadcast"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "gawk-audio",
  "gawk-capture",
@@ -906,7 +906,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-capture"
-version = "2.13.1"
+version = "2.14.0"
 dependencies = [
  "ashpd",
  "block2",
@@ -928,7 +928,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-core"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "gawk-broadcast",
  "gawk-capture",
@@ -944,7 +944,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-devpub"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "gawk-encode",
  "gawk-engine",
@@ -953,7 +953,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-encode"
-version = "2.13.1"
+version = "2.14.0"
 dependencies = [
  "gawk-engine",
  "gstreamer",
@@ -969,7 +969,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-engine"
-version = "2.13.1"
+version = "2.14.0"
 dependencies = [
  "flate2",
  "gawk-wire",
@@ -986,7 +986,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-viewer"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "gawk-encode",
  "gawk-engine",
@@ -999,7 +999,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-wire"
-version = "2.13.1"
+version = "2.14.0"
 
 [[package]]
 name = "getrandom"
@@ -2937,7 +2937,7 @@ dependencies = [
 
 [[package]]
 name = "uniffi-bindgen"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "serde_json",
  "uniffi",
