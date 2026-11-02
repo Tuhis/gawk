@@ -7,7 +7,9 @@ and OBS Studio's WHIP output (§3); owner decisions OD1–OD8 **taken
 ([canvas](https://claude.ai/artifact/TtFyDhdhEv5x13oSmjds2m), §5.1), and its
 owner decisions OD9 and OD10 were **taken 2026-11-02**: the way in is a
 footnote under the broadcaster card, and OBS gets a page of its own.
-Chunks **WG0–WG10** (`WG` = WHIP gateway; unused). Nothing is implemented.
+Chunks **WG0–WG10** (`WG` = WHIP gateway; unused). **WG1–WG9 implemented
+2026-11-02** (§12 records what the build settled); WG0's lab pass with real
+OBS, WG10's owner pass and the OBS page's Room row (§12.4) are open.
 
 Supersedes the 2026-07-29 sketch in `ROADMAP.md` §R33, which put WHIP inside
 `gawk-server`. That sketch predates the relay fleet's scale-out targets, R73's
@@ -1086,3 +1088,35 @@ so in the code and the chart.
   Stream) again, or reset it."; the confirmation titles "Forget this key?"
   and "Reset this key?". A refusal keeps S2's layout with the red box in
   step 3, since its fallback copy points at the steps above.
+
+### 12.4 Dev stack (WG9) and what is open
+
+- **The dev sender is FFmpeg's `whip` muxer** (Alpine FFmpeg 8.1), sending a
+  test pattern with a 1 s GOP. `gawk-whip-gateway/cmd/gawk-whipsim` does
+  what FFmpeg can't: it mints the key over `/publish?mint=1`, attaches the
+  broadcast to `devroom`, and checks that a frame comes back, which is the
+  `dev-stack` CI job's round trip. A pion sender was not used: the
+  gateway's synthetic test media isn't displayable and pubsim's fixture is
+  internal to `gawk-server` (`docs/41`).
+- **Every dev lane's relay carries a dev proxy token and an explicit resume
+  key**, because a compose profile can't change an existing service.
+- **The OBS page has no Room row yet.** The relay side works: attach checks
+  only ID + token, and the dev stack attaches a gateway broadcast to a room.
+  But §5.7 assumed more than holds. OBS's Stop Streaming ends the broadcast
+  with 4014, which removes the attachment, so every Stop and Start needs a
+  re-attach driven by the status poll. A room the page creates ends when the
+  page leaves it. The broadcaster's join/create sheet is inline in
+  `BroadcasterScreen.tsx` and would have to be extracted first. It needs
+  its own small design.
+- **The gateway takes no relay CA or server name**, only `-relay-insecure`:
+  `relay.url` must be a name on the relay's certificate, normally its
+  public URL.
+- **WG0 is not done**, so the reorder window's floor, cap, multiplier and
+  NACK delay (3 ms), `maxSessions` (20), `maxSessionsHard` (25) and the
+  pod's requests are the §4 estimates. The review before landing changed
+  three behaviours WG0 should look at: a hole is NACKed only after it has
+  been missing 3 ms, so a reordered packet never sets the RTT; a session
+  the sender closed waits 2 s for OBS's DELETE before it counts as `lost`,
+  because OBS closes its PeerConnection first; and offers are refused `406`
+  unless their `profile-level-id` is Baseline, Main or High at level 5.2 or
+  below.
