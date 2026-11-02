@@ -21,12 +21,12 @@ script for what counts as a dependency here and why.
 
 **Scope:** `cargo tree -e normal --target x86_64-unknown-linux-gnu` — build- and dev-dependencies (proc macros, bindgen, test harnesses) are excluded because they are not part of the shipped executable.
 
-## Summary — 367 packages
+## Summary — 370 packages
 
 | License (as declared) | Packages |
 |---|---:|
 | `MIT OR Apache-2.0` | 148 |
-| `MIT` | 77 |
+| `MIT` | 80 |
 | `Apache-2.0 OR MIT` | 45 |
 | `Unicode-3.0` | 22 |
 | `MIT/Apache-2.0` | 11 |
@@ -87,7 +87,7 @@ script for what counts as a dependency here and why.
 | `atspi-common` | 0.13.0 | `Apache-2.0 OR MIT` | Copyright (c) 2022 Tait Hoyem <tait@tait.tech> |
 | `atspi-proxies` | 0.13.0 | `Apache-2.0 OR MIT` | Copyright (c) 2022 Tait Hoyem <tait@tait.tech> |
 | `base64` | 0.23.1 | `MIT OR Apache-2.0` | Copyright (c) 2025 Alice Maz, Marshall Pierce |
-| `bitflags` | 2.13.1 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
+| `bitflags` | 2.13.2 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
 | `block-buffer` | 0.12.1 | `MIT OR Apache-2.0` | Copyright (c) 2018-2025 The RustCrypto Project Developers |
 | `blocking` | 1.6.2 | `Apache-2.0 OR MIT` | — |
 | `bytemuck` | 1.25.2 | `Zlib OR Apache-2.0 OR MIT` | Copyright (c) 2019 Daniel "Lokathor" Gee |
@@ -146,9 +146,9 @@ script for what counts as a dependency here and why.
 | `form_urlencoded` | 1.2.2 | `MIT OR Apache-2.0` | Copyright (c) 2013-2016 The rust-url developers |
 | `futures` | 0.3.33 | `MIT OR Apache-2.0` | Copyright (c) 2016 Alex Crichton<br>Copyright (c) 2017 The Tokio Authors |
 | `futures-channel` | 0.3.33 | `MIT OR Apache-2.0` | Copyright (c) 2016 Alex Crichton<br>Copyright (c) 2017 The Tokio Authors |
-| `futures-core` | 0.3.33 | `MIT OR Apache-2.0` | Copyright (c) 2016 Alex Crichton<br>Copyright (c) 2017 The Tokio Authors |
+| `futures-core` | 0.3.34 | `MIT OR Apache-2.0` | Copyright (c) 2016 Alex Crichton<br>Copyright (c) 2017 The Tokio Authors |
 | `futures-executor` | 0.3.33 | `MIT OR Apache-2.0` | Copyright (c) 2016 Alex Crichton<br>Copyright (c) 2017 The Tokio Authors |
-| `futures-io` | 0.3.33 | `MIT OR Apache-2.0` | Copyright (c) 2016 Alex Crichton<br>Copyright (c) 2017 The Tokio Authors |
+| `futures-io` | 0.3.34 | `MIT OR Apache-2.0` | Copyright (c) 2016 Alex Crichton<br>Copyright (c) 2017 The Tokio Authors |
 | `futures-lite` | 2.6.1 | `Apache-2.0 OR MIT` | Copyright (c) 2016 Alex Crichton<br>Copyright (c) 2017 The Tokio Authors |
 | `futures-sink` | 0.3.33 | `MIT OR Apache-2.0` | Copyright (c) 2016 Alex Crichton<br>Copyright (c) 2017 The Tokio Authors |
 | `futures-task` | 0.3.33 | `MIT OR Apache-2.0` | Copyright (c) 2016 Alex Crichton<br>Copyright (c) 2017 The Tokio Authors |
@@ -306,7 +306,7 @@ script for what counts as a dependency here and why.
 | `roxmltree` | 0.21.1 | `MIT OR Apache-2.0` | Copyright (c) 2018 Yevhenii Reizner |
 | `rustc-hash` | 2.1.3 | `Apache-2.0 OR MIT` | — |
 | `rusticata-macros` | 4.1.0 | `MIT/Apache-2.0` | Copyright (c) 2017 Pierre Chifflier |
-| `rustix` | 1.1.4 | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | — |
+| `rustix` | 1.1.6 | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | — |
 | `rustix` | 0.38.44 | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | — |
 | `rustls` | 0.23.46 | `Apache-2.0 OR ISC OR MIT` | Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com><br>Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com> |
 | `rustls-native-certs` | 0.8.4 | `Apache-2.0 OR ISC OR MIT` | Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com><br>Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com> |
@@ -409,8 +409,10 @@ script for what counts as a dependency here and why.
 | `yeslogic-fontconfig-sys` | 6.0.1 | `MIT` | Copyright 2019 YesLogic Pty. Ltd<br>Copyright 2016 Manuel Reinhardt<br>Copyright 2014 Austin Bonander<br>Copyright 2013 The Servo Project Developers |
 | `yoke` | 0.8.3 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `zbus` | 5.19.0 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
+| `zbus` | 6.2.1 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
 | `zbus-lockstep` | 0.5.2 | `MIT` | — |
 | `zbus_names` | 4.3.4 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
+| `zbus_utils` | 6.1.0 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
 | `zbus_xml` | 5.2.1 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
 | `zcheapstr` | 1.2.0 | `MIT` | Copyright (c) 2026 Zeeshan Ali Khan & zcheapstr contributors |
 | `zeno` | 0.3.3 | `Apache-2.0 OR MIT` | Copyright (c) 2020 Chad Brokaw |
@@ -420,6 +422,7 @@ script for what counts as a dependency here and why.
 | `zerotrie` | 0.2.4 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `zerovec` | 0.11.6 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `zmij` | 1.0.23 | `MIT` | — |
+| `zruntime` | 0.2.2 | `MIT` | Copyright (c) 2026 Zeeshan Ali Khan & zruntime contributors<br>Copyright (c) 2020 Yoshua Wuyts, Stjepan Glavina & Zeeshan Ali Khan |
 | `zune-core` | 0.5.1 | `MIT OR Apache-2.0 OR Zlib` | Copyright (c) zune-image developers |
 | `zune-jpeg` | 0.5.15 | `MIT OR Apache-2.0 OR Zlib` | Copyright (c) zune-image developers |
 | `zvariant` | 5.15.1 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
@@ -4576,9 +4579,9 @@ Applies to: `untrusted`
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### 47. MIT — 216 packages
+### 47. MIT — 217 packages
 
-Applies to: `adler2`, `ahash`, `allocator-api2`, `arrayvec`, `as-raw-xcb-connection`, `asn1-rs`, `async-channel`, `async-executor`, `async-io`, `async-lock`, `async-process`, `async-signal` — and 204 more
+Applies to: `adler2`, `ahash`, `allocator-api2`, `arrayvec`, `as-raw-xcb-connection`, `asn1-rs`, `async-channel`, `async-executor`, `async-io`, `async-lock`, `async-process`, `async-signal` — and 205 more
 
 ```
 Permission is hereby granted, free of charge, to any
@@ -5011,7 +5014,45 @@ dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 ```
 
-### 59. UNKNOWN — 1 package
+### 59. MIT — 1 package
+
+Applies to: `zruntime`
+
+```
+Copyright (c) 2026 Zeeshan Ali Khan & zruntime contributors
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+The broadcast channel (`src/broadcast.rs`), its tests (`src/tests/broadcast.rs`) and its
+benchmark (`benches/broadcast.rs`) come from the async-broadcast crate
+(https://github.com/smol-rs/async-broadcast), under the license above and this notice:
+
+Copyright (c) 2020 Yoshua Wuyts, Stjepan Glavina & Zeeshan Ali Khan
+```
+
+### 60. UNKNOWN — 1 package
 
 Applies to: `glib`
 
@@ -5032,7 +5073,7 @@ LGPL or other licenses. For more information check the license of each GNOME
 library.
 ```
 
-### 60. UNKNOWN — 1 package
+### 61. UNKNOWN — 1 package
 
 Applies to: `imgref`
 
@@ -5160,7 +5201,7 @@ express Statement of Purpose.
     this CC0 or use of the Work.
 ```
 
-### 61. UNKNOWN — 1 package
+### 62. UNKNOWN — 1 package
 
 Applies to: `memchr`
 
@@ -5170,7 +5211,7 @@ This project is dual-licensed under the Unlicense and MIT licenses.
 You may use this code under the terms of either license.
 ```
 
-### 62. UNKNOWN — 1 package
+### 63. UNKNOWN — 1 package
 
 Applies to: `ring`
 
@@ -5186,7 +5227,7 @@ See src/polyfill/once_cell/LICENSE-APACHE and src/polyfill/once_cell/LICENSE-MIT
 for the license to code that was sourced from the once_cell project.
 ```
 
-### 63. UNKNOWN — 1 package
+### 64. UNKNOWN — 1 package
 
 Applies to: `typenum`
 
@@ -5194,7 +5235,7 @@ Applies to: `typenum`
 MIT OR Apache-2.0
 ```
 
-### 64. UNKNOWN — 1 package
+### 65. UNKNOWN — 1 package
 
 Applies to: `webpki-roots`
 
@@ -5262,7 +5303,7 @@ of Data, including for example machine learning models and models'
 insights.
 ```
 
-### 65. Unlicense — 3 packages
+### 66. Unlicense — 3 packages
 
 Applies to: `byteorder-lite`, `ksni`, `memchr`
 
@@ -5293,7 +5334,7 @@ OTHER DEALINGS IN THE SOFTWARE.
 For more information, please refer to <http://unlicense.org/>
 ```
 
-### 66. Zlib — 11 packages
+### 67. Zlib — 11 packages
 
 Applies to: `bytemuck`, `cursor-icon`, `foldhash`, `glow`, `lru-slab`, `miniz_oxide`, `raw-window-handle`, `slotmap`, `tiny-xlib`, `tinyvec`, `xkeysym`
 
@@ -5315,7 +5356,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### 67. Zlib — 2 packages
+### 68. Zlib — 2 packages
 
 Applies to: `zune-core`, `zune-jpeg`
 
@@ -5341,7 +5382,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### 68. Zlib — 1 package
+### 69. Zlib — 1 package
 
 Applies to: `tinyvec_macros`
 

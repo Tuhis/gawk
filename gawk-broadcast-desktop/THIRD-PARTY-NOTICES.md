@@ -63,7 +63,7 @@ script for what counts as a dependency here and why.
 | `arrayvec` | 0.7.8 | `MIT OR Apache-2.0` | Copyright (c) Ulrik Sverdrup "bluss" 2015-2023 |
 | `asn1-rs` | 0.7.2 | `MIT OR Apache-2.0` | Copyright (c) 2017 Pierre Chifflier |
 | `base64` | 0.23.1 | `MIT OR Apache-2.0` | Copyright (c) 2025 Alice Maz, Marshall Pierce |
-| `bitflags` | 2.13.1 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
+| `bitflags` | 2.13.2 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
 | `block-buffer` | 0.12.1 | `MIT OR Apache-2.0` | Copyright (c) 2018-2025 The RustCrypto Project Developers |
 | `bytemuck` | 1.25.2 | `Zlib OR Apache-2.0 OR MIT` | Copyright (c) 2019 Daniel "Lokathor" Gee |
 | `byteorder-lite` | 0.1.0 | `Unlicense OR MIT` | Copyright (c) 2015 Andrew Gallant |

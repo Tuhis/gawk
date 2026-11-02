@@ -36,7 +36,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"
 # Notifications over org.freedesktop.Notifications (docs/58 D9): the zbus 5
 # already in the graph, on its default async-io executor — never its `tokio`
 # feature (see ../capture/Cargo.toml for why).
-zbus = "5"
+zbus = "6"
 
 # The audio tests reuse the audio crate's headless-PipeWire harness
 # (../audio/tests/support/pwtest.rs, included by path).
