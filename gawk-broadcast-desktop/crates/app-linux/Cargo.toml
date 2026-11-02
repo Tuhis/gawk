@@ -33,9 +33,11 @@ log = "0.4"
 # loudly rather than changing behaviour.
 slint = { version = "1", features = ["unstable-winit-030"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
-# Notifications over org.freedesktop.Notifications (docs/58 D9): the zbus 5
-# already in the graph, on its default async-io executor — never its `tokio`
-# feature (see ../capture/Cargo.toml for why).
+# Notifications over org.freedesktop.Notifications (docs/58 D9) and the
+# single-instance name (docs/68 D8). zbus 6, on its default runtime
+# (`default-rt`, zruntime — the successor of 5's async-io executor), never its
+# `tokio` feature (see ../capture/Cargo.toml for why). ashpd still pulls zbus 5
+# for the portal; the two copies don't share features.
 zbus = "6"
 
 # The audio tests reuse the audio crate's headless-PipeWire harness

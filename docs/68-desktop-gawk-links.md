@@ -284,8 +284,9 @@ whoever owns it is the primary.
     interface `fi.ioio.gawk.Broadcast1` with `Raise(s token)` and
     `OpenUrl(s url, s token)`. `token` is the secondary's
     `XDG_ACTIVATION_TOKEN`, which the launcher sets, so that the primary
-    can take focus on Wayland. The connection uses zbus's blocking API on
-    its own thread. **zbus's `tokio` feature stays off** (docs/gotchas.md,
+    can take focus on Wayland. The connection is zbus's async API driven
+    by `zbus::block_on` (zbus 6 removed the blocking API), on zbus's own
+    runtime thread. **zbus's `tokio` feature stays off** (docs/gotchas.md,
     docs/58 F-2). With no session bus, the app runs without single-instance
     and logs why.
   - **macOS**: LaunchServices already sends a second launch of the bundle
