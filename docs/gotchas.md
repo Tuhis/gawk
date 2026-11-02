@@ -396,7 +396,14 @@ Add to it when a new gotcha lands in `docs/`.
   (`context.AfterFunc` on the session), and its CONNECTION_CLOSE beat the
   capsule in 25 of 30 runs, as quinn's `Connection::close` can. To send a
   code a relay must act on, keep the connection until the capsule is
-  delivered. ([docs/79](79-stop-ends-the-broadcast.md) §1)
+  delivered. ([docs/79](79-stop-ends-the-broadcast.md) §1) Go clients
+  hit it too: the shared Go publisher engine's `StopBroadcast()` 4014 read
+  as a drop 1 run in 2 on loopback, leaving the broadcast in grace, until
+  `gawk-server/publisher/relay.go` (`dialWebTransportHeader`) dialled QUIC
+  itself and let the connection linger until the relay closed it; the PoP
+  dialer (`internal/popclient`, R78) carries the same fix. A Go client
+  whose close code matters must own its QUIC connection, not use
+  `Transport.Dial`. ([docs/83](83-whip-gateway.md) WG1)
 - **Since v0.12.0, `webtransport.Server.Config` must be set or WebKit refuses
   every session** — with a nil `Config` the library advertises
   `WT_MAX_SESSIONS` without the three `WT_INITIAL_MAX_*` SETTINGS the draft
@@ -1895,7 +1902,15 @@ entries still describe code `gawk-pubsim` runs (now
   order — the native engine saw the token first in ~half of dials, and its
   old "read the first stream, strict-parse as announce" turned that into
   "no broadcast code". Dispatch server messages by wire type, never by
-  arrival order. ([docs/22](22-relay-scale-out.md) finding 9)
+  arrival order. ([docs/22](22-relay-scale-out.md) finding 9) The same holds
+  for the mint-only publish (`CONNECT /publish?mint=1`, R33): its
+  SessionClosing (0x17, code 4017) is a third uni stream, and it can be
+  accepted before the announce or the token. A client that stops at the
+  close notice, or treats the session ending as "no key", loses the key;
+  read every stream to the end, dispatch by type, and finish once both the
+  ID and the token are in (`gawk-whip-gateway/cmd/gawk-whipsim`,
+  `TestMintResultDispatchesByTypeInAnyOrder`).
+  ([docs/83](83-whip-gateway.md) D3)
 - **The hijack fix needs an explicit `resumeTokenKey` to hold between
   broadcasters** — a token key derived from the broadcaster-distributed
   publish secret is computable by every broadcaster, so it only stops
@@ -2795,3 +2810,19 @@ entries still describe code `gawk-pubsim` runs (now
   applies its own gain after the gate. A level measured "after the browser"
   is not the level in the room. ([docs/82](82-voice-ux-and-learned-gate.md)
   D5, §12.2)
+- **MetalLB shares one address between LoadBalancer Services with different
+  selectors only when they all use `externalTrafficPolicy: Cluster`.** The
+  WHIP gateway's per-pod media Services each select one pod
+  (`statefulset.kubernetes.io/pod-name`), so `Local` would leave all but one
+  without the shared address. The gateway doesn't need the client address on
+  the media path (it takes it from the HTTP request, D4), so the chart
+  defaults to `Cluster`. ([docs/83](83-whip-gateway.md) D10,
+  self-hosting §16)
+- **A compose profile can add services but cannot change one.** The `whip`
+  profile needs the relay to trust the gateway's publish-proxy token, which
+  requires an explicit resume-token key, so both are set on the relay in
+  every dev lane (harmless without a gateway; the explicit key also keeps
+  resume tokens valid across a relay restart), and the profile's
+  `whipGatewayUrl` comes from a second run of `dev/config-gen.sh`
+  (`whip-config-gen`) that `app` waits for with `required: false`.
+  ([docs/41](41-local-dev-stack.md))

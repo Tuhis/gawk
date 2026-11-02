@@ -25,6 +25,7 @@ your laptop in about five minutes with a self-signed certificate.
 13. [Automatic content screening](#13-automatic-content-screening-r40)
 14. [PoP relays](#14-pop-relays-r74)
 15. [Room voice through Mumble](#15-room-voice-through-mumble-r79)
+16. [OBS and other WHIP senders](#16-obs-and-other-whip-senders-r33)
 
 ---
 
@@ -37,6 +38,7 @@ your laptop in about five minutes with a self-signed certificate.
 | `gawk-telemetry` *(optional)* | Per-session diagnostics. **Off by default; skip it on a first install.** | Internal only, plus one same-origin ingest path |
 | `gawk-admin` *(optional)* | The moderation portal: fleet-wide kill, durable ID/IP bans, signed webhooks. **Off by default; skip it on a first install.** | ClusterIP by default; an OIDC-gated Ingress is a deliberate opt-in ([§9](#9-gawk-admin--the-moderation-portal-r39)) |
 | `gawk-mumble-bridge` *(optional)* | Room voice: lets room participants talk in a Mumble channel from the browser, one Mumble user each. **Off by default; needs your own Mumble server.** | Its own **UDP LoadBalancer** for browsers; the relay's links and its ops port are internal only ([§15](#15-room-voice-through-mumble-r79)) |
+| `gawk-whip-gateway` *(optional)* | OBS ingest: OBS Studio and other WHIP senders stream to it over WebRTC, and it republishes each stream to the relay. **Off by default.** | Its WHIP endpoint behind an HTTPS Ingress, plus one **UDP+TCP LoadBalancer** per pod on a shared address for media; its peer and ops ports are internal only ([§16](#16-obs-and-other-whip-senders-r33)) |
 | `gawk-sampler` *(optional)* | Automatic content screening: scores each live broadcast's keyframe for explicit content and raises content flags in `gawk-admin`. **Off by default; ships observing, not paging.** | Internal only; reads the relay's screening route and posts flags to `gawk-admin` ([§13](#13-automatic-content-screening-r40)) |
 
 The native broadcasters (`gawk-broadcast-linux`, `gawk-broadcast-windows` and
@@ -2078,3 +2080,134 @@ unset, nothing changes: no voice capability, no voice UI, no new route.
 - **Privacy**: gawk never records voice, but murmur or any Mumble client in
   the channel can, and native users' names and mute state are visible to
   everyone in the room. The voice panel says so.
+
+## 16. OBS and other WHIP senders (R33)
+
+Broadcasters who already stream with OBS Studio (30 or later) point OBS at
+your server over WHIP instead of using the browser or the native apps. The
+`gawk-whip-gateway` chart terminates WebRTC and republishes each stream to
+your relay as an ordinary publisher, so viewers, rooms and moderation see a
+broadcast like any other. The user's side is
+[docs/obs-setup.md](obs-setup.md); the design is
+[docs/83](83-whip-gateway.md).
+
+A gateway publishes only to its own deployment's relay: the web app offers
+the OBS page only while that relay is the selected server (docs/83 OD4).
+
+### 16.1 What it needs
+
+- **The relay's two values from [§6](#6-single-node-vs-cluster-mode)**:
+  `publishProxy.tokenSecretRef` and an explicit `config.resumeTokenKeyRef`.
+  Setting the key for the first time revokes every resume token in use once;
+  §6 says how to do it between broadcasts.
+- **ingress-nginx in front of the WHIP endpoint**, hashing on the bearer key.
+  The chart's Ingress always sets
+  `nginx.ingress.kubernetes.io/upstream-hash-by: "$http_authorization"`, so
+  every request for a key (OBS's `POST` and `DELETE`, the OBS page's status
+  reads) reaches the pod holding that key's session. A controller that
+  can't hash on a header isn't supported. Without the hash a stop and the
+  status land on pods that never saw the session (a peer lookup between the
+  pods covers rescales and rollouts, not a missing hash).
+- **The ingress controller must see real client IPs**: its own Service on
+  `externalTrafficPolicy: Local`, or PROXY protocol. The gateway rate-limits
+  `POST /whip` per OBS user and passes that address to the relay.
+- **A shared address for media and a port per pod.** Pod N answers ICE on
+  `media.basePort + N` (default 8189), UDP and ICE-TCP, through its own
+  LoadBalancer Service; all of them share `publicAddress`. On MetalLB the
+  chart's `metallb.universe.tf/allow-shared-ip` annotation does the sharing
+  (`media.sharedIpAnnotation` renames it for MetalLB releases that use
+  `metallb.io/`), and the Services stay on `externalTrafficPolicy: Cluster`,
+  which MetalLB requires for Services with different selectors to share an
+  address. Open `basePort` to `basePort + replicas − 1`, UDP and TCP, on the
+  firewall and any port forward in front of the address.
+
+### 16.2 `trustedProxyCidrs`
+
+The gateway reads the OBS user's address from `X-Forwarded-For` only when
+the request arrives from an address in `trustedProxyCidrs`:
+
+- List **only the proxy that writes the header**: the ingress controller's
+  pod range, or, when it runs on `hostNetwork`, the exact node addresses
+  (`/32`, `/128`). Never a subnet clients share; on a homelab the node subnet
+  is often the broadcaster's own LAN. Never a kube-proxy SNAT hop in front
+  of the controller.
+- On a dual-stack cluster, list both address families.
+- **Left empty behind an Ingress, every OBS user shares one rate-limit
+  bucket**, on the gateway and on the relay. The chart's install notes warn
+  about it. A list that misses the controller's real address is counted in
+  `gawk_whip_xff_misconfigured_total`, and the OBS page tells the user the
+  server "can't see where your stream comes from" when the header is
+  unusable.
+
+### 16.3 Install
+
+```sh
+kubectl -n gawk create secret generic gawk-whip \
+  --from-literal=internalToken=$(openssl rand -hex 32)
+```
+
+```yaml
+# gawk-whip-gateway values
+relay:
+  url: https://relay.example.com:4433          # a name on the relay's certificate
+  publishSecretRef: {name: gawk-server-secrets, key: publishSecret}   # if the relay has one
+  publishProxyTokenRef: {name: gawk-publish-proxy-token, key: token}  # the relay's §6 Secret
+publicAddress: 203.0.113.20                    # the media address OBS sends to
+media:
+  loadBalancerIP: 203.0.113.20
+internalTokenRef: {name: gawk-whip, key: internalToken}
+allowedOrigins: [https://gawk.example.com]     # the web app, for the OBS page's status reads
+trustedProxyCidrs: [10.42.0.0/16]              # the ingress controller's pods (16.2)
+ingress:
+  enabled: true
+  className: nginx
+  host: whip.example.com
+  tls: {secretName: gawk-whip-gateway-tls}
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-production
+```
+
+```sh
+helm upgrade --install gawk-whip-gateway oci://ghcr.io/tuhis/charts/gawk-whip-gateway \
+  -n gawk -f whip-values.yaml
+```
+
+The gateway checks the relay's certificate by the URL's host name and has no
+CA option, so `relay.url` uses a name the certificate carries. Then tell the
+web app where the gateway is, which turns on the way in to the OBS page:
+
+```yaml
+# gawk-app values
+config:
+  whipGatewayUrl: https://whip.example.com
+```
+
+`helm install` prints these requirements again, filled in with your values.
+
+### 16.4 Capacity
+
+`maxSessions` (default 20) is per pod, and `maxSessionsHard` (default 1.25×)
+is the ceiling a reconnect can push a pod to. Keys hash unevenly, so
+`replicas × maxSessions` holds only on average, and only
+`(replicas − 1) × maxSessions` sessions are safe through a pod restart: a
+restarted pod's OBS clients reconnect to the others as new keys, and a full
+pod answers `503` until OBS retries. The broadcasts wait in the relay's
+grace meanwhile, so viewers keep the code. The defaults and the chart's
+resource requests are estimates until gawk's lab measurement with real OBS
+(docs/83 WG0); size from your own `gawk_whip_sessions` and pod CPU.
+Every gateway session also counts against the relay's `maxBroadcasts`.
+
+Changing `replicas` is a `helm upgrade`: it adds or removes media Services
+and the pods' peer lists. Open the new port first.
+
+### 16.5 Is it working?
+
+- `gawk_whip_sessions` and `gawk_whip_posts_total{status}` on the ops port
+  (`metrics.serviceMonitor.enabled`), with `gawk_whip_gop_seconds` showing
+  what keyframe interval your users send and
+  `gawk_whip_frames_dropped_total{reason}` what the reorder window drops.
+- The relay counts a stream key minted from the OBS page as
+  `gawk_connections_total{route="publish",outcome="minted"}`.
+- Locally, `docker compose --profile whip up` runs the whole path with a
+  test-pattern sender ([docs/41](41-local-dev-stack.md)).
+

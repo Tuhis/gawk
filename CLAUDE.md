@@ -210,6 +210,22 @@ Module roles and the facts `ls` can't tell you. Layout itself: read the tree.
   `/statusz`) is **never routed publicly**. Its murmur integration tests run
   against real murmur (`testdata/murmur.sh`); the in-process fake missed
   every surprise MV5 found (`docs/gotchas.md`).
+- `gawk-whip-gateway` — WHIP ingest for OBS (R33, `docs/83`); the
+  **seventh** top-level Go module and seventh deployable, **default off
+  everywhere**. It terminates OBS's WebRTC with pion and republishes into the
+  relay through the public `gawk-server/publisher` engine as an ordinary
+  publisher: the relay, wire and viewers don't change. A semantic change to
+  `publisher` needs a commit touching `gawk-whip-gateway/` in the same PR
+  (`CONTRIBUTING.md`). The stream key `gawk1_<ID>_<token>` **is** the resume
+  token, a full publish credential: never log it, put it in a URL, telemetry
+  or a status response, and key records by its hash. The gateway holds no
+  token-minting key (keys come from the relay's mint-only
+  `CONNECT /publish?mint=1`), and the relay's `-publish-proxy-token`, which
+  lets it claim any publisher IP, lives only in the gateway's Secret and
+  requires an explicit `-resume-token-key` (D12). Its internal peer listener
+  is **never routed publicly**. OBS ignores PLI, so the GOP is set in OBS and
+  bounded by the gateway; the gateway sends PLI on session start and resume
+  only, never on loss or periodically (`docs/15` D6).
 - `common-ts/` — shared **TypeScript only** (R53): repo-internal npm packages
   with no build step, consumed by the operator SPAs via `file:` (today
   `oidc-session`, the hand-rolled OIDC flow of `gawk-admin` and

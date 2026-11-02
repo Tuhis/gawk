@@ -11,6 +11,7 @@ Not a design doc, but in this directory:
 | File | What |
 |---|---|
 | [`self-hosting.md`](self-hosting.md) | **Run your own gawk** — prerequisites, TLS, install, cluster mode, troubleshooting |
+| [`obs-setup.md`](obs-setup.md) | **Stream from OBS Studio** — the OBS settings for gawk's WHIP gateway, FFmpeg and GStreamer senders, and what the OBS page's messages mean |
 | [`gotchas.md`](gotchas.md) | A consolidated list of gotchas, each of which cost real debugging time |
 | [`implementation-tasks.md`](implementation-tasks.md) | The v0.x server design + chunk breakdown (A1–D3) |
 
