@@ -5,16 +5,19 @@
 //! s token)`. `token` is the second launch's `XDG_ACTIVATION_TOKEN`, so the
 //! primary can say who asked to be raised.
 //!
-//! zbus's blocking API on its default async-io executor — never its `tokio`
-//! feature (docs/gotchas.md, docs/58 F-2). The object is registered before
-//! the name is requested, so a second launch that finds the name always
-//! finds the object behind it.
+//! zbus's async API driven by `zbus::block_on` on its default runtime
+//! (zruntime, the `default-rt` feature) — never its `tokio` feature
+//! (docs/gotchas.md, docs/58 F-2). zbus 6 removed the blocking API; a
+//! connection outlives the `block_on` that built it, on zruntime's helper
+//! thread, so the primary keeps answering after `claim` returns. The object
+//! is registered before the name is requested, so a second launch that finds
+//! the name always finds the object behind it.
 
 use gawk_ui::instance::{Endpoint, Incoming, MAX_MESSAGE, Request};
 use std::io;
 use std::sync::mpsc;
 use std::time::Duration;
-use zbus::blocking::Connection;
+use zbus::Connection;
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
 
 pub const BUS_NAME: &str = "fi.ioio.gawk.broadcast";
@@ -56,17 +59,13 @@ impl DBus {
 
     fn connection(&mut self) -> io::Result<&Connection> {
         if self.conn.is_none() {
+            // zbus 6 defers a bad address to `build()`.
             let builder = match &self.address {
-                Some(a) => zbus::blocking::connection::Builder::address(a.as_str()),
-                None => zbus::blocking::connection::Builder::session(),
-            }
-            .map_err(to_io)?;
-            self.conn = Some(
-                builder
-                    .method_timeout(CALL_TIMEOUT)
-                    .build()
-                    .map_err(to_io)?,
-            );
+                Some(a) => zbus::connection::Builder::address(a.as_str()),
+                None => zbus::connection::Builder::session(),
+            };
+            self.conn =
+                Some(zbus::block_on(builder.method_timeout(CALL_TIMEOUT).build()).map_err(to_io)?);
         }
         Ok(self.conn.as_ref().expect("connected above"))
     }
@@ -114,21 +113,31 @@ impl Endpoint for DBus {
         let conn = self.connection()?.clone();
         // A claim that loses leaves the object on a connection nobody calls;
         // a retry replaces it.
-        conn.object_server()
-            .at(OBJECT_PATH, Broadcast1 { tx })
-            .map_err(to_io)?;
-        // zbus reports DBUS_REQUEST_NAME_REPLY_EXISTS as `NameTaken`.
-        let owned =
-            match conn.request_name_with_flags(BUS_NAME, RequestNameFlags::DoNotQueue.into()) {
+        let owned = zbus::block_on(async {
+            conn.object_server()
+                .at(OBJECT_PATH, Broadcast1 { tx })
+                .await?;
+            // zbus reports DBUS_REQUEST_NAME_REPLY_EXISTS as `NameTaken`.
+            let owned = match conn
+                .request_name_with_flags(BUS_NAME, RequestNameFlags::DO_NOT_QUEUE)
+                .await
+            {
                 Ok(RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner) => true,
                 Ok(RequestNameReply::Exists | RequestNameReply::InQueue)
                 | Err(zbus::Error::NameTaken) => false,
-                Err(e) => return Err(to_io(e)),
+                Err(e) => return Err(e),
             };
+            if !owned {
+                let _ = conn
+                    .object_server()
+                    .remove::<Broadcast1, _>(OBJECT_PATH)
+                    .await;
+            }
+            Ok(owned)
+        })
+        .map_err(to_io)?;
         if owned {
             self.received = Some(rx);
-        } else {
-            let _ = conn.object_server().remove::<Broadcast1, _>(OBJECT_PATH);
         }
         Ok(owned)
     }
@@ -137,25 +146,25 @@ impl Endpoint for DBus {
         let token = self.token.clone();
         let conn = self.connection()?;
         let reply = match request {
-            Request::Raise => conn.call_method(
+            Request::Raise => zbus::block_on(conn.call_method(
                 Some(BUS_NAME),
                 OBJECT_PATH,
                 Some(INTERFACE),
                 "Raise",
                 &(token.as_str(),),
-            ),
+            )),
             Request::Open(link) => {
                 let url = link.as_deref().unwrap_or("");
                 if url.len() > MAX_MESSAGE {
                     return Err(io::Error::new(io::ErrorKind::InvalidInput, "link too long"));
                 }
-                conn.call_method(
+                zbus::block_on(conn.call_method(
                     Some(BUS_NAME),
                     OBJECT_PATH,
                     Some(INTERFACE),
                     "OpenUrl",
                     &(url, token.as_str()),
-                )
+                ))
             }
         };
         reply.map(|_| ()).map_err(to_io)
@@ -185,16 +194,16 @@ impl Endpoint for DBus {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use gawk_ui::instance::{Startup, startup};
     use std::process::{Child, Command, Stdio};
 
     /// A private `dbus-daemon` for one test: its address is passed to the
     /// endpoints, never put in the process environment the tests share.
-    struct Bus {
+    pub(crate) struct Bus {
         child: Child,
-        address: String,
+        pub(crate) address: String,
         _dir: std::path::PathBuf,
     }
 
@@ -206,7 +215,7 @@ mod tests {
         }
     }
 
-    fn bus(tag: &str) -> Option<Bus> {
+    pub(crate) fn bus(tag: &str) -> Option<Bus> {
         let dir = std::env::temp_dir().join(format!("gawk-dbus-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let address = format!("unix:path={}", dir.join("bus").display());
@@ -308,13 +317,13 @@ mod tests {
         // The primary refuses one too, whoever sent it.
         let conn = other.connection().unwrap();
         assert!(
-            conn.call_method(
+            zbus::block_on(conn.call_method(
                 Some(BUS_NAME),
                 OBJECT_PATH,
                 Some(INTERFACE),
                 "OpenUrl",
                 &(huge.as_str(), ""),
-            )
+            ))
             .is_err()
         );
     }

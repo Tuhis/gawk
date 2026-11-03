@@ -5,14 +5,14 @@
 //! instead of stacking. Every notification is also a debug-log line. With no
 //! session bus they are discarded silently.
 //!
-//! On zbus (already in the graph through ashpd), driven from a small runtime
-//! of its own: the shell's notify hook is synchronous and on the GUI thread,
+//! On zbus, driven from a small tokio runtime of its own (zbus itself runs
+//! the connection on zruntime, never its `tokio` feature): the shell's notify hook is synchronous and on the GUI thread,
 //! and a slow notification daemon must never stall the window.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
-use zbus::zvariant::Value;
+use zbus::Variant;
 
 static LAST_ID: AtomicU32 = AtomicU32::new(0);
 
@@ -53,7 +53,7 @@ pub type NotifyArgs<'a> = (
     &'a str,
     &'a str,
     Vec<&'static str>,
-    HashMap<&'static str, Value<'static>>,
+    HashMap<&'static str, Variant<'static>>,
     i32,
 );
 
@@ -67,10 +67,10 @@ pub fn notify_args<'a>(
 ) -> NotifyArgs<'a> {
     let mut hints = HashMap::new();
     // 1 = normal, 2 = critical (the spec's byte).
-    hints.insert("urgency", Value::U8(if critical { 2 } else { 1 }));
+    hints.insert("urgency", Variant::U8(if critical { 2 } else { 1 }));
     hints.insert(
         "desktop-entry",
-        Value::from(crate::platform::APP_ID.to_owned()),
+        Variant::from(crate::platform::APP_ID.to_owned()),
     );
     (
         "gawk broadcast",
@@ -96,6 +96,27 @@ fn runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
+/// Sends one notification over `conn` and returns the daemon's id for it.
+async fn show(
+    conn: &zbus::Connection,
+    summary: &str,
+    body: &str,
+    critical: bool,
+    replaces: u32,
+) -> zbus::Result<u32> {
+    let args = notify_args(summary, body, critical, replaces, icon());
+    conn.call_method(
+        Some("org.freedesktop.Notifications"),
+        "/org/freedesktop/Notifications",
+        Some("org.freedesktop.Notifications"),
+        "Notify",
+        &args,
+    )
+    .await?
+    .body()
+    .deserialize::<u32>()
+}
+
 /// The shell's notify hook.
 pub fn notify(summary: &str, body: &str, critical: bool) {
     if critical {
@@ -108,23 +129,15 @@ pub fn notify(summary: &str, body: &str, critical: bool) {
         let Ok(conn) = zbus::Connection::session().await else {
             return; // no session bus: silently discarded
         };
-        let args = notify_args(
+        match show(
+            &conn,
             &summary,
             &body,
             critical,
             LAST_ID.load(Ordering::Acquire),
-            icon(),
-        );
-        let reply = conn
-            .call_method(
-                Some("org.freedesktop.Notifications"),
-                "/org/freedesktop/Notifications",
-                Some("org.freedesktop.Notifications"),
-                "Notify",
-                &args,
-            )
-            .await;
-        match reply.and_then(|m| m.body().deserialize::<u32>()) {
+        )
+        .await
+        {
             Ok(id) => LAST_ID.store(id, Ordering::Release),
             Err(e) => log::debug!("notification not shown: {e}"),
         }
@@ -146,9 +159,78 @@ mod tests {
             ("video-display", "Broadcast ended", "unexpectedly")
         );
         assert!(actions.is_empty());
-        assert_eq!(hints["urgency"], Value::U8(2));
+        assert_eq!(hints["urgency"], Variant::U8(2));
         assert_eq!(timeout, -1);
         let (.., hints, _) = notify_args("Live", "", false, 0, "x");
-        assert_eq!(hints["urgency"], Value::U8(1));
+        assert_eq!(hints["urgency"], Variant::U8(1));
+    }
+
+    /// A stand-in notification daemon: answers `Notify` with a fixed id and
+    /// passes on what it was sent.
+    struct Daemon {
+        tx: std::sync::mpsc::Sender<(u32, String, u8)>,
+    }
+
+    #[zbus::interface(name = "org.freedesktop.Notifications")]
+    impl Daemon {
+        #[allow(clippy::too_many_arguments)]
+        fn notify(
+            &self,
+            _app: String,
+            replaces: u32,
+            _icon: String,
+            summary: String,
+            _body: String,
+            _actions: Vec<String>,
+            hints: HashMap<String, zbus::OwnedVariant>,
+            _timeout: i32,
+        ) -> u32 {
+            let urgency = hints
+                .get("urgency")
+                .and_then(|v| u8::try_from(v).ok())
+                .unwrap_or(0);
+            let _ = self.tx.send((replaces, summary, urgency));
+            42
+        }
+    }
+
+    // zbus 6 runs every connection on its own runtime (zruntime), never
+    // tokio's (docs/gotchas.md): a notification sent from this module's tokio
+    // runtime must still reach the daemon and bring its id back.
+    #[test]
+    fn a_notification_from_the_notify_runtime_reaches_the_daemon() {
+        let Some(bus) = crate::instance::tests::bus("notify") else {
+            return;
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _daemon = zbus::block_on(
+            zbus::connection::Builder::address(bus.address.as_str())
+                .serve_at("/org/freedesktop/Notifications", Daemon { tx })
+                .name("org.freedesktop.Notifications")
+                .build(),
+        )
+        .expect("the stand-in daemon");
+
+        let address = bus.address.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        runtime().spawn(async move {
+            let conn = zbus::connection::Builder::address(address.as_str())
+                .build()
+                .await;
+            let shown = match conn {
+                Ok(conn) => show(&conn, "Broadcast ended", "unexpectedly", true, 7).await,
+                Err(e) => Err(e),
+            };
+            let _ = done_tx.send(shown);
+        });
+        let id = done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the call finished")
+            .expect("the daemon answered");
+        assert_eq!(id, 42);
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap(),
+            (7, "Broadcast ended".to_owned(), 2)
+        );
     }
 }
