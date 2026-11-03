@@ -127,7 +127,7 @@ OBS (WG0).
 | `-full-retry-after` | `30s` | `Retry-After` of a `503` at the cap |
 | `-relay-busy-retry-after` | `30s` | `Retry-After` for a relay `429` or an unreachable relay |
 | `-reorder-initial-rtt` | `50ms` | D6 (*WG0*) |
-| `-reorder-window-floor`, `-reorder-window-cap` | `60ms`, `150ms` | D6 (*WG0*; the floor was `20ms` until docs/83 §13.4) |
+| `-reorder-window-floor`, `-reorder-window-cap` | `60ms`, `150ms` | D6 (*WG0*; the floor was `20ms` until docs/83 §13.4, so a cap set below 60ms alone now fails at start: lower the floor with it) |
 | `-reorder-window-multiplier`, `-reorder-window-offset` | `1.25`, `5ms` | window = m × RTT + offset (*WG0*) |
 | `-reorder-nack-delay` | `3ms` | reorder tolerance: a hole is NACKed only if still missing this long, so a merely reordered packet is never NACKed or RTT-sampled; below the window floor (*WG0*) |
 | `-reorder-max-packets` | `4096` | buffer bound, and the largest head-to-newest span; past it the head frame drops at once, or the window resyncs on the new packet (a loss: the next frame needs an IDR) |

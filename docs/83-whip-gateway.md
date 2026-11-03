@@ -1224,8 +1224,11 @@ R28 telemetry.
   telemetry hello (wire 0x0D) on every relay session the engine opens, a
   resume included, and the relay-advertised ingest URL (wire 0x12) over the
   configured one, as every producer does (docs/40 D15). It posts a final
-  batch when the session ends, and a pod shutting down waits up to 3 s for
-  its sessions' final batches before it exits. Off means off: no hello, a fleet with
+  batch when the session ends, and a pod shutting down waits, best effort
+  and for at most 3 s, for its sessions' final batches before it exits. A
+  relay-advertised endpoint is normally the public ingest, so with the
+  chart's NetworkPolicy it needs `extraEgress`; each session logs the
+  endpoint it reports to. Off means off: no hello, a fleet with
   telemetry disabled, or no URL makes zero requests.
 - **One sample = the engine's `publisher.Stats` + the gateway's `whip*`
   fields**, flat in one object. The engine's side is the gateway → relay leg,
@@ -1235,7 +1238,13 @@ R28 telemetry.
   by difference the unanswered ones), the slowest NACK → retransmit since the
   previous sample (`whipRetransmitMaxMs`, carried until a sample is actually
   kept), the RTT and window D6 is applying, frames dropped by reason
-  (window, IDR wait, backpressure) and D7's measured GOP.
+  (window, IDR wait, backpressure) and D7's measured GOP. The `whip*`
+  counters run for the whole WHIP session while each relay session (each
+  resume) is its own telemetry row, as the engine's own counters already
+  do for native broadcasters: compare deltas within a row, or read the last
+  row, and never sum rows. Unanswered NACKs (`whipNacksSent` minus the two
+  outcomes) are an upper bound: a reset or a burst of more than 2048
+  unanswered NACKs discards the record a late retransmit would match.
 - **Privacy is docs/33 D8's.** The batch carries the hello's obfuscated
   broadcast key, never the stream key, the raw ID or an address.
   `app.browser` is `gawk-whip-gateway` and `app.version` the gateway's (the

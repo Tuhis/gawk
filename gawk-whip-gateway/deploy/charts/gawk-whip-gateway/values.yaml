@@ -274,7 +274,10 @@ peerTimeout: 200ms
 # gawk-telemetry chart's ingest Service, in-cluster:
 #   http://gawk-telemetry.<namespace>.svc/api/telemetry/v1/ingest
 # With networkPolicy.enabled the egress to it renders from
-# networkPolicy.telemetry; a URL outside the cluster needs extraEgress.
+# networkPolicy.telemetry; a URL outside the cluster needs extraEgress. So
+# does an endpoint the relay advertises (its -telemetry-advertise-url, an
+# https URL, normally the public ingest): it replaces this one, and the
+# gateway logs the endpoint it uses at each session's start.
 telemetry:
   url: ""
 

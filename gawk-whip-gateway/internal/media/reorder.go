@@ -128,8 +128,10 @@ type Reorder struct {
 
 	// WG11: what became of each NACK. recovered: the retransmit filled its
 	// hole while the window was open; lateRetransmits: it arrived after the
-	// window had given up on it. A NACK in neither was never answered (or
-	// is still pending). retransmitMax is the slowest NACK → arrival since
+	// window had given up on it. A NACK in neither was never answered, is
+	// still pending, or was discarded by a reset or a full prune of late
+	// (a sender restart, or more than 2048 unanswered NACKs at once), so
+	// "never answered" is an upper bound. retransmitMax is the slowest NACK → arrival since
 	// the last TakeRetransmitMax, in or out of the window.
 	recovered       uint64
 	lateRetransmits uint64
