@@ -180,3 +180,30 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// docs/83 WG11: the WHIP gateway's own fields, transcribed from whipStats
+// in gawk-whip-gateway/internal/gateway/telemetry.go. An OBS session's
+// sample is the engine's Stats (typed above) plus these; any of them
+// arriving as "unknown" would leave it out of every numeric query and every
+// chart.
+func TestWHIPGatewayFieldsAreTyped(t *testing.T) {
+	sample := map[string]any{
+		"whipSender": "OBS 32.0", "whipPacketsExpected": 1.0, "whipPacketsLost": 1.0,
+		"whipBytesReceived": 1.0, "whipNacksSent": 1.0, "whipRetransmitsRecovered": 1.0,
+		"whipRetransmitsLate": 1.0, "whipRetransmitMaxMs": 1.0, "whipRttAvailable": true,
+		"whipRttMs": 1.0, "whipWindowMs": 1.0, "whipFramesWindowDropped": 1.0,
+		"whipFramesIdrWaitDropped": 1.0, "whipFramesBackpressureDropped": 1.0, "whipGopMs": 1.0,
+	}
+	if _, an := SanitizeStats(sample, BroadcasterFields); an.Total() != 0 {
+		t.Errorf("a WHIP gateway sample sanitized with anomalies: %+v", an)
+	}
+	byName := map[string]Field{}
+	for _, f := range Catalogue() {
+		byName[f.Name] = f
+	}
+	for name := range sample {
+		if byName[name].Desc == "" {
+			t.Errorf("%s has no catalogue description", name)
+		}
+	}
+}

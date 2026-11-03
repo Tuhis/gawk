@@ -201,6 +201,8 @@ var broadcasterSeries = []string{
 	"memFootprintBytes", "memFootprintPeakBytes", "memResidentBytes", "memCommitBytes",
 	"memHeapBytes", "memGpuBytes",
 	"memCaptureBytes", "memEncodeBytes", "memSendBytes", "memPreviewBytes", "memTelemetryBytes",
+	// docs/83 WG11: the WHIP gateway's reorder window and what it needed.
+	"whipRttMs", "whipWindowMs", "whipRetransmitMaxMs", "whipGopMs",
 }
 
 var viewerCounters = []string{
@@ -260,6 +262,11 @@ var broadcasterCounters = []string{
 	"uplinkDatagramsDropped", "uplinkCarriersOpened", "uplinkCarriersExpired", "uplinkRecordsShed",
 	"parityChunksSent", "parityBytesSent",
 	"resumes", "captureRestarts", "audioBytesSent", "audioPacketsDropped",
+	// docs/83 WG11: the WHIP gateway's OBS → gateway leg, so a stored OBS
+	// session says how much it lost before the relay, and why.
+	"whipPacketsExpected", "whipPacketsLost", "whipBytesReceived", "whipNacksSent",
+	"whipRetransmitsRecovered", "whipRetransmitsLate",
+	"whipFramesWindowDropped", "whipFramesIdrWaitDropped", "whipFramesBackpressureDropped",
 	// Recorded for a broadcaster too, but for the opposite purpose: here it
 	// EXPLAINS a real collapse rather than excusing one. A hidden broadcaster
 	// tab is throttled by the browser, so it genuinely sends fewer frames and
@@ -281,6 +288,8 @@ var broadcasterConfig = []string{
 	// answer the same question with different vocabularies, and one column
 	// holding both would group into nonsense.
 	"encoder", "capturePath", "audioSource",
+	// docs/83 WG11: the WHIP client an OBS broadcast came from.
+	"whipSender",
 	// LEGACY capitalized spellings, for sessions stored before the engine
 	// carried tags and for binaries still sending them. See schema/fields.go.
 	"Encoder", "Codec", "CapturePath",
