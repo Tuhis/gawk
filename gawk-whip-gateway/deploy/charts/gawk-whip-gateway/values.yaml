@@ -217,9 +217,11 @@ ice:
 
 # D6: wait about one round trip for a retransmit, then drop. window =
 # clamp(multiplier × RTT + offset, floor, cap). Provisional until WG0.
+# The floor was 20ms until 2026-11-04 (docs/83 §13.4): retransmits on the
+# reference path vary more than a mean-sized window allows.
 reorder:
   initialRtt: 50ms
-  windowFloor: 20ms
+  windowFloor: 60ms
   windowCap: 150ms
   windowMultiplier: 1.25
   windowOffset: 5ms
@@ -263,6 +265,18 @@ internalTokenRef: {}
 #   key: internalToken
 # A peer slower than this counts as holding nothing.
 peerTimeout: 200ms
+
+# WG11 (docs/83 §13): each OBS session posts R28 broadcaster telemetry,
+# so an OBS broadcast gets a lane in gawk-telemetry like the native
+# broadcasters': the engine's send side plus the OBS → gateway leg (loss,
+# NACKs and what became of them, D6's window, the frames dropped and why).
+# Empty reports only where the relay advertises an ingest endpoint. The
+# gawk-telemetry chart's ingest Service, in-cluster:
+#   http://gawk-telemetry.<namespace>.svc/api/telemetry/v1/ingest
+# With networkPolicy.enabled the egress to it renders from
+# networkPolicy.telemetry; a URL outside the cluster needs extraEgress.
+telemetry:
+  url: ""
 
 logLevel: info
 logFormat: json
@@ -325,6 +339,13 @@ networkPolicy:
       kubernetes.io/metadata.name: kube-system
   monitoring:
     namespaceSelector: {}
+  # The gawk-telemetry ingest pods, for telemetry.url (rendered only when
+  # it is set).
+  telemetry:
+    podSelector:
+      app.kubernetes.io/name: gawk-telemetry
+    namespaceSelector: {}
+    port: 8080
   extraEgress: []
 
 podAnnotations: {}

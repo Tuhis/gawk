@@ -33,7 +33,7 @@ func TestDefaults(t *testing.T) {
 		"status burst":      {o.StatusBurst, 10},
 		"nack delay":        {o.Reorder.NACKDelay, 3 * time.Millisecond},
 		"initial rtt":       {o.Reorder.Window.InitialRTT, 50 * time.Millisecond},
-		"floor":             {o.Reorder.Window.Floor, 20 * time.Millisecond},
+		"floor":             {o.Reorder.Window.Floor, 60 * time.Millisecond},
 		"cap":               {o.Reorder.Window.Cap, 150 * time.Millisecond},
 		"multiplier":        {o.Reorder.Window.Multiplier, 1.25},
 		"offset":            {o.Reorder.Window.Offset, 5 * time.Millisecond},
@@ -115,6 +115,7 @@ var knobs = []struct {
 	{"peer-template", "http://gw-{ordinal}.peers:8081", func(_ Config, o gateway.Options) any { return o.Peers }, []string{"http://gw-1.peers:8081"}},
 	{"replicas", "3", func(c Config, _ gateway.Options) any { return c.Replicas }, 3},
 	{"peer-timeout", "300ms", func(_ Config, o gateway.Options) any { return o.PeerTimeout }, 300 * time.Millisecond},
+	{"telemetry-url", "http://gawk-telemetry.gawk/api/telemetry/v1/ingest", func(_ Config, o gateway.Options) any { return o.TelemetryURL }, "http://gawk-telemetry.gawk/api/telemetry/v1/ingest"},
 	{"log-level", "debug", func(c Config, _ gateway.Options) any { return c.LogLevel.String() }, "DEBUG"},
 	{"log-format", "json", func(c Config, _ gateway.Options) any { return c.LogFormat }, "json"},
 }
@@ -219,7 +220,7 @@ func TestInvalidConfigs(t *testing.T) {
 		append(required(), "-trusted-proxy-cidrs", "nope"),
 		append(required(), "-public-address", "gw.example"),
 		append(required(), "-reorder-window-floor", "200ms"),
-		append(required(), "-reorder-nack-delay", "20ms"),
+		append(required(), "-reorder-nack-delay", "60ms"),
 		append(required(), "-status-rate", "-1"),
 		append(required(), "-gop-warn", "3s"),
 		append(required(), "-backoff-initial", "20m"),
@@ -228,6 +229,8 @@ func TestInvalidConfigs(t *testing.T) {
 		append(required(), "-media-base-port", "65535", "-pod-name", "gw-1"),
 		append(required(), "-internal-token", "same", "-relay-publish-proxy-token", "same"),
 		append(required(), "-log-format", "xml"),
+		append(required(), "-telemetry-url", "gawk-telemetry/ingest"),
+		append(required(), "-telemetry-url", "ftp://t.example/ingest"),
 		append(required(), "stray"),
 	}
 	for _, args := range bad {

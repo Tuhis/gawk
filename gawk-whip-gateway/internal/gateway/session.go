@@ -21,6 +21,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-whip-gateway/internal/media"
 	"github.com/Tuhis/gawk/gawk-whip-gateway/internal/status"
 	"github.com/Tuhis/gawk/gawk-whip-gateway/internal/streamkey"
+	"github.com/Tuhis/gawk/gawk-whip-gateway/internal/telemetry"
 )
 
 // iceConnectTimeout bounds how long an answered session may wait for OBS's
@@ -120,6 +121,16 @@ type session struct {
 
 	// push hands one AU to the engine (src.pushFrame; a seam for tests).
 	pushAU func(publisher.AccessUnit) bool
+
+	// WG11's broadcaster telemetry. rep is the session's reporter (inert
+	// until the relay's hello and an ingest URL); engStats the engine's
+	// latest stats (under mu); sender the WHIP client's class. drops and
+	// retransmitMax are loop-owned.
+	rep           *telemetry.Reporter
+	engStats      publisher.Stats
+	sender        string
+	drops         dropCounts
+	retransmitMax time.Duration
 }
 
 func newSessionID() string {
@@ -128,7 +139,7 @@ func newSessionID() string {
 	return hex.EncodeToString(b[:])
 }
 
-func newSession(srv *Server, key streamkey.Key, o offer) *session {
+func newSession(srv *Server, key streamkey.Key, o offer, userAgent string) *session {
 	ss := &session{
 		srv:   srv,
 		id:    newSessionID(),
@@ -140,6 +151,14 @@ func newSession(srv *Server, key streamkey.Key, o offer) *session {
 		snap:  status.Snapshot{Codec: "H.264"},
 	}
 	ss.log = srv.log.With("session", ss.id[:8], "key", hex.EncodeToString(key.Hash[:4]))
+	var senderOS string
+	ss.sender, senderOS = senderClass(userAgent)
+	ss.rep = telemetry.New(telemetry.Options{
+		URL:     srv.opts.TelemetryURL,
+		Version: srv.opts.Version,
+		OS:      senderOS,
+		Log:     ss.log,
+	})
 	ss.src = newSource(o.audio != nil)
 	ss.pushAU = ss.src.pushFrame
 	if o.sps != nil {
@@ -176,6 +195,15 @@ func (ss *session) callbacks() publisher.Callbacks {
 			ss.viewers = &n
 			ss.mu.Unlock()
 		},
+		OnStats: func(st publisher.Stats) {
+			ss.mu.Lock()
+			ss.engStats = st
+			ss.mu.Unlock()
+		},
+		// WG11: each relay session (the first and every resume) carries its
+		// own telemetry identity; Begin closes the previous one.
+		OnTelemetryHello:    ss.rep.Begin,
+		OnTelemetryEndpoint: ss.rep.SetAdvertisedURL,
 		OnResumed: func() {
 			// D7: the relay pod's cache is empty after a resume; ask for an
 			// IDR (stock OBS ignores it, other senders honour it).
@@ -380,6 +408,7 @@ func (ss *session) loop() {
 			ss.apply(ss.pipe.Tick(time.Now(), ss.src.nowUs()))
 		case <-stats.C:
 			ss.sample()
+			ss.reportTelemetry()
 		case <-connect.C:
 			ss.mu.Lock()
 			live := ss.live
@@ -431,13 +460,16 @@ func (ss *session) apply(out media.Output) {
 	}
 	if out.WindowDrops > 0 {
 		m.framesDropped.WithLabelValues(dropReorderWindow).Add(float64(out.WindowDrops))
+		ss.drops.window += uint64(out.WindowDrops)
 	}
 	if out.IDRWaitDrops > 0 {
 		m.framesDropped.WithLabelValues(dropAwaitingIDR).Add(float64(out.IDRWaitDrops))
+		ss.drops.idrWait += uint64(out.IDRWaitDrops)
 	}
 	for _, au := range out.AUs {
 		if ss.awaitIDR && !au.Keyframe {
 			m.framesDropped.WithLabelValues(dropBackpressure).Inc()
+			ss.drops.backpressure++
 			continue
 		}
 		if !ss.pushAU(au) {
@@ -448,6 +480,7 @@ func (ss *session) apply(out media.Output) {
 			// keyframe, and the deltas after it are good.
 			ss.awaitIDR = true
 			m.framesDropped.WithLabelValues(dropBackpressure).Inc()
+			ss.drops.backpressure++
 			continue
 		}
 		if au.Keyframe {
@@ -547,6 +580,9 @@ func (ss *session) end(c endCause) {
 	}
 	_ = ss.pc.Close()
 	ss.src.stop()
+	// The final batch: off this goroutine, since delivery may retry for
+	// seconds and nothing here should wait on telemetry.
+	go ss.rep.Close()
 
 	if c.kind == endEngine {
 		reason, superseded := classifyEngineEnd(c.err)
@@ -710,5 +746,6 @@ func (ss *session) abandon() {
 	ss.mu.Unlock()
 	if !already {
 		close(ss.done)
+		go ss.rep.Close()
 	}
 }

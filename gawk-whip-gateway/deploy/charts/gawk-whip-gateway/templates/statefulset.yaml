@@ -204,6 +204,8 @@ spec:
             {{- include "gawk-whip-gateway.secretEnv" (dict "name" "GAWK_WHIP_INTERNAL_TOKEN" "value" .Values.internalToken "ref" .Values.internalTokenRef) | nindent 12 }}
             - name: GAWK_WHIP_PEER_TIMEOUT
               value: {{ .Values.peerTimeout | quote }}
+            - name: GAWK_WHIP_TELEMETRY_URL
+              value: {{ .Values.telemetry.url | quote }}
             - name: GAWK_WHIP_LOG_LEVEL
               value: {{ .Values.logLevel | quote }}
             - name: GAWK_WHIP_LOG_FORMAT

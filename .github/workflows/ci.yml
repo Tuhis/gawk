@@ -2780,6 +2780,18 @@ jobs:
             e=GAWK_WHIP_$(tr 'a-z-' 'A-Z_' <<<"$f")
             grep -q "name: $e\$" <<<"$sts" || { echo "::error::-$f ($e) has no chart value"; exit 1; }
           done
+          # WG11: telemetry.url reaches its env, and the NetworkPolicy opens
+          # the ingest pods' port only when it is set.
+          sts=$(helm template gawk-whip-gateway "$chart" --show-only templates/statefulset.yaml \
+                  --set telemetry.url=http://gawk-telemetry.gawk.svc/api/telemetry/v1/ingest)
+          env TELEMETRY_URL http://gawk-telemetry.gawk.svc/api/telemetry/v1/ingest
+          np=$(helm template gawk-whip-gateway "$chart" --set networkPolicy.enabled=true --show-only templates/networkpolicy.yaml)
+          if grep -q 'app.kubernetes.io/name: gawk-telemetry' <<<"$np"; then
+            echo "::error::telemetry egress rendered with no telemetry.url"; exit 1; fi
+          np=$(helm template gawk-whip-gateway "$chart" --set networkPolicy.enabled=true \
+                 --set telemetry.url=http://gawk-telemetry.gawk.svc/api/telemetry/v1/ingest --show-only templates/networkpolicy.yaml)
+          grep -A10 'app.kubernetes.io/name: gawk-telemetry' <<<"$np" | grep -q 'port: 8080$' || {
+            echo "::error::no egress to the telemetry ingest with telemetry.url set"; echo "$np"; exit 1; }
           echo "gateway chart: every property held"
       - name: sampler chart — two sharded pods, the share count from replicas, PDB and spread (D22)
         run: |

@@ -365,3 +365,61 @@ func TestD6ChainedHolesHoldAFrameAtMostOneWindowFromItsArrival(t *testing.T) {
 		t.Fatalf("F3 waited %v from its arrival, more than one window %v", waited, w)
 	}
 }
+
+// WG11: the window's outcome per NACK is counted, so a session's telemetry
+// can tell "retransmits come back too late for the window" (window too
+// tight) from "retransmits never come back" (sender ignores NACKs, or the
+// loss is a burst): the two need opposite fixes. The slowest NACK →
+// arrival since the last read is what the window would have needed.
+func TestWG11RetransmitOutcomesAreCounted(t *testing.T) {
+	r := NewReorder(DefaultReorderConfig())
+	fs := &frameStream{}
+
+	// A: NACKed, answered after 30 ms, inside the 67.5 ms first window.
+	a := fs.packets(bigP(1))
+	pushAll(r, append([]Packet{a[0]}, a[2:]...), t0)
+	r.Tick(t0.Add(3 * time.Millisecond))
+	r.Push(a[1], t0.Add(33*time.Millisecond))
+	if got := r.RetransmitsRecovered(); got != 1 {
+		t.Fatalf("recovered = %d after an in-window retransmit, want 1", got)
+	}
+	if got := r.TakeRetransmitMax(); got != 30*time.Millisecond {
+		t.Fatalf("retransmit max = %v, want 30ms", got)
+	}
+	if got := r.TakeRetransmitMax(); got != 0 {
+		t.Fatalf("retransmit max not reset by the read: %v", got)
+	}
+
+	// B: NACKed, its frame dropped when the window (the floor, above
+	// 1.25×30+5) closes, the retransmit arriving 80 ms after the NACK.
+	now := t0.Add(100 * time.Millisecond)
+	b := fs.packets(bigP(2))
+	pushAll(r, append([]Packet{b[0]}, b[2:]...), now)
+	r.Tick(now.Add(3 * time.Millisecond))
+	if res := r.Tick(now.Add(r.Window())); res.Dropped != 1 {
+		t.Fatalf("B not dropped at its window: %+v", res)
+	}
+	r.Push(b[1], now.Add(83*time.Millisecond))
+	if got := r.RetransmitsLate(); got != 1 {
+		t.Fatalf("late = %d after a retransmit past the window, want 1", got)
+	}
+	if got := r.RetransmitsRecovered(); got != 1 {
+		t.Fatalf("a late retransmit counted as recovered: %d", got)
+	}
+	if got := r.TakeRetransmitMax(); got != 80*time.Millisecond {
+		t.Fatalf("retransmit max = %v, want the late one's 80ms", got)
+	}
+
+	// C: NACKed and never answered.
+	now = now.Add(200 * time.Millisecond)
+	c := fs.packets(bigP(3))
+	pushAll(r, append([]Packet{c[0]}, c[2:]...), now)
+	r.Tick(now.Add(3 * time.Millisecond))
+	r.Tick(now.Add(time.Second))
+	if got := r.NACKsSent(); got != 3 {
+		t.Fatalf("nacks = %d, want 3", got)
+	}
+	if rec, late := r.RetransmitsRecovered(), r.RetransmitsLate(); rec != 1 || late != 1 {
+		t.Fatalf("recovered %d late %d after an unanswered NACK, want 1 and 1", rec, late)
+	}
+}

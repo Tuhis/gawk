@@ -116,6 +116,10 @@ type Options struct {
 	// PeerTimeout is how long a peer may take to answer (200 ms).
 	PeerTimeout time.Duration
 
+	// TelemetryURL is where each session posts its R28 broadcaster
+	// telemetry (WG11). Empty: only where the relay advertises an endpoint.
+	TelemetryURL string
+
 	Version string
 	Log     *slog.Logger
 	Metrics *Metrics

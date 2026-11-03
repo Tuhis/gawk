@@ -7,7 +7,7 @@ import "time"
 type WindowConfig struct {
 	// InitialRTT is assumed before the first sample (50 ms).
 	InitialRTT time.Duration
-	// Floor and Cap clamp the window (20 ms, 150 ms).
+	// Floor and Cap clamp the window (60 ms, 150 ms).
 	Floor, Cap time.Duration
 	// Multiplier and Offset: window = Multiplier × RTT + Offset (1.25, 5 ms).
 	Multiplier float64
@@ -18,7 +18,10 @@ type WindowConfig struct {
 func DefaultWindowConfig() WindowConfig {
 	return WindowConfig{
 		InitialRTT: 50 * time.Millisecond,
-		Floor:      20 * time.Millisecond,
+		// 60 ms, not D6's first 20 ms (docs/83 §13.4, 2026-11-04): on
+		// ioio the smoothed RTT swung 20–60 ms within one OBS session and
+		// about 1 NACK in 5 missed a window sized on the mean.
+		Floor:      60 * time.Millisecond,
 		Cap:        150 * time.Millisecond,
 		Multiplier: 1.25,
 		Offset:     5 * time.Millisecond,
