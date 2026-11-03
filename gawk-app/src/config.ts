@@ -77,6 +77,13 @@ export interface GawkRuntimeConfig {
   // opens, never at boot. Same-origin recommended; a cross-origin URL must
   // serve CORS itself.
   serverDirectoryUrl?: string;
+
+  // R33 (docs/83 §6, OD4): the base URL of this deployment's
+  // gawk-whip-gateway, e.g. "https://whip.example.com". OBS is pointed at
+  // `${whipGatewayUrl}/whip` and the OBS page polls `/whip/status` on it.
+  // The gateway publishes only to this deployment's own relay. Unset/empty
+  // ⇒ no OBS way in, and #/broadcast/obs says the server takes no OBS.
+  whipGatewayUrl?: string;
 }
 
 declare global {
@@ -135,6 +142,25 @@ export function desktopHandoffEnabled(): boolean {
 export function getServerDirectoryUrl(): string {
   const v = getRuntimeConfig().serverDirectoryUrl;
   return (typeof v === 'string' && v.trim()) || '';
+}
+
+// The gateway base URL without a trailing slash, or '' when unset (no OBS
+// ingest on this deployment).
+export function getWhipGatewayUrl(): string {
+  const v = getRuntimeConfig().whipGatewayUrl;
+  return ((typeof v === 'string' && v.trim()) || '').replace(/\/+$/, '');
+}
+
+// The URL OBS's Settings → Stream → Server takes, or '' when unset.
+export function getWhipUrl(): string {
+  const base = getWhipGatewayUrl();
+  return base === '' ? '' : `${base}/whip`;
+}
+
+// The D9 status endpoint for the presenting key, or '' when unset.
+export function getWhipStatusUrl(): string {
+  const base = getWhipGatewayUrl();
+  return base === '' ? '' : `${base}/whip/status`;
 }
 
 // "Debug build" per the product spec = running locally. Vite dev mode, or a

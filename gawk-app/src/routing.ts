@@ -31,6 +31,10 @@ export type Route =
   // `?desktop=1`: the link asks to open the desktop app (R67, docs/69 D9);
   // App.tsx strips it before the first render.
   | ({ view: 'broadcaster'; room: string | null; nick: string | null; desktop: boolean } & RouteQuery)
+  // R33 (docs/83 §5.4, OD10): the OBS page. It takes the broadcaster's
+  // query (`?relay=`, `certHash=`) so a link's server applies here too; the
+  // page itself says when that server doesn't take streams from OBS.
+  | ({ view: 'broadcaster-obs' } & RouteQuery)
   | ({ view: 'viewer'; broadcastId: string } & RouteQuery)
   // A room link. The code is kept as typed (a static slug displays as
   // configured; the relay normalizes it). `grant` is the one-shot `?rt=`
@@ -195,6 +199,14 @@ export function hashWithoutParam(hash: string, name: string): string {
   return rest === '' ? hash.slice(0, qIndex) : `${hash.slice(0, qIndex)}?${rest}`;
 }
 
+// The hash for `path` (e.g. "/broadcast") carrying `hash`'s query verbatim:
+// the OBS page's Back and the broadcaster page's way in keep `?relay=` and
+// the rest between the two routes (docs/83 §5.4).
+export function hashWithPathKeepingQuery(hash: string, path: string): string {
+  const qIndex = hash.indexOf('?');
+  return qIndex === -1 ? `#${path}` : `#${path}${hash.slice(qIndex)}`;
+}
+
 export function hashWithoutGrant(hash: string): string {
   return hashWithoutParam(hash, 'rt');
 }
@@ -218,6 +230,7 @@ export function parseRoute(hash: string): Route {
       ...parseQuery(query),
     };
   }
+  if (path === 'broadcast/obs') return { view: 'broadcaster-obs', ...parseQuery(query) };
   if (path === 'terms') return { view: 'terms' };
 
   if (path === 'view' || path.startsWith('view/')) {

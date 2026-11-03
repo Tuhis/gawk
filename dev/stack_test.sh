@@ -97,7 +97,7 @@ else
     fail "a bare \`up\` starts: $default_services(want: $want)"
 fi
 
-for p in sim rooms telemetry app-dev tls; do
+for p in sim rooms whip telemetry app-dev tls; do
     case "$(dc config --profiles 2>/dev/null)" in
         *"$p"*) ok "the $p profile exists" ;;
         *)      fail "the $p profile is missing" ;;
@@ -113,6 +113,9 @@ check "the sim profile adds pubsim"  in_profile sim pubsim
 check "the rooms profile adds pubsim-a" in_profile rooms pubsim-a
 check "the rooms profile adds pubsim-b" in_profile rooms pubsim-b
 check "the app-dev profile adds it"  in_profile app-dev app-dev
+check "the whip profile adds the gateway" in_profile whip whip-gateway
+check "the whip profile adds its sender"  in_profile whip whipsim
+check "the whip profile adds its config.js" in_profile whip whip-config-gen
 
 # R42: rooms are on in the dev stack (the relay's own default is off, docs/44
 # D17), the static room the `rooms` profile's publishers attach to is defined
@@ -157,15 +160,50 @@ check "the telemetry profile adds its fake IdP" in_profile telemetry fakeidp-tel
 
 # §5: -insecure belongs to exactly one kind of client — the in-container Go
 # publisher on the compose network (`pubsim` and, since R42, the `rooms`
-# profile's two copies of it) — and must not spread to any other service.
-# Asserted as "one per pubsim* service", so a third copy of the publisher is
-# fine and a first use anywhere else is not.
+# profile's two copies of it; since R33 the `whip` profile's sender) — and
+# must not spread to any other service. Asserted as "one per pubsim* or
+# whipsim service", so a third copy of the publisher is fine and a first use
+# anywhere else is not. The whip gateway's GAWK_WHIP_RELAY_INSECURE is the
+# same client on the same network, and is the only other one.
 insecure_hits=$(grep -v '^[[:space:]]*#' "$COMPOSE" | grep -c -- '-insecure' || true)
-pubsim_services=$(COMPOSE_PROFILES=sim,rooms dc config --services 2>/dev/null | grep -c '^pubsim' || true)
+pubsim_services=$(COMPOSE_PROFILES=sim,rooms,whip dc config --services 2>/dev/null | grep -cE '^(pubsim|whipsim)' || true)
 if [ "$insecure_hits" -le "$pubsim_services" ]; then
-    ok "-insecure appears only in the pubsim services ($insecure_hits of $pubsim_services)"
+    ok "-insecure appears only in the pubsim and whipsim services ($insecure_hits of $pubsim_services)"
 else
-    fail "-insecure appears $insecure_hits times outside comments for $pubsim_services pubsim services"
+    fail "-insecure appears $insecure_hits times outside comments for $pubsim_services pubsim/whipsim services"
+fi
+if [ "$(grep -v '^[[:space:]]*#' "$COMPOSE" | grep -c 'RELAY_INSECURE' || true)" = 1 ] \
+    && COMPOSE_PROFILES=whip dc config --format json 2>/dev/null \
+        | jq -e '.services["whip-gateway"].environment.GAWK_WHIP_RELAY_INSECURE == "true"' >/dev/null; then
+    ok "the only insecure relay dial outside the publishers is the whip gateway's"
+else
+    fail "an insecure relay setting appears outside the whip gateway"
+fi
+
+# R33 (docs/83 D4, D12, WG9): the relay trusts the gateway as a publish proxy
+# with a key it can actually use (an explicit resume-token key, without which
+# the relay refuses the token), the two sides share one token, the gateway's
+# ops port stays on loopback (D14) and the sender lands in devroom, the link
+# that needs nothing copied.
+wh_cfg=$(COMPOSE_PROFILES=whip dc config --format json 2>/dev/null)
+if printf '%s' "$wh_cfg" | jq -e '
+    .services.relay.environment.GAWK_PUBLISH_PROXY_TOKEN != ""
+    and .services.relay.environment.GAWK_PUBLISH_PROXY_TOKEN == .services["whip-gateway"].environment.GAWK_WHIP_RELAY_PUBLISH_PROXY_TOKEN
+    and (.services.relay.environment.GAWK_RESUME_TOKEN_KEY | test("^[0-9a-f]{64}$"))' >/dev/null 2>&1; then
+    ok "the relay trusts the whip gateway's proxy token and has an explicit resume-token key (D4, D12)"
+else
+    fail "the relay and the whip gateway disagree on the proxy token, or the relay has no explicit resume-token key"
+fi
+wh_ops=$(printf '%s' "$wh_cfg" | jq -r '.services["whip-gateway"].ports[] | select(.target == 9090) | .host_ip // "*"' 2>/dev/null)
+if [ "$wh_ops" = "127.0.0.1" ] && ! grep -E '2114' "$COMPOSE" | grep -q 'BIND_ADDR'; then
+    ok "the whip gateway's ops port is published on loopback only"
+else
+    fail "the whip gateway's ops port is published on: ${wh_ops:-nothing}"
+fi
+if printf '%s' "$wh_cfg" | jq -e '.services.whipsim.command | index("-room=devroom")' >/dev/null 2>&1; then
+    ok "the whip sender attaches to devroom"
+else
+    fail "the whip sender does not attach to devroom"
 fi
 
 # R40's screening lane (docs/71 §9.7) is an override file, not a profile: it

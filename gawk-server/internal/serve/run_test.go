@@ -355,6 +355,7 @@ func TestRunFailsOnUnwireableConfig(t *testing.T) {
 		{"cluster mode off-cluster", cluster, nil, "cluster-mode requires in-cluster kubernetes config"},
 		{"cluster mode with rooms and pops off-cluster", append([]string{"-rooms", "-pops"}, cluster...), nil, "cluster-mode requires in-cluster kubernetes config"},
 		{"pops with no source", nil, func(c *config.Config) { c.Pops = true }, "-pops requires -cluster-mode or -pops-file"},
+		{"publish proxy without an explicit resume key", nil, func(c *config.Config) { c.PublishProxyToken = "gw" }, "requires an explicit -resume-token-key"},
 		{"ops listener cannot bind", []string{"-metrics-addr", "256.0.0.1:1"}, nil, "ops listen"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

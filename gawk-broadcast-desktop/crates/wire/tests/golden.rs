@@ -1202,6 +1202,9 @@ const GOLDEN_SESSION_CLOSING_POP_UPLINK_FULL: &str = "011700000fac";
 // R78 (docs/79 §5): SessionClosing for 4014 BroadcasterStopped
 // (closing_test.go goldenSessionClosingBroadcasterStoppedHex).
 const GOLDEN_SESSION_CLOSING_BROADCASTER_STOPPED: &str = "011700000fae";
+// R33 (docs/83 D3): SessionClosing for 4017 PublishMinted (closing_test.go
+// goldenSessionClosingPublishMintedHex).
+const GOLDEN_SESSION_CLOSING_PUBLISH_MINTED: &str = "011700000fb1";
 
 const LOCAL_RELAY_H1: [u8; 32] = {
     let mut h = [0u8; 32];
@@ -2389,4 +2392,19 @@ fn truncate_voice_name_cuts_on_a_char_boundary() {
     // A 3-byte char straddling byte 64 is dropped whole.
     let odd = format!("{}€", "x".repeat(62));
     assert_eq!(truncate_voice_name(&odd), "x".repeat(62));
+}
+
+// R33 (docs/83 D3): a mint-only publish session is told 4017 in-band before
+// it closes. Pinned by value, and terminal for a viewer as for anyone.
+#[test]
+fn golden_session_closing_publish_minted() {
+    assert_eq!(CLOSE_CODE_PUBLISH_MINTED, 4017);
+    assert_eq!(CLOSE_CODE_PUBLISH_MINTED, CLOSE_CODE_VOICE_UNAVAILABLE + 1);
+    let mut got = Vec::new();
+    append_session_closing(&mut got, CLOSE_CODE_PUBLISH_MINTED).unwrap();
+    assert_eq!(to_hex(&got), GOLDEN_SESSION_CLOSING_PUBLISH_MINTED);
+    assert_eq!(
+        parse_session_closing(&from_hex(GOLDEN_SESSION_CLOSING_PUBLISH_MINTED)).unwrap(),
+        4017
+    );
 }

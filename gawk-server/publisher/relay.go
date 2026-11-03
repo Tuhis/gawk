@@ -1,0 +1,238 @@
+package publisher
+
+import (
+	"context"
+	"crypto/tls"
+	"io"
+	"net/http"
+	"net/url"
+	"time"
+
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
+	"github.com/quic-go/webtransport-go"
+)
+
+// RelaySession is the slice of a WebTransport session the engine uses. It is a
+// seam, not an abstraction for its own sake: the send policy (docs/19
+// Decision 12) is defined by what happens when sends *fail* — a queue-full
+// datagram, a stream that stalls past the next keyframe, a
+// DatagramTooLargeError — and a real relay will not produce those on demand.
+// Every one of those paths is a unit test against a fake implementing this.
+type RelaySession interface {
+	SendDatagram(b []byte) error
+	ReceiveDatagram(ctx context.Context) ([]byte, error)
+	OpenUniStream() (SendStream, error)
+	AcceptUniStream(ctx context.Context) (ReceiveStream, error)
+	CloseWithError(code webtransport.SessionErrorCode, msg string) error
+	// Context is cancelled when the session ends, for any reason.
+	Context() context.Context
+}
+
+// SendStream is one outgoing unidirectional stream (a keyframe).
+type SendStream interface {
+	io.Writer
+	io.Closer
+	// CancelWrite abandons the stream. This is how a superseded keyframe dies
+	// (Decision 12: ≤1 in flight).
+	CancelWrite(code webtransport.StreamErrorCode)
+}
+
+// ReceiveStream is one incoming unidirectional stream (the announce).
+type ReceiveStream interface {
+	io.Reader
+	SetReadDeadline(t time.Time) error
+}
+
+// wtSession adapts *webtransport.Session to RelaySession. The methods exist
+// only to convert concrete stream types into interfaces — carefully, since
+// returning a typed nil pointer in an interface would produce a non-nil
+// interface holding nil, and the caller's `if str == nil` would not fire.
+type wtSession struct{ s *webtransport.Session }
+
+func (w wtSession) SendDatagram(b []byte) error { return w.s.SendDatagram(b) }
+
+func (w wtSession) ReceiveDatagram(ctx context.Context) ([]byte, error) {
+	return w.s.ReceiveDatagram(ctx)
+}
+
+func (w wtSession) OpenUniStream() (SendStream, error) {
+	str, err := w.s.OpenUniStream()
+	if err != nil {
+		return nil, err
+	}
+	return str, nil
+}
+
+func (w wtSession) AcceptUniStream(ctx context.Context) (ReceiveStream, error) {
+	str, err := w.s.AcceptUniStream(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return str, nil
+}
+
+func (w wtSession) CloseWithError(code webtransport.SessionErrorCode, msg string) error {
+	return w.s.CloseWithError(code, msg)
+}
+
+func (w wtSession) Context() context.Context { return w.s.Context() }
+
+// DefaultOrigin is the Origin header the native broadcaster sends on its
+// CONNECT dial.
+//
+// The browser sends the frontend's origin automatically and cannot change it
+// (JS cannot set request headers — the same limitation that puts the publish
+// secret in a query param). A native client is the mirror image: it can set any
+// header, but webtransport-go sends none by default. A relay configured with
+// -allowed-origins / GAWK_ALLOWED_ORIGINS then rejects the native broadcaster,
+// because an empty Origin matches nothing in the whitelist — the field bug this
+// exists to fix.
+//
+// So we send a fixed, self-identifying origin that the relay operator adds to
+// GAWK_ALLOWED_ORIGINS exactly as they already add the frontend's. The custom
+// scheme makes it unmistakable in the relay's access and "origin rejected"
+// logs. Override via Config.Origin (-origin / GAWK_ORIGIN) to reuse an
+// already-allowed origin instead of adding a whitelist entry.
+const DefaultOrigin = "gawk-broadcast://native"
+
+// DialFunc dials the relay. Injectable so tests can supply a fake session
+// without a QUIC stack; the default is dialRelayWithHeader below.
+//
+// It returns the HTTP status separately from the error because that is the
+// whole point of Decision 10: webtransport-go surfaces the status the browser
+// cannot see. Status is 0 when the failure never reached HTTP.
+type DialFunc func(ctx context.Context, rawURL, origin string, insecure bool) (sess RelaySession, status int, err error)
+
+// PublishURL builds the CONNECT URL for a broadcast.
+//
+// The secret travels as a query parameter, not a header. That is not a
+// shortcut: it is how the secret already travels for the browser broadcaster,
+// because the WebTransport JS API cannot set request headers (R2, docs/07),
+// and the relay reads r.URL.Query().Get("secret"). A native client could send
+// a header, but then the two broadcasters would authenticate differently and
+// the relay would need two paths.
+func PublishURL(relayURL, broadcastID, secret, resumeToken string) (string, error) {
+	base, err := url.Parse(relayURL)
+	if err != nil {
+		return "", err
+	}
+	path := "/publish"
+	if broadcastID != "" {
+		path += "/" + broadcastID
+	}
+	u, err := base.Parse(path)
+	if err != nil {
+		return "", err
+	}
+	q := u.Query()
+	if secret != "" {
+		q.Set("secret", secret)
+	}
+	// R17: a /publish/{id} claim carries the resume token minted at first
+	// publish. A mint has no ID to verify against, so the param stays off
+	// there even when a stale token is lying around in config.
+	if broadcastID != "" && resumeToken != "" {
+		q.Set("resume", resumeToken)
+	}
+	if len(q) > 0 {
+		u.RawQuery = q.Encode()
+	}
+	return u.String(), nil
+}
+
+// dialRelayWithHeader is the production DialFunc, closed over Config.Header
+// by New.
+func dialRelayWithHeader(ctx context.Context, rawURL, origin string, insecure bool, extra http.Header) (RelaySession, int, error) {
+	sess, status, err := dialWebTransportHeader(ctx, rawURL, origin, insecure, extra)
+	if err != nil {
+		return nil, status, err
+	}
+	return wtSession{s: sess}, status, nil
+}
+
+// dialWebTransport is the one dial both the publisher session and the R42
+// room control session use — same TLS posture, same QUIC config, same
+// Origin — so a relay that accepts one accepts the other.
+func dialWebTransport(ctx context.Context, rawURL, origin string, insecure bool) (*webtransport.Session, int, error) {
+	return dialWebTransportHeader(ctx, rawURL, origin, insecure, nil)
+}
+
+// dialWebTransportHeader is dialWebTransport with extra request headers.
+// Origin is always the origin argument's, whatever extra says.
+func dialWebTransportHeader(ctx context.Context, rawURL, origin string, insecure bool, extra http.Header) (*webtransport.Session, int, error) {
+	d := &webtransport.Transport{}
+	tlsConf := &tls.Config{
+		// A native client trusts the homelab CA directly, so the
+		// browser's serverCertificateHashes 14-day certificate dance
+		// (docs/02) simply does not apply here. -insecure exists for the
+		// dev cert only.
+		InsecureSkipVerify: insecure, //nolint:gosec // opt-in via -insecure, dev certs only
+		NextProtos:         []string{http3.NextProtoH3},
+	}
+	quicConf := &quic.Config{
+		EnableDatagrams:                  true,
+		EnableStreamResetPartialDelivery: true,
+		// Keep the session alive across idle gaps the same way the relay
+		// does for viewers (D1): a broadcaster mid-menu can go seconds
+		// without a keyframe worth sending.
+		KeepAlivePeriod: 10 * time.Second,
+	}
+	// Send the Origin header. The browser sends this automatically and cannot
+	// change it; here it is explicit, so a relay with -allowed-origins accepts
+	// the native broadcaster once its origin is whitelisted (see DefaultOrigin).
+	reqHdr := extra.Clone()
+	if reqHdr == nil {
+		reqHdr = http.Header{}
+	}
+	reqHdr.Del("Origin")
+	if origin != "" {
+		reqHdr.Set("Origin", origin)
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, 0, err
+	}
+	// The QUIC connection is dialled here rather than by Transport.Dial,
+	// because Transport.Dial closes the connection the instant the session's
+	// context ends, which is the instant CloseWithError has queued its
+	// WT_CLOSE_SESSION capsule, not when the capsule has left. The relay then
+	// often tore the connection down before it parsed the capsule, so a
+	// StopBroadcast's 4014 read as a drop and the broadcast sat in grace
+	// (docs/83 WG1; flaked 1 in 2 on loopback). Owning the connection lets it
+	// linger until the relay closes it in answer, bounded by closeLinger.
+	qconn, err := quic.DialAddrEarly(ctx, u.Host, tlsConf, quicConf)
+	if err != nil {
+		return nil, 0, err
+	}
+	cc, err := d.NewClientConn(qconn)
+	if err != nil {
+		_ = qconn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeNoError), "")
+		return nil, 0, err
+	}
+	rsp, sess, err := cc.Dial(ctx, rawURL, reqHdr)
+	status := 0
+	if rsp != nil {
+		status = rsp.StatusCode
+	}
+	if err != nil {
+		_ = qconn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeNoError), "")
+		return nil, status, err
+	}
+	context.AfterFunc(sess.Context(), func() {
+		t := time.NewTimer(closeLinger)
+		defer t.Stop()
+		select {
+		case <-qconn.Context().Done():
+		case <-t.C:
+		}
+		_ = qconn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeNoError), "")
+	})
+	return sess, status, nil
+}
+
+// closeLinger bounds how long a closed session's QUIC connection waits for
+// the relay to close it, so the close capsule (and its code) is delivered
+// first. The relay closes its side as soon as it has read the capsule, so on
+// a live path this is one round trip; the bound only matters on a dead one.
+const closeLinger = 2 * time.Second

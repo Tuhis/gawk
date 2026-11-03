@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.0](https://github.com/Tuhis/gawk/compare/gawk-ios/v1.6.0...gawk-ios/v1.7.0) (2026-11-02)
+
+
+### Features
+
+* **r33:** WHIP ingest for OBS through gawk-whip-gateway (WG1–WG9) ([#688](https://github.com/Tuhis/gawk/issues/688)) ([f9c5f6a](https://github.com/Tuhis/gawk/commit/f9c5f6a8b7f2279c808e66f20b7141ceeeaa48d0))
+
 ## [1.6.0](https://github.com/Tuhis/gawk/compare/gawk-ios/v1.5.0...gawk-ios/v1.6.0) (2026-10-26)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.0](https://github.com/Tuhis/gawk/compare/gawk-admin/v1.11.0...gawk-admin/v1.12.0) (2026-11-02)
+
+
+### Features
+
+* **admin:** move the API page to Redoc 3, with search ([#667](https://github.com/Tuhis/gawk/issues/667)) ([54ce9f9](https://github.com/Tuhis/gawk/commit/54ce9f915341aa8004b108fd606bce17496cc691))
+
 ## [1.11.0](https://github.com/Tuhis/gawk/compare/gawk-admin/v1.10.0...gawk-admin/v1.11.0) (2026-10-26)
 
 

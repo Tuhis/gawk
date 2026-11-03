@@ -258,6 +258,7 @@ class TestFloorsFileItself(unittest.TestCase):
                 "gawk-server",
                 "gawk-telemetry",
                 "gawk-telemetry-ui",
+                "gawk-whip-gateway",
             ],
         )
 

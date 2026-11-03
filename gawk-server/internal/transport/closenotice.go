@@ -32,7 +32,9 @@ const closeNoticeSettle = 250 * time.Millisecond
 const closeNoticeWriteTimeout = 100 * time.Millisecond
 
 // noticedCloseCode reports whether code is one a client acts on differently
-// from a plain drop — the terminal ones, plus two that are not terminal but
+// from a plain drop — the terminal ones (among them R33's 4017
+// PublishMinted, the mint-only session's "done": a browser that read no code
+// would retry the mint, docs/83 D3), plus two that are not terminal but
 // change what the viewer shows while it retries: R74's 4012 PopUplinkFull
 // (docs/76 item 28) and R78's 4014 BroadcasterStopped, the ended card that
 // waits for the code to come back (docs/79 D5). 4001/4002/4005 all mean
@@ -41,7 +43,7 @@ const closeNoticeWriteTimeout = 100 * time.Millisecond
 func noticedCloseCode(code uint32) bool {
 	switch code {
 	case wire.CloseCodeBroadcastEnded, wire.CloseCodePublisherSuperseded, wire.CloseCodeTerminatedByOperator,
-		wire.CloseCodePopUplinkFull, wire.CloseCodeBroadcasterStopped:
+		wire.CloseCodePopUplinkFull, wire.CloseCodeBroadcasterStopped, wire.CloseCodePublishMinted:
 		return true
 	}
 	return false

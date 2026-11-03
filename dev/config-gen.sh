@@ -10,6 +10,9 @@
 # RELAY_CERT_HASHES (R74): comma-separated hex SHA-256 pins for RELAY_URL,
 # rendered as relayCertHashes, the key a PoP's /app/config.js uses. For
 # pointing the stack's app at a relay on a LAN address (docs/76 §6.1 item 6).
+# And WHIP_GATEWAY_URL (R33, docs/83 §6): the WHIP gateway's base URL,
+# rendered as whipGatewayUrl, which the `whip` profile's run of this script
+# sets; empty leaves the key out, and the app shows no way in to OBS.
 set -eu
 
 CERT=${CERT:-/certs/cert.pem}
@@ -18,6 +21,7 @@ CERT_MODE=${CERT_MODE:-devcert}
 RELAY_URL=${RELAY_URL:-https://localhost:4433}
 APP_URL=${APP_URL:-http://localhost:8080}
 RELAY_CERT_HASHES=${RELAY_CERT_HASHES:-}
+WHIP_GATEWAY_URL=${WHIP_GATEWAY_URL:-}
 
 # Validated up front: a malformed pin would only surface later as an opaque
 # certificate error in the browser.
@@ -30,6 +34,12 @@ if [ -n "$RELAY_CERT_HASHES" ]; then
         fi
         PINS_JSON="${PINS_JSON:+$PINS_JSON, }\"$h\""
     done
+fi
+# Validated for the same reason, and because it lands in a JS string
+# literal: no quote, backslash or whitespace.
+if [ -n "$WHIP_GATEWAY_URL" ] && ! echo "$WHIP_GATEWAY_URL" | grep -Eq '^https?://[^"[:space:]\]+$'; then
+    echo "config-gen: WHIP_GATEWAY_URL '$WHIP_GATEWAY_URL' is not a plain http(s) URL" >&2
+    exit 1
 fi
 
 # The relay is healthy, so the pair exists — but poll rather than assume, and
@@ -96,11 +106,14 @@ TMP="$OUT.tmp"
     if [ -n "$PINS_JSON" ]; then
         echo "  relayCertHashes: [$PINS_JSON],"
     fi
+    if [ -n "$WHIP_GATEWAY_URL" ]; then
+        echo "  whipGatewayUrl: \"$WHIP_GATEWAY_URL\","
+    fi
     echo "};"
 } > "$TMP"
 mv "$TMP" "$OUT"
 
-echo "config-gen: wrote $OUT (relay $RELAY_URL, mode $CERT_MODE${HASH:+, cert ${HASH}})"
+echo "config-gen: wrote $OUT (relay $RELAY_URL, mode $CERT_MODE${HASH:+, cert ${HASH}}${WHIP_GATEWAY_URL:+, WHIP gateway $WHIP_GATEWAY_URL})"
 echo ""
 echo "    gawk is up — open $APP_URL"
 echo ""

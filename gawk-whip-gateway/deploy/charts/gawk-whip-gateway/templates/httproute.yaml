@@ -1,0 +1,78 @@
+{{- if .Values.httpRoute.enabled }}
+{{- $hr := .Values.httpRoute }}
+{{- if .Values.ingress.enabled }}
+{{- fail "enable either ingress or httpRoute, not both: two routes to the gateway would hash a key differently" }}
+{{- end }}
+{{- if not $hr.parentRefs }}
+{{- fail "httpRoute.parentRefs is empty: name the Gateway (and listener sectionName) the WHIP host attaches to" }}
+{{- end }}
+{{- if not (has $hr.keyHash (list "envoy-gateway" "none")) }}
+{{- fail "httpRoute.keyHash must be one of: envoy-gateway, none" }}
+{{- end }}
+{{- if and (eq $hr.keyHash "none") (gt (int .Values.replicas) 1) }}
+{{- fail "httpRoute.keyHash none needs replicas: 1. D10 routes every request for a key to the pod holding its session, and Gateway API has no standard way to hash on a header" }}
+{{- end }}
+{{- $full := include "gawk-whip-gateway.fullname" . }}
+# The public WHIP endpoint through Gateway API. TLS terminates at the
+# Gateway's listener; the gateway reads the client IP from X-Forwarded-For
+# only when the request comes from trustedProxyCidrs (D4).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $full }}
+  labels:
+    {{- include "gawk-whip-gateway.labels" . | nindent 4 }}
+    {{- with $hr.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with $hr.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  parentRefs:
+    {{- toYaml $hr.parentRefs | nindent 4 }}
+  {{- with $hr.hostnames }}
+  hostnames:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    # /whip, /whip/session/<id>, /whip/status. /healthz stays off it.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /whip
+      backendRefs:
+        - name: {{ $full }}
+          port: {{ .Values.service.port }}
+{{- if eq $hr.keyHash "envoy-gateway" }}
+---
+# D10: every request for a key (POST, DELETE on its Location, the status
+# reads) reaches the pod that holds its session and records. Envoy Gateway's
+# consistent hash on the Authorization header is the equivalent of
+# ingress-nginx's upstream-hash-by "$http_authorization". mergeType merges it
+# into a Gateway-level BackendTrafficPolicy (timeouts, say) instead of
+# replacing that policy for this route, which is what an unmerged
+# route-level policy does.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: {{ $full }}
+  labels:
+    {{- include "gawk-whip-gateway.labels" . | nindent 4 }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: {{ $full }}
+  {{- with $hr.envoyGateway.mergeType }}
+  mergeType: {{ . }}
+  {{- end }}
+  loadBalancer:
+    type: ConsistentHash
+    consistentHash:
+      type: Headers
+      headers:
+        - name: Authorization
+{{- end }}
+{{- end }}

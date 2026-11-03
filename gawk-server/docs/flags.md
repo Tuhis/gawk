@@ -53,6 +53,7 @@ deployment must not be able to turn TLS verification off by setting one
 | `-internal-psk` | `GAWK_INTERNAL_PSK` | (empty; required with `-cluster-mode`) |
 | `-internal-server-name` | `GAWK_INTERNAL_SERVER_NAME` | (empty; required with `-cluster-mode`) |
 | `-trusted-cidrs` | `GAWK_TRUSTED_CIDRS` | (empty) |
+| `-publish-proxy-token` | `GAWK_PUBLISH_PROXY_TOKEN` | (empty = no publish proxy trusted; requires `-resume-token-key`, must differ from `-publish-secret`) |
 | `-moderation-source` | `GAWK_MODERATION_SOURCE` | `off` (`off` \| `k8s` \| `file:<path>`) |
 | `-admin-api-token` | `GAWK_ADMIN_API_TOKEN` | (empty; with no OIDC issuer either, `/internal/admin/*` is never registered — 404) |
 | `-admin-oidc-issuer` | `GAWK_ADMIN_OIDC_ISSUER` | (empty; must be set together with `-admin-oidc-audience`) |
@@ -254,6 +255,33 @@ web, desktop and iOS broadcasters show as one line on the broadcast screen.
 Off, publish sessions are byte-identical to a relay without the feature. It
 is a separate switch from the token because the relay cannot see whether a
 sampler actually runs; turn both on together. Chart-side: `screening.notice`.
+
+**`-publish-proxy-token`** makes `gawk-whip-gateway`, the OBS (WHIP)
+ingest, a trusted publish proxy ([docs/83](../../docs/83-whip-gateway.md)
+D4). A `CONNECT /publish` or `/publish/{id}` that presents it as
+`Authorization: Bearer <token>` names its publisher in a `Gawk-Publisher-Ip`
+header (one IP literal, no port), and every per-IP decision then uses that
+address, canonicalised (`::ffff:203.0.113.7` is `203.0.113.7`), instead of
+the gateway's: the rate limit and its loopback and `-trusted-cidrs`
+exemptions, the IP ban before and after the upgrade, the admin portal's
+publisher IP, the logs' `remote` field. The token also stands in for an
+allow-listed Origin. With the token and a missing, repeated or unparsable
+header the CONNECT is a 400 (outcome `bad_request`), never a fallback to the
+gateway's own address. A bearer that does not match is ignored — the request
+is an ordinary publisher keyed on its peer — and it is never honoured on any
+route but publish. The relay refuses to start with the token and no
+`-resume-token-key` (D12: the gateway's stream keys are resume tokens), or
+with a token equal to `-publish-secret`. `gawk-relay` meets D12 with the key
+in its state directory. Chart-side: `publishProxy.token` /
+`.tokenSecretRef`, and the chart refuses to render either without
+`config.resumeTokenKey` / `.resumeTokenKeyRef`.
+
+**`CONNECT /publish?mint=1`** is the mint-only publish (docs/83 D3), not a
+flag: it passes every gate a mint passes, announces a fresh ID and its resume
+token, and closes with 4017 `PublishMinted` without creating a broadcast
+(outcome `minted` on `gawk_connections_total`). The first
+`/publish/{id}?resume=<token>` creates the broadcast. `?mint` on a claim, or
+any value but `1`, is a 400.
 
 **The cluster flags** (`-cluster-mode` and the shared keys/PSK) enable the
 multi-pod federation — per-broadcast Kubernetes origin Leases, pod-to-pod

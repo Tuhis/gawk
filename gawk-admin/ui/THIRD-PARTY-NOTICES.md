@@ -11,11 +11,11 @@ script for what counts as a dependency here and why.
 
 **Scope:** `package-lock.json` entries without `dev: true`.
 
-## Summary — 33 packages
+## Summary — 34 packages
 
 | License (as declared) | Packages |
 |---|---:|
-| `MIT` | 20 |
+| `MIT` | 21 |
 | `Apache-2.0` | 12 |
 | `ISC` | 1 |
 
@@ -42,6 +42,7 @@ script for what counts as a dependency here and why.
 | `@remix-run/route-pattern` | 0.22.1 | `MIT` | Copyright (c) 2025 Shopify Inc |
 | `@types/react` | 19.3.0 | `MIT` | Copyright (c) Microsoft Corporation |
 | `@types/react-dom` | 19.3.0 | `MIT` | Copyright (c) Microsoft Corporation |
+| `@types/stylis` | 4.2.7 | `MIT` | Copyright (c) Microsoft Corporation |
 | `camelize` | 1.0.1 | `MIT` | — |
 | `cookie-es` | 3.1.1 | `MIT` | Copyright (c) 2012-2014 Roman Shtylman <shtylman@gmail.com><br>Copyright (c) 2015 Douglas Christopher Wilson <doug@somethingdoug.com><br>Copyright (c) 2015 Nathan Friedly <nathan@nfriedly.com> (http://nfriedly.com/) |
 | `css-color-keywords` | 1.0.0 | `ISC` | Copyright (c) 2017, Jakob Krigovsky |
@@ -53,7 +54,7 @@ script for what counts as a dependency here and why.
 | `react-router` | 8.5.1 | `MIT` | Copyright (c) React Training LLC 2015-2019<br>Copyright (c) Remix Software Inc. 2020-2021<br>Copyright (c) Shopify Inc. 2022-2023 |
 | `redoc` | 3.0.1 | `MIT` | Copyright (c) 2015-present, Rebilly, Inc<br>Copyright (c) 2021-present, Redocly Inc |
 | `scheduler` | 0.28.0 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
-| `styled-components` | 6.5.3 | `MIT` | Copyright (c) 2016-present Glen Maddern and Maximilian Stoiber |
+| `styled-components` | 6.6.0 | `MIT` | Copyright (c) 2016-present Glen Maddern and Maximilian Stoiber |
 | `stylis` | 4.3.6 | `MIT` | Copyright (c) 2016-present Sultan Tarimo |
 | `ulid` | 3.0.2 | `MIT` | Copyright (c) 2017 Alizain Feerasta |
 
@@ -336,9 +337,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 5. MIT — 2 packages
+### 5. MIT — 3 packages
 
-Applies to: `@types/react`, `@types/react-dom`
+Applies to: `@types/react`, `@types/react-dom`, `@types/stylis`
 
 ```
 MIT License

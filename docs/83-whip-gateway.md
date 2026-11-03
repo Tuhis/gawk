@@ -7,7 +7,9 @@ and OBS Studio's WHIP output (§3); owner decisions OD1–OD8 **taken
 ([canvas](https://claude.ai/artifact/TtFyDhdhEv5x13oSmjds2m), §5.1), and its
 owner decisions OD9 and OD10 were **taken 2026-11-02**: the way in is a
 footnote under the broadcaster card, and OBS gets a page of its own.
-Chunks **WG0–WG10** (`WG` = WHIP gateway; unused). Nothing is implemented.
+Chunks **WG0–WG10** (`WG` = WHIP gateway; unused). **WG1–WG9 implemented
+2026-11-02** (§12 records what the build settled); WG0's lab pass with real
+OBS, WG10's owner pass and the OBS page's Room row (§12.4) are open.
 
 Supersedes the 2026-07-29 sketch in `ROADMAP.md` §R33, which put WHIP inside
 `gawk-server`. That sketch predates the relay fleet's scale-out targets, R73's
@@ -229,7 +231,8 @@ re-checks it against the OBS release it tests.
   client IP itself, before dialing the relay.
 
   **Where the gateway gets the client IP.** `POST /whip` arrives through the
-  public Ingress (§6), so `r.RemoteAddr` is the ingress controller for every
+  public Ingress (§6; or a Gateway API route, §12.5, where everything below
+  holds for the Gateway's proxy pods), so `r.RemoteAddr` is the ingress controller for every
   OBS user. Keyed on it, both the gateway's limit and `Gawk-Publisher-Ip`
   would collapse into one shared bucket, the failure `gawk-telemetry`'s
   ingest already hit (`internal/ingest/ingest.go`). And `X-Forwarded-For` is
@@ -432,15 +435,17 @@ re-checks it against the OBS release it tests.
     the pod that holds the session. The chart renders one Service per
     replica, so changing `replicas` is a `helm upgrade`, and the firewall
     opens the port range.
-  - **HTTP: the Ingress routes by key.** `POST`, `DELETE` and
-    `GET`/`DELETE /whip/status` all carry the bearer key, and the Ingress
-    hashes on it (ingress-nginx
-    `nginx.ingress.kubernetes.io/upstream-hash-by: "$http_authorization"`).
+  - **HTTP: the route hashes on the key.** `POST`, `DELETE` and
+    `GET`/`DELETE /whip/status` all carry the bearer key, and the route in
+    front of the gateway hashes on it: an HTTPRoute with Envoy Gateway's
+    consistent hash on the `Authorization` header, or an ingress-nginx
+    Ingress with
+    `nginx.ingress.kubernetes.io/upstream-hash-by: "$http_authorization"`.
     In the steady state every request for a key, and all of D7's and D9's
     per-key state, lands on one pod, and nothing is shared. `OPTIONS`
-    preflights carry no key, and they're stateless. An Ingress that can't hash
-    on a header isn't supported in v1; the chart notes and the self-hosting
-    guide say so.
+    preflights carry no key, and they're stateless. A route that can't hash
+    on a header holds only at `replicas: 1`; the chart refuses more. (Amended
+    2026-11-02, §12.5: v1 shipped with the Ingress only.)
   - **Scaling and restarts move some keys.** On a **scale-up**, some keys
     hash to a new pod. A live session keeps running on its old pod until it
     ends; OBS's next `POST` reaches the new pod, which reclaims the ID, and
@@ -459,7 +464,7 @@ re-checks it against the OBS release it tests.
   - **A pod without a key's live session or running backoff asks its
     peers.** A key can be hashed to a pod other than the one holding its
     session or its records: after a rescale, and on every rolling release,
-    because the Ingress maps a pod's keys elsewhere while it's down and back
+    because the route maps a pod's keys elsewhere while it's down and back
     when it's Ready again, while a session that reconnected meanwhile stays
     where it is, and D7's backoff or D9's refusal records are written
     wherever that session ends. A local refusal record or `lost` settles
@@ -856,11 +861,12 @@ broadcast whose publisher is the gateway.
   the gateway releases with every relay release.
 - **Chart:** based on `gawk-mumble-bridge`'s, with a StatefulSet (D10,
   `replicas` default 2), an HTTP Service for the WHIP endpoint behind the
-  public Ingress (TLS by the Ingress, `upstream-hash-by` on the bearer key),
+  public route (an HTTPRoute or an Ingress, TLS there, hashing on the bearer
+  key, §12.5),
   one UDP+TCP `LoadBalancer` Service per replica on a shared address (port
   `media.basePort + ordinal`), a headless Service for D10's peer lookup, a
   NetworkPolicy (egress to the relay's UDP port and to the other gateway pods'
-  internal port; ingress from the Ingress, the media LBs and the other gateway
+  internal port; ingress from the HTTP proxy, the media LBs and the other gateway
   pods on the internal port only), a ServiceMonitor and a PDB. `values.yaml`
   holds `relay.url`, `relay.publishSecret` (existing secret ref),
   `relay.publishProxyToken` (D4), `publicAddress`, `replicas`,
@@ -871,9 +877,9 @@ broadcast whose publisher is the gateway.
   the gateway's own config). The chart's notes carry D4's requirements:
   `trustedProxyCidrs` lists only the header-writing proxy (exact node
   addresses under `hostNetwork`, both address families on dual-stack), the
-  ingress controller must see real client IPs (`externalTrafficPolicy: Local`
-  or PROXY protocol), and an empty list behind an Ingress means one shared
-  bucket. They also carry D10's: the Ingress must hash on the `Authorization`
+  proxy must see real client IPs (`externalTrafficPolicy: Local`
+  or PROXY protocol), and an empty list behind a proxy means one shared
+  bucket. They also carry D10's: the route must hash on the `Authorization`
   header, and the firewall must open `media.basePort` to `media.basePort +
   replicas - 1`, and only `(replicas − 1) × maxSessions` sessions are safe
   through a pod restart.
@@ -972,3 +978,195 @@ the design pass (§5.1,
 - Transcoding, scaling, or any change to OBS's encoded bitstream beyond
   re-chunking.
 - R73 carriers on the gateway → relay leg (D11).
+
+## 12. Implementation contract (2026-11-02)
+
+WG1–WG9 were built against this section. It records what §4–§8 left to the
+chunks and where the build departs from them. Where the two disagree, this
+section is what the code does. WG0 (the lab pass with real OBS) has not run,
+so every number it was to set (D6's floor, cap and multiplier, D10's
+`maxSessions`, the pod's resources) is the provisional value from §4, marked
+so in the code and the chart.
+
+### 12.1 Relay (WG1–WG3)
+
+- **WG1.** The engine is `gawk-server/publisher`. `StopBroadcast()` closes
+  with 4014, `Stop()` with 0. A terminal relay close reaches `OnError` as a
+  typed `*publisher.CloseError{Code}`, which the gateway maps (D8) instead
+  of matching text. `Config.Header` rides every publish dial, first and
+  resumed, and never overrides Origin.
+- **The engine owns its QUIC connection.** webtransport-go's
+  `Transport.Dial` closes the connection the instant the session's context
+  ends, which is when `CloseWithError` has queued its close capsule, not
+  when the capsule has left. On loopback about half of the 4014s then read
+  as drops and the broadcast sat in grace. The engine dials QUIC itself and
+  lets the connection linger until the relay closes it, at most 2 s
+  (`publisher/relay.go`). R78's PoP dialer had the same fix.
+- **4017 `CloseCodePublishMinted`** closes a mint-only session, noticed
+  in-band first (`011700000fb1`), in all three wire copies. Terminal.
+- **Mint-only gate order:** draining 503, the proxy header check (400), the
+  rate limit 429, `?mint` validity (400: a value other than `1`, or on a
+  `/publish/{id}` claim), the secret 401, the IP ban 451, `CheckPublishNew`
+  429, the upgrade, the ban re-check (4006), then BroadcastAnnounce and
+  ResumeToken on their own uni streams as on any mint, SessionClosing(4017),
+  a 250 ms settle and the close. The connection counter's new outcome is
+  `minted`; nothing else is counted.
+- **No reservation for a minted ID.** The token is the only way to use it
+  later, and a reclaim of an unknown ID creates the broadcast. The draw only
+  skips IDs that are live, graced or reserved on this pod, held by an origin
+  Lease anywhere in the fleet (asked of the API server, not the informer
+  cache), or ID-banned. A PoP relay answers a mint-only `404`: its mint
+  gate clears IDs with the home fleet, which a mint-only would skip, and the
+  gateway publishes only to its home relay (OD4). The cost of no
+  reservation: an OBS key is saved for weeks, so an ordinary mint that later
+  draws the same ID while the key is idle is superseded (4004) by the key's
+  next Start. The odds are the ordinary mint's one in ~31^6 per mint, the
+  same as for any long-lived resume token.
+- **A stop during auto-resume still ends the broadcast.** If
+  `StopBroadcast()` lands while a reclaim dial is in flight, the session that
+  dial returns is closed with 4014 instead of attached. If it lands between
+  attempts, with no live session, the engine makes one bounded reclaim and
+  closes it with 4014 at once, as the desktop engine does when paused. It
+  never does that after a terminal close: a deposed engine (4004) that
+  reclaimed would supersede the newer publisher and end its broadcast.
+- **Proxy (D4).** A bearer that doesn't match the token is ignored, not
+  refused: browsers can't send headers on a WebTransport CONNECT and the
+  native apps send none, so ignoring it leaves the sender with what it had.
+  The relay logs a mismatch after the rate limit. `Gawk-Publisher-Ip` must
+  be exactly one bare address; a port, a CIDR, a list, `::` or a repeated
+  header is a 400. The token must differ from `-publish-secret`, which is
+  handed to broadcasters. The local-relay offer also matches on the
+  proxied address. The bad-header 400 is counted as `bad_request`.
+- **D12 on `gawk-relay`.** `gawk-server` refuses the proxy token without an
+  explicit `-resume-token-key` when parsing flags. `gawk-relay` keeps a
+  durable key in its state directory, which satisfies D12, so the shared
+  backstop in `serve.Run` checks the key it actually got.
+
+### 12.2 Gateway (WG4–WG7)
+
+- **Checks on `POST /whip`, in order:** a malformed key 401, not SDP 415,
+  D7's backoff 422 (records nothing), the client IP unknown 400, the
+  gateway's own per-IP limit 429 (1/s, burst 5), the peer lookup (a peer's
+  backoff is a 422 and a takeover), the cap 503, the SDP checks 406, the
+  relay dial (D8's mapping), the answer.
+- **Not recorded for D9:** the gateway's own 429, a 415 and a malformed
+  offer's 400, which have no reason in the fixed set. A relay that can't be
+  reached, a 5xx, 404 or 400 from it and a failed resume are all `503` with
+  `relay_busy`, the closest reason in the set.
+- **NACKs are the gateway's own**, not pion's generator: one NACK per hole,
+  sent at once, and only once-NACKed packets are sampled for D6's RTT. A
+  packet that was only reordered gives a short sample, which the 20 ms floor
+  absorbs. pion v4.2 deprecates `SetNAT1To1IPs`; the gateway uses the
+  equivalent `SetICEAddressRewriteRules`.
+- **B-frames** are detected from the slice types the engine's own
+  `publisher.HasBSlices` reads. Audio is 48 kHz Opus in 20 ms frames, which
+  the engine's first-packet check requires; a sender with other Opus
+  settings keeps its video and loses audio.
+- **Backoff level.** The doc doesn't say when D7's ladder resets: a key's
+  record lives one record lifetime (10 minutes) past the end of its backoff,
+  and the level goes with it. **Retry now** clears the backoff but keeps the
+  level, so a user who retries with the same bad settings still climbs.
+- **"Live"** for D9 and D10 means the PeerConnection is connected. A session
+  that has been answered but isn't connected yet still exempts a reconnect
+  from the cap; one that doesn't connect within 30 s ends as `lost`. A
+  same-pod replacement is exempt even at `maxSessionsHard`, since the
+  count doesn't grow.
+- **Peer routes** (internal listener, bearer `internalToken`, keyed by the
+  key's hash, never the key): `GET`/`DELETE /internal/v1/keys/{hash}` (the
+  `DELETE` is the takeover acknowledgement), `GET`/`DELETE
+  /internal/v1/keys/{hash}/status`, `DELETE
+  /internal/v1/sessions/{id}?key={hash}`. Peers come from
+  `-peer-template` + `-replicas` or an explicit `-peers` list.
+- **No broadcast ID in the gateway's logs**: the engine's `broadcast_id`
+  attribute is stripped, and relay dial errors are redacted, since an ID is
+  a join capability (CLAUDE.md).
+
+### 12.3 Web app (WG8)
+
+- **The key is stored under its own `localStorage` entry,
+  `gawk.obsKey:<relay origin>`,** not inside the server record beside the
+  publish secret (OD3's wording). Clearing the default server's secret
+  deletes that record, which would have deleted the key with it.
+- **Browsers see no HTTP status on a refused CONNECT,** so a failed mint
+  can't tell a missing secret from a ban or a rate limit. A refused dial
+  opens the broadcaster's publish-secret prompt with its existing "may
+  require a publish secret" note and the error.
+- **Create stream key goes through the one-time terms acknowledgement**,
+  like Start a stream: a key is a licence to broadcast.
+- Copy §5.6 doesn't give: a malformed key (`401`): "The server can't read
+  this key." / "Forget it here, then paste the key from OBS (Settings →
+  Stream) again, or reset it."; the confirmation titles "Forget this key?"
+  and "Reset this key?". A refusal keeps S2's layout with the red box in
+  step 3, since its fallback copy points at the steps above.
+
+### 12.4 Dev stack (WG9) and what is open
+
+- **The dev sender is FFmpeg's `whip` muxer** (Alpine FFmpeg 8.1), sending a
+  test pattern with a 1 s GOP. `gawk-whip-gateway/cmd/gawk-whipsim` does
+  what FFmpeg can't: it mints the key over `/publish?mint=1`, attaches the
+  broadcast to `devroom`, and checks that a frame comes back, which is the
+  `dev-stack` CI job's round trip. A pion sender was not used: the
+  gateway's synthetic test media isn't displayable and pubsim's fixture is
+  internal to `gawk-server` (`docs/41`).
+- **Every dev lane's relay carries a dev proxy token and an explicit resume
+  key**, because a compose profile can't change an existing service.
+- **The OBS page has no Room row yet.** The relay side works: attach checks
+  only ID + token, and the dev stack attaches a gateway broadcast to a room.
+  But §5.7 assumed more than holds. OBS's Stop Streaming ends the broadcast
+  with 4014, which removes the attachment, so every Stop and Start needs a
+  re-attach driven by the status poll. A room the page creates ends when the
+  page leaves it. The broadcaster's join/create sheet is inline in
+  `BroadcasterScreen.tsx` and would have to be extracted first. It needs
+  its own small design.
+- **The gateway takes no relay CA or server name**, only `-relay-insecure`:
+  `relay.url` must be a name on the relay's certificate, normally its
+  public URL.
+- **WG0 is not done**, so the reorder window's floor, cap, multiplier and
+  NACK delay (3 ms), `maxSessions` (20), `maxSessionsHard` (25) and the
+  pod's requests are the §4 estimates. The review before landing changed
+  three behaviours WG0 should look at: a hole is NACKed only after it has
+  been missing 3 ms, so a reordered packet never sets the RTT; a session
+  the sender closed waits 2 s for OBS's DELETE before it counts as `lost`,
+  because OBS closes its PeerConnection first; and offers are refused `406`
+  unless their `profile-level-id` is Baseline, Main or High at level 5.2 or
+  below.
+
+### 12.5 Routing through Gateway API (2026-11-02)
+
+The chart shipped in 1.0 with an ingress-nginx Ingress as the only public
+route, because §6 and D10 assumed the reference deployment's frontend sat
+behind ingress-nginx. It doesn't: ioio routes HTTP through Gateway API with
+Envoy Gateway (v1.9), one HTTPS listener per hostname on a shared `Gateway`,
+and ingress-nginx is gone there. So:
+
+- **`httpRoute` is the chart's Gateway API route.** It renders an
+  `HTTPRoute` for `/whip` to the gateway's HTTP Service, attached to the
+  `parentRefs` the operator names (the Gateway and the WHIP host's
+  listener). The Gateway and its listener stay the cluster's own; the chart
+  never creates one.
+- **The key hash is the implementation's.** Gateway API has no standard way
+  to hash on a header. `httpRoute.keyHash: envoy-gateway` (the default)
+  adds a `BackendTrafficPolicy` with `loadBalancer.type: ConsistentHash`,
+  `consistentHash.type: Headers` on `Authorization`, the equivalent of the
+  Ingress annotation. It sets `mergeType: StrategicMerge`: an unmerged
+  route-level policy *replaces* a Gateway-level one for that route, so the
+  route would lose the Gateway's own timeouts and the rest. `keyHash: none`
+  renders no policy and is refused above one replica, which is what an
+  implementation without a header hash (Cilium's, say) supports.
+- **One route, not two.** The chart refuses `httpRoute` and `ingress`
+  together: two routes could hash a key to different pods.
+- **The NetworkPolicy's HTTP source is `networkPolicy.httpProxy`**, which
+  names the proxy pods (Envoy Gateway's are `app.kubernetes.io/name: envoy`,
+  `app.kubernetes.io/component: proxy` in its namespace). Naming nothing
+  falls back to 1.0's `networkPolicy.ingressController` and its
+  ingress-nginx default, so a 1.0 install keeps its policy on upgrade.
+- **D4 is unchanged.** Envoy appends the address it received the request
+  from to `X-Forwarded-For`, as ingress-nginx does, so `trustedProxyCidrs`
+  lists the Envoy pods' range, and the proxy's own Service must keep client
+  IPs (`externalTrafficPolicy: Local`, as both of ioio's Envoy Services are).
+- **Verified by** the chart CI step: the HTTPRoute attaches to the named
+  listener and routes `/whip` to the HTTP Service; the policy hashes on
+  `Authorization` with `StrategicMerge`; `keyHash: none` above one replica,
+  a route with an Ingress, an unknown `keyHash` and missing `parentRefs`
+  are refused; `httpProxy` replaces the ingress-nginx default, and a
+  `cidrs`-only `httpProxy` renders no pod peer. WG10 checks it on ioio.

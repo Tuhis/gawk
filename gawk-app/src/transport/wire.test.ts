@@ -166,6 +166,7 @@ import {
   CLOSE_CODE_VOICE_REMOVED,
   ROOM_CAP_VOICE,
   CLOSE_CODE_VOICE_UNAVAILABLE,
+  CLOSE_CODE_PUBLISH_MINTED,
   MAX_VOICE_NAME_LEN,
   MAX_VOICE_PAYLOAD,
   MAX_VOICE_ROSTER_ENTRIES,
@@ -867,6 +868,15 @@ describe('SessionClosing (R57)', () => {
     expect(CLOSE_CODE_BROADCASTER_STOPPED).toBe(4014);
     expect(toHex(encodeSessionClosing(CLOSE_CODE_BROADCASTER_STOPPED))).toBe('011700000fae');
     expect(parseSessionClosing(fromHex('011700000fae'))).toBe(4014);
+  });
+
+  // R33: 4017 PublishMinted is noticed before a mint-only publish closes
+  // (docs/83 D3). closing_test.go goldenSessionClosingPublishMintedHex.
+  it('encodes the golden 4017 notice byte-for-byte', () => {
+    expect(CLOSE_CODE_PUBLISH_MINTED).toBe(4017);
+    expect(CLOSE_CODE_PUBLISH_MINTED).toBe(CLOSE_CODE_VOICE_UNAVAILABLE + 1);
+    expect(toHex(encodeSessionClosing(CLOSE_CODE_PUBLISH_MINTED))).toBe('011700000fb1');
+    expect(parseSessionClosing(fromHex('011700000fb1'))).toBe(4017);
   });
 
   it('is strict: exact size, version, type, and the gawk code range', () => {

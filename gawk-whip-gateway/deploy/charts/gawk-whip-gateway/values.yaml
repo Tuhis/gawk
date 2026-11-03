@@ -1,0 +1,332 @@
+# gawk-whip-gateway (R33, docs/83) — WHIP ingest for OBS Studio and other
+# WHIP senders. Each OBS session's H.264 + Opus is republished to the relay
+# as an ordinary publisher; viewers watch it like any other broadcast.
+#
+# Default off: nothing installs it, and a relay no gateway publishes to
+# behaves exactly as before. The required values below render empty so a
+# `helm template` works; the pods CrashLoopBackOff with the missing flag's
+# name until they are set (the gawk-admin, gawk-sampler and
+# gawk-mumble-bridge convention).
+#
+# Required: relay.url, publicAddress, internalToken (with replicas > 1), and
+# the relay prerequisites:
+#   * the relay chart's publishProxy.token (or tokenSecretRef) — the SAME
+#     value goes in relay.publishProxyToken below (D4);
+#   * the relay chart's config.resumeTokenKey (or resumeTokenKeyRef), an
+#     explicit key (D12). The relay chart refuses publishProxy without it.
+#     Setting it on a relay that had none revokes every resume token in use
+#     once: docs/self-hosting.md §6.
+#   * the relay's publish secret, if it has one, in relay.publishSecret.
+# Then the frontend chart's config.whipGatewayUrl (https://<the WHIP host>),
+# and allowedOrigins here listing the frontend's origin.
+#
+# NOTES.txt (printed by `helm install`) and docs/self-hosting.md carry the
+# operator requirements: the HTTPRoute or Ingress must hash on
+# Authorization, the
+# trustedProxyCidrs rules, the media port range in the firewall.
+
+image:
+  repository: ghcr.io/tuhis/gawk-whip-gateway
+  # Empty = the chart's appVersion (kept in lockstep with the image tag).
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# Pods (D10, OD7). A StatefulSet: pod N answers ICE on media.basePort + N,
+# behind its own media LoadBalancer Service. Changing it is a `helm upgrade`
+# (the chart renders one media Service per replica, and every pod's peer
+# list); open the new port in the firewall first. Sessions on a removed pod
+# get an ICE failure and OBS reconnects to the others, counted against
+# their caps (D10). Only (replicas − 1) × maxSessions sessions are safe
+# through a pod restart.
+replicas: 2
+
+podDisruptionBudget:
+  enabled: true
+
+# soft (default) = preferred anti-affinity; hard = required; none.
+podAntiAffinity: soft
+
+# The relay the gateway publishes to: its own deployment's, never another
+# (OD4). The gateway is a WebTransport client of it.
+relay:
+  # Its https URL. The gateway verifies the relay's certificate against
+  # the system roots by the URL's host name and has no CA or server-name
+  # option, so use the name the certificate carries, normally the relay's
+  # public one (in-cluster traffic to a LoadBalancer address goes straight
+  # to the relay pods under kube-proxy):
+  #   https://relay.example.com:4433
+  url: ""
+  # The relay's -publish-secret, if it has one. The house literal/Ref dual
+  # form: Ref wins, and the literal never renders beside a Ref.
+  publishSecret: ""
+  publishSecretRef: {}
+  #   name: gawk-server-secrets
+  #   key: publishSecret
+  # The relay's -publish-proxy-token (D4): lets the relay's rate limit, IP
+  # bans and the admin portal's publisher-IP fields see the OBS user's
+  # address instead of this pod's. It lets its holder claim any publisher
+  # IP, so it lives only here and in the relay's Secret.
+  # The relay chart's publishProxy.tokenSecretRef Secret
+  # (docs/self-hosting.md §6):
+  #   kubectl -n gawk create secret generic gawk-publish-proxy-token \
+  #     --from-literal=token="$(openssl rand -hex 32)"
+  publishProxyToken: ""
+  publishProxyTokenRef: {}
+  #   name: gawk-publish-proxy-token
+  #   key: token
+  # Origin on the publish dial; empty sends gawk-broadcast://native. A valid
+  # proxy token skips the relay's Origin check anyway.
+  origin: ""
+  # Skip TLS verification of the relay: dev certificates only. An
+  # in-cluster URL needs the relay certificate to carry that name, or this.
+  insecure: false
+  # How long a POST /whip waits for the relay to accept the publish.
+  dialTimeout: 10s
+
+# The IP every ICE host candidate carries: the media LoadBalancers' shared
+# address (D10), the one OBS sends media to. Required.
+publicAddress: ""
+
+media:
+  # Pod N's port, UDP and ICE-TCP: basePort + N. The firewall (and any NAT
+  # in front of the LoadBalancer) must pass basePort … basePort+replicas−1,
+  # UDP and TCP, to publicAddress.
+  basePort: 8189
+  # The shared LoadBalancer address: set it to publicAddress unless your LB
+  # assigns it some other way.
+  loadBalancerIP: ""
+  # MetalLB puts Services with the same sharing key on one address. The key
+  # is the annotation's value; the annotation's name is configurable for
+  # MetalLB releases that renamed it (metallb.io/allow-shared-ip).
+  sharedIpAnnotation: metallb.universe.tf/allow-shared-ip
+  sharingKey: gawk-whip-gateway
+  # Cluster, not Local: MetalLB shares one address between Services with
+  # different selectors (one per pod here) only when they all use Cluster.
+  # The gateway does not need the client's address on the media path; its
+  # client IP comes from the HTTP request (D4).
+  externalTrafficPolicy: Cluster
+  annotations: {}
+
+# The public WHIP endpoint: POST/DELETE/OPTIONS /whip…, GET/DELETE
+# /whip/status. TLS at the Gateway listener or Ingress; the Service behind it
+# is plain HTTP.
+service:
+  port: 80
+  annotations: {}
+
+# Route the public endpoint with ONE of httpRoute (Gateway API) or ingress
+# (ingress-nginx). Whichever it is must send every request for a key to the
+# pod holding its session (D10): the routes hash on the Authorization header,
+# which carries the stream key.
+
+# Gateway API. The Gateway and its HTTPS listener for the WHIP host are the
+# cluster's own; this chart adds the HTTPRoute and, for Envoy Gateway, the
+# hash policy.
+httpRoute:
+  enabled: false
+  parentRefs: []
+  #  - name: gw-ext
+  #    namespace: envoy-gateway-system
+  #    sectionName: whip      # the listener for the WHIP host
+  hostnames: []
+  #  - whip.example.com      # CHANGEME: the gateway's public name
+  labels: {}
+  annotations: {}
+  # How the route hashes on the key. Gateway API has no standard way to
+  # hash on a header, so this is the implementation's own policy:
+  #   envoy-gateway  a BackendTrafficPolicy with a consistent hash on the
+  #                  Authorization header (Envoy Gateway's CRDs must be
+  #                  installed; v1.9 checked).
+  #   none           no hash. Only with replicas: 1; the chart refuses
+  #                  anything else.
+  keyHash: envoy-gateway
+  envoyGateway:
+    # Merge the hash policy into a Gateway-level BackendTrafficPolicy
+    # instead of replacing it for this route (StrategicMerge or JSONMerge;
+    # empty: no merge). Unmerged, the route loses that policy's timeouts and
+    # the rest.
+    mergeType: StrategicMerge
+
+# ingress-nginx. The Ingress always hashes on the bearer key
+# (nginx.ingress.kubernetes.io/upstream-hash-by: "$http_authorization", D10),
+# so another Ingress controller isn't supported: one that cannot hash on a
+# header puts a key's DELETE and status reads on pods that never saw its
+# session.
+ingress:
+  enabled: false
+  className: nginx
+  host: whip.example.com # CHANGEME: the gateway's public name
+  tls:
+    secretName: gawk-whip-gateway-tls
+  # Extra annotations (cert-manager's issuer, say). The hash annotation is
+  # rendered by the template and cannot be overridden here.
+  annotations: {}
+  #   cert-manager.io/cluster-issuer: letsencrypt-production
+
+# Serve the public listener over TLS in the pod itself, for a deployment
+# without an Ingress: an existing kubernetes.io/tls Secret. Empty (the
+# default) serves plain HTTP for the TLS-terminating Gateway or Ingress.
+# Without either nothing hashes on the key, so keep replicas: 1 then.
+tls:
+  secretName: ""
+
+# Origins allowed to read and clear /whip/status cross-origin (D9): the
+# gawk-app origin(s), e.g. https://gawk.example.com. Empty allows any —
+# development only.
+allowedOrigins: []
+
+# D4: the CIDRs of the proxy that WRITES X-Forwarded-For, and only those —
+# the Gateway's proxy pods (Envoy Gateway: the envoy pods' range) or the
+# ingress controller's, or under hostNetwork its exact node addresses
+# (/32, /128). Never a subnet clients share and never a kube-proxy SNAT hop
+# in front of it. Dual-stack clusters list both families. The proxy must see
+# real client IPs (externalTrafficPolicy: Local on its Service, or PROXY
+# protocol). Empty (the default) uses the peer address only: behind a proxy
+# that puts every OBS user in ONE rate-limit bucket on the gateway and on
+# the relay. A list that misses the proxy's real address is counted in
+# gawk_whip_xff_misconfigured_total.
+trustedProxyCidrs: []
+
+# The gateway's own POST /whip limit per client IP (in front of the
+# relay's): per second sustained, and at once. 0 disables it.
+postRate: 1
+postBurst: 5
+# The same for GET/DELETE /whip/status (the OBS page polls every 2 s).
+statusRate: 2
+statusBurst: 10
+
+# Sessions per pod for a new key (D10). Provisional until WG0 measures CPU
+# and memory per 1080p60 session (docs/83 §8); size resources for
+# maxSessionsHard, not this.
+maxSessions: 20
+# The hard per-pod ceiling, even for a reconnect whose session is on a
+# peer. 0 = ceil(1.25 × maxSessions).
+maxSessionsHard: 0
+# Retry-After of a 503 at the cap, and of a relay 429 or an unreachable relay.
+fullRetryAfter: 30s
+relayBusyRetryAfter: 30s
+
+# ICE consent (provisional until WG0).
+ice:
+  disconnectedTimeout: 5s
+  # Silence until a session counts as lost (D8).
+  failedTimeout: 15s
+  keepalive: 2s
+
+# D6: wait about one round trip for a retransmit, then drop. window =
+# clamp(multiplier × RTT + offset, floor, cap). Provisional until WG0.
+reorder:
+  initialRtt: 50ms
+  windowFloor: 20ms
+  windowCap: 150ms
+  windowMultiplier: 1.25
+  windowOffset: 5ms
+  # A hole is NACKed only once it has been missing this long, so a packet
+  # that is merely reordered is never NACKed or sampled as an RTT. Must
+  # stay below windowFloor.
+  nackDelay: 3ms
+  # Packets the window may hold before it drops the head frame at once.
+  maxPackets: 4096
+
+# D7: the keyframe interval, measured at the gateway (OD5).
+gop:
+  # Above it the status warns gop_long.
+  warn: 1.1s
+  # Above it the gateway ends the session gop_too_long.
+  max: 2.2s
+  # Before `samples` spacings exist, two consecutive gaps above it end the
+  # session. It cannot come down without breaking that safeguard (D7).
+  earlyGap: 4.5s
+  # The interval is the median of this many spacings.
+  samples: 5
+# D7's backoff after a session the gateway ended itself: 422 to that key's
+# POSTs, doubling per repeat.
+backoff:
+  initial: 30s
+  max: 10m
+# D9's per-key records (refusals, ended sessions).
+records:
+  ttl: 10m
+  max: 4096
+
+# D10's peer lookup: the pods find each other through the headless Service,
+# authenticated with this shared token on the internal port. Required with
+# replicas > 1 (the pods refuse to start without it). It must differ from
+# the publish-proxy token. Dual form, Ref wins.
+#   kubectl -n gawk create secret generic gawk-whip \
+#     --from-literal=internalToken="$(openssl rand -hex 32)"
+internalToken: ""
+internalTokenRef: {}
+#   name: gawk-whip
+#   key: internalToken
+# A peer slower than this counts as holding nothing.
+peerTimeout: 200ms
+
+logLevel: info
+logFormat: json
+
+# PROVISIONAL: WG0, the per-session measurement with real OBS, has not run
+# (docs/83 §8). The request is an estimate for maxSessionsHard (25 at the
+# default maxSessions) sessions of 1080p60 at ~6 Mb/s: SRTP decrypt, RTP
+# reassembly and the publisher engine's re-chunking at ~600 packets/s each,
+# guessed at ~0.02 CPU and ~15 MiB (reorder window, engine queues) per
+# session. Replace both with WG0's numbers.
+resources:
+  requests:
+    cpu: 500m
+    memory: 256Mi
+  limits:
+    memory: 768Mi
+
+metrics:
+  serviceMonitor:
+    enabled: false
+    labels: {}
+    interval: 30s
+    scrapeTimeout: 10s
+
+# Ingress: WHIP HTTP from the HTTP proxy only (the Gateway's proxy pods or
+# the ingress controller), media from anywhere, the internal port from the
+# other gateway pods only, ops from the monitoring namespace. Egress: the
+# relay's UDP port, the other gateway pods' internal port, DNS. Media replies
+# to OBS are replies, which a NetworkPolicy allows.
+networkPolicy:
+  enabled: false
+  # The proxy in front of the public endpoint: the Gateway's proxy pods or
+  # the ingress controller. For Envoy Gateway:
+  #   namespaceSelector: {kubernetes.io/metadata.name: envoy-gateway-system}
+  #   podSelector: {app.kubernetes.io/name: envoy, app.kubernetes.io/component: proxy}
+  # A proxy on hostNetwork reaches the pod from its node addresses, which no
+  # pod selector matches: list them in cidrs. Naming nothing here falls back
+  # to ingressController below.
+  httpProxy:
+    namespaceSelector: {}
+    podSelector: {}
+    cidrs: []
+  # 1.0's name for the same thing, with its ingress-nginx default. Used
+  # only while httpProxy names nothing.
+  ingressController:
+    namespaceSelector:
+      kubernetes.io/metadata.name: ingress-nginx
+    podSelector:
+      app.kubernetes.io/name: ingress-nginx
+    cidrs: []
+  relay:
+    podSelector:
+      app.kubernetes.io/name: gawk-server
+    namespaceSelector: {}
+    port: 4433
+  dns:
+    podSelector:
+      k8s-app: kube-dns
+    namespaceSelector:
+      kubernetes.io/metadata.name: kube-system
+  monitoring:
+    namespaceSelector: {}
+  extraEgress: []
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []

@@ -56,7 +56,10 @@ func TestShaperOutageDropAndHold(t *testing.T) {
 
 	spec = pathSpec{outagePer: time.Second, outageLen: 100 * time.Millisecond, outageHold: true, delay: 5 * time.Millisecond}
 	h, hc, hout := testShaper(t, spec, 0, true)
-	start := time.Now()
+	// The outage runs from the epoch testShaper set, not from this line: on
+	// a loaded -race runner the two were 20 ms apart, and a held packet
+	// leaving on time read as early.
+	start := time.Unix(0, h.epoch.Load())
 	h.offer([]byte{2})
 	if hc.outageHeld.Load() != 1 || hc.forwarded.Load() != 1 {
 		t.Fatalf("hold mode: held %d, forwarded %d", hc.outageHeld.Load(), hc.forwarded.Load())
@@ -66,7 +69,7 @@ func TestShaperOutageDropAndHold(t *testing.T) {
 		if b[0] != 2 {
 			t.Fatalf("wrote %v", b)
 		}
-		if el := time.Since(start); el < 90*time.Millisecond {
+		if el := time.Since(start); el < 100*time.Millisecond {
 			t.Fatalf("held packet left after %v, before the outage ended", el)
 		}
 	case <-time.After(2 * time.Second):

@@ -47,6 +47,9 @@ import {
   saveHandoffAuto,
 } from '../../lib/desktopLink';
 import { DesktopHandoffModal, type HandoffModalKind } from './DesktopHandoffModal';
+import { PublishSecretModal, SECRET_MAYBE_REQUIRED_NOTE, TermsPromptModal } from './PublishPrompts';
+import { ObsWayIn } from '../obs/ObsWayIn';
+import { obsWayInOffered } from '../obs/availability';
 import { relayHost } from '../../lib/relayUrl';
 import { STATS_HOTKEY } from '../../lib/hotkeys';
 import { useHotkey } from '../../lib/useHotkey';
@@ -338,6 +341,8 @@ export function BroadcasterScreen({
 
   const [showServerPicker, setShowServerPicker] = useState(false);
   const resolvedServerUrl = useTransportStore((s) => s.serverUrl);
+  // R33 (docs/83 U3): a gateway, the deployment's own relay, a desktop.
+  const obsWayIn = obsWayInOffered(resolvedServerUrl);
 
   // The `gawk://broadcast` link for what this card would start: the pending
   // room, the name in the field, and the relay when it isn't the default
@@ -605,9 +610,7 @@ export function BroadcasterScreen({
       ) {
         setStatus('idle');
         setSecretDraft('');
-        setSecretPromptNote(
-          'The server refused the connection. It may require a publish secret — enter one to retry, or cancel.',
-        );
+        setSecretPromptNote(SECRET_MAYBE_REQUIRED_NOTE);
         setSecretPrompt(true);
         return;
       }
@@ -1374,6 +1377,9 @@ export function BroadcasterScreen({
             </Button>
           </div>
         </GlassPanel>
+        {/* R33 (docs/83 §5.3 D): the way in to the OBS page, under the card
+            and outside its glass, so the card stays as it is (U1). */}
+        {obsWayIn && !running && <ObsWayIn serverUrl={resolvedServerUrl} />}
       </div>
       {settingsPanel}
       {roomPanel}
@@ -1389,32 +1395,7 @@ export function BroadcasterScreen({
       )}
 
       {termsPrompt && (
-        <>
-          <div className={styles.scrim} onClick={() => setTermsPrompt(false)} />
-          <div className={styles.modalCenter}>
-            <GlassPanel className={styles.modal} role="dialog" aria-label="Terms of use">
-              <h2 className={styles.modalTitle}>Before you broadcast</h2>
-              <p className={styles.cardText}>
-                You are about to publish your screen to anyone holding your join code. You are
-                responsible for the content you stream, which must be lawful where you are. The
-                service is provided as is, with no warranty.
-              </p>
-              <p className={styles.cardText}>
-                By continuing you agree to the{' '}
-                <a href="#/terms" target="_blank" rel="noopener noreferrer">
-                  Terms of use
-                </a>
-                .
-              </p>
-              <div className={styles.modalActions}>
-                <Button variant="secondary" onClick={() => setTermsPrompt(false)}>
-                  Cancel
-                </Button>
-                <Button onClick={acceptTermsAndContinue}>Agree &amp; continue</Button>
-              </div>
-            </GlassPanel>
-          </div>
-        </>
+        <TermsPromptModal onCancel={() => setTermsPrompt(false)} onAccept={acceptTermsAndContinue} />
       )}
 
       {showServerPicker && <ServerPickerPanel onClose={() => setShowServerPicker(false)} />}
@@ -1423,42 +1404,13 @@ export function BroadcasterScreen({
       <ServerIndicator />
 
       {secretPrompt && (
-        <>
-          <div className={styles.scrim} onClick={() => setSecretPrompt(false)} />
-          <div className={styles.modalCenter}>
-            <GlassPanel className={styles.modal} role="dialog" aria-label="Publish secret">
-              <h2 className={styles.modalTitle}>Publish secret</h2>
-              <p className={styles.cardText}>
-                {secretPromptNote ?? 'This relay requires a secret to broadcast.'}
-              </p>
-              <form
-                className={styles.modalForm}
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  submitSecret();
-                }}
-              >
-                <input
-                  type="password"
-                  className={styles.modalInput}
-                  value={secretDraft}
-                  onChange={(e) => setSecretDraft(e.target.value)}
-                  placeholder="shared secret"
-                  autoComplete="current-password"
-                  spellCheck={false}
-                  // eslint-disable-next-line jsx-a11y/no-autofocus -- the field is the modal's sole purpose
-                  autoFocus
-                />
-                <div className={styles.modalActions}>
-                  <Button type="button" variant="secondary" onClick={() => setSecretPrompt(false)}>
-                    Cancel
-                  </Button>
-                  <Button type="submit">Start broadcasting</Button>
-                </div>
-              </form>
-            </GlassPanel>
-          </div>
-        </>
+        <PublishSecretModal
+          note={secretPromptNote}
+          draft={secretDraft}
+          onDraftChange={setSecretDraft}
+          onSubmit={submitSecret}
+          onCancel={() => setSecretPrompt(false)}
+        />
       )}
     </div>
   );

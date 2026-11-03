@@ -49,8 +49,8 @@ import (
 	"time"
 
 	"github.com/Tuhis/gawk/gawk-server/internal/pubsim"
-	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/engine"
 	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/fixture"
+	"github.com/Tuhis/gawk/gawk-server/publisher"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
@@ -75,13 +75,13 @@ func main() {
 // own sentence for a dial the relay answered with an HTTP status, and reports
 // whether there was one.
 //
-// The status is taken from engine.StartError rather than re-derived: the
+// The status is taken from publisher.StartError rather than re-derived: the
 // engine already carries it (webtransport-go's Dial returns the *http.Response
 // even on rejection) and already renders each status as a sentence a human can
 // act on, including R39's 451. Two places deciding what 451 means is exactly
 // the drift docs/42 D13 exists to avoid.
 func reportDialStatus(err error) bool {
-	se, ok := engine.AsStartError(err)
+	se, ok := publisher.AsStartError(err)
 	if !ok || se.Status == 0 {
 		return false
 	}
@@ -162,7 +162,7 @@ func run() error {
 		defer cancel()
 	}
 
-	media := engine.DefaultMediaConfig()
+	media := publisher.DefaultMediaConfig()
 	// The fixture's real properties, not the shipped 1080p60 rung: stats and
 	// the announced dimensions should describe what is actually sent.
 	media.Width, media.Height = 320, 240
@@ -171,8 +171,8 @@ func run() error {
 
 	ended := make(chan struct{})
 	endOnce := make(chan struct{}, 1)
-	sess := engine.New(
-		engine.Config{
+	sess := publisher.New(
+		publisher.Config{
 			RelayURL:         *url,
 			PublishSecret:    *secret,
 			Insecure:         *insecure,
@@ -184,7 +184,7 @@ func run() error {
 			RoomVoice:        *roomVoice,
 			Nickname:         *nick,
 		},
-		engine.Callbacks{
+		publisher.Callbacks{
 			OnBroadcastID: func(id string) {
 				// The one machine-readable line; harnesses scrape it.
 				fmt.Printf("GAWK_PUBSIM_ID=%s\n", id)
@@ -224,7 +224,7 @@ func run() error {
 				}
 			},
 		},
-		engine.Options{
+		publisher.Options{
 			Log:          log,
 			MediaFactory: pubsim.Factory(aus, *fps, packets),
 		},
@@ -237,7 +237,7 @@ func run() error {
 	fmt.Fprintf(os.Stderr, "publishing the %d-frame fixture at %d fps to %s\n", len(aus), *fps, *url)
 	if *audio {
 		fmt.Fprintf(os.Stderr, "…with %d Opus packets on the audio lane (%d ms, looping)\n",
-			len(packets), len(packets)*engine.AudioFrameMs)
+			len(packets), len(packets)*publisher.AudioFrameMs)
 	}
 
 	if *statsEvery > 0 {
@@ -260,7 +260,7 @@ func run() error {
 // without normalizing (dynamic codes are case-insensitive, docs/44 §4.2).
 // fixtureAUs demuxes the named committed clip into the access units the
 // source loops.
-func fixtureAUs(name string) ([]engine.AccessUnit, error) {
+func fixtureAUs(name string) ([]publisher.AccessUnit, error) {
 	switch name {
 	case "default":
 		return pubsim.Demux(fixture.TS)
@@ -280,7 +280,7 @@ func roomLine(code, creatorTokenHex string) string {
 	return fmt.Sprintf("ROOM %s %s\n", strings.ToUpper(code), creatorTokenHex)
 }
 
-func statsLoop(ctx context.Context, sess *engine.Session, every time.Duration) {
+func statsLoop(ctx context.Context, sess *publisher.Session, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {

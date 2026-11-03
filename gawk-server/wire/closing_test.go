@@ -93,6 +93,35 @@ func TestGoldenSessionClosingBroadcasterStopped(t *testing.T) {
 	}
 }
 
+// R33 (docs/83 D3): 4017 PublishMinted is noticed in-band before a mint-only
+// publish session closes.
+//
+//	01           version
+//	17           type = SessionClosing
+//	00 00 0f b1  code = 4017 (CloseCodePublishMinted), big-endian
+const goldenSessionClosingPublishMintedHex = "011700000fb1"
+
+func TestGoldenSessionClosingPublishMinted(t *testing.T) {
+	if CloseCodePublishMinted != 4017 {
+		t.Fatalf("CloseCodePublishMinted = %d; docs/83 D3 pins 4017", CloseCodePublishMinted)
+	}
+	if CloseCodePublishMinted != CloseCodeVoiceUnavailable+1 {
+		t.Fatal("4017 must follow R79's 4016")
+	}
+	want := mustHex(t, goldenSessionClosingPublishMintedHex)
+	msg, err := AppendSessionClosing(nil, CloseCodePublishMinted)
+	if err != nil {
+		t.Fatalf("AppendSessionClosing: %v", err)
+	}
+	if !bytes.Equal(msg, want) {
+		t.Errorf("AppendSessionClosing produced %x, want %x", msg, want)
+	}
+	code, err := ParseSessionClosing(want)
+	if err != nil || code != CloseCodePublishMinted {
+		t.Fatalf("ParseSessionClosing = (%d, %v), want 4017", code, err)
+	}
+}
+
 func TestSessionClosingRejects(t *testing.T) {
 	if _, err := AppendSessionClosing(nil, 0); !errors.Is(err, ErrBadSessionClosing) {
 		t.Errorf("AppendSessionClosing(0) err = %v, want ErrBadSessionClosing", err)

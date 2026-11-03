@@ -720,6 +720,22 @@ COMPONENTS = {
         sources="`go list -deps ./...` in `gawk-mumble-bridge/`.",
         collect=lambda: collect_go("gawk-mumble-bridge"),
     ),
+    # R33 (docs/83 D1, §6): the WHIP gateway. CGO_ENABLED=0: pion does ICE,
+    # DTLS and SRTP in Go, and the gateway never decodes, so its image is the
+    # Go binary and nothing native. The list also covers gawk-whipsim (the dev
+    # stack's sender), whose image adds Alpine's FFmpeg package, attributed by
+    # Alpine and never shipped in a release.
+    "whip-gateway": dict(
+        path="gawk-whip-gateway",
+        blurb=(
+            "The WHIP gateway (`gawk-whip-gateway`). It links no codec: H.264 and\n"
+            "Opus pass through it as RTP payloads, re-chunked for the relay, so\n"
+            "this list is the whole of what its image carries besides the Go\n"
+            "runtime."
+        ),
+        sources="`go list -deps ./...` in `gawk-whip-gateway/`.",
+        collect=lambda: collect_go("gawk-whip-gateway"),
+    ),
     "windows": dict(
         path="gawk-broadcast-desktop",
         blurb=(
@@ -921,6 +937,7 @@ def check() -> int:
         ("gawk-admin", "", False),
         ("gawk-sampler", "", True),
         ("gawk-mumble-bridge", "", False),
+        ("gawk-whip-gateway", "", False),
     ):
         for pkg in collect_go(module, tags, cgo):
             checked += 1

@@ -88,6 +88,17 @@ mod tests {
         }
     }
 
+    // R33 (docs/83 D3): 4017 closes the OBS page's mint-only publish and
+    // never reaches a subscribe session, so it must not join the viewer's
+    // terminal set the iOS viewer reads from the shared wire crate.
+    #[test]
+    fn a_mint_only_close_is_not_a_viewer_terminal() {
+        assert_eq!(gawk_wire::CLOSE_CODE_PUBLISH_MINTED, 4017);
+        assert!(!gawk_wire::terminal_for_viewer(
+            gawk_wire::CLOSE_CODE_PUBLISH_MINTED
+        ));
+    }
+
     #[test]
     fn a_drain_reconnects_at_once_and_an_abrupt_drop_fast_on_the_first_attempt_only() {
         let drain = Some(gawk_wire::CLOSE_CODE_SERVER_DRAINING);

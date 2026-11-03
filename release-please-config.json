@@ -114,6 +114,17 @@
           "path": "deploy/charts/gawk-mumble-bridge/Chart.yaml"
         }
       ]
+    },
+    "gawk-whip-gateway": {
+      "release-type": "go",
+      "component": "gawk-whip-gateway",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "deploy/charts/gawk-whip-gateway/Chart.yaml"
+        }
+      ]
     }
   }
 }
