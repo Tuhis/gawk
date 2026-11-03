@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -186,5 +187,40 @@ func TestWG11SenderClass(t *testing.T) {
 		if client != tc.client || os != tc.os {
 			t.Errorf("senderClass(%q) = %q, %q; want %q, %q", tc.ua, client, os, tc.client, tc.os)
 		}
+	}
+}
+
+// PR #699 review: a POST the relay refuses never registers a session, so
+// neither end() nor abandon() ran and its reporter's sender goroutine
+// stayed blocked forever — one per refused POST, telemetry configured or
+// not. An OBS client retrying a dead key would grow it without bound.
+func TestWG11RefusedPublishReleasesItsReporter(t *testing.T) {
+	relay := newFakeRelay()
+	g := startGW(t, relay, nil)
+	refused := func() {
+		key := newKey(t)
+		relay.setRefuse(key.ID, http.StatusServiceUnavailable)
+		c, offer := newClientPC(t, clientOpts{})
+		if r := do(t, http.MethodPost, g.public.URL+"/whip", key.String(), "application/sdp", offer, nil); r.code == http.StatusCreated {
+			t.Fatalf("POST to a refusing relay: %d", r.code)
+		}
+		// The test's own client (its PeerConnection and UDP mux) must not count.
+		_ = c.pc.Close()
+		_ = c.conn.Close()
+
+	}
+	refused() // warm up whatever is created once
+	base := runtime.NumGoroutine()
+	const n = 30
+	for i := 0; i < n; i++ {
+		refused()
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for runtime.NumGoroutine() >= base+n/2 {
+		if time.Now().After(deadline) {
+			buf := make([]byte, 1<<20)
+			t.Fatalf("goroutines %d after %d refused POSTs, baseline %d:\n%s", runtime.NumGoroutine(), n, base, buf[:runtime.Stack(buf, true)])
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

@@ -285,6 +285,9 @@ func (s *Server) startSession(ctx context.Context, key streamkey.Key, ip netip.A
 	err = ss.eng.Start(dialCtx)
 	cancel()
 	if err != nil {
+		// Never registered and never started: abandon releases what the
+		// session holds (its reporter), since no end() will run for it.
+		ss.abandon()
 		_ = pc.Close()
 		st := 0
 		if se, ok := publisher.AsStartError(err); ok {
