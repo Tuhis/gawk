@@ -7,6 +7,7 @@ import {
   desktopHandoffOffered,
   isDesktopForHandoff,
   launchDesktopLink,
+  loadDesktopAppKnown,
   loadHandoffAuto,
   saveHandoffAuto,
   type DesktopBroadcastLink,
@@ -147,6 +148,20 @@ describe('the remembered choice and the per-room flag (D5)', () => {
     saveHandoffAuto(false);
     expect(localStorage.getItem('gawk:desktop-handoff')).toBeNull();
     expect(loadHandoffAuto()).toBe(false);
+  });
+
+  it('knows the user has the app once they chose "always", and keeps knowing it (HO5)', () => {
+    expect(loadDesktopAppKnown()).toBe(false);
+    saveHandoffAuto(true);
+    expect(loadDesktopAppKnown()).toBe(true);
+    // "Stop doing this" forgets the automatic launch, not the app.
+    saveHandoffAuto(false);
+    expect(loadDesktopAppKnown()).toBe(true);
+  });
+
+  it('takes an "always" stored before HO5 as knowing the app', () => {
+    localStorage.setItem('gawk:desktop-handoff', 'auto');
+    expect(loadDesktopAppKnown()).toBe(true);
   });
 
   it('allows one automatic launch per room in this tab, case-insensitively', () => {

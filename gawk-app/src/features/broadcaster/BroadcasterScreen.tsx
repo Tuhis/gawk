@@ -43,6 +43,7 @@ import {
   claimAutomaticHandoff,
   desktopHandoffOffered,
   launchDesktopLink,
+  loadDesktopAppKnown,
   loadHandoffAuto,
   saveHandoffAuto,
 } from '../../lib/desktopLink';
@@ -1389,6 +1390,7 @@ export function BroadcasterScreen({
           kind={handoffModal}
           href={handoffHref}
           auto={handoffAuto}
+          appKnown={loadDesktopAppKnown()}
           onAutoChange={setAutoHandoff}
           onClose={() => setHandoffModal(null)}
         />
