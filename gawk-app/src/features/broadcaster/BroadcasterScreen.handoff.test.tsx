@@ -110,7 +110,11 @@ describe('the Opening modal (D4, D6, G7)', () => {
     fireEvent.click(offer()!);
     const dialog = within(modal()!);
     expect(dialog.getByText('Opening the desktop app…')).toBeTruthy();
-    expect(dialog.getByRole('link', { name: 'Get the app' })).toBeTruthy();
+    // HO5: the download is a quiet inline link, not an action beside Continue.
+    expect(dialog.getByRole('link', { name: 'Get the app' }).closest('p')).toBeTruthy();
+    expect(dialog.getByRole('link', { name: 'Open again' }).getAttribute('href')).toBe(
+      'gawk://broadcast?room=vip-qy346he235',
+    );
 
     fireEvent.click(dialog.getByRole('button', { name: 'Continue in the browser' }));
     expect(modal()).toBeNull();
@@ -134,6 +138,34 @@ describe('the Opening modal (D4, D6, G7)', () => {
     expect(localStorage.getItem('gawk:desktop-handoff')).toBe('auto');
     fireEvent.click(screen.getByRole('checkbox', { name: 'Always open broadcast links in the desktop app' }));
     expect(localStorage.getItem('gawk:desktop-handoff')).toBeNull();
+  });
+});
+
+describe('not asking for a download from someone who has the app (HO5)', () => {
+  it('drops "Get the app" from the Opening modal once "always" was ever chosen', () => {
+    render(<BroadcasterScreen />);
+    fireEvent.click(offer()!);
+    expect(within(modal()!).queryByRole('link', { name: 'Get the app' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Always open broadcast links in the desktop app' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Always open broadcast links in the desktop app' }));
+    fireEvent.click(within(modal()!).getByRole('button', { name: 'Continue in the browser' }));
+
+    fireEvent.click(offer()!);
+    const dialog = within(modal()!);
+    expect(dialog.queryByRole('link', { name: 'Get the app' })).toBeNull();
+    expect(dialog.getByText('Didn’t open? Open it again, or continue in the browser.')).toBeTruthy();
+  });
+
+  it('never shows it in the Opened modal: only "always" users see that one', () => {
+    localStorage.setItem('gawk:desktop-handoff', 'auto');
+    linkStash('vip-qy346he235');
+    render(<BroadcasterScreen />);
+    expect(within(modal()!).queryByRole('link', { name: 'Get the app' })).toBeNull();
+  });
+
+  it('a ?desktop=1 link for someone not known to have the app still offers it', () => {
+    render(<BroadcasterScreen linkDesktop />);
+    expect(within(modal()!).getByRole('link', { name: 'Get the app' })).toBeTruthy();
   });
 });
 

@@ -83,6 +83,18 @@ export function loadHandoffAuto(): boolean {
 
 export function saveHandoffAuto(on: boolean): void {
   writeStored(AUTO_KEY, on ? 'auto' : null);
+  if (on) writeStored(APP_KNOWN_KEY, 'known');
+}
+
+// HO5: the user has shown us they have the app, so the modals stop offering
+// the download. Not detection (§3 still holds): the only evidence is the
+// user's own choice of "always", which nobody makes for an app that never
+// opened. Never cleared — "Stop doing this" forgets the automatic launch,
+// not the app. An "always" stored before HO5 counts too.
+const APP_KNOWN_KEY = 'gawk:desktop-app';
+
+export function loadDesktopAppKnown(): boolean {
+  return readStored(APP_KNOWN_KEY) === 'known' || loadHandoffAuto();
 }
 
 // D5: at most one automatic launch per room in this tab. Returns true, and

@@ -42,13 +42,14 @@ remembers what the user chose.
 | # | Goal | Verified by |
 |---|---|---|
 | G1 | On Windows, macOS and Linux, the broadcaster's pre-start card and the room's "Start streaming here" offer **Open in the desktop app**. The link carries the room, nickname and non-default relay, and never a grant or secret. | unit tests + HO4 |
-| G2 | Clicking it with the app installed opens the app prefilled (R66 G1/G2). Without the app, the page stays put with its state intact, and the **Opening** modal offers the download and **Continue in the browser**. | HO4, per browser (V-1) |
+| G2 | Clicking it with the app installed opens the app prefilled (R66 G1/G2). Without the app, the page stays put with its state intact, and the **Opening** modal offers the download (only to someone not known to have the app, HO5) and **Continue in the browser**. | HO4, per browser (V-1) |
 | G3 | The offer never appears on Android, iOS or ChromeOS, on viewer pages or on the landing page | unit tests |
 | G4 | After the user ticks **Always open broadcast links in the desktop app**, a broadcast-intent link opens the app on its own, at most once per room in a tab (D5). The page shows the **Opened** modal, with the fallback and a one-click **Stop doing this**. | unit tests + HO4 |
 | G5 | `gawk-app` builds links that are byte-identical to R66's canonical `to_gawk` for every vector | unit test on the restated vectors |
 | G6 | An operator can turn the offer off with `config.desktopHandoff: false`, plumbed through the chart | chart template test + unit test |
 | G8 | A `#/broadcast?…&desktop=1` link tries the app once on load and shows the **Opening** modal, on the same devices and under the same conditions as the offer; the parameter leaves the URL before the first render (D9) | unit tests + HO4 |
 | G7 | The browser broadcast flow is unchanged when the offer is ignored: no extra prompt, and Start is the primary action | existing BroadcasterScreen tests stay green + new ones |
+| G9 | Someone who has shown they have the app is never asked to download it: the Opened modal has no download link, and neither does the Opening modal once "always" has ever been chosen (D10) | unit tests (HO5) |
 
 ## 2. Owner decisions
 
@@ -146,11 +147,15 @@ returns R66's canonical `gawk://broadcast?…`.
   and the pending room stays (G7, D6). Owner decision 2026-10-06, replacing
   the inline note first drafted here (§12). The modal holds, in order:
   - the title "Opening the desktop app…";
-  - "Didn't open? Get the app, or continue in the browser.";
+  - "Don't have it? Get the app, or continue in the browser.", with
+    **Get the app** as a quiet inline link (`SITE_DOWNLOAD_URL` in a new
+    tab); for someone known to have the app (D10), "Didn't open? Open it
+    again, or continue in the browser." with no download link;
   - "☐ Always open broadcast links in the desktop app" (D5);
-  - **Get the app** (secondary, `SITE_DOWNLOAD_URL` in a new tab) and
+  - **Open again** (secondary, the same `gawk://` anchor as the offer) and
     **Continue in the browser** (primary, closes the modal). The scrim and
-    Escape close it too.
+    Escape close it too. (Amended by HO5, 2026-11-03: the download was a
+    secondary button here and is now the inline link.)
 - The page never tries to find out whether the launch worked. The modal
   stays until it's dismissed.
 
@@ -192,8 +197,9 @@ returns R66's canonical `gawk://broadcast?…`.
   modal's **Open again** still do.
 - An automatic launch opens the **Opened** modal (owner decision
   2026-10-06, replacing the inline note): the title "Opened the desktop
-  app"; "Didn't open? Get the app, or continue in the browser." with
-  **Get the app** as an inline link; between two dividers, the quiet line
+  app"; "Didn't open? Open it again, or continue in the browser." (no
+  download link: only "always" users see this modal, D10); between two
+  dividers, the quiet line
   "Broadcast links open in the desktop app automatically." with
   **Stop doing this** under it, which clears the key and closes the modal;
   then **Open again** (secondary, the same `gawk://` anchor as the offer)
@@ -225,11 +231,12 @@ builds can turn it off.
 | Card secondary action | Open in the desktop app |
 | Room, beside "Start streaming here" | …or in the desktop app |
 | Opening modal: title | Opening the desktop app… |
-| Opening modal: body | Didn't open? Get the app, or continue in the browser. |
+| Opening modal: body | Don't have it? **Get the app**, or continue in the browser. (inline link) |
+| Opening modal: body, app known (D10) | Didn't open? Open it again, or continue in the browser. |
 | Opening modal: checkbox | Always open broadcast links in the desktop app |
-| Opening modal: actions | **Get the app** · **Continue in the browser** |
+| Opening modal: actions | **Open again** · **Continue in the browser** |
 | Opened modal: title | Opened the desktop app |
-| Opened modal: body | Didn't open? **Get the app**, or continue in the browser. |
+| Opened modal: body | Didn't open? Open it again, or continue in the browser. |
 | Opened modal: automatic line | Broadcast links open in the desktop app automatically. **Stop doing this** |
 | Opened modal: actions | **Open again** · **Continue in the browser** |
 
@@ -261,6 +268,35 @@ desktop app (a chat bot's card, a pinned link) can say so:
   typed URL or a reload (§12). A browser that refuses still shows the
   modal; **Continue in the browser** closes it and the offer stays on the
   card.
+
+### D10 — Not asking for a download from someone who has the app (HO5, 2026-11-03)
+
+Field feedback: "do not ask user to download app if they already have the
+app". §3 still holds — the page never detects the app — but the user's own
+choices are evidence, and two of the surfaces only ever reach people who
+have it.
+
+- **The Opened modal never offers the download.** It shows only in the
+  automatic mode, which only a user who ticked "always" reaches; nobody
+  ticks that for an app that never opened.
+- **"Known to have the app"**: `gawk:desktop-app` = `"known"` in
+  localStorage, written when "always" is ticked, and also true while
+  `gawk:desktop-handoff` = `"auto"` (so an "always" stored before HO5
+  counts). It is never cleared: **Stop doing this** forgets the automatic
+  launch, not the app. `loadDesktopAppKnown()` in `lib/desktopLink.ts`.
+- **The Opening modal** drops its download link for a known user. For
+  everyone else the download is a quiet inline link in the body, not a
+  button beside **Continue in the browser**, so the modal reads as
+  "this is opening" rather than "go get something".
+- The modal reads the flag once when it opens, so ticking "always" doesn't
+  pull the link out from under the pointer.
+- Not touched: the landing footer's **Get the app** and the "Sharing tips"
+  links (docs/46) — quiet, always-there links, not a prompt after a launch.
+- Rejected for now: treating a click on the offer that isn't followed by
+  **Continue in the browser** as evidence — leaving the tab doesn't prove
+  the app opened. A positive signal (the pending room seeing this user's
+  broadcast go live from the app) would be real evidence and is left as a
+  follow-up.
 
 ## 5. Non-goals
 
@@ -297,7 +333,7 @@ is still on the card underneath.
 once, and the tab shows the **Opening** modal, as after a click.
 
 **No app**: click → nothing visible happens (or the browser says it has no
-handler) → the modal's "Didn't open? Get the app, or continue in the
+handler) → the modal's "Don't have it? Get the app, or continue in the
 browser" → **Continue in the browser** → Start works as before.
 
 ## 8. Risks
@@ -318,6 +354,7 @@ browser" → **Continue in the browser** → Start works as before.
 | **HO1** | D3's builder, the restated vectors (after R66 LH1), D7's config and chart | Every R66 vector's canonical link is reproduced byte for byte (G5); no grant or secret can be produced, tested with a grant in the stash; the chart renders `desktopHandoff` with and without the value set (G6) |
 | **HO2** | D1, D2, D4, D6, D8: the offer, the room's secondary action, the Opening modal, the `NATIVE_TIP` copy | Component tests: the offer shows on the three desktop OS identities and on none of the others, nor on viewer and landing pages (G3); `isDesktopForHandoff` is tested with real UA strings, including iPadOS Safari's `Macintosh` UA with `maxTouchPoints` 5 (hidden) and macOS Safari with 0 (shown); the anchor's `href` carries room, nick and a non-default relay (G1); after a click, the Opening modal is open, and once it is closed Start is still enabled and the pending room is intact (G7, D6); the room's secondary action launches, stashes `handoff: 'opening'` and the broadcaster opens the modal without a second launch. An e2e step in `e2e/run.mjs` clicks the button in headless Chrome with no handler and asserts the page and room chip remain. |
 | **HO3** | D5 and D9: the remembered choice, automatic launch and `?desktop=1`, on D4's mechanism | Unit tests, against D5's detection point: with `"auto"` set, `applyRouteRoom` stashes `source: 'link'` and the screen launches once on mount; a room's "Start streaming here" click launches from the handler and the screen, seeing `source: 'room'`, doesn't launch again; a plain `#/broadcast`, a stash without `source`, and a second trigger for a room already in `gawk:handoff-done:<code>` never launch; not on reload; never on non-desktop OS, with a dropped relay, or with storage unavailable; "Stop doing this" clears it. D9: `parseRoute` reads `desktop=1` and nothing else; `applyRouteDesktop` strips it; the screen launches once and opens the Opening modal; never on non-desktop OS, with the config off or a dropped relay; nothing is stored. Merged only after a desktop release containing R66 LH2–LH5 (gawk-broadcast-desktop v2.5.0, 2026-10-04). |
+| **HO5** | D10: no download prompt for someone who has the app | Unit tests: `loadDesktopAppKnown` is false by default, true after "always" is ticked and still true after it is unticked or **Stop doing this**, and true for an "always" stored before HO5; the Opened modal has no **Get the app**; the Opening modal shows **Get the app** as an inline link in the body (never an action) until "always" has been chosen, and not after; its actions are **Open again** (the offer's `gawk://` link) and **Continue in the browser**; a `?desktop=1` link for an unknown user still offers the download (G9) |
 | **HO4** | The owner's pass: Chrome, Firefox and Edge on Windows; Chrome, Firefox and Safari on macOS; Chrome and Firefox on Linux; with and without the app installed; V-1 | G1, G2 and G4 recorded per browser in §12 |
 
 ## 10. V-items (recorded in §12)
@@ -369,3 +406,8 @@ None.
     and `location.href` followed in the same task by the hash change to
     `#/broadcast` are all taken — the hop doesn't cancel the launch.
   - Still open for HO4: real handlers, Safari, Edge and Windows/macOS.
+- **2026-11-03, HO5** (D10, G9): feedback that the modals asked people who
+  already had the app to download it. The Opened modal lost its download
+  link, the Opening modal's became a quiet inline link shown only to users
+  not known to have the app, and its secondary action became **Open
+  again**, matching the Opened modal.
