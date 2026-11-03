@@ -23,7 +23,7 @@
     "styled-components": "6.6.0"
   },
   "devDependencies": {
-    "@asyncapi/cli": "6.2.2",
+    "@asyncapi/cli": "6.2.3",
     "@redocly/cli": "2.72.1",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/react": "^16.3.2",
