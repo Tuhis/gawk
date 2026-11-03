@@ -121,6 +121,9 @@ type Options struct {
 	// afterFinish runs inside Close between its Finish and closed being
 	// set: the window a racing Begin can land in (tests only).
 	afterFinish func(*Reporter)
+	// afterTake runs inside Flush between taking a batch (its seq) and
+	// enqueueing it (tests only).
+	afterTake func(final bool)
 }
 
 // Reporter batches stats and events for one broadcaster session at a time.
@@ -290,6 +293,11 @@ func (r *Reporter) Begin(h wire.TelemetryHello) {
 	now := r.opts.now()
 
 	r.mu.Lock()
+	if r.closed {
+		// Close ran since the check at the top: stay inert.
+		r.mu.Unlock()
+		return
+	}
 	r.token = hex.EncodeToString(h.Token)
 	r.broadcastKey = hex.EncodeToString(h.BroadcastKey)
 	r.reportInterval = interval
@@ -299,6 +307,7 @@ func (r *Reporter) Begin(h wire.TelemetryHello) {
 	r.seq, r.bytesUsed = 0, 0
 	r.truncated = false
 	r.haveLastSampleAt = false
+	url := r.effectiveURL()
 	r.mu.Unlock()
 
 	r.startLoop()
@@ -311,7 +320,10 @@ func (r *Reporter) Begin(h wire.TelemetryHello) {
 	if err != nil {
 		sessionID = "?"
 	}
-	r.log.Info("telemetry session started", "session_id", sessionID, "report_interval", interval)
+	// The endpoint too: a relay-advertised one replaces the configured one,
+	// and a NetworkPolicy that opens only the configured one would drop
+	// every batch silently (PR #699 review).
+	r.log.Info("telemetry session started", "session_id", sessionID, "report_interval", interval, "url", url)
 }
 
 // Report records one stats observation, decimated to the relay-requested
@@ -369,9 +381,17 @@ func (r *Reporter) Flush(final bool) {
 	if url == "" {
 		return
 	}
+	// sendMu spans take (which numbers the batch) through enqueue, so
+	// batches reach the sender in seq order: a final batch can never
+	// overtake one taken before it. deliver never takes sendMu.
+	r.sendMu.Lock()
+	defer r.sendMu.Unlock()
 	batch, ok := r.take(final)
 	if !ok {
 		return
+	}
+	if r.opts.afterTake != nil {
+		r.opts.afterTake(final)
 	}
 	body, err := json.Marshal(batch)
 	if err != nil {
@@ -396,7 +416,7 @@ func (r *Reporter) Flush(final bool) {
 		// a clipped session would read as one that simply ended here.
 		r.Event("telemetry-budget-exhausted", "events only from here")
 	}
-	r.enqueue(outbound{url: url, body: body})
+	r.enqueueLocked(outbound{url: url, body: body})
 }
 
 // Finish ends the current session: a final batch, then the flush loop stops
@@ -478,11 +498,10 @@ func (r *Reporter) take(final bool) (Batch, bool) {
 	return b, true
 }
 
-// enqueue hands a batch to the single sender goroutine. Never blocks: a
+// enqueueLocked hands a batch to the single sender goroutine. Never blocks: a
 // stalled endpoint must not stall a caller that may be on the media path.
-func (r *Reporter) enqueue(o outbound) {
-	r.sendMu.Lock()
-	defer r.sendMu.Unlock()
+// The caller holds sendMu.
+func (r *Reporter) enqueueLocked(o outbound) {
 	r.mu.Lock()
 	closed := r.closed
 	r.mu.Unlock()
@@ -574,6 +593,9 @@ func (r *Reporter) startLoop() {
 		r.mu.Unlock()
 		cancel()
 		return
+	}
+	if r.cancel != nil {
+		r.cancel() // a loop from an earlier session that was never stopped
 	}
 	r.cancel = cancel
 	// Added under the lock Close sets closed under, so a loop either

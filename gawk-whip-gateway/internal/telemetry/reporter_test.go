@@ -618,3 +618,38 @@ func TestCloseCancelsALoopABeginStartedDuringIt(t *testing.T) {
 		t.Fatal("Close hung on a flush loop started during it")
 	}
 }
+
+// PR #699 round 1: Flush took a batch's seq under mu and enqueued it later
+// under sendMu, so a final batch taken after the flush loop's batch could
+// still be enqueued before it — exactly the reordering the single sender
+// exists to prevent (a final batch overtaking data still in flight).
+func TestFinalBatchNeverOvertakesAnEarlierOne(t *testing.T) {
+	c := newCapture(t)
+	var r *Reporter
+	finished := make(chan struct{})
+	r = New(Options{URL: c.srv.URL, Version: "1", afterTake: func(final bool) {
+		if final {
+			return
+		}
+		// The periodic batch holds seq N; the final one is taken now.
+		go func() { r.Finish(); close(finished) }()
+		select {
+		case <-finished:
+		case <-time.After(200 * time.Millisecond):
+		}
+	}})
+	r.Begin(hello(true))
+	r.Report(map[string]any{"encoderFps": 60})
+	r.Flush(false)
+	<-finished
+	r.Close()
+
+	b := c.batches(t)
+	if len(b) != 2 {
+		t.Fatalf("batches = %d, want 2", len(b))
+	}
+	if b[0].Final || !b[1].Final || b[0].Seq > b[1].Seq {
+		t.Fatalf("delivery order seq/final = %d/%v then %d/%v; the final batch must come last",
+			b[0].Seq, b[0].Final, b[1].Seq, b[1].Final)
+	}
+}
