@@ -1224,7 +1224,8 @@ R28 telemetry.
   telemetry hello (wire 0x0D) on every relay session the engine opens, a
   resume included, and the relay-advertised ingest URL (wire 0x12) over the
   configured one, as every producer does (docs/40 D15). It posts a final
-  batch when the session ends. Off means off: no hello, a fleet with
+  batch when the session ends, and a pod shutting down waits up to 3 s for
+  its sessions' final batches before it exits. Off means off: no hello, a fleet with
   telemetry disabled, or no URL makes zero requests.
 - **One sample = the engine's `publisher.Stats` + the gateway's `whip*`
   fields**, flat in one object. The engine's side is the gateway → relay leg,

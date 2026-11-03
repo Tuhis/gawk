@@ -224,3 +224,65 @@ func TestWG11RefusedPublishReleasesItsReporter(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// PR #699 review: a pod shutting down ends its sessions, and each one's
+// final batch is posted by its reporter's Close; Server.Close must wait for
+// those (bounded), or the process exits first and every live OBS session
+// loses its final batch and last samples.
+func TestWG11ShutdownWaitsForTheFinalBatch(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		delay  time.Duration // how long the ingest takes to answer
+		final  bool          // whether the final batch must have landed
+		within time.Duration // Close's ceiling
+	}{
+		{"slow ingest", 500 * time.Millisecond, true, reporterDrainTimeout + 2*time.Second},
+		{"dead ingest", time.Minute, false, reporterDrainTimeout + 2*time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var finals int
+			release := make(chan struct{})
+			ingest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					return
+				}
+				var b telemetry.Batch
+				body, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(body, &b)
+				select {
+				case <-time.After(tc.delay):
+				case <-release:
+				}
+				if b.Final {
+					mu.Lock()
+					finals++
+					mu.Unlock()
+				}
+				w.WriteHeader(http.StatusAccepted)
+			}))
+			t.Cleanup(ingest.Close)
+			// Registered after ingest.Close so it runs first: a handler
+			// still holding the dead ingest's request lets go.
+			t.Cleanup(func() { close(release) })
+			relay := newFakeRelay()
+			relay.hello = telemetryHello(t)
+			g := startGW(t, relay, func(o *Options) { o.TelemetryURL = ingest.URL })
+			c := connect(t, g.public.URL, newKey(t))
+			c.sendGOP(10)
+			time.Sleep(600 * time.Millisecond) // a few samples
+
+			start := time.Now()
+			g.srv.Close()
+			if took := time.Since(start); took > tc.within {
+				t.Fatalf("Close took %v, want at most %v", took, tc.within)
+			}
+			mu.Lock()
+			got := finals
+			mu.Unlock()
+			if tc.final && got != 1 {
+				t.Fatalf("final batches delivered by the time Close returned = %d, want 1", got)
+			}
+		})
+	}
+}

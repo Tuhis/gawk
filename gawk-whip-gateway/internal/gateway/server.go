@@ -23,6 +23,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-whip-gateway/internal/media"
 	"github.com/Tuhis/gawk/gawk-whip-gateway/internal/ratelimit"
 	"github.com/Tuhis/gawk/gawk-whip-gateway/internal/status"
+	"github.com/Tuhis/gawk/gawk-whip-gateway/internal/telemetry"
 )
 
 // Engine is the slice of *publisher.Session a WHIP session drives.
@@ -150,6 +151,12 @@ type Hooks struct {
 	beforeLiveRecord func(*session)
 }
 
+// reporterDrainTimeout bounds how long Close waits for the sessions'
+// final telemetry batches (WG11). The pod's 15 s termination grace already
+// gives the HTTP listeners up to 10 s, and telemetry must never hold a
+// shutdown past it: a slow or dead ingest loses the batch, not the pod.
+const reporterDrainTimeout = 3 * time.Second
+
 // Server is one gateway pod.
 type Server struct {
 	opts    Options
@@ -177,6 +184,13 @@ type Server struct {
 
 	xffWarnMu   sync.Mutex
 	xffWarnLast time.Time
+
+	// reporters counts sessions' telemetry reporters still closing (their
+	// final batch in flight), which Close waits for (WG11). draining (under
+	// mu) is set once Close has started waiting: a reporter closed after
+	// that is not counted, so no Add can race the Wait.
+	reporters sync.WaitGroup
+	draining  bool
 }
 
 type keyLock struct {
@@ -336,8 +350,35 @@ func (s *Server) Close() {
 		}()
 	}
 	wg.Wait()
+	// The sessions' final telemetry batches, bounded (reporterDrainTimeout).
+	s.mu.Lock()
+	s.draining = true
+	s.mu.Unlock()
+	drained := make(chan struct{})
+	go func() { s.reporters.Wait(); close(drained) }()
+	select {
+	case <-drained:
+	case <-time.After(reporterDrainTimeout):
+		s.log.Info("shutting down with telemetry batches still in flight")
+	}
 	_ = s.udp.Close()
 	_ = s.tcp.Close()
+}
+
+// closeReporter closes a session's reporter (its final batch) off the
+// caller's goroutine, where Close can wait for it.
+func (s *Server) closeReporter(r *telemetry.Reporter) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.draining {
+		go r.Close()
+		return
+	}
+	s.reporters.Add(1)
+	go func() {
+		defer s.reporters.Done()
+		r.Close()
+	}()
 }
 
 // lockKey serialises one key's POSTs on this pod.

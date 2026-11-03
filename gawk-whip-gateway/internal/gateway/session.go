@@ -581,8 +581,9 @@ func (ss *session) end(c endCause) {
 	_ = ss.pc.Close()
 	ss.src.stop()
 	// The final batch: off this goroutine, since delivery may retry for
-	// seconds and nothing here should wait on telemetry.
-	go ss.rep.Close()
+	// seconds and nothing here should wait on telemetry; Server.Close waits
+	// for it on shutdown (bounded).
+	ss.srv.closeReporter(ss.rep)
 
 	if c.kind == endEngine {
 		reason, superseded := classifyEngineEnd(c.err)
@@ -746,6 +747,6 @@ func (ss *session) abandon() {
 	ss.mu.Unlock()
 	if !already {
 		close(ss.done)
-		go ss.rep.Close()
+		ss.srv.closeReporter(ss.rep)
 	}
 }
