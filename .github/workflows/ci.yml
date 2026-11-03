@@ -1806,6 +1806,24 @@ jobs:
           if helm template "$chart" --set config.desktopHandoff=false | grep -q '"desktopHandoff": true'; then
             echo "::error::config.desktopHandoff=false still renders true"; exit 1
           fi
+      # config.js and terms.html are subPath mounts, which the kubelet never
+      # refreshes in a running pod. A config change must change the pod
+      # template, or the pods keep serving the old file until something else
+      # restarts them (R33's whipGatewayUrl on ioio, 2026-11-03).
+      - name: app chart rolls its pods when the runtime config changes
+        run: |
+          set -euo pipefail
+          chart=gawk-app/deploy/charts/gawk-app
+          tmpl() { helm template "$chart" "$@" --show-only templates/deployment.yaml | sed -n '/^  template:/,$p'; }
+          base=$(tmpl)
+          for change in config.whipGatewayUrl=https://whip.example.com config.termsHtml='<p>t</p>'; do
+            if [ "$(tmpl --set "$change")" = "$base" ]; then
+              echo "::error::--set $change leaves the pod template unchanged, so running pods keep the old config"; exit 1
+            fi
+          done
+          # Only the runtime config may move it: a replica change must not.
+          [ "$(tmpl --set replicaCount=3)" = "$base" ] || {
+            echo "::error::the pod template changed with replicaCount"; exit 1; }
       - run: helm template gawk-telemetry/deploy/charts/gawk-telemetry --set telemetryKey=00 > /dev/null
       # The monitoring templates are opt-in, so the default render above never
       # reaches them.
