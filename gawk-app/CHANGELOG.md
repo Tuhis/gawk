@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.60.1](https://github.com/Tuhis/gawk/compare/gawk-app/v0.60.0...gawk-app/v0.60.1) (2026-11-03)
+
+
+### Bug Fixes
+
+* **app:** roll the pods when the runtime config changes ([#697](https://github.com/Tuhis/gawk/issues/697)) ([6d75aea](https://github.com/Tuhis/gawk/commit/6d75aea4caf354f2891ab751acf6ca9319751e59))
+
 ## [0.60.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.59.4...gawk-app/v0.60.0) (2026-11-02)
 
 
