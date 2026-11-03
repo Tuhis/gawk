@@ -603,3 +603,18 @@ func TestReporterInertAfterClose(t *testing.T) {
 		t.Errorf("a closed reporter sent %d batches", n)
 	}
 }
+
+// PR #699 review: a hello landing between Close's Finish and closed being
+// set started a flush loop nothing cancelled, so Close waited on it forever
+// (abandon() closes the reporter while the engine can still deliver one).
+func TestCloseCancelsALoopABeginStartedDuringIt(t *testing.T) {
+	c := newCapture(t)
+	r := New(Options{URL: c.srv.URL, Version: "1", afterFinish: func(r *Reporter) { r.Begin(hello(true)) }})
+	done := make(chan struct{})
+	go func() { r.Close(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close hung on a flush loop started during it")
+	}
+}

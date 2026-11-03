@@ -118,6 +118,9 @@ type Options struct {
 	Log    *slog.Logger
 	// now is injectable so tests drive time without wall clocks.
 	now func() time.Time
+	// afterFinish runs inside Close between its Finish and closed being
+	// set: the window a racing Begin can land in (tests only).
+	afterFinish func(*Reporter)
 }
 
 // Reporter batches stats and events for one broadcaster session at a time.
@@ -416,10 +419,17 @@ func (r *Reporter) Finish() {
 // safe to call more than once.
 func (r *Reporter) Close() {
 	r.Finish()
+	if r.opts.afterFinish != nil {
+		r.opts.afterFinish(r)
+	}
 	r.mu.Lock()
 	r.closed = true
 	r.token = ""
 	r.mu.Unlock()
+	// A Begin racing Finish may have started a loop after Finish's
+	// stopLoop; startLoop can't start one now that closed is set, so
+	// cancel any that did.
+	r.stopLoop()
 	r.closeOnce.Do(func() {
 		r.sendMu.Lock()
 		close(r.sendCh)
