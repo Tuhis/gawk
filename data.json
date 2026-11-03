@@ -2,9 +2,9 @@
   "components": {
     "gawk-admin": {
       "component": "gawk-admin",
-      "covered": 4919,
+      "covered": 4930,
       "label": "admin",
-      "pct": 80.7,
+      "pct": 80.9,
       "total": 6097,
       "unit": "statements"
     },
@@ -42,7 +42,7 @@
     },
     "gawk-server": {
       "component": "gawk-server",
-      "covered": 17554,
+      "covered": 17555,
       "label": "relay",
       "pct": 85.6,
       "total": 20510,
@@ -66,9 +66,9 @@
     },
     "gawk-whip-gateway": {
       "component": "gawk-whip-gateway",
-      "covered": 1797,
+      "covered": 1799,
       "label": "WHIP gateway",
-      "pct": 86.7,
+      "pct": 86.8,
       "total": 2073,
       "unit": "statements"
     }
