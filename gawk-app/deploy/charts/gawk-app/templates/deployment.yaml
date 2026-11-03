@@ -11,6 +11,10 @@ spec:
       {{- include "gawk-app.selectorLabels" . | nindent 6 }}
   template:
     metadata:
+      annotations:
+        # config.js and terms.html are subPath mounts, which the kubelet never
+        # refreshes in a running pod: a config change has to roll the pods.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
       labels:
         {{- include "gawk-app.selectorLabels" . | nindent 8 }}
     spec:
