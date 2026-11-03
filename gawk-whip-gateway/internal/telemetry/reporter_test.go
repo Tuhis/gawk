@@ -3,12 +3,14 @@ package telemetry
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -651,5 +653,49 @@ func TestFinalBatchNeverOvertakesAnEarlierOne(t *testing.T) {
 	if b[0].Final || !b[1].Final || b[0].Seq > b[1].Seq {
 		t.Fatalf("delivery order seq/final = %d/%v then %d/%v; the final batch must come last",
 			b[0].Seq, b[0].Final, b[1].Seq, b[1].Final)
+	}
+}
+
+// PR #699 round 2: Finish cleared the token only after its final Flush, so
+// a periodic Flush waiting behind the final batch, plus a Report in
+// between, emitted a non-final batch after final: true.
+func TestNothingFollowsTheFinalBatch(t *testing.T) {
+	c := newCapture(t)
+	var r *Reporter
+	done := make(chan struct{})
+	// Each reading a second later, so no Report is decimated away.
+	var clock atomic.Int64
+	clock.Store(time.Unix(1700000000, 0).UnixNano())
+	now := func() time.Time { return time.Unix(0, clock.Add(int64(time.Second))) }
+	r = New(Options{URL: c.srv.URL, Version: "1", now: now, afterFinalFlush: func() {
+		// Let the periodic Flush queued behind the final batch run first.
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+		}
+	}, afterTake: func(final bool) {
+		if !final {
+			return
+		}
+		go func() {
+			r.Report(map[string]any{"encoderFps": 30})
+			r.Flush(false)
+			close(done)
+		}()
+		time.Sleep(50 * time.Millisecond) // the goroutine reaches sendMu
+	}})
+	r.Begin(hello(true))
+	r.Report(map[string]any{"encoderFps": 60})
+	r.Finish()
+	<-done
+	r.Close()
+
+	b := c.batches(t)
+	if len(b) == 0 || !b[len(b)-1].Final {
+		seqs := []string{}
+		for _, x := range b {
+			seqs = append(seqs, fmt.Sprintf("%d/%v", x.Seq, x.Final))
+		}
+		t.Fatalf("batches (seq/final) %v: the final batch must be the last", seqs)
 	}
 }

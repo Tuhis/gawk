@@ -124,6 +124,9 @@ type Options struct {
 	// afterTake runs inside Flush between taking a batch (its seq) and
 	// enqueueing it (tests only).
 	afterTake func(final bool)
+	// afterFinalFlush runs inside Finish right after its final Flush
+	// (tests only).
+	afterFinalFlush func()
 }
 
 // Reporter batches stats and events for one broadcaster session at a time.
@@ -429,6 +432,9 @@ func (r *Reporter) Finish() {
 		return
 	}
 	r.Flush(true)
+	if r.opts.afterFinalFlush != nil {
+		r.opts.afterFinalFlush()
+	}
 	r.stopLoop()
 	r.mu.Lock()
 	r.token = ""
@@ -495,6 +501,12 @@ func (r *Reporter) take(final bool) (Batch, bool) {
 	}
 	r.seq++
 	r.samples, r.events = nil, nil
+	if final {
+		// The session ends with the batch that says so, under the lock that
+		// numbered it: no later take or Report sees it, so nothing can
+		// follow the final batch (PR #699 round 2).
+		r.token = ""
+	}
 	return b, true
 }
 
