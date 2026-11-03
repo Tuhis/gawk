@@ -125,6 +125,18 @@ type Reorder struct {
 	nacksSent uint64
 	lost      uint64
 	first     int64
+
+	// WG11: what became of each NACK. recovered: the retransmit filled its
+	// hole while the window was open; lateRetransmits: it arrived after the
+	// window had given up on it. A NACK in neither was never answered, is
+	// still pending, or was discarded by a reset or a full prune of late
+	// (a sender restart, or more than 2048 unanswered NACKs at once), so
+	// "never answered" is an upper bound. retransmitMax is the slowest
+	// NACK → arrival since the last TakeRetransmitMax, in or out of the
+	// window.
+	recovered       uint64
+	lateRetransmits uint64
+	retransmitMax   time.Duration
 }
 
 // NewReorder builds a reorder window.
@@ -159,6 +171,33 @@ func (r *Reorder) Window() time.Duration { return r.rtt.Window() }
 // NACKsSent counts NACKed sequence numbers.
 func (r *Reorder) NACKsSent() uint64 { return r.nacksSent }
 
+// RetransmitsRecovered counts NACKed packets that arrived while their
+// window was still open (WG11).
+func (r *Reorder) RetransmitsRecovered() uint64 { return r.recovered }
+
+// RetransmitsLate counts NACKed packets that arrived after the window had
+// given up on them: the window was shorter than the retransmit (WG11).
+func (r *Reorder) RetransmitsLate() uint64 { return r.lateRetransmits }
+
+// TakeRetransmitMax returns the slowest NACK → arrival seen since the last
+// call (0 if none) and resets it (WG11).
+func (r *Reorder) TakeRetransmitMax() time.Duration {
+	d := r.retransmitMax
+	r.retransmitMax = 0
+	return d
+}
+
+func (r *Reorder) observeRetransmit(d time.Duration) {
+	if d > r.retransmitMax {
+		r.retransmitMax = d
+	}
+}
+
+func (r *Reorder) countLate(d time.Duration) {
+	r.lateRetransmits++
+	r.observeRetransmit(d)
+}
+
 func (r *Reorder) extend(seq uint16) int64 {
 	return r.highest + int64(int16(seq-uint16(r.highest)))
 }
@@ -185,6 +224,7 @@ func (r *Reorder) Push(p Packet, now time.Time) ReorderResult {
 		// it answers a NACK.
 		if t, ok := r.late[ext]; ok {
 			r.rtt.Sample(now.Sub(t))
+			r.countLate(now.Sub(t))
 			delete(r.late, ext)
 		}
 		return res
@@ -205,6 +245,8 @@ func (r *Reorder) Push(p Packet, now time.Time) ReorderResult {
 	if h, ok := r.holes[ext]; ok {
 		if h.nacks == 1 {
 			r.rtt.Sample(now.Sub(h.nackedAt))
+			r.recovered++
+			r.observeRetransmit(now.Sub(h.nackedAt))
 		}
 		delete(r.holes, ext)
 	}

@@ -118,6 +118,22 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+    {{- if .Values.telemetry.url }}
+    # WG11: each session's broadcaster telemetry to the gawk-telemetry
+    # ingest.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- toYaml $np.telemetry.podSelector | nindent 14 }}
+          {{- with $np.telemetry.namespaceSelector }}
+          namespaceSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ $np.telemetry.port }}
+    {{- end }}
     {{- with $np.extraEgress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

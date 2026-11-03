@@ -7,9 +7,11 @@ and OBS Studio's WHIP output (§3); owner decisions OD1–OD8 **taken
 ([canvas](https://claude.ai/artifact/TtFyDhdhEv5x13oSmjds2m), §5.1), and its
 owner decisions OD9 and OD10 were **taken 2026-11-02**: the way in is a
 footnote under the broadcaster card, and OBS gets a page of its own.
-Chunks **WG0–WG10** (`WG` = WHIP gateway; unused). **WG1–WG9 implemented
+Chunks **WG0–WG11** (`WG` = WHIP gateway; unused). **WG1–WG9 implemented
 2026-11-02** (§12 records what the build settled); WG0's lab pass with real
 OBS, WG10's owner pass and the OBS page's Room row (§12.4) are open.
+**WG11** (per-session broadcaster telemetry, §13) was added 2026-11-03 after
+production showed OBS broadcasts losing frames inside the gateway.
 
 Supersedes the 2026-07-29 sketch in `ROADMAP.md` §R33, which put WHIP inside
 `gawk-server`. That sketch predates the relay fleet's scale-out targets, R73's
@@ -303,10 +305,11 @@ re-checks it against the OBS release it tests.
     As in RFC 6298, the **first sample sets the RTT directly**; later samples
     are smoothed (EWMA, α = 1/8, like TCP's SRTT). Before the first sample it
     assumes 50 ms (a knob).
-  - The window is `clamp(1.25 × RTT + 5 ms, 20 ms, 150 ms)`; the floor, the
+  - The window is `clamp(1.25 × RTT + 5 ms, 60 ms, 150 ms)` (the floor was
+    20 ms until 2026-11-04, §13.4); the floor, the
     cap, the multiplier and the starting RTT are gateway knobs. Before any
     sample that is 67.5 ms, so a session's first loss can wait that long. From
-    the first recovered loss on, a LAN is at the 20 ms floor and a 60 ms
+    the first recovered loss on, a LAN is at the 60 ms floor and a 60 ms
     internet path at ~80 ms.
   - A frame still incomplete when its window closes is **dropped**, and the
     deltas after it are dropped until the next IDR, exactly as a viewer
@@ -892,7 +895,7 @@ broadcast whose publisher is the gateway.
   1 s GOP, so the OBS page shows a live stream with nothing to install.
 - **Telemetry:** Prometheus metrics only in v1: sessions, `POST` outcomes by
   status, frames dropped by the reorder window, measured GOP, NACKs sent.
-  R28 per-session telemetry is a later addition.
+  R28 per-session telemetry came with WG11 (§13).
 
 ## 7. Latency budget
 
@@ -905,7 +908,7 @@ the same way as the native ≈50 ms figure.
 | Encode | ~5–15 ms | ~15–50 ms |
 | Packetize + pace | ~1–5 ms | ~5–20 ms |
 | OBS → gateway | RTT/2 | RTT/2 |
-| Gateway reorder window (D6) | 0 ms for a whole frame with no incomplete frame ahead of it; on loss (for the lost packet's frame and the frames queued behind it) up to `clamp(1.25 × RTT + 5, 20, 150)` ms (67.5 ms before the first RTT sample; then 20 ms on a LAN) | same |
+| Gateway reorder window (D6) | 0 ms for a whole frame with no incomplete frame ahead of it; on loss (for the lost packet's frame and the frames queued behind it) up to `clamp(1.25 × RTT + 5, 60, 150)` ms (67.5 ms before the first RTT sample; then 60 ms on a LAN; the floor was 20 ms until §13.4) | same |
 | Gateway → relay → viewer | as today | as today |
 | **Glass-to-glass, LAN** | **~60–120 ms** | **~100–200 ms** |
 
@@ -1170,3 +1173,113 @@ and ingress-nginx is gone there. So:
   a route with an Ingress, an unknown `keyHash` and missing `parentRefs`
   are refused; `httpProxy` replaces the ingress-nginx default, and a
   `cidrs`-only `httpProxy` renders no pod peer. WG10 checks it on ioio.
+
+## 13. Broadcaster telemetry for OBS sessions (WG11, 2026-11-03)
+
+### 13.1 Why: what production showed
+
+On 2026-11-03 two broadcasts ran side by side on the reference deployment,
+watched by the same two Firefox viewers: Y4YYH3 from OBS through the gateway
+(720p30, then 1080p60, NVENC, about 10.5 Mbps) and Z4YE4Z from the native
+Windows broadcaster (1080p at about 47 fps, 7.5 Mbps). The OBS stream played
+worse even though the relay received it without loss:
+
+| | OBS (gateway) | native |
+|---|---|---|
+| Relay ingress frames lost | 0 | 0.9 % |
+| Viewer samples under 15 fps | 3.7–5.8 % | 0.2–1.7 % |
+| Viewer frame gap, p99 | 560–730 ms | 75–370 ms |
+
+The loss was upstream of the relay, inside the gateway. Its Prometheus
+series, the only per-gateway signal in v1 (§6), showed it:
+
+- About **6 % of OBS frames never reached the engine**: per 10 minutes at
+  60 fps, ~34,000 frames republished, ~140 dropped by D6's window and
+  ~2,000 more dropped waiting for the next IDR (OBS ignores PLI, D7; the
+  measured GOP was ~0.87 s).
+- **About 1 NACK in 5 was not repaired in time**: 3,891 NACKs and 806
+  window drops over the session.
+- The window is `1.25 × SRTT + 5 ms`, and the smoothed RTT itself ranged
+  from under 20 ms to over 60 ms across the session (the
+  `gawk_whip_rtt_seconds` histogram): a mean with no variance term, so
+  every retransmit in the path's upper tail lands after the window closed.
+- Kernel receive-buffer drops in the gateway pod's netns were 512 out of
+  6.9 M datagrams: real, but not the cause.
+
+What the series could not say is the question the fix depends on: are
+unrepaired NACKs retransmits that **arrived late** (the window is too
+tight; widen it, or size it on RTT variance as RFC 6298 does) or
+retransmits that **never arrived** (the sender dropped them, or the loss is
+a burst one retransmit can't cover; widening only adds latency)? Nor could
+anything put the gateway's numbers next to the viewers' in gawk-telemetry:
+an OBS broadcast's broadcaster lane was empty, because the gateway sent no
+R28 telemetry.
+
+### 13.2 Design
+
+- **Each session reports R28 broadcaster telemetry.** The gateway gets a
+  reporter per session: the Go broadcaster's (docs/33 TM2), removed with
+  that binary in R56 LX9, restored as `internal/telemetry` with the native
+  engine's 16 MiB session budget (docs/77 D12). It adopts the relay's
+  telemetry hello (wire 0x0D) on every relay session the engine opens, a
+  resume included, and the relay-advertised ingest URL (wire 0x12) over the
+  configured one, as every producer does (docs/40 D15). It posts a final
+  batch when the session ends, and a pod shutting down waits, best effort
+  and for at most 3 s, for its sessions' final batches before it exits. A
+  relay-advertised endpoint is normally the public ingest, so with the
+  chart's NetworkPolicy it needs `extraEgress`; each session logs the
+  endpoint it reports to. Off means off: no hello, a fleet with
+  telemetry disabled, or no URL makes zero requests.
+- **One sample = the engine's `publisher.Stats` + the gateway's `whip*`
+  fields**, flat in one object. The engine's side is the gateway → relay leg,
+  plotted like any native broadcaster's (`sentFps` is the lane). The `whip*`
+  side is the OBS → gateway leg: packets expected and lost, bytes, NACKs
+  and their outcome (`whipRetransmitsRecovered`, `whipRetransmitsLate`, and
+  by difference the unanswered ones), the slowest NACK → retransmit since the
+  previous sample (`whipRetransmitMaxMs`, carried until a sample is actually
+  kept), the RTT and window D6 is applying, frames dropped by reason
+  (window, IDR wait, backpressure) and D7's measured GOP. The `whip*`
+  counters run for the whole WHIP session while each relay session (each
+  resume) is its own telemetry row, as the engine's own counters already
+  do for native broadcasters: compare deltas within a row, or read the last
+  row, and never sum rows. Unanswered NACKs (`whipNacksSent` minus the two
+  outcomes) are an upper bound: a reset or a burst of more than 2048
+  unanswered NACKs discards the record a late retransmit would match.
+- **Privacy is docs/33 D8's.** The batch carries the hello's obfuscated
+  broadcast key, never the stream key, the raw ID or an address.
+  `app.browser` is `gawk-whip-gateway` and `app.version` the gateway's (the
+  schema version is the producer's). The sender is reduced to a class from
+  its `User-Agent`: `whipSender` is `OBS 32.0`, `FFmpeg`, `GStreamer` or
+  `WHIP client`, and `app.os` is the OS class OBS names (`Windows`, `macOS`,
+  `Linux`) or empty.
+- **gawk-telemetry types the fields** (`schema.BroadcasterFields`), describes
+  them in the catalogue, and keeps the counters and gauges on the
+  permanent rollup row, so the OBS leg shows in the field explorer and on
+  stored sessions. No diagnose rule yet: §13.4.
+- **Config:** `-telemetry-url` / `GAWK_WHIP_TELEMETRY_URL` / chart
+  `telemetry.url`, empty by default. With `networkPolicy.enabled` the chart
+  opens egress to the gawk-telemetry ingest pods (`networkPolicy.telemetry`)
+  only when the URL is set.
+
+### 13.3 Acceptance criteria
+
+| Chunk | Accepted when |
+|---|---|
+| **WG11** | Unit: the reorder window counts each NACK's outcome (recovered in the window, arrived late, never), and reports and resets the slowest NACK → arrival (`TestWG11RetransmitOutcomesAreCounted`). In-process: a session against a relay that sends a telemetry hello posts batches whose identity is the hello's (`role` broadcaster, its key), whose app is `gawk-whip-gateway` with the sender's OS class, whose samples carry the engine's fields and every `whip*` field, whose last batch is `final` after the DELETE, and whose bodies hold neither the stream key, the raw ID nor the full user-agent (`TestWG11SessionReportsBroadcasterTelemetry`). The sender class is coarse (`TestWG11SenderClass`). A reporter closed while a resume's hello is still in flight stays inert (`TestReporterInertAfterClose`). gawk-telemetry sanitizes a gateway sample with no anomalies and describes every field (`TestWHIPGatewayFieldsAreTyped`), and the stored-shape golden records them. The flag reaches `gateway.Options`; the chart renders `GAWK_WHIP_TELEMETRY_URL` and the ingest egress only with the URL set (chart CI step). |
+| **WG11 on ioio** | With `telemetry.url` set on the reference deployment, an OBS broadcast shows a broadcaster lane in the dashboard, and one evening's session answers §13.1's open question: `whipRetransmitsLate` against `whipNacksSent − whipRetransmitsRecovered − whipRetransmitsLate`, and `whipRetransmitMaxMs` against `whipWindowMs`. |
+
+### 13.4 Open
+
+- **D6's window sizing.** Provisional step taken 2026-11-04 (owner): the
+  floor is **60 ms** (was 20 ms), so a frame missing a packet waits up to
+  ~40 ms longer, paid only on loss, before it and the deltas to the next IDR
+  are dropped. WG11's numbers on ioio then decide the rest: if late
+  retransmits still dominate, size the window on RTT variance
+  (`SRTT + k × RTTVAR`, RFC 6298); if unanswered ones dominate, the window
+  is not the lever, and the floor can come back down.
+- **A diagnose rule** for the OBS leg (frames dropped before the relay as a
+  share of frames, with the retransmit split as evidence), once a few
+  sessions show where its thresholds belong.
+- **The gateway's UDP socket buffer** is the kernel default (208 KiB on
+  ioio); `SetReadBuffer` on the media socket would remove the remaining
+  kernel drops.

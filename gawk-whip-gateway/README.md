@@ -127,7 +127,7 @@ OBS (WG0).
 | `-full-retry-after` | `30s` | `Retry-After` of a `503` at the cap |
 | `-relay-busy-retry-after` | `30s` | `Retry-After` for a relay `429` or an unreachable relay |
 | `-reorder-initial-rtt` | `50ms` | D6 (*WG0*) |
-| `-reorder-window-floor`, `-reorder-window-cap` | `20ms`, `150ms` | D6 (*WG0*) |
+| `-reorder-window-floor`, `-reorder-window-cap` | `60ms`, `150ms` | D6 (*WG0*; the floor was `20ms` until docs/83 §13.4, so a cap set below 60ms alone now fails at start: lower the floor with it) |
 | `-reorder-window-multiplier`, `-reorder-window-offset` | `1.25`, `5ms` | window = m × RTT + offset (*WG0*) |
 | `-reorder-nack-delay` | `3ms` | reorder tolerance: a hole is NACKed only if still missing this long, so a merely reordered packet is never NACKed or RTT-sampled; below the window floor (*WG0*) |
 | `-reorder-max-packets` | `4096` | buffer bound, and the largest head-to-newest span; past it the head frame drops at once, or the window resyncs on the new packet (a loss: the next frame needs an IDR) |
@@ -139,6 +139,7 @@ OBS (WG0).
 | `-peer-template`, `-replicas` | —, `1` | `http://gawk-whip-gateway-{ordinal}.<headless>:8081`, every ordinal but this pod's |
 | `-internal-token` | — | shared peer token; required with peers (prefer the env) |
 | `-peer-timeout` | `200ms` | a slower peer counts as holding nothing |
+| `-telemetry-url` | — | R28 ingest each OBS session's broadcaster telemetry is posted to (WG11, docs/83 §13), e.g. `http://gawk-telemetry/api/telemetry/v1/ingest`; empty reports only where the relay advertises an endpoint |
 | `-log-level`, `-log-format` | `info`, `text` | |
 
 The per-IP POST limit (1/s, burst 5) sits in front of the relay's own (3/s,
@@ -183,6 +184,19 @@ All on the ops listener, prefix `gawk_whip_`: `sessions` (gauge),
 `plis_sent_total{trigger=start|resume}`,
 `xff_misconfigured_total{kind=untrusted_peer|client_ip_unknown}`,
 `peer_requests_total{op,result}`, `build_info`.
+
+## Per-session telemetry
+
+With `-telemetry-url` set (or an ingest endpoint the relay advertises), each
+session posts R28 broadcaster telemetry under the relay's telemetry identity,
+so an OBS broadcast gets a broadcaster lane in `gawk-telemetry`. Each sample
+is the publisher engine's stats (the gateway → relay leg) plus the gateway's
+`whip*` fields (the OBS → gateway leg): packets expected and lost, NACKs and
+what became of them (`whipRetransmitsRecovered`, `whipRetransmitsLate`), the
+slowest retransmit since the last sample against the window D6 applied,
+frames dropped by reason and the measured GOP. The sender is reported as a
+class (`whipSender: "OBS 32.0"`), never its user-agent string, and nothing
+carries the stream key or the raw broadcast ID ([docs/83 §13](../docs/83-whip-gateway.md#13-broadcaster-telemetry-for-obs-sessions-wg11-2026-11-03)).
 
 ## Tests
 

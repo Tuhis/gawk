@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -51,6 +52,9 @@ type fakeRelay struct {
 	current  map[string]*fakeRelaySession
 	closes   []closeRecord
 	sessions []*fakeRelaySession
+	// hello, when set, is the R28 telemetry hello (wire 0x0D) every new
+	// publisher session receives on its first uni stream.
+	hello []byte
 }
 
 func newFakeRelay() *fakeRelay {
@@ -70,6 +74,9 @@ func (f *fakeRelay) dial(ctx context.Context, rawURL, origin string, insecure bo
 		return nil, st, fmt.Errorf("relay refused with %d", st)
 	}
 	s := newFakeRelaySession(f, id)
+	if f.hello != nil {
+		s.uni <- f.hello
+	}
 	old := f.current[id]
 	f.current[id] = s
 	f.sessions = append(f.sessions, s)
@@ -127,6 +134,8 @@ type fakeRelaySession struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	dgrams chan []byte
+	// uni holds server messages for AcceptUniStream.
+	uni chan []byte
 
 	mu         sync.Mutex
 	remoteCode *webtransport.SessionErrorCode
@@ -137,7 +146,7 @@ type fakeRelaySession struct {
 
 func newFakeRelaySession(f *fakeRelay, id string) *fakeRelaySession {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &fakeRelaySession{relay: f, id: id, ctx: ctx, cancel: cancel, dgrams: make(chan []byte, 16)}
+	return &fakeRelaySession{relay: f, id: id, ctx: ctx, cancel: cancel, dgrams: make(chan []byte, 16), uni: make(chan []byte, 4)}
 }
 
 func (s *fakeRelaySession) SendDatagram(b []byte) error {
@@ -180,8 +189,15 @@ func (s *fakeRelaySession) OpenUniStream() (publisher.SendStream, error) {
 	return discardStream{}, nil
 }
 
+// serverMessage is one relay → publisher uni stream.
+type serverMessage struct{ *bytes.Reader }
+
+func (serverMessage) SetReadDeadline(time.Time) error { return nil }
+
 func (s *fakeRelaySession) AcceptUniStream(ctx context.Context) (publisher.ReceiveStream, error) {
 	select {
+	case b := <-s.uni:
+		return serverMessage{bytes.NewReader(b)}, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-s.ctx.Done():

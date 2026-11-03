@@ -65,7 +65,7 @@ func TestWG5D8RemoteCloseWithoutDeleteIsLostAfterTheGrace(t *testing.T) {
 // after a keyframe that was pushed later in the same batch.
 func TestWG6BackpressureDemandsAnIDROnlyUntilOneIsPushed(t *testing.T) {
 	g := startGW(t, newFakeRelay(), nil)
-	ss := newSession(g.srv, newKey(t), offer{})
+	ss := newSession(g.srv, newKey(t), offer{}, "")
 	var pushed []bool
 	calls := 0
 	ss.pushAU = func(au publisher.AccessUnit) bool {

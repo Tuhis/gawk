@@ -219,7 +219,7 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, answer, refusal := s.startSession(r.Context(), key, ip, off, string(body))
+	sess, answer, refusal := s.startSession(r.Context(), key, ip, off, string(body), r.Header.Get("User-Agent"))
 	if refusal != nil {
 		s.refuse(w, r, &key, *refusal)
 		return
@@ -243,7 +243,7 @@ func (s *Server) refuseBackoff(w http.ResponseWriter, rec status.Record, now tim
 
 // startSession builds the PeerConnection, dials the relay (before
 // answering: D4's relay dial comes first) and answers.
-func (s *Server) startSession(ctx context.Context, key streamkey.Key, ip netip.Addr, off offer, sdpOffer string) (*session, string, *httpRefusal) {
+func (s *Server) startSession(ctx context.Context, key streamkey.Key, ip netip.Addr, off offer, sdpOffer, userAgent string) (*session, string, *httpRefusal) {
 	internalErr := &httpRefusal{status: http.StatusInternalServerError, msg: "internal error"}
 	me := &webrtc.MediaEngine{}
 	if err := me.RegisterCodec(off.video, webrtc.RTPCodecTypeVideo); err != nil {
@@ -270,7 +270,7 @@ func (s *Server) startSession(ctx context.Context, key streamkey.Key, ip netip.A
 		return nil, "", &httpRefusal{status: http.StatusBadRequest, msg: "offer refused"}
 	}
 
-	ss := newSession(s, key, off)
+	ss := newSession(s, key, off, userAgent)
 	ss.pc = pc
 	cfg := s.engineConfig(key, ip, off.audio != nil)
 	if h := s.opts.Hooks.EngineConfig; h != nil {
@@ -285,6 +285,9 @@ func (s *Server) startSession(ctx context.Context, key streamkey.Key, ip netip.A
 	err = ss.eng.Start(dialCtx)
 	cancel()
 	if err != nil {
+		// Never registered and never started: abandon releases what the
+		// session holds (its reporter), since no end() will run for it.
+		ss.abandon()
 		_ = pc.Close()
 		st := 0
 		if se, ok := publisher.AsStartError(err); ok {

@@ -335,6 +335,27 @@ var BroadcasterFields = map[string]Kind{
 	// judges sentFps, and its input must be typed.
 	"intervalMin": KindObject,
 
+	// docs/83 WG11: what the WHIP gateway alone sees of an OBS broadcast —
+	// the OBS → gateway leg. The engine's own fields above cover the
+	// gateway → relay leg like any native broadcaster's; these say what
+	// reached the engine, and what did not and why. `whip`-prefixed so none
+	// can be mistaken for a browser or native field.
+	"whipSender":                    KindString,
+	"whipPacketsExpected":           KindNumber,
+	"whipPacketsLost":               KindNumber,
+	"whipBytesReceived":             KindNumber,
+	"whipNacksSent":                 KindNumber,
+	"whipRetransmitsRecovered":      KindNumber,
+	"whipRetransmitsLate":           KindNumber,
+	"whipRetransmitMaxMs":           KindNumber,
+	"whipRttAvailable":              KindBool,
+	"whipRttMs":                     KindNumber,
+	"whipWindowMs":                  KindNumber,
+	"whipFramesWindowDropped":       KindNumber,
+	"whipFramesIdrWaitDropped":      KindNumber,
+	"whipFramesBackpressureDropped": KindNumber,
+	"whipGopMs":                     KindNumber,
+
 	// D17: what the broadcast was ASKED to be. Every other field here is an
 	// outcome; without these no consumer can compute the difference, and
 	// "30 fps" reads identically whether 30 or 60 was requested. Typed

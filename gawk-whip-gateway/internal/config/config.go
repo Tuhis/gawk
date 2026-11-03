@@ -100,6 +100,10 @@ type Config struct {
 	InternalToken string
 	PeerTimeout   time.Duration
 
+	// TelemetryURL is the R28 ingest endpoint each session reports to
+	// (WG11); empty reports nowhere unless the relay advertises one.
+	TelemetryURL string
+
 	LogLevel  slog.Level
 	LogFormat string
 }
@@ -209,6 +213,7 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 	internalToken := str("internal-token", "", "shared token authenticating the internal listener (D10); required with peers; prefer the env")
 	peerTimeout := dur("peer-timeout", 200*time.Millisecond, "a peer slower than this counts as holding nothing (D10)")
 
+	telemetryURL := str("telemetry-url", "", "R28 ingest endpoint each OBS session's broadcaster telemetry is posted to (WG11), e.g. http://gawk-telemetry/api/telemetry/v1/ingest; empty reports only where the relay advertises an endpoint")
 	logLevel := str("log-level", "info", "log level: debug|info|warn|error")
 	logFormat := str("log-format", "text", "log format: text|json")
 	if onFlagSet != nil {
@@ -241,6 +246,7 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 		PeerTemplate:       strings.TrimSpace(*peerTmpl),
 		InternalToken:      strings.TrimSpace(*internalToken),
 		LogFormat:          strings.TrimSpace(*logFormat),
+		TelemetryURL:       strings.TrimSpace(*telemetryURL),
 	}
 	c.AllowedOrigins = splitList(*origins)
 	c.TrustedProxyCIDRs = splitList(*trusted)
@@ -342,6 +348,12 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 	if c.RelayURL == "" || err != nil || u.Scheme != "https" || u.Host == "" || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.User != nil {
 		return Config{}, fmt.Errorf("invalid -relay-url %q (want https://host:port)", c.RelayURL)
 	}
+	if c.TelemetryURL != "" {
+		tu, err := url.Parse(c.TelemetryURL)
+		if err != nil || (tu.Scheme != "http" && tu.Scheme != "https") || tu.Host == "" || tu.User != nil {
+			return Config{}, fmt.Errorf("invalid -telemetry-url %q (want an http(s) URL)", c.TelemetryURL)
+		}
+	}
 	if c.PublicAddress != "" {
 		if _, err := netip.ParseAddr(c.PublicAddress); err != nil {
 			return Config{}, fmt.Errorf("invalid -public-address %q (want an IP address)", c.PublicAddress)
@@ -438,6 +450,7 @@ func (c Config) Options(version string, log *slog.Logger) gateway.Options {
 		Peers:                  c.Peers,
 		InternalToken:          c.InternalToken,
 		PeerTimeout:            c.PeerTimeout,
+		TelemetryURL:           c.TelemetryURL,
 		Version:                version,
 		Log:                    log,
 	}
@@ -464,5 +477,6 @@ func (c Config) LogAttrs() []any {
 		"backoff_initial", c.Backoff.Initial, "backoff_max", c.Backoff.Max,
 		"record_ttl", c.RecordTTL, "max_records", c.MaxRecords,
 		"peers", len(c.Peers), "internal_token_set", set(c.InternalToken), "peer_timeout", c.PeerTimeout,
+		"telemetry_url", c.TelemetryURL,
 	}
 }

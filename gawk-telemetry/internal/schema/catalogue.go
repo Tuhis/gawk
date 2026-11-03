@@ -191,6 +191,27 @@ var fieldMeta = map[string]meta{
 	"lastEncodeLatencyMs": gauge("ms", "Wall time the last frame spent inside the encoder."),
 	"keyframeIntervalMs":  gauge("ms", "Interval between keyframes."),
 
+	// --- broadcaster: the WHIP gateway's OBS → gateway leg (docs/83 WG11) ----
+	"whipPacketsExpected": counter("packets", "Video RTP packets the WHIP gateway expected from the sender (first sequence number to newest)."),
+	"whipPacketsLost": counter("packets",
+		"Video RTP packets the WHIP gateway gave up on: never received, or received only after the reorder window closed. Loss on the OBS → gateway leg after retransmits."),
+	"whipBytesReceived": counter("bytes", "Video RTP payload bytes the WHIP gateway received from the sender."),
+	"whipNacksSent":     counter("packets", "Video packets the WHIP gateway NACKed (each NACKed once)."),
+	"whipRetransmitsRecovered": counter("packets",
+		"NACKed packets whose retransmit arrived while the reorder window was still open: loss the gateway repaired."),
+	"whipRetransmitsLate": counter("packets",
+		"NACKed packets whose retransmit arrived after the reorder window had dropped their frame. Rising while recovered stays flat means the window is shorter than the path's retransmit time."),
+	"whipRetransmitMaxMs": gauge("ms",
+		"Slowest NACK → retransmit the WHIP gateway saw since the previous sample (0: none). Compare with whipWindowMs: above it, that retransmit was too late."),
+	"whipRttMs":    gauge("ms", "The WHIP gateway's smoothed OBS → gateway RTT, from NACK → retransmit (D6). The configured initial RTT until whipRttAvailable."),
+	"whipWindowMs": gauge("ms", "The reorder window the WHIP gateway applies: how long a frame with a missing packet waits for its retransmit before it is dropped (D6)."),
+	"whipFramesWindowDropped": counter("frames",
+		"Frames the WHIP gateway dropped because the reorder window closed on a missing packet. Each one also drops the deltas after it until the next IDR."),
+	"whipFramesIdrWaitDropped": counter("frames",
+		"Delta frames the WHIP gateway dropped after a loss while waiting for the next IDR. This is the freeze viewers see, and only a keyframe ends it (OBS ignores PLI)."),
+	"whipFramesBackpressureDropped": counter("frames", "Frames the WHIP gateway dropped because its publisher engine fell behind."),
+	"whipGopMs":                     gauge("ms", "The sender's keyframe interval as the WHIP gateway measures it (median, D7): the longest a loss can freeze viewers."),
+
 	// --- broadcaster: memory (R76, docs/77) ----------------------------------
 	"memFootprintBytes": gauge("bytes",
 		"Memory the native broadcaster's process holds, in the figure the OS's own task manager shows: Windows' private working set, Apple's phys_footprint, Linux's anonymous + shared resident pages. The budget is 100 MiB while live."),
@@ -252,6 +273,7 @@ var fieldMeta = map[string]meta{
 	"encoder":          {SemText, "", "Encoder element in use (native broadcaster)."},
 	"capturePath":      {SemText, "", "Capture path in use (native broadcaster)."},
 	"audioSource":      {SemText, "", "Audio source in use (native broadcaster)."},
+	"whipSender":       {SemText, "", "The WHIP client sending to the gateway, as a class: \"OBS 32.0\", \"FFmpeg\", \"GStreamer\", \"WHIP client\"."},
 	"shareMode":        {SemText, "", "What the desktop's picker returned: screen or window (native broadcaster, R35)."},
 	"audioApp":         {SemText, "", "Application whose audio is captured, by process binary (native broadcaster, R35)."},
 	"memAvailable":     {SemBool, "", "Whether the OS reported the process's memory (R76)."},
@@ -277,6 +299,7 @@ var fieldMeta = map[string]meta{
 	"viewerCountAvailable":      {SemBool, "", "Whether a viewer count is available on this path."},
 	"resuming":                  {SemBool, "", "Whether the native broadcaster is mid-resume."},
 	"uplinkPacketsAvailable":    {SemBool, "", "Whether the native broadcaster's transport reports QUIC packet counters."},
+	"whipRttAvailable":          {SemBool, "", "Whether the WHIP gateway has measured the OBS → gateway RTT yet (whipRttMs is the configured initial RTT until then)."},
 
 	// --- objects ------------------------------------------------------------
 	"audioBuffer":         {SemObject, "", "Audio jitter-buffer detail. Its members are flattened into facts for the rules."},
