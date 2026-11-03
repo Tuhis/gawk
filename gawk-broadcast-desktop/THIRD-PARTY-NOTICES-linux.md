@@ -372,8 +372,8 @@ script for what counts as a dependency here and why.
 | `unicode-segmentation` | 1.13.3 | `MIT OR Apache-2.0` | Copyright (c) 2015 The Rust Project Developers |
 | `unicode-vo` | 0.1.0 | `MIT/Apache-2.0` | Copyright (c) 2018 Reizner Evgeniy |
 | `untrusted` | 0.9.0 | `ISC` | Copyright 2015-2021 Brian Smith |
-| `ureq` | 3.5.0 | `MIT OR Apache-2.0` | Copyright (c) 2019 Martin Algesten |
-| `ureq-proto` | 0.6.5 | `MIT OR Apache-2.0` | Copyright 2022 Martin Algesten |
+| `ureq` | 3.5.1 | `MIT OR Apache-2.0` | Copyright (c) 2019 Martin Algesten |
+| `ureq-proto` | 0.7.1 | `MIT OR Apache-2.0` | Copyright 2022 Martin Algesten |
 | `url` | 2.5.8 | `MIT OR Apache-2.0` | Copyright (c) 2013-2025 The rust-url developers |
 | `usvg` | 0.48.1 | `Apache-2.0 OR MIT` | Copyright 2017 the Resvg Authors |
 | `utf8-zero` | 0.8.1 | `MIT OR Apache-2.0` | — |
