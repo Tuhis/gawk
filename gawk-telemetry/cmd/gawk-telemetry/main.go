@@ -609,7 +609,8 @@ func basicAuth(next http.Handler, user, pass string) http.Handler {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		next.ServeHTTP(w, r)
+		// Verified: the Ask box keys its per-operator limits by it.
+		next.ServeHTTP(w, r.WithContext(readapi.WithBasicUser(r.Context(), u)))
 	})
 }
 

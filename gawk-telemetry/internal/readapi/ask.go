@@ -66,13 +66,23 @@ func (a *API) askStatus() AskStatus {
 // maxAskBody bounds the request: a question is at most ask.MaxQuestionBytes.
 const maxAskBody = 16 << 10
 
+type basicUserKey struct{}
+
+// WithBasicUser records the basic-auth user the read listener's gate has
+// VERIFIED. Only the gate calls it: a Basic header on its own proves nothing,
+// and on an open listener any caller could send one with a fresh name.
+func WithBasicUser(ctx context.Context, user string) context.Context {
+	return context.WithValue(ctx, basicUserKey{}, user)
+}
+
 // AskOperator is who is asking, for D7's per-operator limits and D9's log:
-// the OIDC subject, the basic-auth user, or "anonymous" on an open listener.
+// the verified OIDC subject, the verified basic-auth user, or "anonymous" on
+// an open listener, where every caller shares one budget.
 func AskOperator(r *http.Request) string {
 	if id, ok := oidcauth.FromContext(r.Context()); ok && id.Subject != "" {
 		return "oidc:" + id.Subject
 	}
-	if u, _, ok := r.BasicAuth(); ok && u != "" {
+	if u, ok := r.Context().Value(basicUserKey{}).(string); ok && u != "" {
 		return "basic:" + u
 	}
 	return "anonymous"

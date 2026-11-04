@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -142,3 +144,17 @@ func (explainEngine) Explain(context.Context, string) (string, error) { return "
 func (explainEngine) Schema() ([]sqlengine.ViewSchema, error)         { return nil, nil }
 
 var _ readapi.SQLEngine = plainEngine{}
+
+// The basic-auth gate hands the Ask box the user it verified, and only that.
+func TestBasicAuthNamesTheVerifiedOperator(t *testing.T) {
+	var got string
+	h := basicAuth(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		got = readapi.AskOperator(r)
+	}), "ops", "s3cret")
+	req := httptest.NewRequest(http.MethodPost, "/v1/query/ask", nil)
+	req.SetBasicAuth("ops", "s3cret")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if got != "basic:ops" {
+		t.Errorf("operator = %q, want basic:ops", got)
+	}
+}

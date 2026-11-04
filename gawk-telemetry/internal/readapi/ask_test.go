@@ -150,7 +150,14 @@ func TestAskOperatorIdentity(t *testing.T) {
 	if AskOperator(r) != "anonymous" {
 		t.Error(AskOperator(r))
 	}
-	r.SetBasicAuth("ops", "pw")
+	// A Basic header nothing verified is not an identity: on an open
+	// listener every caller could name themselves into a fresh budget
+	// (PR #706 review, round 1).
+	r.SetBasicAuth("forged", "x")
+	if AskOperator(r) != "anonymous" {
+		t.Errorf("an unverified Basic user became %q", AskOperator(r))
+	}
+	r = r.WithContext(WithBasicUser(r.Context(), "ops"))
 	if AskOperator(r) != "basic:ops" {
 		t.Error(AskOperator(r))
 	}

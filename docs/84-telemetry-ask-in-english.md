@@ -401,8 +401,10 @@ Decisions taken while building, none of which changes an owner decision:
   when it is loopback, private, single-label or ends in `.svc` or
   `.cluster.local`; a bare `name.namespace` reads as outside, the safe
   default, so spell an in-cluster Ollama with `.svc`.
-- **Operators are keyed `oidc:<sub>` or `basic:<user>`,** or `anonymous`
-  on an open listener (where every operator shares one budget).
+- **Operators are keyed `oidc:<sub>` or `basic:<user>`,** each as its gate
+  verified it, or `anonymous` on an open listener, where every operator
+  shares one budget. A Basic header no gate checked is not an identity:
+  trusting it let any caller name a fresh budget (PR #706 review).
 - **The key is a file from a Secret** (`ask.apiKeyRef`, mounted read-only),
   never an env var, because the SQL workers start with the service's
   environment. §5 has the limit of that.
