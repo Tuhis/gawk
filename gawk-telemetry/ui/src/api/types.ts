@@ -532,6 +532,36 @@ export interface QueryStatus {
   views?: ViewDoc[];
   rowLimit: number;
   timeoutMs: number;
+  /** R82's Ask box. Absent from a server that predates it. */
+  ask?: AskStatus;
+}
+
+/**
+ * R82 (docs/84 D8): the question box over the console. `enabled` needs both a
+ * provider and an engine; `reason` says which is missing when one was asked
+ * for. `provider: 'none'` is the default, and shows nothing.
+ */
+export interface AskStatus {
+  enabled: boolean;
+  provider: string;
+  model?: string;
+  context?: string;
+  /** The provider is outside the cluster: the question leaves it (rows never do). */
+  external?: boolean;
+  endpoint?: string;
+  reason?: string;
+}
+
+/** A draft from a question: SQL to read and run, never a result (docs/84 D3). */
+export interface AskAnswer {
+  interpretation: string;
+  sql: string;
+  checks: number;
+  /** The shadow catalogue's verdict on the final SQL: "OK" or the error Run would meet. */
+  check: string;
+  provider: string;
+  model: string;
+  elapsedMs: number;
 }
 
 export interface QueryResult {

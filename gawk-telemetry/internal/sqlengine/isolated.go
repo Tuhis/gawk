@@ -57,6 +57,10 @@ type workerRequest struct {
 	// learned schema does not cover, so a worker registers only what the
 	// statement names.
 	Views []string `json:"views"`
+	// Explain asks for a shadow-catalogue check of SQL (shadow.go) instead of
+	// a query: Shadow is the catalogue's DDL, and no view is registered.
+	Explain bool     `json:"explain,omitempty"`
+	Shadow  []string `json:"shadow,omitempty"`
 }
 
 // workerResponse is the worker's one line of stdout. Views covers only the
@@ -65,6 +69,8 @@ type workerResponse struct {
 	Result *Result   `json:"result,omitempty"`
 	Views  []ViewDoc `json:"views,omitempty"`
 	Err    string    `json:"error,omitempty"`
+	// Verdict is an Explain's answer.
+	Verdict string `json:"verdict,omitempty"`
 }
 
 // referencedViews is the views stmt names, by whole-word match. A false
@@ -102,6 +108,15 @@ func RunWorker(in io.Reader, out io.Writer) int {
 	if err := json.NewDecoder(in).Decode(&req); err != nil {
 		_ = enc.Encode(workerResponse{Err: "sqlengine: malformed worker request: " + err.Error()})
 		return 2
+	}
+	if req.Explain {
+		verdict, err := explainShadow(req.Shadow, req.SQL)
+		if err != nil {
+			_ = enc.Encode(workerResponse{Err: err.Error()})
+			return 1
+		}
+		_ = enc.Encode(workerResponse{Verdict: verdict})
+		return 0
 	}
 	var only map[string]bool
 	if req.Views != nil {
@@ -159,6 +174,10 @@ type isolated struct {
 
 	mu    sync.Mutex
 	views []ViewDoc
+
+	// checkTurn is Explain's own one-at-a-time slot. A check never waits
+	// behind a console query, and never adds to its budget (docs/84 D7).
+	checkTurn chan struct{}
 }
 
 // OpenIsolated opens the engine the service runs: the in-process engine,
@@ -178,8 +197,9 @@ func OpenIsolated(opts Options) (Engine, error) {
 	}
 	e := &isolated{
 		opts: opts, exe: exe,
-		turn:  make(chan struct{}, 1),
-		views: viewDocs(func(string) bool { return false }),
+		turn:      make(chan struct{}, 1),
+		checkTurn: make(chan struct{}, 1),
+		views:     viewDocs(func(string) bool { return false }),
 	}
 	// Two workers, so the open fails only on what is fatal. The first
 	// registers no view: it proves the binary re-executes and DuckDB opens,

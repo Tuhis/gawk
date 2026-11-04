@@ -50,26 +50,9 @@ var learnBatch = 64
 // learning; the rest is the query's.
 const learnShare = 2.0 / 3
 
-// learnedVersion is the on-disk format. A file in any other format, or
-// learned by another DuckDB, is relearned from scratch: a DuckDB upgrade can
-// sniff the same file differently.
-const learnedVersion = 1
-
 // testHookSniff, when set, sees every batch before it is sniffed. Nil in
 // production.
 var testHookSniff func(files []string)
-
-// learned is one view's schema and the files it covers.
-type learned struct {
-	Version int    `json:"version"`
-	DuckDB  string `json:"duckdb"`
-	// Columns is the row type as a STRUCT, unknowns written NULL.
-	Columns string `json:"columns"`
-	// Files maps each covered file, relative to Root, to [size, mtime ns].
-	Files map[string][2]int64 `json:"files"`
-
-	cols *colType
-}
 
 // errLearning is a view whose files are not all sniffed yet. It is not a
 // failure of the view: the next query carries on from where this one stopped.
@@ -82,10 +65,6 @@ func (e *errLearning) Error() string {
 	return fmt.Sprintf("sqlengine: %s: still learning the columns of its files (%d of %d read); the next query continues from there",
 		e.view, e.done, e.total)
 }
-
-// SchemaDir is where the learned schemas live: a dot-directory at the data
-// root, like SpillDir, so no view glob matches it.
-func SchemaDir(root string) string { return filepath.Join(root, ".sql-schema") }
 
 // columns is the explicit column list for view name over matches (its glob,
 // expanded), learning whatever matches the stored schema does not cover.

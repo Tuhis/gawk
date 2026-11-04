@@ -111,7 +111,10 @@ The landing view lists every live broadcast with its broadcaster and each
 viewer, severity-sorted, with anything obviously wrong highlighted before
 you click anything. Peer sections cover single-session drill-down,
 whole-broadcast comparison, history, field explorer, fleet trends, the
-rule trace, and a read-only SQL console over the stored partitions.
+rule trace, and a read-only SQL console over the stored partitions. An
+optional Ask box above the console drafts its SQL from a question in
+English; the model sees the schema, never a row, and the operator runs
+the draft ([docs/84](../docs/84-telemetry-ask-in-english.md)).
 
 The full tour — every section, the SQL console's build-tag caveat,
 operator notes, the find-a-stream lookup and how tab visibility is
@@ -226,6 +229,12 @@ Every flag has a `GAWK_TELEMETRY_*` environment fallback
 | `-sql-threads` | `GAWK_TELEMETRY_SQL_THREADS` | `2` (each holds a 32 MiB JSON read buffer) |
 | `-sql-spill-limit` | `GAWK_TELEMETRY_SQL_SPILL_LIMIT` | `512MiB` (in `<data-dir>/.sql-spill`; `0` disables) |
 | `-sql-probe-interval` | `GAWK_TELEMETRY_SQL_PROBE_INTERVAL` | `5m` (`0` disables the view probe) |
+| `-ask-provider` | `GAWK_TELEMETRY_ASK_PROVIDER` | `none` (the SQL console's Ask box is off; `anthropic` or `openai` turns it on, [docs/84](../docs/84-telemetry-ask-in-english.md)) |
+| `-ask-model` | `GAWK_TELEMETRY_ASK_MODEL` | `claude-sonnet-5-5` for `anthropic`; required for `openai` |
+| `-ask-base-url` | `GAWK_TELEMETRY_ASK_BASE_URL` | `https://api.anthropic.com` for `anthropic`; required for `openai` (Ollama, llama.cpp, vLLM) |
+| `-ask-api-key-file` | `GAWK_TELEMETRY_ASK_API_KEY_FILE` | (required for `anthropic`, optional for `openai`) |
+| `-ask-context` | `GAWK_TELEMETRY_ASK_CONTEXT` | `full` for `anthropic`, `slim` for `openai` |
+| `-ask-timeout` / `-ask-max-checks` / `-ask-rate` | `GAWK_TELEMETRY_ASK_TIMEOUT` / `_MAX_CHECKS` / `_RATE` | `2m0s` / `4` / `30` questions per operator per hour |
 | `-metrics-addr` | `GAWK_TELEMETRY_METRICS_ADDR` | `:8082` (ClusterIP only; `off` disables) |
 | `-stats-key` | `GAWK_TELEMETRY_STATS_KEY` | (empty = the find-a-stream lookup is off) |
 | `-read-user` / `-read-password` | `GAWK_TELEMETRY_READ_USER` / `_PASSWORD` | (empty = no basic auth) |

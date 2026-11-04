@@ -41,6 +41,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/oidcroles"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/annotations"
+	"github.com/Tuhis/gawk/gawk-telemetry/internal/ask"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/dashboard"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/ingest"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/live"
@@ -135,6 +136,20 @@ func run() error {
 		metrics.SetSQLEngine(engine != nil)
 	}
 
+	// R82's question box. It needs the engine (its checks run in the
+	// engine's shadow catalogue); without one, the console says so.
+	asker, err := newAsker(cfg, engine, log)
+	if err != nil {
+		return fmt.Errorf("ask: %w", err)
+	}
+	if cfg.askProvider != "none" && asker == nil {
+		log.Warn("-ask-provider is set but there is no query engine to check drafts with; the Ask box is unavailable")
+	}
+	var apiAsker readapi.Asker
+	if asker != nil {
+		apiAsker = asker
+	}
+
 	api, err := readapi.New(readapi.Options{
 		Store: st, Live: projection, DashboardBase: cfg.dashboardBase,
 		StatsKey:       cfg.statsKey,
@@ -143,6 +158,8 @@ func run() error {
 		Annotations:    notes,
 		SQL:            engine,
 		SQLOpenErr:     engineErr,
+		Ask:            apiAsker,
+		AskProvider:    cfg.askProvider,
 	})
 	if err != nil {
 		return err
@@ -193,6 +210,12 @@ func run() error {
 		"sql_threads", cfg.sqlThreads,
 		"sql_spill_limit_bytes", cfg.sqlSpillLimit,
 		"sql_probe_interval", cfg.sqlProbeInterval,
+		// The question box: which provider and model, and where questions
+		// go. Never the key.
+		"ask_provider", cfg.askProvider,
+		"ask_model", cfg.askModel,
+		"ask_endpoint", askEndpointForLog(cfg),
+		"ask_context", cfg.askContext,
 		"metrics_addr", cfg.metricsAddr,
 		// The read listener's gate (docs/55 D1/D9). Every knob, so a
 		// deployment's log says which IdP and role it actually enforces.
@@ -623,6 +646,17 @@ type config struct {
 	sqlThreads       int
 	sqlSpillLimit    int64
 	sqlProbeInterval time.Duration
+	// R82's question box (docs/84 D8). Off unless askProvider is set; the
+	// key is read from askAPIKeyFile at parse time and never logged.
+	askProvider   string
+	askModel      string
+	askBaseURL    string
+	askAPIKeyFile string
+	askAPIKey     string
+	askContext    string
+	askTimeout    time.Duration
+	askMaxChecks  int
+	askRate       int
 	// metricsAddr is the ClusterIP-only Prometheus listener; empty (spelled
 	// "off" on the command line and in env) disables it.
 	metricsAddr   string
@@ -751,6 +785,23 @@ func parseFlags(args []string, env func(string) string) (config, error) {
 		"cap on the SQL engine's spill directory (<data-dir>/.sql-spill, on the data volume ingest writes to); 0 disables spilling")
 	sqlProbe := fs.String("sql-probe-interval", or(env("GAWK_TELEMETRY_SQL_PROBE_INTERVAL"), "5m"),
 		"how often every SQL view is probed for the gawk_telemetry_sql_view_up gauge; 0 disables the probe")
+	// R82 (docs/84 D8): the question box over the SQL console. Off by default.
+	fs.StringVar(&c.askProvider, "ask-provider", or(env("GAWK_TELEMETRY_ASK_PROVIDER"), "none"),
+		"model provider for the SQL console's Ask box: none (default, off), anthropic, or openai (any OpenAI-compatible server: Ollama, llama.cpp, vLLM)")
+	fs.StringVar(&c.askModel, "ask-model", env("GAWK_TELEMETRY_ASK_MODEL"),
+		"model the Ask box drafts with; default "+ask.DefaultAnthropicModel+" for anthropic, required for openai")
+	fs.StringVar(&c.askBaseURL, "ask-base-url", env("GAWK_TELEMETRY_ASK_BASE_URL"),
+		"provider address; required for openai (e.g. http://ollama.ollama.svc:11434), optional for anthropic (default "+ask.DefaultAnthropicBaseURL+")")
+	fs.StringVar(&c.askAPIKeyFile, "ask-api-key-file", env("GAWK_TELEMETRY_ASK_API_KEY_FILE"),
+		"file holding the provider's API key; required for anthropic, optional for openai")
+	fs.StringVar(&c.askContext, "ask-context", env("GAWK_TELEMETRY_ASK_CONTEXT"),
+		"prompt size: full (every view's columns and the field catalogue, ~17.5k tokens) or slim (rollups only, ~3.2k); default full for anthropic, slim for openai")
+	askTimeout := fs.String("ask-timeout", or(env("GAWK_TELEMETRY_ASK_TIMEOUT"), ask.DefaultTimeout.String()),
+		"how long one question may take, every model request and check included")
+	fs.IntVar(&c.askMaxChecks, "ask-max-checks", orInt(env("GAWK_TELEMETRY_ASK_MAX_CHECKS"), ask.DefaultMaxChecks),
+		"how many times the model may check a draft against the schema, per question")
+	fs.IntVar(&c.askRate, "ask-rate", orInt(env("GAWK_TELEMETRY_ASK_RATE"), ask.DefaultRatePerHour),
+		"questions per operator per hour")
 	fs.StringVar(&c.metricsAddr, "metrics-addr", or(env("GAWK_TELEMETRY_METRICS_ADDR"), ":8082"),
 		"ClusterIP-only Prometheus listener (/metrics) — never route it; off disables it")
 	fs.StringVar(&c.basicAuthUser, "read-user", env("GAWK_TELEMETRY_READ_USER"),
@@ -834,6 +885,12 @@ func parseFlags(args []string, env func(string) string) (config, error) {
 	if c.sqlProbeInterval, err = time.ParseDuration(*sqlProbe); err != nil || c.sqlProbeInterval < 0 {
 		return config{}, fmt.Errorf("invalid -sql-probe-interval %q", *sqlProbe)
 	}
+	if c.askTimeout, err = time.ParseDuration(*askTimeout); err != nil || c.askTimeout <= 0 {
+		return config{}, fmt.Errorf("invalid -ask-timeout %q", *askTimeout)
+	}
+	if err := c.validateAsk(); err != nil {
+		return config{}, err
+	}
 	// "off", not empty, is the env spelling of "disabled": an empty env var
 	// means unset everywhere else here and falls back to the default.
 	if strings.EqualFold(strings.TrimSpace(c.metricsAddr), "off") {
@@ -855,6 +912,100 @@ func parseFlags(args []string, env func(string) string) (config, error) {
 		}
 	}
 	return c, nil
+}
+
+// validateAsk checks the question box's flags and reads its key (docs/84 D8).
+// A box that was asked for and cannot work refuses to start, rather than
+// leaving a console whose Ask fails on every question.
+func (c *config) validateAsk() error {
+	c.askProvider = strings.ToLower(strings.TrimSpace(c.askProvider))
+	c.askModel = strings.TrimSpace(c.askModel)
+	c.askBaseURL = strings.TrimSpace(c.askBaseURL)
+	c.askContext = strings.ToLower(strings.TrimSpace(c.askContext))
+	switch c.askContext {
+	case "", ask.ContextFull, ask.ContextSlim:
+	default:
+		return fmt.Errorf("-ask-context must be %s or %s, not %q", ask.ContextFull, ask.ContextSlim, c.askContext)
+	}
+	if c.askMaxChecks < 1 || c.askMaxChecks > 20 {
+		return fmt.Errorf("-ask-max-checks must be between 1 and 20")
+	}
+	if c.askRate < 1 {
+		return fmt.Errorf("-ask-rate must be at least 1")
+	}
+	if c.askAPIKeyFile != "" {
+		b, err := os.ReadFile(c.askAPIKeyFile)
+		if err != nil {
+			return fmt.Errorf("-ask-api-key-file: %w", err)
+		}
+		c.askAPIKey = strings.TrimSpace(string(b))
+	}
+	switch c.askProvider {
+	case "", "none":
+		c.askProvider = "none"
+	case "anthropic":
+		if c.askModel == "" {
+			c.askModel = ask.DefaultAnthropicModel
+		}
+		if c.askAPIKey == "" {
+			return fmt.Errorf("-ask-provider=anthropic needs a key in -ask-api-key-file")
+		}
+	case "openai":
+		if c.askModel == "" || c.askBaseURL == "" {
+			return fmt.Errorf("-ask-provider=openai needs -ask-model and -ask-base-url")
+		}
+	default:
+		return fmt.Errorf("-ask-provider must be none, anthropic or openai, not %q", c.askProvider)
+	}
+	return nil
+}
+
+// askEndpoint is where questions go, for the log and the console.
+func (c config) askEndpoint() (host string, external bool) {
+	base := c.askBaseURL
+	if base == "" && c.askProvider == "anthropic" {
+		base = ask.DefaultAnthropicBaseURL
+	}
+	return ask.Endpoint(base)
+}
+
+func askEndpointForLog(c config) string {
+	if c.askProvider == "none" {
+		return ""
+	}
+	host, _ := c.askEndpoint()
+	return host
+}
+
+// newAsker builds the question box over the engine's shadow catalogue, or
+// returns nil when it is off or there is no engine to check drafts with.
+func newAsker(c config, engine readapi.SQLEngine, log *slog.Logger) (*ask.Service, error) {
+	if c.askProvider == "none" || engine == nil {
+		return nil, nil
+	}
+	checker, ok := engine.(sqlengine.Explainer)
+	if !ok {
+		return nil, fmt.Errorf("the query engine cannot check drafts")
+	}
+	var (
+		p   ask.Provider
+		err error
+	)
+	switch c.askProvider {
+	case "anthropic":
+		p, err = ask.NewAnthropic(ask.AnthropicOptions{APIKey: c.askAPIKey, Model: c.askModel, BaseURL: c.askBaseURL})
+	case "openai":
+		p, err = ask.NewOpenAI(ask.OpenAIOptions{BaseURL: c.askBaseURL, Model: c.askModel, APIKey: c.askAPIKey})
+	}
+	if err != nil {
+		return nil, err
+	}
+	host, external := c.askEndpoint()
+	return ask.New(ask.Options{
+		Provider: p, Checker: checker, Context: c.askContext,
+		MaxChecks: c.askMaxChecks, Timeout: c.askTimeout, RatePerHour: c.askRate,
+		Log: log, External: external, Endpoint: host,
+	})
 }
 
 // validateReadAuth enforces docs/55 D1/D9: OIDC is all three of issuer,

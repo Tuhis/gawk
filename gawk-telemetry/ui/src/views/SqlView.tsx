@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
-import { fetchQueryStatus, runQuery } from '../api/client.ts';
-import type { QueryResult, QueryStatus } from '../api/types.ts';
+import { askQuery, fetchQueryStatus, runQuery } from '../api/client.ts';
+import type { AskAnswer, AskStatus, QueryResult, QueryStatus } from '../api/types.ts';
 import { TimeChart, type Series } from '../charts/TimeChart.tsx';
 import { download, seriesToCsv } from '../lib/export.ts';
 import { useDocumentTitle, useUrlState } from '../router/router.ts';
@@ -23,6 +23,11 @@ import view from './view.module.css';
 // Results feed the chart component, so an ad-hoc query is PLOTTABLE rather than
 // a table of numbers — which is most of why the console is worth having beside
 // the purpose-built views rather than instead of them.
+//
+// R82 (docs/84) puts an Ask box above the editor, shown only when the server
+// says a model is configured. A question comes back as a DRAFT: SQL in the
+// editor and one line saying how the question was read. It never runs by
+// itself — the operator reads the reading, then presses Run.
 
 const EXAMPLES = [
   {
@@ -62,6 +67,7 @@ export function SqlView() {
   const [busy, setBusy] = useState(false);
   const [chartX, setChartX] = useUrlState('x');
   const [chartY, setChartY] = useUrlState('y');
+  const [answer, setAnswer] = useState<AskAnswer | null>(null);
 
   useEffect(() => {
     fetchQueryStatus()
@@ -88,6 +94,15 @@ export function SqlView() {
     } finally {
       setBusy(false);
     }
+  };
+
+  // A draft replaces the editor's contents; what was there stays one Back
+  // away, in the URL history.
+  const takeDraft = (a: AskAnswer) => {
+    if (draft !== sql) setSql(draft, true);
+    setAnswer(a);
+    setDraft(a.sql);
+    setSql(a.sql);
   };
 
   const chart = useMemo<Series[]>(() => {
@@ -129,6 +144,11 @@ export function SqlView() {
           cgo-free and the deployed image is compiled with <code>-tags duckdb</code>. Everything the
           console would query is reachable through the purpose-built views meanwhile.
         </p>
+        {status.ask && status.ask.provider !== 'none' && (
+          <p className={view.note}>
+            The Ask box is configured ({status.ask.provider}) and needs the engine too, so it is not shown.
+          </p>
+        )}
         {status.views && status.views.length > 0 && (
           <section className={view.panel}>
             <h2 className={view.panelTitle}>What would be queryable</h2>
@@ -180,6 +200,7 @@ export function SqlView() {
             onClick={() => {
               setDraft(ex.sql);
               setSql(ex.sql);
+              setAnswer(null);
               void run(ex.sql);
             }}
           >
@@ -187,6 +208,9 @@ export function SqlView() {
           </button>
         ))}
       </div>
+
+      {status?.ask && <AskBox status={status.ask} onDraft={takeDraft} />}
+      {answer && <ReadAs answer={answer} />}
 
       <form
         onSubmit={(e) => {
@@ -284,6 +308,94 @@ export function SqlView() {
             </table>
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The question box. Hidden when no provider is configured (the default); a
+ * configured one that cannot answer says why, which is a different fact from
+ * "no engine" (the page above) and from "the model could not answer" (an
+ * error under the box).
+ */
+function AskBox({ status, onDraft }: { status: AskStatus; onDraft: (a: AskAnswer) => void }) {
+  const [question, setQuestion] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (status.provider === 'none') return null;
+  if (!status.enabled) {
+    return (
+      <p className={view.note}>
+        <strong>Ask is not available here.</strong> No model can answer: {status.reason ?? 'no reason given'}.
+      </p>
+    );
+  }
+
+  const ask = async () => {
+    const q = question.trim();
+    if (!q || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onDraft(await askQuery(q));
+    } catch (e) {
+      // The server's own words: a refusal, a rate limit and a provider outage
+      // each read differently.
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className={styles.ask} aria-label="ask in English">
+      <form
+        className={styles.askRow}
+        onSubmit={(e) => {
+          e.preventDefault();
+          void ask();
+        }}
+      >
+        <input
+          className={styles.askInput}
+          type="text"
+          value={question}
+          maxLength={2000}
+          placeholder="Ask in English — e.g. how does stalling compare between Linux and Windows viewers?"
+          aria-label="question"
+          onChange={(e) => setQuestion(e.target.value)}
+        />
+        <button type="submit" className={view.button} disabled={busy || !question.trim()}>
+          {busy ? 'drafting…' : 'ask'}
+        </button>
+      </form>
+      <p className={view.note}>
+        {status.model} drafts SQL from the schema and puts it in the editor; nothing runs until you press run. It
+        never sees a row.
+        {status.external && (
+          <>
+            {' '}
+            Your question is sent to <code>{status.endpoint ?? status.provider}</code>.
+          </>
+        )}
+      </p>
+      {error && <p className={view.error}>{error}</p>}
+    </section>
+  );
+}
+
+/** How the model read the question, above the draft it wrote. */
+function ReadAs({ answer }: { answer: AskAnswer }) {
+  return (
+    <div className={styles.readAs}>
+      <p>
+        <span className={view.dim}>Read as:</span> {answer.interpretation || '(the model gave no reading)'}{' '}
+        <span className={view.note}>— {answer.model}</span>
+      </p>
+      {answer.check && answer.check !== 'OK' && (
+        <p className={view.error}>This draft does not bind: {answer.check.replace(/^ERROR: /, '')}</p>
       )}
     </div>
   );

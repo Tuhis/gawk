@@ -26,3 +26,5 @@ func Compiled() bool { return false }
 // engine here" and "there is nothing to query" are different facts, and an
 // operator on a laptop build should still be able to see which one they hit.
 func Views() []ViewDoc { return viewDocs(func(string) bool { return false }) }
+
+func explainShadow([]string, string) (string, error) { return "", ErrNoEngine }

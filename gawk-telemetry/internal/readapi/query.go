@@ -38,6 +38,8 @@ type QueryStatus struct {
 	// surprise the operator has to infer.
 	RowLimit  int   `json:"rowLimit"`
 	TimeoutMs int64 `json:"timeoutMs"`
+	// Ask is R82's question box (ask.go).
+	Ask AskStatus `json:"ask"`
 }
 
 // QueryStatus reports whether the console can work here.
@@ -45,6 +47,7 @@ func (a *API) QueryStatus() QueryStatus {
 	s := QueryStatus{
 		RowLimit:  sqlengine.DefaultRowLimit,
 		TimeoutMs: sqlengine.DefaultTimeout.Milliseconds(),
+		Ask:       a.askStatus(),
 	}
 	if a.sql == nil {
 		s.Reason, s.Failed = a.sqlUnavailable()

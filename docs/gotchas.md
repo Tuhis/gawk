@@ -118,6 +118,22 @@ Add to it when a new gotcha lands in `docs/`.
   into `"NaN"`/`"Infinity"`/`"-Infinity"` and a string-keyed object; any
   new path that encodes engine values must go through it.
   ([docs/84](84-telemetry-ask-in-english.md) NQ0b)
+- **`EXPLAIN` against the real telemetry views is not data-free.** A
+  dynamic `PIVOT … ON col` with no `IN` list runs `SELECT DISTINCT col` while
+  binding, so a binder error's candidate list carries stored values and
+  whether `SELECT "Windows" FROM (PIVOT …)` binds says whether a value
+  exists; file table functions sniff files at bind time. Anything that
+  checks SQL for a model (R82's Ask box) binds it in
+  `sqlengine`'s shadow catalogue — empty tables from the learned schema,
+  external access off, configuration locked, its own worker with an empty
+  environment — never against the store. The real views add hive keys
+  after the file columns in name order (`broadcast` before `date`), which
+  the shadow tables must match. ([docs/84](84-telemetry-ask-in-english.md) D2, §12.6)
+- **Go's HTTP transport can resend a POST on a reused connection, so a fake
+  server can see one request more than the client made.** It flaked R82's
+  retry tests one run in a few under `-race`. Count attempts with a
+  counting `RoundTripper` on the client when the number of retries is the
+  assertion. ([docs/84](84-telemetry-ask-in-english.md) §13)
 - **A stored telemetry field never changes type and is never renamed.** The
   SQL views union partitions by name, so a field that is a number in old
   rows and a string in new ones turns the column into JSON for every query

@@ -25,6 +25,22 @@ spec:
   {{- end }}
   {{- end }}
   {{- end }}
+  {{- /* R82's Ask box: refused here with the same rules the binary
+         applies, before a CrashLoopBackOff does (docs/84 D8). */}}
+  {{- with .Values.ask }}
+  {{- if not (has .provider (list "none" "anthropic" "openai")) }}
+  {{- fail (printf "ask.provider must be none, anthropic or openai, not %q" .provider) }}
+  {{- end }}
+  {{- if and (eq .provider "anthropic") (not .apiKeyRef) }}
+  {{- fail "ask.provider=anthropic needs ask.apiKeyRef (a Secret holding the API key)" }}
+  {{- end }}
+  {{- if and (eq .provider "openai") (or (not .model) (not .baseUrl)) }}
+  {{- fail "ask.provider=openai needs ask.model and ask.baseUrl" }}
+  {{- end }}
+  {{- if and .apiKeyRef (or (not .apiKeyRef.name) (not .apiKeyRef.key)) }}
+  {{- fail "ask.apiKeyRef needs both name and key" }}
+  {{- end }}
+  {{- end }}
   # Recreate, not RollingUpdate: two pods must never hold the same PVC and the
   # same session files at once.
   strategy:
@@ -171,6 +187,36 @@ spec:
               value: {{ .role | quote }}
             {{- end }}
             {{- end }}
+            {{- /* R82's Ask box (docs/84 D8). Nothing renders while it is off,
+                   so an install that never enables it is unchanged. */}}
+            {{- with .Values.ask }}
+            {{- if ne .provider "none" }}
+            - name: GAWK_TELEMETRY_ASK_PROVIDER
+              value: {{ .provider | quote }}
+            {{- if .model }}
+            - name: GAWK_TELEMETRY_ASK_MODEL
+              value: {{ .model | quote }}
+            {{- end }}
+            {{- if .baseUrl }}
+            - name: GAWK_TELEMETRY_ASK_BASE_URL
+              value: {{ .baseUrl | quote }}
+            {{- end }}
+            {{- if .apiKeyRef }}
+            - name: GAWK_TELEMETRY_ASK_API_KEY_FILE
+              value: /var/run/secrets/gawk-telemetry-ask/{{ .apiKeyRef.key }}
+            {{- end }}
+            {{- if .context }}
+            - name: GAWK_TELEMETRY_ASK_CONTEXT
+              value: {{ .context | quote }}
+            {{- end }}
+            - name: GAWK_TELEMETRY_ASK_TIMEOUT
+              value: {{ .timeout | quote }}
+            - name: GAWK_TELEMETRY_ASK_MAX_CHECKS
+              value: {{ .maxChecks | quote }}
+            - name: GAWK_TELEMETRY_ASK_RATE
+              value: {{ .rate | quote }}
+            {{- end }}
+            {{- end }}
             {{- /* GAWK_TELEMETRY_DEV_OIDC_PROXY is deliberately never rendered:
                    it is the docs/41 compose lane's /idp/ proxy, not a
                    deployment knob (the GAWK_DEV_CERT precedent). */}}
@@ -191,9 +237,24 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            {{- if and (ne .Values.ask.provider "none") .Values.ask.apiKeyRef }}
+            # The provider key, as a file rather than an env var: the SQL
+            # workers start with the service's environment.
+            - name: ask-key
+              mountPath: /var/run/secrets/gawk-telemetry-ask
+              readOnly: true
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
+        {{- if and (ne .Values.ask.provider "none") .Values.ask.apiKeyRef }}
+        - name: ask-key
+          secret:
+            secretName: {{ .Values.ask.apiKeyRef.name | quote }}
+            items:
+              - key: {{ .Values.ask.apiKeyRef.key | quote }}
+                path: {{ .Values.ask.apiKeyRef.key | quote }}
+        {{- end }}
         - name: data
           {{- if .Values.persistence.enabled }}
           persistentVolumeClaim:
