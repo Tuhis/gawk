@@ -31,9 +31,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/Tuhis/gawk/gawk-telemetry/internal/schema"
 )
 
 // ShadowViews are the views the shadow catalogue describes. `annotations` is
@@ -106,12 +109,86 @@ func LearnedSchema(root string) ([]ViewSchema, error) {
 		}
 		v := ViewSchema{Name: name}
 		for _, f := range t.fields {
-			v.Columns = append(v.Columns, Column{f.name, f.t.emit()})
+			if !identifierRE.MatchString(f.name) {
+				continue
+			}
+			var allow map[string]bool
+			if name == "sessions" && f.name == "stats" {
+				allow = statsFields
+			}
+			v.Columns = append(v.Columns, Column{f.name, safeType(f.t, allow, 1).emit()})
+			if len(v.Columns) >= maxShadowFields {
+				break
+			}
 		}
 		v.Columns = append(v.Columns, partitionColumns[name]...)
 		out = append(out, v)
 	}
 	return out, nil
+}
+
+// The learned schema is not all the code's own words. Public ingest keeps an
+// unknown stats key verbatim (schema.SanitizeStats, docs/36 D15), and the
+// learner records it as a STRUCT field of `sessions.stats` — so a client could
+// write a "column name" that is an instruction to the model, and have it put
+// in every question's system prompt and in the binder errors a check returns
+// (PR #706 review). The shadow catalogue therefore keeps only:
+//
+//   - names shaped like identifiers (identifierRE), at every depth;
+//   - under `sessions.stats`, only the fields the schema tables define —
+//     the rest are what a client invented;
+//   - at most maxShadowFields per struct, and maxShadowDepth levels, below
+//     which a value is JSON.
+//
+// Every other struct is a Go type's (rollup.Row, relayscrape.Observation),
+// whose names the code writes. A draft that reads a dropped field fails to
+// bind in the check; the console still runs it.
+var identifierRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
+
+const (
+	maxShadowFields = 128
+	maxShadowDepth  = 4
+)
+
+// statsFields is every stats field the schema tables define, both roles.
+var statsFields = func() map[string]bool {
+	out := map[string]bool{}
+	for _, table := range []map[string]schema.Kind{schema.ViewerFields, schema.BroadcasterFields} {
+		for name := range table {
+			out[name] = true
+		}
+	}
+	return out
+}()
+
+// safeType is t with only the names the shadow catalogue may carry. allow,
+// when set, is the only field names t's top level may keep.
+func safeType(t *colType, allow map[string]bool, depth int) *colType {
+	switch t.kind {
+	case structKind:
+		if depth > maxShadowDepth {
+			return scalar(jsonType)
+		}
+		out := &colType{kind: structKind}
+		for _, f := range t.fields {
+			if !identifierRE.MatchString(f.name) || (allow != nil && !allow[f.name]) {
+				continue
+			}
+			out.fields = append(out.fields, colField{f.name, safeType(f.t, nil, depth+1)})
+			if len(out.fields) >= maxShadowFields {
+				break
+			}
+		}
+		if len(out.fields) == 0 {
+			return scalar(jsonType)
+		}
+		return out
+	case listKind:
+		return &colType{kind: listKind, elem: safeType(t.elem, nil, depth+1)}
+	case mapKind:
+		return &colType{kind: mapKind, key: safeType(t.key, nil, depth+1), elem: safeType(t.elem, nil, depth+1)}
+	}
+	return t
 }
 
 // shadowDDL is the CREATE TABLE per view.

@@ -139,6 +139,15 @@ first.
 - **The question leaves the homelab** in Anthropic mode. It is the
   operator's own text; the console says so under the box when the provider
   is not in-cluster.
+- **Column names are not all the code's.** Public ingest keeps an unknown
+  stats key verbatim (docs/36 D15), and the learner records it as a field of
+  `sessions.stats`. Fed to the model, a client-written "column name" could
+  be an instruction, in every question's prompt and in binder errors. The
+  shadow catalogue, and so the prompt, keeps only identifier-shaped names,
+  under `sessions.stats` only the fields the schema tables define, and at
+  most 128 fields a struct and four levels (PR #706 review). A draft that
+  reads an uncatalogued stats key fails its check, and the console still
+  runs it.
 - **A draft is SQL the operator runs with the console's own reach.** The
   console's engine keeps external file access on (it reads the NDJSON), so
   any statement run from it — written by hand or drafted — can read files
