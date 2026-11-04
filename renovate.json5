@@ -118,5 +118,15 @@
       matchFileNames: ["gawk-broadcast-desktop/vendor/**"],
       enabled: false,
     },
+    {
+      description: "ubuntu:24.04 in the desktop CI image IS the Linux broadcaster's distro floor (docs/58 OD14, D12): glibc 2.39, GStreamer 1.24, PipeWire 1.0. The `linux` job asserts the binary needs no GLIBC_ newer than 2.39, build-deb.sh's dpkg-shlibdeps writes the build release's versions into the .deb's Depends (docs/63 D4), and linux-deb install-tests it on the floor releases. A newer base raises the floor for every user and leaves the container path (this Dockerfile's `ci` stage) disagreeing with the desktop pool's actions-runner `runner` stage. Moving the floor is a docs/58 OD14 decision, made by hand; the relay-windows Wine container in ci.yml compiles no Linux code and is left to Renovate (PR #683).",
+      matchDatasources: ["docker"],
+      matchPackageNames: ["ubuntu"],
+      matchFileNames: [
+        ".github/actions/linux-container-setup/Dockerfile",
+        ".github/workflows/broadcast-desktop.yml",
+      ],
+      enabled: false,
+    },
   ],
 }
