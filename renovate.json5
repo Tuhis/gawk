@@ -134,5 +134,11 @@
       matchPackageNames: ["mumblevoip/mumble-server"],
       allowedVersions: "/^v1\\.5\\.\\d+$/",
     },
+    {
+      description: "pion/rtp v2 cannot be adopted on its own: gawk-whip-gateway gets and hands its RTP packets through pion/webrtc/v4 (track.ReadRTP, TrackLocalStaticRTP.WriteRTP), and webrtc/v4, interceptor and srtp/v3 all require rtp v1, so a lone v2 require is unused and `go mod tidy` removes it (PR #696). Bump rtp's major together with the pion/webrtc major that moves to rtp/v2, rewriting the imports.",
+      matchPackageNames: ["github.com/pion/rtp"],
+      matchUpdateTypes: ["major"],
+      enabled: false,
+    },
   ],
 }
