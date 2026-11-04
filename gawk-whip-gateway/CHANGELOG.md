@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/Tuhis/gawk/compare/gawk-whip-gateway/v1.1.0...gawk-whip-gateway/v1.2.0) (2026-11-04)
+
+
+### Features
+
+* **whip-gateway:** per-session broadcaster telemetry and a 60 ms reorder floor (WG11) ([#699](https://github.com/Tuhis/gawk/issues/699)) ([9eb49b6](https://github.com/Tuhis/gawk/commit/9eb49b6d2662be61afca34538e80e89535e5e598))
+
 ## [1.1.0](https://github.com/Tuhis/gawk/compare/gawk-whip-gateway/v1.0.0...gawk-whip-gateway/v1.1.0) (2026-11-02)
 
 

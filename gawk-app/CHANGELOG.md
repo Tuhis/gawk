@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.60.2](https://github.com/Tuhis/gawk/compare/gawk-app/v0.60.1...gawk-app/v0.60.2) (2026-11-04)
+
+
+### Bug Fixes
+
+* **app:** don't ask for a download from someone who has the desktop app ([#700](https://github.com/Tuhis/gawk/issues/700)) ([121248d](https://github.com/Tuhis/gawk/commit/121248dd70ba678562b26630ec0fad5968488e12))
+
 ## [0.60.1](https://github.com/Tuhis/gawk/compare/gawk-app/v0.60.0...gawk-app/v0.60.1) (2026-11-03)
 
 
