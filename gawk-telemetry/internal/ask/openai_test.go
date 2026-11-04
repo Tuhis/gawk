@@ -102,6 +102,28 @@ func TestOpenAIRefusal(t *testing.T) {
 	}
 }
 
+// OpenAI's own API declines in message.refusal with finish_reason "stop".
+func TestOpenAIRefusalField(t *testing.T) {
+	f := newFake(t, reply{body: `{"choices":[{"message":{"role":"assistant","content":null,"refusal":"I can't help with that."},"finish_reason":"stop"}]}`})
+	s := newOpenAIService(t, f, &fakeChecker{}, nil)
+	_, err := s.Ask(context.Background(), "bob", "q")
+	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "can't help") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestRetryAfterTakesSecondsOrADate(t *testing.T) {
+	h := http.Header{}
+	h.Set("Retry-After", "7")
+	if retryAfter(h) != 7*time.Second {
+		t.Error(retryAfter(h))
+	}
+	h.Set("Retry-After", time.Now().Add(10*time.Second).UTC().Format(http.TimeFormat))
+	if d := retryAfter(h); d < 8*time.Second || d > 10*time.Second {
+		t.Errorf("an HTTP-date Retry-After = %s", d)
+	}
+}
+
 func TestOpenAIRetriesA429(t *testing.T) {
 	f := newFake(t,
 		reply{status: 429, headers: map[string]string{"Retry-After": "0"}, body: `{"error":"busy"}`},

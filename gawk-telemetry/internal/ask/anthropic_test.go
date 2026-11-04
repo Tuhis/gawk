@@ -203,6 +203,21 @@ func TestAnthropicHaikuSendsNoFallbacks(t *testing.T) {
 	}
 }
 
+// Haiku 4.5 and older reject effort; current models take it.
+func TestAnthropicEffortOnlyWhereTheModelTakesIt(t *testing.T) {
+	for model, want := range map[string]bool{"claude-haiku-4-5": false, "claude-haiku-5-5": true, "claude-sonnet-5-5": true} {
+		f := newFake(t, anthropicFinal("One.", "SELECT 1"))
+		p, _ := NewAnthropic(AnthropicOptions{APIKey: "k", BaseURL: f.URL, Model: model})
+		s, _ := New(Options{Provider: p, Checker: &fakeChecker{}})
+		if _, err := s.Ask(context.Background(), "a", "q"); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(f.requests()[0], `"effort"`); got != want {
+			t.Errorf("%s: effort sent = %v, want %v", model, got, want)
+		}
+	}
+}
+
 func TestAnthropicNeedsAKey(t *testing.T) {
 	if _, err := NewAnthropic(AnthropicOptions{}); err == nil {
 		t.Fatal("no key accepted")

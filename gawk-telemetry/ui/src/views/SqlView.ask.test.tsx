@@ -106,6 +106,39 @@ describe('the Ask box', () => {
     expect(api.run).not.toHaveBeenCalled();
   });
 
+  it('drops the reading once the editor holds other SQL', async () => {
+    api.status = { ...base, ask: { enabled: true, provider: 'anthropic', model: 'claude-sonnet-5-5' } };
+    api.ask.mockResolvedValue(answer);
+    render(<SqlView />);
+    const box = await screen.findByLabelText('question');
+    fireEvent.change(box, { target: { value: 'q' } });
+    fireEvent.submit(box.closest('form')!);
+    expect(await screen.findByText(/Viewer sessions per platform/)).not.toBeNull();
+    fireEvent.change(editor(), { target: { value: 'SELECT 1' } });
+    expect(screen.queryByText(/Viewer sessions per platform/)).toBeNull();
+  });
+
+  it('says when the draft was not checked, without calling it broken', async () => {
+    api.status = { ...base, ask: { enabled: true, provider: 'anthropic', model: 'claude-sonnet-5-5' } };
+    api.ask.mockResolvedValue({ ...answer, check: 'NOT CHECKED: the check did not finish' });
+    render(<SqlView />);
+    const box = await screen.findByLabelText('question');
+    fireEvent.change(box, { target: { value: 'q' } });
+    fireEvent.submit(box.closest('form')!);
+    expect(await screen.findByText(/This draft was not checked: the check did not finish/)).not.toBeNull();
+    expect(screen.queryByText(/does not bind/)).toBeNull();
+  });
+
+  it('holds a question over the byte limit back', async () => {
+    api.status = { ...base, ask: { enabled: true, provider: 'anthropic', model: 'claude-sonnet-5-5' } };
+    render(<SqlView />);
+    const box = await screen.findByLabelText('question');
+    fireEvent.change(box, { target: { value: 'ä'.repeat(1001) } }); // 1001 characters, 2002 bytes
+    expect(screen.getByText(/longer than the 2000-byte limit/)).not.toBeNull();
+    fireEvent.submit(box.closest('form')!);
+    expect(api.ask).not.toHaveBeenCalled();
+  });
+
   it('renders an error from the model as prose', async () => {
     api.status = { ...base, ask: { enabled: true, provider: 'anthropic', model: 'claude-sonnet-5-5' } };
     api.ask.mockRejectedValue(new Error('ask: the model did not produce a usable draft: it answered without SQL: I cannot tell.'));

@@ -81,6 +81,12 @@ func (p *anthropicProvider) Model() string { return p.model }
 // server-side fallback and would reject the field.
 func fallbackCapable(model string) bool { return !strings.Contains(model, "haiku") }
 
+// effortCapable is whether model takes `output_config.effort`. Haiku 4.5 and
+// the Claude 3 models reject it; every current model takes it.
+func effortCapable(model string) bool {
+	return !strings.HasPrefix(model, "claude-haiku-4") && !strings.HasPrefix(model, "claude-3")
+}
+
 func checkTool() anthropic.BetaToolUnionParam {
 	return anthropic.BetaToolUnionParam{OfTool: &anthropic.BetaToolParam{
 		Name:        CheckToolName,
@@ -108,11 +114,13 @@ func (p *anthropicProvider) Draft(ctx context.Context, req Request) (Reply, erro
 			CacheControl: anthropic.NewBetaCacheControlEphemeralParam(),
 		}},
 		Tools: []anthropic.BetaToolUnionParam{checkTool()},
-		// docs/84 §12 was measured at medium.
-		OutputConfig: anthropic.BetaOutputConfigParam{Effort: anthropic.BetaOutputConfigEffortMedium},
 		Messages: []anthropic.BetaMessageParam{
 			anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(req.Question)),
 		},
+	}
+	if effortCapable(p.model) {
+		// docs/84 §12 was measured at medium.
+		params.OutputConfig = anthropic.BetaOutputConfigParam{Effort: anthropic.BetaOutputConfigEffortMedium}
 	}
 	if fallbackCapable(p.model) {
 		// A declined question is re-served by the model the API picks for the

@@ -74,7 +74,10 @@ type Request struct {
 	// MaxChecks is how many check calls the question may make; the provider
 	// stops asking after a couple of requests past it.
 	MaxChecks int
-	Check     CheckFunc
+	// Check is the only function that answers the model. It counts its own
+	// calls to enforce the cap and is NOT safe for concurrent use: a provider
+	// that runs tool calls in parallel must still call it one at a time.
+	Check CheckFunc
 }
 
 // Usage is a question's token count, summed over its requests.
@@ -124,8 +127,9 @@ type Answer struct {
 	SQL            string `json:"sql"`
 	// Checks is how many times the model checked a draft.
 	Checks int `json:"checks"`
-	// Check is the shadow catalogue's verdict on the final SQL: "OK", or the
-	// error the operator will meet when they run it.
+	// Check is the shadow catalogue's verdict on the final SQL: "OK", the
+	// "ERROR: …" the operator will meet when they run it, or "NOT CHECKED: …"
+	// when the check itself could not run.
 	Check     string `json:"check"`
 	Provider  string `json:"provider"`
 	Model     string `json:"model"`
@@ -285,7 +289,7 @@ func (s *Service) Ask(ctx context.Context, operator, question string) (*Answer, 
 			"cache_read_tokens", ans.Usage.CacheReadTokens, "cache_write_tokens", ans.Usage.CacheWriteTokens)
 	}
 	if err != nil {
-		if ctx.Err() != nil && !errors.Is(err, ErrRefused) {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) && !errors.Is(err, ErrRefused) {
 			err = fmt.Errorf("ask: no answer within %s: %w", s.opts.Timeout, err)
 		}
 		s.opts.Log.Info("ask failed", append(attrs, "err", err)...)
@@ -356,6 +360,9 @@ func (s *Service) draft(ctx context.Context, question string) (*Answer, error) {
 		ans.Check = v
 	} else if v, err := s.opts.Checker.Explain(ctx, stmt); err == nil {
 		ans.Check = v
+	} else {
+		// Never empty: an empty verdict would read as a pass.
+		ans.Check = "NOT CHECKED: the check did not finish"
 	}
 	return ans, nil
 }

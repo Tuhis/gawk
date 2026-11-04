@@ -57,6 +57,31 @@ func TestTheFinalSQLsVerdictIsReported(t *testing.T) {
 	}
 }
 
+// A final check that could not run is not passed off as a pass.
+func TestAFinalCheckThatFailedIsSaid(t *testing.T) {
+	f := newFake(t, anthropicFinal("x", "SELECT 1"))
+	s := newAnthropicService(t, f, &fakeChecker{err: errors.New("worker gone")}, nil)
+	ans, err := s.Ask(context.Background(), "alice", "q")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(ans.Check, "NOT CHECKED") {
+		t.Errorf("check = %q", ans.Check)
+	}
+}
+
+// A question the operator abandoned is not reported as a timeout.
+func TestACancelledQuestionIsNotATimeout(t *testing.T) {
+	f := newFake(t, reply{delay: 5 * time.Second, body: "{}"})
+	s := newAnthropicService(t, f, &fakeChecker{}, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	_, err := s.Ask(ctx, "alice", "q")
+	if err == nil || strings.Contains(err.Error(), "no answer within") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestADraftTheConsoleRefusesIsNotOffered(t *testing.T) {
 	f := newFake(t, anthropicFinal("Delete it.", "COPY rollups TO '/tmp/x'"))
 	s := newAnthropicService(t, f, &fakeChecker{}, nil)

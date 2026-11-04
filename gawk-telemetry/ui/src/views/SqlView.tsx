@@ -210,7 +210,9 @@ export function SqlView() {
       </div>
 
       {status?.ask && <AskBox status={status.ask} onDraft={takeDraft} />}
-      {answer && <ReadAs answer={answer} />}
+      {/* The reading describes the draft it came with; once the editor holds
+          something else, it would describe SQL that is no longer there. */}
+      {answer && draft === answer.sql && <ReadAs answer={answer} />}
 
       <form
         onSubmit={(e) => {
@@ -313,6 +315,9 @@ export function SqlView() {
   );
 }
 
+/** The server's MaxQuestionBytes (internal/ask). */
+const MAX_QUESTION_BYTES = 2000;
+
 /**
  * The question box. Hidden when no provider is configured (the default); a
  * configured one that cannot answer says why, which is a different fact from
@@ -333,9 +338,12 @@ function AskBox({ status, onDraft }: { status: AskStatus; onDraft: (a: AskAnswer
     );
   }
 
+  // The server's limit is in bytes; maxLength would count UTF-16 units.
+  const tooLong = new TextEncoder().encode(question.trim()).length > MAX_QUESTION_BYTES;
+
   const ask = async () => {
     const q = question.trim();
-    if (!q || busy) return;
+    if (!q || busy || tooLong) return;
     setBusy(true);
     setError(null);
     try {
@@ -362,12 +370,11 @@ function AskBox({ status, onDraft }: { status: AskStatus; onDraft: (a: AskAnswer
           className={styles.askInput}
           type="text"
           value={question}
-          maxLength={2000}
           placeholder="Ask in English — e.g. how does stalling compare between Linux and Windows viewers?"
           aria-label="question"
           onChange={(e) => setQuestion(e.target.value)}
         />
-        <button type="submit" className={view.button} disabled={busy || !question.trim()}>
+        <button type="submit" className={view.button} disabled={busy || !question.trim() || tooLong}>
           {busy ? 'drafting…' : 'ask'}
         </button>
       </form>
@@ -381,6 +388,7 @@ function AskBox({ status, onDraft }: { status: AskStatus; onDraft: (a: AskAnswer
           </>
         )}
       </p>
+      {tooLong && <p className={view.error}>That question is longer than the {MAX_QUESTION_BYTES}-byte limit.</p>}
       {error && <p className={view.error}>{error}</p>}
     </section>
   );
@@ -394,8 +402,11 @@ function ReadAs({ answer }: { answer: AskAnswer }) {
         <span className={view.dim}>Read as:</span> {answer.interpretation || '(the model gave no reading)'}{' '}
         <span className={view.note}>— {answer.model}</span>
       </p>
-      {answer.check && answer.check !== 'OK' && (
+      {answer.check.startsWith('ERROR') && (
         <p className={view.error}>This draft does not bind: {answer.check.replace(/^ERROR: /, '')}</p>
+      )}
+      {answer.check !== 'OK' && !answer.check.startsWith('ERROR') && (
+        <p className={view.note}>This draft was not checked: {answer.check.replace(/^NOT CHECKED: /, '') || 'no verdict'}.</p>
       )}
     </div>
   );

@@ -27,14 +27,16 @@ spec:
   {{- end }}
   {{- /* R82's Ask box: refused here with the same rules the binary
          applies, before a CrashLoopBackOff does (docs/84 D8). */}}
+  {{- /* An empty provider is none, as the binary reads it. */}}
+  {{- $askProvider := .Values.ask.provider | default "none" }}
   {{- with .Values.ask }}
-  {{- if not (has .provider (list "none" "anthropic" "openai")) }}
-  {{- fail (printf "ask.provider must be none, anthropic or openai, not %q" .provider) }}
+  {{- if not (has $askProvider (list "none" "anthropic" "openai")) }}
+  {{- fail (printf "ask.provider must be none, anthropic or openai, not %q" $askProvider) }}
   {{- end }}
-  {{- if and (eq .provider "anthropic") (not .apiKeyRef) }}
+  {{- if and (eq $askProvider "anthropic") (not .apiKeyRef) }}
   {{- fail "ask.provider=anthropic needs ask.apiKeyRef (a Secret holding the API key)" }}
   {{- end }}
-  {{- if and (eq .provider "openai") (or (not .model) (not .baseUrl)) }}
+  {{- if and (eq $askProvider "openai") (or (not .model) (not .baseUrl)) }}
   {{- fail "ask.provider=openai needs ask.model and ask.baseUrl" }}
   {{- end }}
   {{- if and .apiKeyRef (or (not .apiKeyRef.name) (not .apiKeyRef.key)) }}
@@ -190,9 +192,9 @@ spec:
             {{- /* R82's Ask box (docs/84 D8). Nothing renders while it is off,
                    so an install that never enables it is unchanged. */}}
             {{- with .Values.ask }}
-            {{- if ne .provider "none" }}
+            {{- if ne $askProvider "none" }}
             - name: GAWK_TELEMETRY_ASK_PROVIDER
-              value: {{ .provider | quote }}
+              value: {{ $askProvider | quote }}
             {{- if .model }}
             - name: GAWK_TELEMETRY_ASK_MODEL
               value: {{ .model | quote }}
@@ -237,7 +239,7 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
-            {{- if and (ne .Values.ask.provider "none") .Values.ask.apiKeyRef }}
+            {{- if and (ne $askProvider "none") .Values.ask.apiKeyRef }}
             # The provider key, as a file rather than an env var: the SQL
             # workers start with the service's environment.
             - name: ask-key
@@ -247,7 +249,7 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
-        {{- if and (ne .Values.ask.provider "none") .Values.ask.apiKeyRef }}
+        {{- if and (ne $askProvider "none") .Values.ask.apiKeyRef }}
         - name: ask-key
           secret:
             secretName: {{ .Values.ask.apiKeyRef.name | quote }}

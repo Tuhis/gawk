@@ -69,6 +69,7 @@ func (p *openAIProvider) Model() string { return p.model }
 type oaiMessage struct {
 	Role       string        `json:"role"`
 	Content    string        `json:"content"`
+	Refusal    string        `json:"refusal,omitempty"`
 	ToolCalls  []oaiToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string        `json:"tool_call_id,omitempty"`
 }
@@ -147,6 +148,10 @@ func (p *openAIProvider) Draft(ctx context.Context, req Request) (Reply, error) 
 			return reply, fmt.Errorf("%w: the reply ran past the server's output limit", ErrNoDraft)
 		}
 		m := choice.Message
+		if m.Refusal != "" {
+			// OpenAI's own API declines here, with finish_reason "stop".
+			return reply, fmt.Errorf("%w (%s)", ErrRefused, excerpt(m.Refusal))
+		}
 		if len(m.ToolCalls) == 0 {
 			reply.Text = m.Content
 			return reply, nil
@@ -182,6 +187,10 @@ func decodeArguments(raw json.RawMessage) json.RawMessage {
 
 // maxRetryWait bounds how long a Retry-After is honoured; past it, the
 // operator is better told.
+//
+// post retries a 429 or a 5xx, honouring Retry-After (seconds or an HTTP
+// date). A connection error is not retried: a local server that is down
+// stays down for the next few seconds, and the operator is told at once.
 const maxRetryWait = 20 * time.Second
 
 func (p *openAIProvider) post(ctx context.Context, body oaiRequest) (*oaiResponse, error) {
@@ -232,8 +241,14 @@ func (p *openAIProvider) post(ctx context.Context, body oaiRequest) (*oaiRespons
 }
 
 func retryAfter(h http.Header) time.Duration {
-	if s, err := strconv.Atoi(strings.TrimSpace(h.Get("Retry-After"))); err == nil && s >= 0 {
+	v := strings.TrimSpace(h.Get("Retry-After"))
+	if s, err := strconv.Atoi(v); err == nil && s >= 0 {
 		return time.Duration(s) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
 	}
 	return 0
 }
