@@ -143,11 +143,16 @@ first.
   stats key verbatim (docs/36 D15), and the learner records it as a field of
   `sessions.stats`. Fed to the model, a client-written "column name" could
   be an instruction, in every question's prompt and in binder errors. The
-  shadow catalogue, and so the prompt, keeps only identifier-shaped names,
-  under `sessions.stats` only the fields the schema tables define, and at
-  most 128 fields a struct and four levels (PR #706 review). A draft that
-  reads an uncatalogued stats key fails its check, and the console still
-  runs it.
+  shadow catalogue, and so the prompt, keeps only identifier-shaped names;
+  under `sessions.stats` only the fields the schema tables define, with
+  the object ones (`audioBuffer`, `featureGates`, … whose members a client
+  chooses) typed JSON, so no member name is carried and the prompt says to
+  read one with `->>` (which binds in the check and answers on the real
+  STRUCT); at most 128 fields in any other struct, four levels, and 16 KiB
+  of type per column (PR #706 review, rounds 1 and 2). A draft that reads
+  an uncatalogued stats key fails its check, and the console still runs it;
+  a member of an object field binds in the check whatever its name, so the
+  check cannot say whether that member exists.
 - **A draft is SQL the operator runs with the console's own reach.** The
   console's engine keeps external file access on (it reads the NDJSON), so
   any statement run from it — written by hand or drafted — can read files

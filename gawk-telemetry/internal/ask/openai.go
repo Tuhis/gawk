@@ -187,12 +187,12 @@ func decodeArguments(raw json.RawMessage) json.RawMessage {
 
 // maxRetryWait bounds how long a Retry-After is honoured; past it, the
 // operator is better told.
-//
-// post retries a 429 or a 5xx, honouring Retry-After (seconds or an HTTP
-// date). A connection error is not retried: a local server that is down
-// stays down for the next few seconds, and the operator is told at once.
 const maxRetryWait = 20 * time.Second
 
+// post sends one request, retrying a 429 or a 5xx and honouring Retry-After
+// (seconds or an HTTP date). A connection error is not retried: a local
+// server that is down stays down for the next few seconds, and the operator
+// is told at once.
 func (p *openAIProvider) post(ctx context.Context, body oaiRequest) (*oaiResponse, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {

@@ -80,6 +80,10 @@ func buildPrompt(in promptInput) string {
 			fmt.Fprintf(&b, "- %s %s\n", c.Name, c.Type)
 		}
 	}
+	if objs := sqlengine.StatsObjectFields(); len(objs) > 0 && in.Context == ContextFull {
+		fmt.Fprintf(&b, "\nIn sessions.stats, %s are JSON objects whose members are not listed: read one with stats.audioBuffer->>'member' (cast as needed).\n",
+			strings.Join(objs, ", "))
+	}
 	if in.Context == ContextFull {
 		b.WriteString("\n### Field catalogue (stats fields; they appear as sessions.stats.<f>, rollups.series.<f> or rollups.counters.<f>)\n")
 		for _, f := range schema.Catalogue() {

@@ -32,6 +32,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -116,7 +117,13 @@ func LearnedSchema(root string) ([]ViewSchema, error) {
 			if name == "sessions" && f.name == "stats" {
 				allow = statsFields
 			}
-			v.Columns = append(v.Columns, Column{f.name, safeType(f.t, allow, 1).emit()})
+			typ := safeType(f.t, allow, 1).emit()
+			if len(typ) > maxShadowTypeBytes {
+				// However a store grew it, no column outgrows its share
+				// of the prompt.
+				typ = jsonType
+			}
+			v.Columns = append(v.Columns, Column{f.name, typ})
 			if len(v.Columns) >= maxShadowFields {
 				break
 			}
@@ -136,9 +143,13 @@ func LearnedSchema(root string) ([]ViewSchema, error) {
 //
 //   - names shaped like identifiers (identifierRE), at every depth;
 //   - under `sessions.stats`, only the fields the schema tables define —
-//     the rest are what a client invented;
-//   - at most maxShadowFields per struct, and maxShadowDepth levels, below
-//     which a value is JSON.
+//     the rest are what a client invented — and an object field among them
+//     (KindObject, KindAny) as JSON: ingest keeps its members verbatim, so an
+//     identifier-shaped instruction would pass the pattern. `->>` reads a
+//     member in the check and on the real STRUCT alike;
+//   - at most maxShadowFields per struct the code does not bound (the stats
+//     allowlist does), maxShadowDepth levels, and maxShadowTypeBytes per
+//     column, past which the value is JSON.
 //
 // Every other struct is a Go type's (rollup.Row, relayscrape.Observation),
 // whose names the code writes. A draft that reads a dropped field fails to
@@ -146,20 +157,36 @@ func LearnedSchema(root string) ([]ViewSchema, error) {
 var identifierRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
 
 const (
-	maxShadowFields = 128
-	maxShadowDepth  = 4
+	maxShadowFields    = 128
+	maxShadowDepth     = 4
+	maxShadowTypeBytes = 16 << 10
 )
 
-// statsFields is every stats field the schema tables define, both roles.
-var statsFields = func() map[string]bool {
-	out := map[string]bool{}
+// statsFields is every stats field the schema tables define, both roles;
+// statsObjects the ones whose members a client chooses.
+var statsFields, statsObjects = func() (fields, objects map[string]bool) {
+	fields, objects = map[string]bool{}, map[string]bool{}
 	for _, table := range []map[string]schema.Kind{schema.ViewerFields, schema.BroadcasterFields} {
-		for name := range table {
-			out[name] = true
+		for name, k := range table {
+			fields[name] = true
+			if k == schema.KindObject || k == schema.KindAny {
+				objects[name] = true
+			}
 		}
 	}
-	return out
+	return fields, objects
 }()
+
+// StatsObjectFields are the `sessions.stats` fields the shadow catalogue
+// types as JSON, sorted, for the prompt to name.
+func StatsObjectFields() []string {
+	out := make([]string, 0, len(statsObjects))
+	for name := range statsObjects {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
 
 // safeType is t with only the names the shadow catalogue may carry. allow,
 // when set, is the only field names t's top level may keep.
@@ -174,8 +201,14 @@ func safeType(t *colType, allow map[string]bool, depth int) *colType {
 			if !identifierRE.MatchString(f.name) || (allow != nil && !allow[f.name]) {
 				continue
 			}
-			out.fields = append(out.fields, colField{f.name, safeType(f.t, nil, depth+1)})
-			if len(out.fields) >= maxShadowFields {
+			ft := safeType(f.t, nil, depth+1)
+			if allow != nil && statsObjects[f.name] {
+				ft = scalar(jsonType)
+			}
+			out.fields = append(out.fields, colField{f.name, ft})
+			// An allowlisted struct is bounded by its allowlist; capping it
+			// would cut catalogued fields (there are over 200 stats fields).
+			if allow == nil && len(out.fields) >= maxShadowFields {
 				break
 			}
 		}

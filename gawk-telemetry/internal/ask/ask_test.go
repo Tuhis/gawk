@@ -142,7 +142,7 @@ func TestPromptContents(t *testing.T) {
 	}
 	full := buildPrompt(promptInput{Today: "2026-11-05", Views: views, Context: ContextFull})
 	slim := buildPrompt(promptInput{Today: "2026-11-05", Views: views, Context: ContextSlim})
-	for _, want := range []string{"Today is 2026-11-05.", "- os VARCHAR", "- tMs BIGINT", "### Field catalogue", "receivedFps (", schema.Glossary, "### relay", "no columns learned yet"} {
+	for _, want := range []string{"Today is 2026-11-05.", "stats.audioBuffer->>'member'", "- os VARCHAR", "- tMs BIGINT", "### Field catalogue", "receivedFps (", schema.Glossary, "### relay", "no columns learned yet"} {
 		if !strings.Contains(full, want) {
 			t.Errorf("full prompt lacks %q", want)
 		}
