@@ -128,5 +128,11 @@
       ],
       enabled: false,
     },
+    {
+      description: "The compose voice lane stays on murmur 1.5 on purpose (the comment above its image line): the 1.6.870 image ignores MUMBLE_SUPERUSER_PASSWORD after its first start, which murmur-init's SuperUser login depends on, and 1.6.870 is a release candidate (1.6 RC 1) whose Docker tag carries no prerelease marker, so ignoreUnstable cannot see it. 1.5 patch releases still come through. No CI job runs this file, so a green Renovate PR here proves nothing (PR #625). Lift this rule only together with a lane that sets the password itself, verified with `docker compose -f docker-compose.yml -f dev/compose.voice.yml up`. The bridge's own 1.6 coverage lives in gawk-mumble-bridge/testdata/murmur.sh and e2e/voice.mjs, which Renovate does not manage.",
+      matchFileNames: ["dev/compose.voice.yml"],
+      matchPackageNames: ["mumblevoip/mumble-server"],
+      allowedVersions: "/^v1\\.5\\.\\d+$/",
+    },
   ],
 }
