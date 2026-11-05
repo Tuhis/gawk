@@ -429,6 +429,7 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     isFullscreen,
     tier,
     toggle: toggleFullscreen,
+    stallRecoveries,
   } = useFullscreen(rootRef, presentationVideo, { onNativeEnter, onNativeExit });
 
   // The native player has no access to the viewer's volume slider, so mirror it
@@ -557,6 +558,12 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     elementWidth: presentationVideo?.videoWidth ?? null,
     elementHeight: presentationVideo?.videoHeight ?? null,
     elementFrames: elementFramesRef.current,
+    ...((w) => ({
+      stallRecoveries: w?.recoveries ?? 0,
+      stallRecoverySeeks: w?.seeks ?? 0,
+      stallRecoveryPlayErrors: w?.playErrors ?? 0,
+      lastStallCause: w?.lastCause ?? null,
+    }))(stallRecoveries()),
   };
 
   // Rolling stat-sample window backing "Copy diagnostics" and the derived

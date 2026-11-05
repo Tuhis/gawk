@@ -252,3 +252,75 @@ describe('useFullscreen tier 3 (gated, no video)', () => {
     expect(result.current.tier).toBeNull();
   });
 });
+
+// The stall watchdog is tier-2 only: it runs between webkitbeginfullscreen and
+// webkitendfullscreen and nowhere else, so the armed-but-paused element
+// (docs/27 Decision 5) is never resumed behind the user's back.
+describe('useFullscreen tier 2 stall watchdog', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  // Mutable media state on top of fakeVideo's stub, for WebKit's underrun:
+  // paused + ended + starved, with newer data buffered ahead.
+  function starvable() {
+    const video = fakeVideo({ paused: true, buffered: [[0, 10]], currentTime: 9.95 });
+    const s = { paused: true, ended: false, readyState: 4, ranges: [[0, 10]] as Array<[number, number]> };
+    Object.defineProperty(video, 'paused', { configurable: true, get: () => s.paused });
+    Object.defineProperty(video, 'ended', { configurable: true, get: () => s.ended });
+    Object.defineProperty(video, 'readyState', { configurable: true, get: () => s.readyState });
+    Object.defineProperty(video, 'buffered', {
+      configurable: true,
+      get: () => ({ length: s.ranges.length, start: (i: number) => s.ranges[i][0], end: (i: number) => s.ranges[i][1] }),
+    });
+    video.play = vi.fn(() => {
+      s.paused = false;
+      return Promise.resolve();
+    });
+    const underrun = () => {
+      s.paused = true;
+      s.ended = true;
+      s.readyState = 2;
+      s.ranges = [
+        [0, 10],
+        [10.4, 13],
+      ];
+      video.dispatchEvent(new Event('pause'));
+      video.dispatchEvent(new Event('ended'));
+    };
+    return { video, underrun };
+  }
+
+  it('re-plays an underrun while native fullscreen is up, and counts it', async () => {
+    const { video, underrun } = starvable();
+    const { result } = renderHook(() => useFullscreen({ current: document.createElement('div') }, video));
+    act(() => result.current.toggle());
+    expect(video.play).toHaveBeenCalledTimes(1); // the entry gesture's own play()
+
+    act(() => underrun());
+    await act(() => vi.advanceTimersByTimeAsync(500));
+    expect(video.play).toHaveBeenCalledTimes(2);
+    expect(result.current.stallRecoveries()?.recoveries).toBe(1);
+  });
+
+  it('leaves the armed (not fullscreen) element paused', async () => {
+    const { video, underrun } = starvable();
+    const { result } = renderHook(() => useFullscreen({ current: document.createElement('div') }, video));
+    act(() => underrun());
+    await act(() => vi.advanceTimersByTimeAsync(2000));
+    expect(video.play).not.toHaveBeenCalled();
+    expect(result.current.stallRecoveries()?.recoveries ?? 0).toBe(0);
+  });
+
+  it('stands down when native fullscreen exits (system UI and toggle)', async () => {
+    for (const exit of ['system', 'toggle'] as const) {
+      const { video, underrun } = starvable();
+      const { result } = renderHook(() => useFullscreen({ current: document.createElement('div') }, video));
+      act(() => result.current.toggle());
+      if (exit === 'system') act(() => void video.dispatchEvent(new Event('webkitendfullscreen')));
+      else act(() => result.current.toggle());
+      act(() => underrun());
+      await act(() => vi.advanceTimersByTimeAsync(2000));
+      expect(video.play).toHaveBeenCalledTimes(1); // only the entry's
+    }
+  });
+});

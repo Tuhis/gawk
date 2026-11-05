@@ -729,6 +729,8 @@ first proved native fullscreen works at all — landing them separately keeps pa
    Production players all ship this (hls.js's gap-controller nudges, seeks over
    holes, and re-plays). A tier-2-only watchdog that seeks into the newest
    buffered range and re-`play()`s is the general answer to both.
+   **Fixed 2026-11-06, on-device confirmation pending** — see "Stall watchdog"
+   below.
 5. **MMS parking plus the bounded queue can manufacture holes while armed.**
    `pump()` parks on `streaming === false`; while armed the element is paused, so
    MMS's buffered-ahead only grows and it stops asking for data, while the queue
@@ -737,6 +739,60 @@ first proved native fullscreen works at all — landing them separately keeps pa
    segment and where appends resume. Either keep the armed playhead following the
    buffered edge so MMS never parks, or treat resume-after-park as a
    discontinuity and seek into the newest range.
+
+### Stall watchdog (fixed 2026-11-06, on-device pending)
+
+Item 4 above, built as `gawk-app/src/lib/presentationWatchdog.ts` and owned by
+`useFullscreen`. Modeled on hls.js's gap-controller. On `waiting`, `stalled`,
+`ended` or a starvation `pause` of the presentation `<video>` it reads the
+newest buffered range and:
+
+| Playhead | Action |
+| --- | --- |
+| behind the newest range's start (a hole, or an older range) | seek to the entry seek's live-edge landing (`max(start, end − rejoin offset)`), then `play()` if paused |
+| inside it, < 100 ms ahead | nothing yet — poll every 250 ms until media arrives (replaying into an empty buffer just stalls again) |
+| inside it with data ahead, `ended` | same seek first (`play()` on an ended element restarts from 0), then `play()` |
+| inside it with data ahead, paused | `play()` |
+| inside it with data ahead, playing but unmoved across one 250 ms retry | nudge 100 ms forward |
+
+`playing` stands it down. Constraints, each with a test
+(`presentationWatchdog.test.ts`, `useFullscreen.test.ts`):
+
+* **Tier 2 only, fullscreen interval only.** `useFullscreen` starts it on entry
+  (eagerly in the gesture, and again — idempotently — on
+  `webkitbeginfullscreen`) and stops it on both exit paths *before* their own
+  `pause()`. The armed-but-paused element (Decision 5) is never resumed: an
+  armed element that underruns stays exactly as paused as it was.
+* **Never fights a deliberate pause.** The system player has a pause button, and
+  with a sub-second live-edge cushion a user pause also lands near the buffered end, so
+  position cannot tell the two apart. The element's own state does: a pause is
+  starvation only with `ended`, `readyState < HAVE_FUTURE_DATA`, or an
+  unanswered `waiting`/`stalled` before it (covering an append that lands
+  between WebKit's underrun and the `pause` event's dispatch). Any other pause
+  is the user's, and the watchdog ignores everything until a `play` event. The
+  trade-off is deliberate: a starvation pause the element misreports as healthy
+  stays paused (today's behavior), rather than a user pause being undone.
+* **Cannot spin.** Recovery actions are spaced ≥ 1 s apart
+  (`RECOVERY_MIN_INTERVAL_MS`); the wait-for-data poll is not a recovery and
+  costs one timer.
+
+Counted into `presentationSurface` and the overlay's **Stall recoveries** row:
+`stallRecoveries`, `stallRecoverySeeks`, `stallRecoveryPlayErrors`,
+`lastStallCause`. A healthy session reads 0; a climbing count is a player that
+keeps stalling and being rescued — a symptom worth chasing (live-edge cushion,
+item 3; holes, item 5), not a fix.
+
+**What the on-device pass should look for.** This shipped with unit tests
+against a fake element only — Chrome does not pause on underrun, so CI cannot
+exercise it (Decision 10's boundary). On an iPhone in native fullscreen:
+(1) a stream that previously paused after 1–10 s keeps playing, and Copy
+diagnostics shows `stallRecoveries` climbing with `lastStallCause` `ended` or
+`pause` — proof the watchdog is what kept it alive; (2) the system pause button
+keeps the video paused (no auto-resume) until play is tapped; (3) a healthy
+long session reads `stallRecoveries: 0`; (4) exiting fullscreen leaves the
+hidden element paused, with the counter frozen; (5) `stallRecoveryPlayErrors`
+stays 0 — non-zero means WebKit refused a non-gesture `play()` in native
+fullscreen, which would make the play half of this design moot on iOS.
 
 ## On-device findings (MF5 pass 3, 2026-07-26)
 
@@ -956,10 +1012,12 @@ against the homelab deployment:
 6. **Regression, non-gated**: desktop Chrome + Firefox — fullscreen unchanged,
    DOM has no video element, worker traffic unchanged (assert via logging);
    iPad — tier 1, R22 inert.
-7. **Cost sanity**: ~20 min fullscreen session — battery/thermal; if
+7. **Stall watchdog**: the checks under "Stall watchdog" above (recoveries
+   counted, system pause respected, zero on a healthy session).
+8. **Cost sanity**: ~20 min fullscreen session — battery/thermal; if
    concerning, apply the Decision-5 deferred-arm and/or suspend-inline-decode
    optimizations and re-measure.
-8. Record findings + verdicts here; sync README/ROADMAP/CLAUDE; replace the
+9. Record findings + verdicts here; sync README/ROADMAP/CLAUDE; replace the
    R16 BUGS.md entry.
 
 ## Non-goals

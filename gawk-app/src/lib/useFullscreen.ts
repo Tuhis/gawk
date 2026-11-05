@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import type { FullscreenTier } from './featureGates';
+import { PresentationWatchdog, type PresentationWatchdogStats } from './presentationWatchdog';
 
 // Fullscreen for a target element, in tiers. Where the Element Fullscreen API
 // exists (desktop, Android, iPad) tier 1 is the whole feature. On iPhone
@@ -13,6 +14,11 @@ import type { FullscreenTier } from './featureGates';
 // State tracking is per tier: `fullscreenchange` (tier 1),
 // `webkitbeginfullscreen`/`webkitendfullscreen` on the video (tier 2 — the
 // native fullscreen does NOT fire fullscreenchange), local state (tier 3).
+//
+// Tier 2 also runs the stall watchdog (presentationWatchdog.ts) for exactly
+// the native-fullscreen interval: WebKit pauses an underrun MSE element where
+// Chromium would resume it, and the system player gives gawk no other way in.
+// It never runs while the element is merely armed (docs/27 Decision 5).
 
 // The device gate: no Element.requestFullscreen is effectively an iPhone.
 export function elementFullscreenAvailable(): boolean {
@@ -89,6 +95,14 @@ export function useFullscreen(
   const stateRef = useRef(state);
   stateRef.current = state;
 
+  // One watchdog per hook, re-attached as the presentation video changes, so
+  // its recovery counters describe the whole viewing session.
+  const [watchdog] = useState(() => new PresentationWatchdog({ rejoinS: LIVE_EDGE_REJOIN_S }));
+  const stallRecoveries = useCallback(
+    (): PresentationWatchdogStats | null => (tier1Available ? null : watchdog.getStats()),
+    [tier1Available, watchdog],
+  );
+
   // Tier 1 tracking.
   useEffect(() => {
     if (!tier1Available) return;
@@ -107,8 +121,14 @@ export function useFullscreen(
   // second decode burning battery under the inline canvas.
   useEffect(() => {
     if (tier1Available || !presentationVideo) return;
-    const onBegin = () => setState({ fullscreen: true, tier: 'video' });
+    watchdog.attach(presentationVideo);
+    const onBegin = () => {
+      watchdog.start();
+      setState({ fullscreen: true, tier: 'video' });
+    };
     const onEnd = () => {
+      // Before the pause: the watchdog must never see its own session's exit.
+      watchdog.stop();
       try {
         presentationVideo.pause();
       } catch {
@@ -124,8 +144,9 @@ export function useFullscreen(
     return () => {
       presentationVideo.removeEventListener('webkitbeginfullscreen', onBegin);
       presentationVideo.removeEventListener('webkitendfullscreen', onEnd);
+      watchdog.detach();
     };
-  }, [tier1Available, presentationVideo]);
+  }, [tier1Available, presentationVideo, watchdog]);
 
   const toggle = useCallback(() => {
     if (tier1Available) {
@@ -141,6 +162,7 @@ export function useFullscreen(
     if (current.fullscreen) {
       if (current.tier === 'video') {
         const video = presentationVideo as WebKitVideoElement | null;
+        watchdog.stop();
         video?.webkitExitFullscreen?.();
         // webkitendfullscreen confirms (and pauses the hidden video); update
         // eagerly so the button follows the tap even if the event is late,
@@ -177,6 +199,9 @@ export function useFullscreen(
         // what the native player must not be handed.
         if (video.paused) void video.play()?.catch?.(() => {});
         video.webkitEnterFullscreen();
+        // Eagerly, like the state: webkitbeginfullscreen confirms (start() is
+        // idempotent), but a late or missing event must not leave it unguarded.
+        watchdog.start();
         setState({ fullscreen: true, tier: 'video' });
         return;
       } catch {
@@ -186,7 +211,14 @@ export function useFullscreen(
 
     // Tier 3: CSS pseudo-fullscreen. The caller styles its root off `tier`.
     setState({ fullscreen: true, tier: 'pseudo' });
-  }, [tier1Available, ref, presentationVideo]);
+  }, [tier1Available, ref, presentationVideo, watchdog]);
 
-  return { isFullscreen: state.fullscreen, tier: state.fullscreen ? state.tier : null, toggle };
+  return {
+    isFullscreen: state.fullscreen,
+    tier: state.fullscreen ? state.tier : null,
+    toggle,
+    // The tier-2 watchdog's counters, for presentationSurface (null on tier-1
+    // devices, where it never runs).
+    stallRecoveries,
+  };
 }

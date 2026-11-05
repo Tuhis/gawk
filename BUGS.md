@@ -404,26 +404,6 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   bought latency for smoothness. Since docs/27 finding 2 muxed audio onto the
   same timeline, raising it no longer costs lip-sync. See docs/27 "Still open".
 
-## iPhone native fullscreen: nothing recovers a stalled presentation element
-
-- **Found**: 2026-07-26, same investigation. Diagnosed by code reading.
-- **Impact**: iPhone native fullscreen only. Any stall that does happen is
-  permanent until the user taps the native play button — which is what made
-  docs/27 finding 1 so visible, and what would make the entry above visible too.
-- **Cause**: no listener for `waiting` / `stalled` / `ended` / unexpected
-  `pause` exists on the presentation `<video>`; the only listeners are
-  `webkitbeginfullscreen`/`webkitendfullscreen` (`lib/useFullscreen.ts`) and
-  rVFC frame counting (`ViewerScreen.tsx`). WebKit pauses and fires `ended` on
-  an MSE buffer underrun where Chromium stalls and resumes (docs/27 finding 1),
-  so "the element recovers itself" is not an assumption that holds here.
-- **Fix would start**: a tier-2-only watchdog — on those events, if the playhead
-  is behind the newest buffered range, seek into it and `play()` again, counting
-  recoveries into `presentationSurface` so a recovering-but-unhealthy player is
-  distinguishable from a healthy one. This is what production players ship
-  (hls.js's gap-controller nudges, seeks over holes, and re-plays). It is also
-  the general remedy for the hole entry below, which is why it is worth doing
-  even if the cushion fix alone appears to settle the symptom.
-
 ## iPhone native fullscreen: MMS parking can leave holes in the buffered timeline
 
 - **Found**: 2026-07-26, same investigation. Diagnosed by code reading; the
@@ -465,8 +445,10 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 - **Fix would start**: either keep the armed playhead following the buffered
   edge so MMS never parks and the buffer stays bounded, or treat
   resume-after-park as a discontinuity — discard the stale backlog, re-anchor,
-  and seek the element into the newest range. The watchdog above covers the
-  symptom generically; this entry is about not manufacturing the hole.
+  and seek the element into the newest range. The stall watchdog (docs/27
+  "Stall watchdog") covers the symptom generically — it seeks over a hole into
+  the newest range — so a hole now costs a recovery, not the session; this
+  entry is about not manufacturing the hole.
 
 ## Resilient/Deep-buffer viewers lose video entirely to the Safari stream wedge
 
