@@ -54,8 +54,10 @@ func TestRegistryOptionsCarryAllLimits(t *testing.T) {
 		MaxBandwidthBytes:             1250000,
 		DVRAudio:                      true,
 		LiveEdgeAudioOnReliableStream: true,
+		StripedDelivery:               true,
 		UplinkCarriers:                true,
 		UplinkMaxBitrateBytes:         12_500_000,
+		StatsKey:                      bytes.Repeat([]byte{0x5A}, 32),
 	}
 	want := hub.Options{
 		MaxSubscribers:                7,
@@ -67,8 +69,10 @@ func TestRegistryOptionsCarryAllLimits(t *testing.T) {
 		MaxBandwidthBytes:             1250000,
 		DVRAudio:                      true,
 		LiveEdgeAudioOnReliableStream: true,
+		StripedDelivery:               true,
 		UplinkCarriers:                true,
 		UplinkMaxBitrateBytes:         12_500_000,
+		StatsKey:                      bytes.Repeat([]byte{0x5A}, 32),
 	}
 	// DeepEqual, not ==: Options grew func-typed cluster hooks in R17 W3
 	// (nil here on both sides — registryOptions never sets them; Run wires

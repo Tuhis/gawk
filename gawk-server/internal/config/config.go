@@ -169,8 +169,9 @@ type Config struct {
 	// best-effort under etp=Cluster.
 	TrustedCIDRs []*net.IPNet
 
-	// StatsKey keys the /statusz + metrics broadcast-ID obfuscation: 32 bytes
-	// from 64 hex chars, shared fleet-wide so one broadcast keeps one
+	// StatsKey keys the /statusz + metrics broadcast-ID obfuscation, and
+	// since R36 the /statusz stripeOwner: 32 bytes from 64 hex chars, shared
+	// fleet-wide so one broadcast (or one striped viewer) keeps one
 	// obfuscated identity across pods. Empty = per-process random.
 	StatsKey []byte
 
@@ -531,7 +532,7 @@ func parse(args []string, getenv func(string) string, p Profile, register func(f
 	trustedCIDRs := fs.String("trusted-cidrs", env("GAWK_TRUSTED_CIDRS", ""),
 		"comma-separated CIDRs that bypass the per-IP connection rate limiter (node/pod CIDRs under SNAT)")
 	statsKey := fs.String("stats-key", env("GAWK_STATS_KEY", ""),
-		"statusz/metrics broadcast-ID obfuscation key as 64 hex chars (32 bytes), shared fleet-wide; empty = per-process random")
+		"statusz/metrics obfuscation key (broadcast IDs, stripe owners) as 64 hex chars (32 bytes), shared fleet-wide; empty = per-process random")
 	telemetryKey := fs.String("telemetry-key", env("GAWK_TELEMETRY_KEY", ""),
 		"R28 telemetry session-token HMAC key as 64 hex chars (32 bytes), shared with the gawk-telemetry service; empty disables telemetry entirely (no hello is sent)")
 	telemetryReportInterval := fs.String("telemetry-report-interval", env("GAWK_TELEMETRY_REPORT_INTERVAL", "2s"),

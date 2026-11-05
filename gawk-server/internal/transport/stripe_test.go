@@ -1,7 +1,9 @@
 package transport
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"testing"
@@ -10,6 +12,7 @@ import (
 	"github.com/quic-go/webtransport-go"
 
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
+	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
@@ -79,6 +82,73 @@ func TestStripeLegRejectedWhenDisabled(t *testing.T) {
 	if _, sess, err := dialOnce(t, ctx, url, clientTLS); err == nil {
 		sess.CloseWithError(0, "")
 		t.Fatal("leg dial accepted on a striping-disabled relay, want 400")
+	}
+}
+
+// TestStripeOwnerOnStatusz (R36) is the dial-to-/statusz proof: the ?owner=
+// token a viewer dials its primary and legs with surfaces as one shared
+// stripeOwner on exactly those rows, another viewer's as another, an unowned
+// viewer's as none, and the token itself appears nowhere in the document.
+func TestStripeOwnerOnStatusz(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	port, clientTLS, r, _ := startTestServerCfg(t, ctx, stripedTestConfig(15))
+	pub, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
+	defer pub.CloseWithError(0, "")
+
+	base := fmt.Sprintf("https://127.0.0.1:%d/subscribe/%s", port, id)
+	const ownerA, ownerB = "aabbccdd00112233", "0123456789abcdef"
+	for _, q := range []string{
+		"?owner=" + ownerA, "?stripe=2&leg=0&owner=" + ownerA, "?stripe=2&leg=1&owner=" + ownerA,
+		"?owner=" + ownerB,
+		"", // unowned
+	} {
+		sess := dial(t, ctx, base+q, clientTLS)
+		defer sess.CloseWithError(0, "")
+	}
+	waitFor(t, 5*time.Second, func() bool { return r.Stats().Totals.Subscribers == 5 }, "all five sessions registered")
+
+	_, body := h3Get(t, ctx, clientTLS, fmt.Sprintf("https://127.0.0.1:%d/statusz", port))
+	for _, tok := range []string{ownerA, ownerB} {
+		if bytes.Contains(body, []byte(tok)) {
+			t.Fatalf("/statusz carries the raw owner token %q", tok)
+		}
+	}
+	var st hub.RegistryStats
+	if err := json.Unmarshal(body, &st); err != nil {
+		t.Fatalf("unmarshal /statusz: %v", err)
+	}
+	// Group the rows by stripeOwner: viewer A is one primary + two legs,
+	// viewer B one primary, the unowned viewer the "" group.
+	type group struct{ primaries, legs int }
+	groups := map[string]group{}
+	for _, d := range st.Broadcasts[r.ObfuscateID(id)].SubscriberDetails {
+		g := groups[d.StripeOwner]
+		if d.StripeLeg {
+			g.legs++
+		} else {
+			g.primaries++
+		}
+		groups[d.StripeOwner] = g
+	}
+	var striped, single int
+	for owner, g := range groups {
+		switch {
+		case owner == "":
+			if g != (group{primaries: 1}) {
+				t.Errorf("unowned rows = %+v, want one primary", g)
+			}
+		case g == (group{primaries: 1, legs: 2}):
+			striped++
+		case g == (group{primaries: 1}):
+			single++
+		default:
+			t.Errorf("stripeOwner %q groups %+v", owner, g)
+		}
+	}
+	if len(groups) != 3 || striped != 1 || single != 1 {
+		t.Fatalf("stripeOwner groups = %+v; want viewer A's three rows, viewer B's one, one unowned", groups)
 	}
 }
 

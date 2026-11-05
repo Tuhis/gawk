@@ -196,8 +196,8 @@ type Options struct {
 	ParityDefault int
 
 	// StripedDelivery enables stripe legs (docs/35). The transport owns the
-	// dial gate and capability bit; this mirror keeps registryOptions complete
-	// (guarded by the carry-all-limits test).
+	// dial gate and capability bit; the hub reads it only to publish
+	// stripeOwner on /statusz (R36), which it omits with striping off.
 	StripedDelivery bool
 
 	// UplinkCarriers accepts reliable carrier streams from publishers (R73,
@@ -362,11 +362,17 @@ type SubscriberStats struct {
 	ParityRequested int `json:"parityRequested,omitempty"`
 	// Striped delivery (docs/35). StripeLeg marks a leg session, with its
 	// (member, n) filter; Striped marks a primary whose deltas its legs
-	// currently carry, with the width the viewer last reported.
+	// currently carry, with the width the viewer last reported. StripeOwner
+	// (R36) joins one viewer's sessions: every session dialed with the same
+	// ?owner= token, its primary and each of its legs, carries the same value
+	// on every pod of the fleet. A keyed MAC of the token
+	// (Registry.stripeOwnerKey), never the token; omitted on unowned sessions
+	// and on a relay with striping off.
 	StripeLeg             bool   `json:"stripeLeg,omitempty"`
 	StripeN               int    `json:"stripeN,omitempty"`
 	StripeMember          int    `json:"stripeMember,omitempty"`
 	Striped               bool   `json:"striped,omitempty"`
+	StripeOwner           string `json:"stripeOwner,omitempty"`
 	CarrierStreams        uint64 `json:"carrierStreams,omitempty"`
 	CarrierRecords        uint64 `json:"carrierRecords,omitempty"`
 	CarrierRecordsDropped uint64 `json:"carrierRecordsDropped,omitempty"`
@@ -1669,6 +1675,13 @@ func (r *Registry) subscribe(id string, conn Conn, internal, reliable bool) (*Su
 
 func (r *Registry) subscribeOpts(id string, conn Conn, so subscribeOpts) (*Subscriber, error) {
 	internal, reliable := so.internal, so.reliable
+	// Off the lock: statsKey and opts are fixed at construction. With
+	// striping off no leg can exist to join, and /statusz stays as it was
+	// before R30 (docs/35 ST3), so the key is not published.
+	var ownerKey string
+	if so.owner != "" && r.opts.StripedDelivery {
+		ownerKey = r.stripeOwnerKey(so.owner)
+	}
 	r.mu.Lock()
 
 	normID, err := broadcastid.Normalize(id)
@@ -1704,6 +1717,7 @@ func (r *Registry) subscribeOpts(id string, conn Conn, so subscribeOpts) (*Subsc
 		stripeN:         so.stripeN,
 		stripeMember:    so.stripeMember,
 		owner:           so.owner,
+		ownerKey:        ownerKey,
 		leg:             so.leg,
 		legCarrier:      so.legCarrier,
 		legOpts:         so.legOpts,
@@ -1803,17 +1817,24 @@ func (r *Registry) ObfuscateID(id string) string {
 }
 
 // Stats returns a point-in-time snapshot of registry state.
-func (r *Registry) Stats() RegistryStats { return r.statsWith(r.ObfuscateID) }
+func (r *Registry) Stats() RegistryStats { return r.statsWith(r.ObfuscateID, true) }
 
 // BroadcastStatsByRawID is Stats().Broadcasts keyed by the RAW broadcast ID
 // rather than its HMAC. Only for a PoP's link home (docs/78 D7), which
 // already carries raw IDs and where home re-keys them with its own HMAC.
 // Never expose it: raw IDs are joinable.
+//
+// Its subscriber rows carry no stripeOwner. That value is MACed with this
+// registry's statsKey, and a PoP's is its own persisted key, never home's
+// fleet key, so it would join nothing home keys; home cannot re-key it
+// either without the raw token crossing the link.
 func (r *Registry) BroadcastStatsByRawID() map[string]Stats {
-	return r.statsWith(func(id string) string { return id }).Broadcasts
+	return r.statsWith(func(id string) string { return id }, false).Broadcasts
 }
 
-func (r *Registry) statsWith(key func(id string) string) RegistryStats {
+// statsWith builds the snapshot with each broadcast keyed by key(id).
+// ownerKeys publishes each subscriber's stripeOwner.
+func (r *Registry) statsWith(key func(id string) string, ownerKeys bool) RegistryStats {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -1877,6 +1898,10 @@ func (r *Registry) statsWith(key func(id string) string) RegistryStats {
 				stripedPrimaries++
 			}
 			stripeTransitions += s.stripeTransitions.Load()
+			var stripeOwner string
+			if ownerKeys {
+				stripeOwner = s.ownerKey
+			}
 			subDrops := s.keyframeDrops()
 			dropped += s.dropped.Load()
 			kfSent += s.keyframesSent.Load()
@@ -1915,6 +1940,7 @@ func (r *Registry) statsWith(key func(id string) string) RegistryStats {
 				StripeN:               stripeStatN(s, striped),
 				StripeMember:          int(s.stripeMember),
 				Striped:               striped,
+				StripeOwner:           stripeOwner,
 			})
 		}
 		totals.DatagramsDropped += dropped
@@ -2966,6 +2992,10 @@ type Subscriber struct {
 	// owner is the viewer-minted session-group token, empty on unowned
 	// sessions. Read-only after subscribe — no lock.
 	owner string
+	// ownerKey is owner's /statusz stripeOwner (stripeOwnerKey), computed
+	// once at subscribe so a stats poll adds no MAC under the registry
+	// lock. Empty when owner is, and on a relay with striping off. Read-only.
+	ownerKey string
 	// legLastInbound is a stripe leg's liveness-lease stamp (UnixNano),
 	// renewed by NoteLegAlive and read by legLeaseWatch — hence atomic.
 	legLastInbound atomic.Int64

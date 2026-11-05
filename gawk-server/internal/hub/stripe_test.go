@@ -1,7 +1,10 @@
 package hub
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"regexp"
 	"testing"
 	"time"
 
@@ -470,6 +473,169 @@ func TestStripeSubscriberDetails(t *testing.T) {
 	}
 	if !sawLeg || !sawPrimary {
 		t.Fatalf("details missing a row: leg=%v primary=%v", sawLeg, sawPrimary)
+	}
+}
+
+// stripeOwnerFormat is ObfuscateID's shape: the first 6 MAC bytes, hex.
+var stripeOwnerFormat = regexp.MustCompile(`^[0-9a-f]{12}$`)
+
+// stripeOwnersByKey maps each subscriber row's statsKey to its stripeOwner.
+func stripeOwnersByKey(stats RegistryStats) map[string]string {
+	out := map[string]string{}
+	for _, b := range stats.Broadcasts {
+		for _, d := range b.SubscriberDetails {
+			out[d.Key] = d.StripeOwner
+		}
+	}
+	return out
+}
+
+// subscribed returns a func that fails t on a subscribe error and closes
+// the subscriber at cleanup, so a call reads must(r.Subscribe…(…)).
+func subscribed(t *testing.T) func(*Subscriber, error) *Subscriber {
+	return func(s *Subscriber, err error) *Subscriber {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("subscribe: %v", err)
+		}
+		t.Cleanup(s.Close)
+		return s
+	}
+}
+
+// TestStripeOwnerJoinsViewerSessions (R36): every session a viewer dialed
+// with one ?owner= token — its primary and each of its legs — carries the
+// same stripeOwner, another viewer's differs, an unowned session carries
+// none, and the token itself never reaches the /statusz JSON.
+func TestStripeOwnerJoinsViewerSessions(t *testing.T) {
+	must := subscribed(t)
+	r := NewRegistry(discardLog, Options{ParityDefault: 2, StripedDelivery: true, MaxSubscribers: 16})
+	id, _, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	const ownerA, ownerB = testOwner, "0123456789abcdef"
+	primaryA := must(r.SubscribeParity(id, &fakeSender{}, 2, ownerA))
+	legA0 := must(r.SubscribeStripeLeg(id, &fakeSender{}, StripeLeg{N: 2, Member: 0, Owner: ownerA}, 2))
+	legA1 := must(r.SubscribeStripeLeg(id, &fakeSender{}, StripeLeg{N: 2, Member: 1, Owner: ownerA}, 2))
+	primaryB := must(r.SubscribeParity(id, &fakeSender{}, 2, ownerB))
+	legB := must(r.SubscribeStripeLeg(id, &fakeSender{}, StripeLeg{N: 3, Member: 2, Owner: ownerB}, 2))
+	unowned := must(r.SubscribeParity(id, &fakeSender{}, 2, ""))
+	primaryA.ApplyStripeState(wire.StripeState{Striped: true, StripeN: 2})
+
+	owners := stripeOwnersByKey(r.Stats())
+	keyA, keyB := owners[primaryA.statsKey], owners[primaryB.statsKey]
+	if !stripeOwnerFormat.MatchString(keyA) || !stripeOwnerFormat.MatchString(keyB) {
+		t.Fatalf("primary stripeOwners = %q, %q; want 12 lowercase hex each", keyA, keyB)
+	}
+	if got0, got1 := owners[legA0.statsKey], owners[legA1.statsKey]; got0 != keyA || got1 != keyA {
+		t.Errorf("viewer A's legs stripeOwner = %q, %q; want the primary's %q", got0, got1, keyA)
+	}
+	if got := owners[legB.statsKey]; got != keyB {
+		t.Errorf("viewer B's leg stripeOwner = %q, want the primary's %q", got, keyB)
+	}
+	if keyA == keyB {
+		t.Errorf("two viewers share stripeOwner %q", keyA)
+	}
+	if got := owners[unowned.statsKey]; got != "" {
+		t.Errorf("unowned primary stripeOwner = %q, want none", got)
+	}
+	// Domain separation: under the same statsKey, an owner key is never the
+	// broadcast key of a string equal to the token.
+	if keyA == r.ObfuscateID(ownerA) {
+		t.Errorf("stripeOwner %q equals ObfuscateID of the token: not domain-separated", keyA)
+	}
+
+	body, err := json.Marshal(r.Stats())
+	if err != nil {
+		t.Fatalf("marshal stats: %v", err)
+	}
+	for _, tok := range []string{ownerA, ownerB} {
+		if bytes.Contains(body, []byte(tok)) {
+			t.Errorf("/statusz JSON carries the raw owner token %q", tok)
+		}
+	}
+	if want := `"stripeOwner":"` + keyA + `"`; !bytes.Contains(body, []byte(want)) {
+		t.Errorf("/statusz JSON lacks %s", want)
+	}
+}
+
+// TestStripeOwnerKeyIsFleetShared (R36): stripeOwner is keyed with the
+// fleet-shared StatsKey (docs/22), so a viewer whose legs land on another pod
+// than its primary gets one value on every pod — the cross-pod join the
+// telemetry service makes — while a relay with another key cannot produce it.
+func TestStripeOwnerKeyIsFleetShared(t *testing.T) {
+	must := subscribed(t)
+	fleetKey := bytes.Repeat([]byte{0xA1}, 32)
+	otherKey := bytes.Repeat([]byte{0xB2}, 32)
+	ownerKeyOn := func(statsKey []byte, leg bool) string {
+		t.Helper()
+		r := NewRegistry(discardLog, Options{StripedDelivery: true, StatsKey: statsKey})
+		id, _, err := r.StartPublish("")
+		if err != nil {
+			t.Fatalf("StartPublish: %v", err)
+		}
+		var s *Subscriber
+		if leg {
+			s = must(r.SubscribeStripeLeg(id, &fakeSender{}, StripeLeg{N: 3, Member: 1, Owner: testOwner}, 0))
+		} else {
+			s = must(r.SubscribeParity(id, &fakeSender{}, 0, testOwner))
+		}
+		return stripeOwnersByKey(r.Stats())[s.statsKey]
+	}
+	primaryPod := ownerKeyOn(fleetKey, false)
+	legPod := ownerKeyOn(fleetKey, true)
+	if primaryPod == "" || primaryPod != legPod {
+		t.Fatalf("same fleet key: primary pod %q, leg pod %q; want equal and non-empty", primaryPod, legPod)
+	}
+	if foreign := ownerKeyOn(otherKey, true); foreign == "" || foreign == primaryPod {
+		t.Fatalf("different key: %q vs the fleet's %q; want a different non-empty value", foreign, primaryPod)
+	}
+}
+
+// TestStripeOwnerOmittedWhenStripingOff: with -striped-delivery=false
+// /statusz stays as it was before R30 (docs/35 ST3). A primary still records
+// its ?owner= token there, but no leg can exist to join it to.
+func TestStripeOwnerOmittedWhenStripingOff(t *testing.T) {
+	must := subscribed(t)
+	r := NewRegistry(discardLog, Options{})
+	id, _, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	must(r.SubscribeParity(id, &fakeSender{}, 0, testOwner))
+	body, err := json.Marshal(r.Stats())
+	if err != nil {
+		t.Fatalf("marshal stats: %v", err)
+	}
+	if bytes.Contains(body, []byte("stripeOwner")) {
+		t.Fatalf("striping-off /statusz carries stripeOwner: %s", body)
+	}
+}
+
+// TestBroadcastStatsByRawIDOmitsStripeOwner: a PoP's link-home snapshot
+// (docs/78 D7) carries no stripeOwner. The PoP's statsKey is its own, never
+// home's fleet key, so its value could not join anything home keys.
+func TestBroadcastStatsByRawIDOmitsStripeOwner(t *testing.T) {
+	must := subscribed(t)
+	r := NewRegistry(discardLog, Options{StripedDelivery: true})
+	id, _, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	primary := must(r.SubscribeParity(id, &fakeSender{}, 0, testOwner))
+	must(r.SubscribeStripeLeg(id, &fakeSender{}, StripeLeg{N: 2, Member: 0, Owner: testOwner}, 0))
+	if stripeOwnersByKey(r.Stats())[primary.statsKey] == "" {
+		t.Fatal("Stats() carries no stripeOwner: the setup proves nothing")
+	}
+	raw := r.BroadcastStatsByRawID()
+	if len(raw[id].SubscriberDetails) != 2 {
+		t.Fatalf("raw snapshot has %d subscriber rows, want 2", len(raw[id].SubscriberDetails))
+	}
+	for _, d := range raw[id].SubscriberDetails {
+		if d.StripeOwner != "" {
+			t.Errorf("raw-ID snapshot row %s carries stripeOwner %q", d.Key, d.StripeOwner)
+		}
 	}
 }
 
