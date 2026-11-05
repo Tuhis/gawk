@@ -2,8 +2,8 @@
 
 High-level roadmap for the work that follows v0.5. The v0.x milestones
 (loopback → hello-world → single-client → fan-out → resilience + deploy,
-chunks A1–D4) are complete — see [`docs/implementation-tasks.md`](docs/implementation-tasks.md)
-and the [Project status section of the README](README.md#project-status). This document is
+chunks A1–D4) are complete — see [`docs/implementation-tasks.md`](docs/implementation-tasks.md).
+This document is
 the equivalent forward-looking view: what we build next, in what order, and
 why.
 
