@@ -36,11 +36,39 @@ const BOOT_TIMEOUT_MS = 2000;
 // How long stop() waits for the worker's 'ended' before force-terminating.
 const STOP_TIMEOUT_MS = 3000;
 
+// Worker liveness. A killed worker (renderer OOM, hard crash) fires no event
+// at all, so the session watches the pipeline's stats heartbeat instead: once
+// started, it posts stats every 500 ms until teardown — through transport
+// auto-resume too. WORKER_SILENCE_MS without one (ten missed beats) means the
+// worker is gone.
+export const WORKER_SILENCE_MS = 5000;
+const LIVENESS_CHECK_MS = 1000;
+// A watchdog tick this late means the main thread itself was stalled (system
+// sleep, a frozen page, a debugger pause) — the worker's stats may be queued
+// behind it, so the silence window restarts instead of judging.
+const LIVENESS_STALL_MS = 3 * LIVENESS_CHECK_MS;
+export const WORKER_SILENCE_MESSAGE =
+  'The broadcast stopped responding (its background worker was lost), so viewers no longer get video. Start again to continue.';
+
+export interface WorkerLivenessOptions {
+  // Whether the page is hidden. While it is, no verdict: a hidden tab may
+  // throttle the worker's timers (and freezes on some browsers), and nobody
+  // is looking at the LIVE screen then anyway. The check resumes with a
+  // fresh window once the page is visible, so a dead worker in a background
+  // tab is caught within WORKER_SILENCE_MS of the broadcaster coming back.
+  isHidden?: () => boolean;
+}
+
+function documentHidden(): boolean {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+}
+
 // The slice of Worker the session touches, injectable for tests.
 export interface WorkerLike {
   postMessage(message: unknown, transfer?: Transferable[]): void;
   terminate(): void;
   onmessage: ((e: MessageEvent) => void) | null;
+  onerror: ((e: ErrorEvent) => void) | null;
 }
 
 export type AcquireDisplayStream = (
@@ -71,6 +99,12 @@ export class WorkerBroadcastSession implements BroadcastSessionLike {
   private startResolve: (() => void) | null = null;
   private startReject: ((e: Error) => void) | null = null;
   private stopWaiter: (() => void) | null = null;
+  private stopping = false;
+  private isHidden: () => boolean;
+  private livenessTimer: ReturnType<typeof setInterval> | null = null;
+  // Last heartbeat (or window restart) and last watchdog tick, Date.now().
+  private lastHeardAt = 0;
+  private lastCheckAt = 0;
 
   constructor(
     worker: WorkerLike,
@@ -80,6 +114,7 @@ export class WorkerBroadcastSession implements BroadcastSessionLike {
     callbacks: BroadcastCallbacks,
     broadcastId?: string,
     acquire: AcquireDisplayStream = acquireDisplayStream,
+    liveness: WorkerLivenessOptions = {},
   ) {
     this.worker = worker;
     this.config = config;
@@ -88,7 +123,10 @@ export class WorkerBroadcastSession implements BroadcastSessionLike {
     this.cb = callbacks;
     this.broadcastId = broadcastId;
     this.acquire = acquire;
+    this.isHidden = liveness.isHidden ?? documentHidden;
     worker.onmessage = (e: MessageEvent) => this.onMessage(e.data as BroadcastWorkerOutbound);
+    // Replaces waitForBoot's handler, whose post-boot resolve is a no-op.
+    worker.onerror = (e: ErrorEvent) => this.onWorkerError(e);
   }
 
   setLadder(selection: ResolutionSelection, framerate: FramerateSelection): void {
@@ -122,6 +160,10 @@ export class WorkerBroadcastSession implements BroadcastSessionLike {
 
   async stop(opts?: BroadcastStopOptions): Promise<void> {
     if (this.disposed || this.ended) return;
+    // The worker goes quiet while it tears down; stop()'s own timeout covers
+    // a worker that never answers, so the liveness check stands down.
+    this.stopping = true;
+    this.disarmLiveness();
     // Kill the capture indicator immediately; the worker stops its clone in
     // pipeline teardown.
     this.releaseLocalMedia();
@@ -154,6 +196,7 @@ export class WorkerBroadcastSession implements BroadcastSessionLike {
       case 'started': {
         const resolve = this.startResolve;
         this.startResolve = this.startReject = null;
+        if (!this.stopping) this.armLiveness();
         resolve?.();
         return;
       }
@@ -197,6 +240,7 @@ export class WorkerBroadcastSession implements BroadcastSessionLike {
         this.cb.onResumed?.();
         return;
       case 'stats':
+        this.lastHeardAt = Date.now();
         this.cb.onStats(msg.stats);
         return;
       case 'error':
@@ -206,6 +250,59 @@ export class WorkerBroadcastSession implements BroadcastSessionLike {
         this.handleEnded();
         return;
     }
+  }
+
+  // An uncaught exception inside the worker. The worker may keep running,
+  // but its pipeline is in an unknown state, so the broadcast ends here —
+  // like 'startError' during start, like 'error' + 'ended' after it.
+  private onWorkerError(e: ErrorEvent): void {
+    if (this.disposed || this.ended) return;
+    e.preventDefault?.();
+    const message = e.message || 'The broadcast worker failed';
+    log.error('Broadcast worker error:', message);
+    const reject = this.startReject;
+    if (reject) {
+      this.startResolve = this.startReject = null;
+      this.releaseLocalMedia();
+      this.ended = true;
+      this.dispose();
+      reject(new Error(message));
+      return;
+    }
+    this.cb.onError(new Error(message));
+    this.handleEnded();
+  }
+
+  private armLiveness(): void {
+    if (this.livenessTimer !== null) return;
+    this.lastHeardAt = this.lastCheckAt = Date.now();
+    this.livenessTimer = setInterval(() => this.checkLiveness(), LIVENESS_CHECK_MS);
+  }
+
+  private disarmLiveness(): void {
+    if (this.livenessTimer === null) return;
+    clearInterval(this.livenessTimer);
+    this.livenessTimer = null;
+  }
+
+  private checkLiveness(): void {
+    const now = Date.now();
+    const stalled = now - this.lastCheckAt > LIVENESS_STALL_MS;
+    this.lastCheckAt = now;
+    if (this.disposed || this.ended || this.stopping) {
+      this.disarmLiveness();
+      return;
+    }
+    if (stalled || this.isHidden()) {
+      // No verdict; the window restarts from here (see WorkerLivenessOptions
+      // and LIVENESS_STALL_MS).
+      this.lastHeardAt = now;
+      return;
+    }
+    if (now - this.lastHeardAt < WORKER_SILENCE_MS) return;
+    log.error(`Broadcast worker silent for ${now - this.lastHeardAt} ms; treating it as dead.`);
+    this.cb.onError(new Error(WORKER_SILENCE_MESSAGE));
+    this.handleEnded();
   }
 
   // The worker connected and wants the screen share. Acquisition failures
@@ -295,6 +392,7 @@ export class WorkerBroadcastSession implements BroadcastSessionLike {
 
   private dispose(): void {
     this.disposed = true;
+    this.disarmLiveness();
     this.worker.terminate();
   }
 
