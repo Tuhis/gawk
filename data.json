@@ -34,15 +34,15 @@
     },
     "gawk-mumble-bridge": {
       "component": "gawk-mumble-bridge",
-      "covered": 1814,
+      "covered": 1816,
       "label": "voice bridge",
-      "pct": 86.3,
+      "pct": 86.4,
       "total": 2103,
       "unit": "statements"
     },
     "gawk-server": {
       "component": "gawk-server",
-      "covered": 17569,
+      "covered": 17566,
       "label": "relay",
       "pct": 85.6,
       "total": 20520,
@@ -66,9 +66,9 @@
     },
     "gawk-whip-gateway": {
       "component": "gawk-whip-gateway",
-      "covered": 2077,
+      "covered": 2072,
       "label": "WHIP gateway",
-      "pct": 87.7,
+      "pct": 87.5,
       "total": 2367,
       "unit": "statements"
     }
