@@ -159,6 +159,13 @@ impl WtSession {
     pub fn quic_stats(&self) -> wtransport::quinn::ConnectionStats {
         self.conn.quic_connection().stats()
     }
+
+    /// The congestion controller's own state: its window, and for BBR its
+    /// pacing rate (bits/s). Read-only, for the uplink lab as
+    /// [`Self::quic_stats`].
+    pub fn quic_congestion(&self) -> wtransport::quinn::congestion::ControllerMetrics {
+        self.conn.quic_connection().congestion_state().metrics()
+    }
 }
 
 /// Dials the relay's publish endpoint. `insecure` skips server certificate
@@ -594,6 +601,8 @@ impl RelaySession for WtSession {
             lost: stats.path.lost_packets,
             datagrams_offered: self.datagrams_offered.load(Ordering::Relaxed),
             datagrams_sent: stats.frame_tx.datagram,
+            wire_bytes: stats.udp_tx.bytes,
+            min_rtt_us: u64::try_from(stats.path.min_rtt.as_micros()).unwrap_or(u64::MAX),
         })
     }
 

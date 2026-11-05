@@ -171,6 +171,14 @@ pub struct PathCounters {
     /// `frame_tx.datagram`). Offered minus this is what the stack dropped
     /// from its own send buffer, plus whatever is still queued in it.
     pub datagrams_sent: u64,
+    /// UDP payload bytes the connection put on the wire (quinn's
+    /// `udp_tx.bytes`): the stream as the uplink carries it — media, parity,
+    /// retransmissions and QUIC's own overhead (R75, docs/85 D2).
+    pub wire_bytes: u64,
+    /// The path's minimum RTT in microseconds (quinn's `path.min_rtt`, its
+    /// initial estimate until the first sample; docs/85 D2). 0 for a
+    /// transport that cannot tell.
+    pub min_rtt_us: u64,
 }
 
 /// Which phase a start failure happened in. The shells' "Start a new

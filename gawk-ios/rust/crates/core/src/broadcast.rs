@@ -1130,7 +1130,9 @@ mod stats_tests {
 
     /// The engine's QUIC uplink counters reach iOS telemetry untouched
     /// (docs/75 D8): the sample is the engine's `Stats`, whose serde names
-    /// (`uplinkDatagramsDropped`, …) the engine's key-set test pins.
+    /// (`uplinkDatagramsDropped`, …) the engine's key-set test pins. R75's
+    /// slow keyframes too (docs/85 D4): the upload warning on the phone
+    /// reads them, so a session's row must show why it raised.
     #[test]
     fn the_sample_keeps_the_engines_uplink_counters() {
         let engine = Stats {
@@ -1138,6 +1140,8 @@ mod stats_tests {
             uplink_packets_sent: 9_000,
             uplink_packets_lost: 12,
             uplink_datagrams_dropped: 5,
+            keyframe_streams_sent: 40,
+            keyframe_streams_slow: 7,
             ..Default::default()
         };
         let st = merged_stats(engine, &PipelineCounters::default(), None, None, "", "off");
@@ -1149,6 +1153,10 @@ mod stats_tests {
                 st.uplink_datagrams_dropped
             ),
             (9_000, 12, 5)
+        );
+        assert_eq!(
+            (st.keyframe_streams_sent, st.keyframe_streams_slow),
+            (40, 7)
         );
     }
 

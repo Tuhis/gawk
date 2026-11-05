@@ -259,6 +259,8 @@ var broadcasterCounters = []string{
 	// sent and dropped frames, the carrier lane (docs/75 D8), quinn's
 	// datagram drops, parity, resumes and capture rebuilds.
 	"sentFrames", "framesDroppedAtSend", "configsSent", "keyframeBytesSent",
+	// docs/85 D4: keyframes that drained slowly, the warning's R75 input.
+	"keyframeStreamsSlow",
 	"uplinkDatagramsDropped", "uplinkCarriersOpened", "uplinkCarriersExpired", "uplinkRecordsShed",
 	"parityChunksSent", "parityBytesSent",
 	"resumes", "captureRestarts", "audioBytesSent", "audioPacketsDropped",

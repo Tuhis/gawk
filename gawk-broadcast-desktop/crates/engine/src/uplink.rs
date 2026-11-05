@@ -14,11 +14,19 @@
 //! signal held this warning through every 80 ms radio outage while the
 //! uplink carried the stream.
 //!
-//! In both delivery modes (the F-12 signals):
+//! In both delivery modes (the F-12 signals, and R75's):
 //! - a keyframe stream superseded or failed in the second: a keyframe
 //!   outlived its GOP;
 //! - frames dropped at send: sends are failing;
-//! - sent fps far below encode fps: most frames never leave the box.
+//! - sent fps far below encode fps: most frames never leave the box;
+//! - every keyframe acknowledged in the second drained slowly
+//!   ([`crate::drain`]: under 1.2 times the stream's own wire rate — an
+//!   uplink with room delivers a burst faster than the stream's average).
+//!   This is the one that sees a full uplink under BBR (R75, docs/85): BBR
+//!   holds the stream's rate and the network drops the excess, so nothing
+//!   backs up on this side and the counters above stay clean, but every
+//!   keyframe crawls. A radio outage or a lost packet stretches one keyframe
+//!   in a few; a link that cannot carry the stream stretches them all.
 //!
 //! And per delivery mode, judged only in the mode in use (R73, docs/75):
 //! - *Lowest latency* (datagrams): quinn's send buffer fell further behind —
@@ -28,14 +36,17 @@
 //! - *Reliable* (carriers): records shed — a GOP still queued when the next
 //!   began — or every carrier that retired in the second expired. One GOP
 //!   in a few missing the 150 ms deadline is round-trip time (a shared
-//!   link's full queue, a long path), not capacity.
+//!   link's full queue, a long path), not capacity; and on a path whose
+//!   minimum RTT is over a third of that deadline every carrier that meets a
+//!   loss expires, so expiries are not read there at all (R75,
+//!   [`CARRIER_EXPIRY_MAX_MIN_RTT_MS`]).
 //!
 //! Hysteresis on both edges: several consecutive bad seconds raise the
 //! warning (one slow keyframe is weather, not climate), and it takes a
 //! longer run of clean seconds to clear it (a flapping banner is worse
 //! than a sticky one).
 
-use crate::carrier::UplinkMode;
+use crate::carrier::{CARRIER_RETIRE_DEADLINE, UplinkMode};
 use crate::stats::Stats;
 
 /// Consecutive bad seconds before the warning raises.
@@ -50,6 +61,15 @@ pub const CLEAR_AFTER_GOOD_SECONDS: u32 = 15;
 /// upload it grew by up to 270 at once (docs/75 §11, tables R and O3).
 pub const BAD_SECOND_DATAGRAMS_BEHIND: u64 = 10;
 
+/// The longest minimum RTT on which an expired carrier still says anything
+/// about capacity (R75, docs/85 D5): a third of the carrier's deadline. A
+/// lost packet costs a carrier about three round trips — the first try, loss
+/// detection, the retransmission's acknowledgement — so on a longer path
+/// every carrier that meets a loss expires, whatever the uplink's capacity.
+/// The lab's 100 ms path with 2 % random loss held the warning that way
+/// while viewers lost 1.6 % of frames.
+pub const CARRIER_EXPIRY_MAX_MIN_RTT_MS: f64 = CARRIER_RETIRE_DEADLINE.as_millis() as f64 / 3.0;
+
 #[derive(Debug, Clone, Copy, Default)]
 struct Counters {
     late_keyframes: u64,
@@ -58,6 +78,8 @@ struct Counters {
     carriers_opened: u64,
     carriers_expired: u64,
     records_shed: u64,
+    keyframes_acked: u64,
+    keyframes_slow: u64,
 }
 
 /// Feed [`UplinkMonitor::observe`] one stats snapshot per second; it
@@ -85,6 +107,8 @@ impl UplinkMonitor {
             carriers_opened: st.uplink_carriers_opened,
             carriers_expired: st.uplink_carriers_expired,
             records_shed: st.uplink_records_shed,
+            keyframes_acked: st.keyframe_streams_sent,
+            keyframes_slow: st.keyframe_streams_slow,
         };
         let Some(prev) = self.last.replace(now) else {
             return self.warned; // first sample: no deltas yet
@@ -94,13 +118,21 @@ impl UplinkMonitor {
         // Keyframes come about twice a second: one a second outliving its
         // GOP, held for the streak, is the uplink running late (docs/75 RU4:
         // beside an upload on a thin uplink that is what moved, one in two).
+        // R75: every keyframe acknowledged in the second drained slowly —
+        // the path delivered less than the stream needs, whatever the
+        // controller did with its window (docs/85 D3). One slow keyframe
+        // among fast ones is an outage or a loss recovery, not the link.
+        let slow = delta(|c| c.keyframes_slow);
+        let full_uplink = slow >= 1 && slow >= delta(|c| c.keyframes_acked);
         let both_modes = delta(|c| c.late_keyframes) >= 1
             || delta(|c| c.dropped) > 0
-            || (st.encoder_fps > 20.0 && st.sent_fps < st.encoder_fps * 0.75);
+            || (st.encoder_fps > 20.0 && st.sent_fps < st.encoder_fps * 0.75)
+            || full_uplink;
         let this_mode = if st.uplink_mode == UplinkMode::Carrier.as_str() {
             let expired = delta(|c| c.carriers_expired);
+            let expiry_is_capacity = st.uplink_min_rtt_ms <= CARRIER_EXPIRY_MAX_MIN_RTT_MS;
             delta(|c| c.records_shed) > 0
-                || (expired > 0 && expired >= delta(|c| c.carriers_opened))
+                || (expiry_is_capacity && expired > 0 && expired >= delta(|c| c.carriers_opened))
         } else {
             // A draining buffer reads as no growth, so one burst it
             // absorbed is a single bad second, not a streak.
@@ -397,6 +429,68 @@ mod tests {
         (1007, 0, 0, 0, 2, 0, 0),
     ];
 
+    // R75's engine matrix, *100 ms, 2 % loss*, carrier · BBR
+    // (rtt100-loss0.02/eng-carrier-bbr, seconds 4–28): every carrier that
+    // meets a loss retransmits past its 150 ms deadline — three round trips
+    // are 300 ms — so most seconds every carrier expires, while the uplink
+    // carries the stream (1.6 % undecodable). RU4's warning raised at 13 s
+    // and held (docs/75 table R's false raise, docs/85 D5).
+    const LONG_LOSSY_PATH_CARRIER_BBR: &[LabSecond] = &[
+        (1075, 19, 0, 0, 2, 2, 0),
+        (997, 16, 0, 0, 2, 2, 0),
+        (838, 19, 0, 0, 2, 1, 0),
+        (819, 25, 0, 0, 2, 1, 0),
+        (794, 14, 0, 0, 2, 1, 0),
+        (889, 21, 0, 0, 2, 2, 0),
+        (1085, 28, 0, 1, 2, 2, 0),
+        (1278, 29, 0, 0, 2, 2, 0),
+        (1393, 28, 0, 0, 2, 2, 0),
+        (1327, 16, 0, 0, 2, 2, 0),
+        (1211, 20, 0, 0, 2, 2, 0),
+        (1064, 30, 0, 0, 2, 2, 0),
+        (1009, 27, 0, 1, 2, 1, 0),
+        (984, 26, 0, 0, 2, 2, 0),
+        (1094, 33, 0, 0, 2, 2, 0),
+        (1094, 33, 0, 0, 2, 1, 0),
+        (1106, 22, 0, 0, 2, 0, 0),
+        (936, 23, 0, 0, 2, 2, 0),
+        (993, 22, 0, 1, 2, 2, 0),
+        (884, 16, 0, 1, 2, 2, 0),
+        (995, 15, 0, 0, 2, 0, 0),
+        (1097, 27, 0, 0, 2, 2, 0),
+        (885, 15, 0, 0, 2, 2, 0),
+        (911, 17, 0, 0, 2, 2, 0),
+        (1029, 16, 0, 0, 2, 2, 0),
+    ];
+
+    #[test]
+    fn a_long_lossy_path_is_not_an_upload_problem() {
+        let mut m = UplinkMonitor::new();
+        let mut st = Stats {
+            encoder_fps: 60.0,
+            sent_fps: 60.0,
+            uplink_packets_available: true,
+            uplink_mode: UplinkMode::Carrier.as_str().to_owned(),
+            uplink_min_rtt_ms: 100.4,
+            ..Default::default()
+        };
+        m.observe(&st);
+        let mut shown = Vec::new();
+        for &(sent, lost, kf, dropped, opened, expired, shed) in LONG_LOSSY_PATH_CARRIER_BBR {
+            st.uplink_packets_sent += sent;
+            st.uplink_packets_lost += lost;
+            st.keyframe_streams_superseded += kf;
+            st.uplink_datagrams_dropped = dropped;
+            st.uplink_carriers_opened += opened;
+            st.uplink_carriers_expired += expired;
+            st.uplink_records_shed += shed;
+            shown.push(m.observe(&st));
+        }
+        assert!(!shown.contains(&true), "{shown:?}");
+        // The same seconds on a 10 ms path are a full uplink: expiries count.
+        assert!(replay(UplinkMode::Carrier, LONG_LOSSY_PATH_CARRIER_BBR).contains(&true));
+    }
+
     #[test]
     fn a_radio_outage_is_not_an_upload_problem() {
         for (name, mode, seconds) in [
@@ -436,6 +530,172 @@ mod tests {
             assert!(!shown[..10].contains(&true), "{name}: early, {shown:?}");
             assert!(!shown[10..].contains(&false), "{name}: {shown:?}");
         }
+    }
+
+    /// One second of an R75 lab run (docs/85 §7): a [`LabSecond`], then the
+    /// keyframe streams acknowledged in it and how many of those drained
+    /// slowly (`Stats::keyframe_streams_slow`, the lab's `Y` lines).
+    type LabSecondKf = (u64, u64, u64, u64, u64, u64, u64, u64, u64);
+
+    fn replay_kf(mode: UplinkMode, seconds: &[LabSecondKf]) -> Vec<bool> {
+        let mut m = UplinkMonitor::new();
+        let mut st = Stats {
+            encoder_fps: 60.0,
+            sent_fps: 60.0,
+            uplink_packets_available: true,
+            uplink_mode: mode.as_str().to_owned(),
+            uplink_min_rtt_ms: 10.0,
+            ..Default::default()
+        };
+        m.observe(&st);
+        let mut shown = Vec::new();
+        for &(sent, lost, kf, dropped, opened, expired, shed, acked, slow) in seconds {
+            st.uplink_packets_sent += sent;
+            st.uplink_packets_lost += lost;
+            st.keyframe_streams_superseded += kf;
+            st.uplink_datagrams_dropped = dropped;
+            st.uplink_carriers_opened += opened;
+            st.uplink_carriers_expired += expired;
+            st.uplink_records_shed += shed;
+            st.keyframe_streams_sent += acked;
+            st.keyframe_streams_slow += slow;
+            shown.push(m.observe(&st));
+        }
+        shown
+    }
+
+    // R75's acceptance run (docs/85 §7): table O's thin cell, 15 Mbps beside
+    // a household's TCP upload from 20 s, with BBR (r15-*-engine-bbr-tcp-s1,
+    // seconds 15–44). BBR holds the stream's rate and the network drops the
+    // excess: a fifth of the packets lost, keyframes mostly finishing inside
+    // their GOP, carriers expiring in short runs — RU4's monitor stayed
+    // silent on the carrier and raised late on datagrams (docs/75 table O3).
+    // 15 Mbps is only 1.27× this stream's wire rate, so keyframes drain
+    // slowly from second 16, before the upload; with it, every one does.
+    const THIN_BESIDE_AN_UPLOAD_DATAGRAM_BBR: &[LabSecondKf] = &[
+        (1199, 20, 0, 0, 0, 0, 0, 2, 1),
+        (1195, 97, 0, 0, 0, 0, 0, 2, 2),
+        (1294, 237, 0, 0, 0, 0, 0, 2, 2),
+        (1432, 303, 0, 0, 0, 0, 0, 2, 2),
+        (1463, 329, 0, 0, 0, 0, 0, 2, 2),
+        (1361, 163, 0, 0, 0, 0, 0, 2, 2),
+        (1423, 440, 0, 5, 0, 0, 0, 2, 2),
+        (1472, 546, 0, 13, 0, 0, 0, 1, 1),
+        (1172, 127, 0, 5, 0, 0, 0, 3, 3),
+        (1296, 182, 0, 5, 0, 0, 0, 2, 2),
+        (1567, 362, 0, 5, 0, 0, 0, 2, 2),
+        (1074, 64, 0, 5, 0, 0, 0, 2, 2),
+        (1064, 45, 0, 5, 0, 0, 0, 2, 2),
+        (1138, 52, 0, 9, 0, 0, 0, 1, 1),
+        (646, 0, 0, 212, 0, 0, 0, 1, 1),
+        (440, 0, 2, 582, 0, 0, 0, 0, 0),
+        (345, 0, 4, 967, 0, 0, 0, 0, 0),
+        (215, 0, 1, 1469, 0, 0, 0, 0, 0),
+        (403, 0, 2, 1712, 0, 0, 0, 0, 0),
+        (967, 61, 3, 1570, 0, 0, 0, 0, 0),
+        (1643, 265, 1, 878, 0, 0, 0, 2, 0),
+        (1371, 174, 1, 804, 0, 0, 0, 2, 2),
+        (1182, 200, 0, 804, 0, 0, 0, 2, 2),
+        (1365, 241, 0, 804, 0, 0, 0, 2, 2),
+        (1566, 387, 0, 804, 0, 0, 0, 2, 2),
+        (1358, 238, 0, 804, 0, 0, 0, 1, 1),
+        (1568, 447, 0, 804, 0, 0, 0, 3, 3),
+        (1285, 301, 0, 969, 0, 0, 0, 1, 1),
+        (973, 0, 0, 865, 0, 0, 0, 1, 1),
+        (652, 0, 2, 1089, 0, 0, 0, 0, 0),
+    ];
+    const THIN_BESIDE_AN_UPLOAD_CARRIER_BBR: &[LabSecondKf] = &[
+        (1061, 20, 0, 0, 2, 0, 0, 2, 1),
+        (1092, 97, 0, 0, 2, 0, 0, 2, 2),
+        (1206, 245, 0, 0, 2, 0, 0, 2, 2),
+        (1509, 436, 0, 0, 2, 0, 0, 2, 2),
+        (1420, 365, 0, 0, 2, 0, 0, 2, 2),
+        (1247, 163, 0, 0, 2, 0, 0, 2, 2),
+        (1484, 586, 0, 0, 2, 1, 0, 2, 2),
+        (769, 125, 0, 0, 2, 2, 0, 2, 2),
+        (616, 0, 0, 0, 2, 2, 0, 2, 2),
+        (515, 0, 0, 1, 2, 2, 0, 2, 2),
+        (1054, 146, 0, 0, 2, 2, 0, 2, 2),
+        (965, 107, 0, 0, 2, 1, 0, 2, 1),
+        (1142, 247, 0, 0, 2, 0, 0, 2, 2),
+        (1226, 239, 0, 0, 2, 0, 0, 2, 2),
+        (1343, 272, 0, 0, 2, 1, 0, 2, 2),
+        (1439, 347, 0, 0, 2, 0, 0, 2, 2),
+        (1215, 282, 0, 0, 2, 0, 0, 2, 2),
+        (1461, 522, 0, 0, 2, 0, 0, 2, 2),
+        (967, 95, 0, 0, 2, 1, 0, 2, 2),
+        (1104, 176, 0, 0, 2, 1, 0, 2, 2),
+        (1179, 185, 0, 0, 2, 0, 0, 2, 2),
+        (1313, 299, 0, 0, 2, 0, 0, 2, 2),
+        (1017, 182, 0, 0, 2, 1, 0, 2, 2),
+        (1180, 245, 0, 0, 2, 0, 0, 2, 2),
+        (1411, 403, 0, 0, 2, 0, 0, 2, 2),
+        (1556, 560, 0, 0, 2, 1, 0, 2, 2),
+        (1594, 593, 0, 0, 2, 0, 0, 2, 2),
+        (1215, 255, 0, 0, 2, 1, 0, 2, 2),
+        (1475, 539, 0, 0, 2, 1, 0, 2, 2),
+        (1064, 85, 0, 0, 2, 1, 0, 2, 2),
+    ];
+
+    #[test]
+    fn a_thin_uplink_beside_an_upload_warns_with_bbr_too() {
+        for (name, mode, seconds) in [
+            (
+                "datagram · BBR",
+                UplinkMode::Datagram,
+                THIN_BESIDE_AN_UPLOAD_DATAGRAM_BBR,
+            ),
+            (
+                "carrier · BBR",
+                UplinkMode::Carrier,
+                THIN_BESIDE_AN_UPLOAD_CARRIER_BBR,
+            ),
+        ] {
+            let shown = replay_kf(mode, seconds);
+            // Within five seconds of the upload's start at second 20 (row
+            // 5), by 25 (row 10), the warning shows, and it holds.
+            assert!(!shown[10..].contains(&false), "{name}: {shown:?}");
+        }
+    }
+
+    // R75's acceptance matrix, *100 ms, 2 % loss*, datagram · BBR
+    // (rtt100-loss0.02/eng-dgram-bbr, seconds 4–28): most keyframes meet a
+    // loss and wait out a recovery, so some drain slowly — with one RTT
+    // allowed instead of two, at 1.0× the rate, this run raised the warning
+    // (docs/85 F3) — but never every keyframe in a second for five seconds.
+    // The uplink carries the stream (3.4 % undecodable).
+    const LONG_LOSSY_PATH_DATAGRAM_BBR: &[LabSecondKf] = &[
+        (1167, 19, 0, 0, 0, 0, 0, 2, 2),
+        (1083, 21, 0, 0, 0, 0, 0, 2, 1),
+        (921, 20, 0, 0, 0, 0, 0, 2, 1),
+        (904, 25, 0, 0, 0, 0, 0, 2, 0),
+        (852, 20, 0, 0, 0, 0, 0, 2, 1),
+        (986, 23, 0, 0, 0, 0, 0, 2, 0),
+        (1204, 24, 0, 0, 0, 0, 0, 2, 0),
+        (1411, 36, 0, 0, 0, 0, 0, 2, 0),
+        (1540, 22, 0, 14, 0, 0, 0, 2, 0),
+        (1433, 22, 0, 0, 0, 0, 0, 2, 1),
+        (1364, 32, 0, 0, 0, 0, 0, 2, 0),
+        (1189, 40, 0, 0, 0, 0, 0, 2, 0),
+        (1112, 25, 0, 0, 0, 0, 0, 2, 0),
+        (1032, 26, 0, 0, 0, 0, 0, 2, 1),
+        (1145, 42, 0, 0, 0, 0, 0, 2, 1),
+        (1110, 16, 0, 0, 0, 0, 0, 2, 1),
+        (1213, 29, 0, 0, 0, 0, 0, 2, 0),
+        (1001, 22, 0, 0, 0, 0, 0, 2, 0),
+        (1046, 15, 0, 0, 0, 0, 0, 2, 1),
+        (979, 26, 0, 0, 0, 0, 0, 2, 1),
+        (1042, 17, 0, 0, 0, 0, 0, 2, 1),
+        (1163, 20, 0, 0, 0, 0, 0, 2, 0),
+        (943, 14, 0, 0, 0, 0, 0, 2, 0),
+        (988, 18, 0, 0, 0, 0, 0, 2, 0),
+        (1112, 23, 0, 1, 0, 0, 0, 2, 0),
+    ];
+
+    #[test]
+    fn keyframes_a_loss_stretched_are_not_a_full_uplink() {
+        let shown = replay_kf(UplinkMode::Datagram, LONG_LOSSY_PATH_DATAGRAM_BBR);
+        assert!(!shown.contains(&true), "{shown:?}");
     }
 
     #[test]
@@ -497,6 +757,38 @@ mod tests {
         let buffer_behind: Vec<LabSecond> =
             (1..=10).map(|i| (1300, 0, 0, 30 * i, 2, 0, 0)).collect();
         assert!(!replay(UplinkMode::Carrier, &buffer_behind).contains(&true));
+    }
+
+    // R75 (docs/85 D3): every keyframe acknowledged in the second slow is a
+    // bad second; one slow among fast ones is not, nor a second with no
+    // keyframe acknowledged at all.
+    #[test]
+    fn every_keyframe_draining_slowly_warns_in_both_modes() {
+        let run = |mode: UplinkMode, per_second: (u64, u64)| {
+            let mut m = UplinkMonitor::new();
+            let mut st = Stats {
+                encoder_fps: 60.0,
+                sent_fps: 60.0,
+                uplink_mode: mode.as_str().to_owned(),
+                ..Default::default()
+            };
+            m.observe(&st);
+            (0..WARN_AFTER_BAD_SECONDS)
+                .map(|_| {
+                    st.keyframe_streams_sent += per_second.0;
+                    st.keyframe_streams_slow += per_second.1;
+                    m.observe(&st)
+                })
+                .last()
+                .unwrap()
+        };
+        for mode in [UplinkMode::Datagram, UplinkMode::Carrier] {
+            assert!(run(mode, (2, 2)), "{mode:?}: both slow");
+            assert!(run(mode, (1, 1)), "{mode:?}: the one slow");
+            assert!(!run(mode, (2, 1)), "{mode:?}: one of two");
+            assert!(!run(mode, (2, 0)), "{mode:?}: none");
+            assert!(!run(mode, (0, 0)), "{mode:?}: none acknowledged");
+        }
     }
 
     #[test]

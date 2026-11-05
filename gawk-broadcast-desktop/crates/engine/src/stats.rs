@@ -80,6 +80,10 @@ pub struct Stats {
     pub keyframe_streams_failed: u64,
     pub keyframe_streams_superseded: u64,
     pub keyframe_bytes_sent: u64,
+    /// Keyframe streams that drained at under 1.2 times the stream's recent
+    /// wire rate (R75, docs/85 D1; `drain`): a subset of
+    /// `keyframe_streams_sent`. Every keyframe slow is the uplink full.
+    pub keyframe_streams_slow: u64,
 
     pub frames_dropped_at_send: u64,
 
@@ -100,6 +104,11 @@ pub struct Stats {
     /// not expose the queue's length. Shares `uplinkPacketsAvailable`:
     /// both come from the same QUIC stack.
     pub uplink_datagrams_dropped: u64,
+    /// The current connection's minimum RTT as QUIC measured it, in ms
+    /// (R75, docs/85 D5): the upload warning reads carrier expiries only
+    /// on a path short enough to retransmit inside the carrier deadline.
+    /// Shares `uplinkPacketsAvailable`.
+    pub uplink_min_rtt_ms: f64,
 
     /// R73 (docs/75 D8): how the current GOP's deltas leave — "datagram" or
     /// "carrier" — and the Delivery setting asked for ("reliable" |
@@ -298,11 +307,13 @@ mod tests {
             "keyframeStreamsFailed",
             "keyframeStreamsSuperseded",
             "keyframeBytesSent",
+            "keyframeStreamsSlow",
             "framesDroppedAtSend",
             "uplinkPacketsAvailable",
             "uplinkPacketsSent",
             "uplinkPacketsLost",
             "uplinkDatagramsDropped",
+            "uplinkMinRttMs",
             "uplinkMode",
             "uplinkModeRequested",
             "uplinkCongestion",

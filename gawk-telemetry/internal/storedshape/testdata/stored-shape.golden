@@ -313,6 +313,7 @@ sessions.stats.keyframeIntervalMs number
 sessions.stats.keyframeStreamsFailed number
 sessions.stats.keyframeStreamsReceived number
 sessions.stats.keyframeStreamsSent number
+sessions.stats.keyframeStreamsSlow number
 sessions.stats.keyframeStreamsSuperseded number
 sessions.stats.keyframes number
 sessions.stats.lastDecodeLatencyMs number
@@ -385,6 +386,7 @@ sessions.stats.uplinkCarriersExpired number
 sessions.stats.uplinkCarriersOpened number
 sessions.stats.uplinkCongestion string
 sessions.stats.uplinkDatagramsDropped number
+sessions.stats.uplinkMinRttMs number
 sessions.stats.uplinkMode string
 sessions.stats.uplinkModeRequested string
 sessions.stats.uplinkPacketsAvailable boolean
