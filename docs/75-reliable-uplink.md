@@ -1224,7 +1224,7 @@ the same code in both, so where they differ it is run-to-run spread.
   `carrier::engage` and frames a delta's datagrams as records with the
   same `chunk_with_parity` it sends as datagrams, so G9 holds by
   construction and by test. The defaults live in one place each:
-  `carrier::DEFAULT_DELIVERY` (*Lowest latency*) and
+  `carrier::DEFAULT_DELIVERY` (*Reliable* since the owner's 2026-11-05 decision, D4) and
   `transport::DEFAULT_CONGESTION` (BBR since the owner's 2026-10-21
   decision, D5). Blank `uplinkDelivery` / `congestion` in
   `broadcast.json` follow them, so a flip reaches everyone who never
