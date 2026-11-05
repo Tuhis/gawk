@@ -325,6 +325,22 @@ describe('useFullscreen tier 2 stall watchdog', () => {
     expect(result.current.stallRecoveries()?.recoveries).toBe(1);
   });
 
+  it('lands recoveries at the delivery mode\'s cushion, following a mode change', async () => {
+    const { video, underrun } = starvable();
+    const { result, rerender } = renderHook(
+      ({ mode }: { mode: 'live' | 'deep' }) =>
+        useFullscreen({ current: document.createElement('div') }, video, {}, mode),
+      { initialProps: { mode: 'live' as 'live' | 'deep' } },
+    );
+    rerender({ mode: 'deep' });
+    act(() => result.current.toggle());
+    video.currentTime = 9.95; // wherever the entry seek put it: before the hole
+    act(() => underrun()); // newest range [10.4, 13]
+    await act(() => vi.advanceTimersByTimeAsync(500));
+    // Hole skip into the newest range, 1.5 s (deep) inside its end.
+    expect(video.currentTime).toBeCloseTo(13 - 1.5, 6);
+  });
+
   it('leaves the armed (not fullscreen) element paused', async () => {
     const { video, underrun } = starvable();
     const { result } = renderHook(() => useFullscreen({ current: document.createElement('div') }, video));

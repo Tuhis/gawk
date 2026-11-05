@@ -215,25 +215,28 @@ export const MAX_QUEUED_SEGMENTS = 128;
 // appends against each segment's timestamp; once they exceed the budget — or
 // the buffered span exceeds the time ceiling, which keeps a near-static,
 // low-bitrate stream bounded too — it removes everything before the newest
-// keyframe at or before `playhead − PRUNE_BEHIND_S`. Audio is cut at the same
-// time so the tracks' intersection stays intact; its bytes are negligible
-// (~16 KB/s) and not counted.
+// keyframe at or before `playhead − PRUNE_BEHIND_S` (a paused element: below).
+// Audio is cut at the same time so the tracks' intersection stays intact; its
+// bytes are negligible (~16 KB/s) and not counted.
 //
-// Why so little history: nothing ever seeks backwards. Native fullscreen only
-// seeks forward toward live (useFullscreen's entry seek, maybeCatchUp), and the
-// paused armed element's stale playhead is replaced by that entry seek, so a
-// paused element is pruned relative to the live edge. What IS needed behind the
-// playhead is its own GOP: MSE's remove() also drops every frame depending on a
-// removed one up to the next keyframe, so a cut inside the playhead's GOP would
-// take the frames ahead of it too. Hence keyframe-aligned cuts, plus one second
-// of margin to absorb a stale currentTime. A paused element is pruned to the
-// live edge minus the delivery mode's target lag (liveEdge.ts) minus that
-// margin, so the GOP the entry seek lands in is always kept.
+// Why so little history: nothing seeks behind the kept range. Native
+// fullscreen seeks toward live (useFullscreen's entry seek, maybeCatchUp, the
+// stall watchdog), and its few backward steps stay within the delivery mode's
+// target lag of the end (liveEdge.ts). What IS needed behind the playhead is
+// its own GOP: MSE's remove() also drops every frame depending on a removed one
+// up to the next keyframe, so a cut inside the playhead's GOP would take the
+// frames ahead of it too. Hence keyframe-aligned cuts, plus one second of
+// margin to absorb a stale currentTime. A paused element is the armed one,
+// whose stale playhead the entry seek replaces with a landing the mode's
+// target lag behind the live edge, so it is pruned to the live edge minus that
+// lag minus the margin: the GOP the entry seek lands in is always kept.
 //
 // 8 MiB is ~2.5 s at 7 MP / 25 Mbps and ~10 s at 1080p / 6 Mbps: past any
-// reasonable GOP plus the 2 s catch-up lag, so it only ever removes history,
-// never the live edge's working set (which a keyframe-aligned cut can't
-// touch anyway — the budget is a soft bound over a single long GOP).
+// reasonable GOP. At 7 MP it is less than Deep buffer's 3 s catch-up trigger,
+// which is harmless: a playing element is cut relative to currentTime, never
+// the edge, so the budget only ever removes history (and a keyframe-aligned
+// cut can't touch the live edge's working set anyway — the budget is a soft
+// bound over a single long GOP).
 export const PRUNE_BUDGET_BYTES = 8 * 1024 * 1024;
 export const PRUNE_CEILING_S = 30;
 export const PRUNE_BEHIND_S = 1;
@@ -247,7 +250,6 @@ export const PRUNE_BEHIND_S = 1;
 // presentation is worse than video-only: it is dead. Generous enough for a
 // transcoder to warm up, short enough that nobody watches a blank fullscreen.
 export const AUDIO_FIRST_SAMPLE_TIMEOUT_MS = 3000;
-
 
 // HTMLMediaElement.HAVE_METADATA — the readiness `webkitEnterFullscreen`
 // requires (useFullscreen tier 2 checks the same bar).

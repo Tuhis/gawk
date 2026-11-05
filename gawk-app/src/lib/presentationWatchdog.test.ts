@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   PresentationWatchdog,
+  CUSHION_GRACE_MS,
   RECOVERY_MIN_INTERVAL_MS,
   RECOVERY_RETRY_MS,
   type WatchdogMedia,
@@ -181,6 +182,59 @@ describe('PresentationWatchdog — recovery', () => {
     await vi.advanceTimersByTimeAsync(RECOVERY_RETRY_MS);
     expect(media.playCalls).toBe(1);
     expect(dog.getStats().playErrors).toBe(1);
+  });
+});
+
+// The per-mode live-edge cushion (liveEdge.ts): after an underrun at the live
+// edge, appends arrive at 1x, so whatever lies ahead when play() resumes is the
+// cushion until the next seek. Rebuild it by waiting, never by seeking back
+// over frames already shown.
+describe('PresentationWatchdog — rebuilds the cushion after an underrun', () => {
+  it('waits for the rejoin offset ahead, then resumes without rewinding (ended)', async () => {
+    dog.setRejoinS(1.0);
+    dog.start();
+    media.ranges = [[0, 10.2]];
+    media.at(10).underrun();
+    await vi.advanceTimersByTimeAsync(RECOVERY_RETRY_MS * 2);
+    // 0.2 s ahead: enough to play, not enough to hold a 1 s cushion.
+    expect(media.playCalls).toBe(0);
+
+    media.ranges = [[0, 11.1]];
+    await vi.advanceTimersByTimeAsync(RECOVERY_RETRY_MS);
+    expect(media.playCalls).toBe(1);
+    // `ended` still needs a seek before play(), but never behind the playhead.
+    expect(media.seeks).toHaveLength(1);
+    expect(media.seeks[0]).toBeGreaterThanOrEqual(10);
+    expect(11.1 - media.seeks[0]).toBeGreaterThanOrEqual(1.0 - 1e-9);
+  });
+
+  it('waits for the rejoin offset after a starvation pause without `ended`', async () => {
+    dog.setRejoinS(1.0);
+    dog.start();
+    media.ranges = [[0, 10.3]];
+    media.at(10);
+    media.readyState = HAVE_CURRENT_DATA;
+    media.paused = true;
+    media.fire('pause');
+    await vi.advanceTimersByTimeAsync(RECOVERY_RETRY_MS * 2);
+    expect(media.playCalls).toBe(0);
+
+    media.ranges = [[0, 11.05]];
+    await vi.advanceTimersByTimeAsync(RECOVERY_RETRY_MS);
+    expect(media.playCalls).toBe(1);
+    expect(media.seeks).toEqual([]);
+  });
+
+  it('gives up waiting for the full cushion after the grace period', async () => {
+    dog.setRejoinS(1.0);
+    dog.start();
+    media.ranges = [[0, 10.3]];
+    media.at(10).underrun();
+    // The buffer never grows (e.g. MMS stopped asking for data while paused).
+    await vi.advanceTimersByTimeAsync(1000 + CUSHION_GRACE_MS - RECOVERY_RETRY_MS);
+    expect(media.playCalls).toBe(0);
+    await vi.advanceTimersByTimeAsync(RECOVERY_RETRY_MS * 2);
+    expect(media.playCalls).toBe(1);
   });
 });
 

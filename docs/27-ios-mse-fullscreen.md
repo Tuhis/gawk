@@ -721,22 +721,29 @@ MMS had not evicted. A time window costs ~10× more memory at 3360×2100 than at
   near-static low-bitrate stream stays bounded too). It runs on every
   MediaSource, MMS included.
 - **Cut.** `remove(0, K)` on both SourceBuffers, where K is the newest keyframe
-  at or before `playhead − PRUNE_BEHIND_S` (1 s). The playhead is
-  `currentTime` while playing and the buffered end while paused: the paused
-  element is the armed one, and the fullscreen entry seek replaces its stale
-  playhead with the live edge. A track busy when the target moves takes it at
+  at or before `playhead − PRUNE_BEHIND_S` (1 s) while playing, and at or
+  before `end − liveEdgePolicy(mode).targetLagS − PRUNE_BEHIND_S` while paused:
+  the paused element is the armed one, and the fullscreen entry seek replaces
+  its stale playhead with a landing the mode's target lag behind the live edge
+  (up to 1.5 s in Deep buffer). A track busy when the target moves takes it at
   its next idle moment, so the tracks converge on the same window and the
   intersection is not shortened.
-- **Why so little history.** Nothing seeks backwards: native fullscreen only
-  seeks forward toward live (the entry seek, `maybeCatchUp`). What the playhead
+- **Why so little history.** Nothing seeks behind the kept range: native
+  fullscreen seeks toward live (the entry seek, `maybeCatchUp`, the stall
+  watchdog's hole skip), and the two seeks that can step back — the entry
+  seek's back-off from a playhead pinned at the end, and the watchdog's `ended`
+  re-seek — stay within the mode's target lag of the end. What the playhead
   does need is its own GOP — MSE's `remove()` also drops every frame that
   depends on a removed one, up to the next random-access point, so a cut inside
   the playhead's GOP removes the frames *ahead* of it. Keyframe alignment makes
-  that impossible, and the 1 s margin exceeds the entry seek's live-edge offset
-  (0.1 s today, ~0.6 s at most under finding 3's proposed target lag), so the
-  GOP that seek lands in is always kept. It also absorbs a stale `currentTime`.
+  that impossible. The paused keep range adds the mode's target lag to the 1 s
+  margin, so the GOP the entry seek lands in is always kept; while playing, the
+  playhead already sits at that lag. The margin also absorbs a stale
+  `currentTime`.
 - **The budget's size.** 8 MiB is ~2.5 s at 7 MP / 25 Mbps and ~10 s at
-  1080p / 6 Mbps — past a GOP plus the 2 s catch-up lag. It is a soft bound:
+  1080p / 6 Mbps. It can be less than Deep buffer's 3 s catch-up trigger at
+  7 MP, which is harmless: a playing element is cut relative to `currentTime`,
+  never the edge, so the budget only ever removes history. It is a soft bound:
   with keyframe-aligned cuts the held bytes are at most the budget plus one GOP
   (a single GOP longer than the budget is never cut into).
 - **Diagnostics.** `presenter.getStats()` and `presentationSurface` carry
@@ -748,6 +755,7 @@ MMS had not evicted. A time window costs ~10× more memory at 3360×2100 than at
 | 3360×2100-sized segments (~52 KB at 60 fps) are pruned well before 20 s; held bytes stay ≤ budget + one GOP | `msePresentation.test.ts` "prunes 3360×2100-sized segments well before 20 s, by bytes" |
 | Every cut lands on a keyframe at or before `playhead − PRUNE_BEHIND_S` | "cuts only at a keyframe at or before the playhead minus the margin" |
 | A paused (armed) element is pruned against the live edge, not its stale playhead | "prunes a paused (armed) element relative to the live edge…" |
+| A paused element keeps the delivery mode's entry-seek cushion (`end − targetLagS − PRUNE_BEHIND_S`) | "keeps the Deep buffer entry seek cushion when pruning a paused element" |
 | The 30 s time ceiling still bounds low-bitrate streams | "still prunes small segments by the time ceiling" |
 | A single GOP is never cut into | "does not prune inside the only GOP" |
 | Both tracks are cut to the same window | "prunes both tracks to the same window…" |
@@ -782,7 +790,10 @@ first proved native fullscreen works at all — landing them separately keeps pa
 
    **Fix landed, on-device confirmation pending (2026-11-06).** One shared
    policy, `gawk-app/src/lib/liveEdge.ts` (`liveEdgePolicy`,
-   `liveEdgeSeekTarget`), replaces both copies. The target lag scales with the
+   `liveEdgeSeekTarget`), replaces both copies, and has two more users: the
+   stall watchdog's recovery landing (its rejoin offset follows the mode
+   through `PresentationWatchdog.setRejoinS`) and the paused-element prune keep
+   range (see "Pruning"). The target lag scales with the
    delivery mode, because the cushion is fullscreen-only latency and the
    resilient and Deep-buffer viewers have already traded latency for
    smoothness:
@@ -838,8 +849,7 @@ newest buffered range and:
 | --- | --- |
 | behind the newest range's start (a hole, or an older range) | seek to the entry seek's live-edge landing (`max(start, end − rejoin offset)`), then `play()` if paused |
 | inside it, < 100 ms ahead | nothing yet — poll every 250 ms until media arrives (replaying into an empty buffer just stalls again) |
-| inside it with data ahead, `ended` | same seek first (`play()` on an ended element restarts from 0), then `play()` |
-| inside it with data ahead, paused | `play()` |
+| inside it with data ahead, paused or `ended` | wait until the rejoin offset (the mode's target lag, `liveEdgePolicy`) lies ahead — or the stall has lasted that plus `CUSHION_GRACE_MS` (1 s), in case MMS stops feeding a paused element — then `play()`. Appends arrive at 1×, so this is what rebuilds the cushion; seeking back to `end − rejoin offset` would replay frames already shown. If `ended`, first re-seek in place or forward to the cushion (`play()` on an ended element restarts from 0), never back |
 | inside it with data ahead, playing but unmoved across one 250 ms retry | nudge 100 ms forward |
 
 `playing` stands it down. Constraints, each with a test
