@@ -42,10 +42,10 @@
     },
     "gawk-server": {
       "component": "gawk-server",
-      "covered": 17554,
+      "covered": 17563,
       "label": "relay",
       "pct": 85.6,
-      "total": 20510,
+      "total": 20520,
       "unit": "statements"
     },
     "gawk-telemetry": {
@@ -66,9 +66,9 @@
     },
     "gawk-whip-gateway": {
       "component": "gawk-whip-gateway",
-      "covered": 2072,
+      "covered": 2075,
       "label": "WHIP gateway",
-      "pct": 87.5,
+      "pct": 87.7,
       "total": 2367,
       "unit": "statements"
     }
