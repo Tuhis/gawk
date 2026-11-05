@@ -401,29 +401,55 @@ export class WorkerBroadcastSession implements BroadcastSessionLike {
   }
 }
 
-// Whether the worker path can even be attempted from this main thread; the
-// worker's own capabilities are checked by its boot handshake.
-function canAttemptWorker(): boolean {
-  return (
-    typeof Worker === 'function' &&
-    typeof document !== 'undefined' &&
-    typeof HTMLCanvasElement !== 'undefined' &&
-    typeof HTMLCanvasElement.prototype.captureStream === 'function'
-  );
+// Whether the worker path can even be attempted from this main thread (the
+// worker's own capabilities are checked by its boot handshake): null when it
+// can, otherwise the missing capability, for the fallback reason.
+function mainThreadGateFailure(): string | null {
+  if (typeof Worker !== 'function') return 'Web Workers unavailable';
+  if (
+    typeof document === 'undefined' ||
+    typeof HTMLCanvasElement === 'undefined' ||
+    typeof HTMLCanvasElement.prototype.captureStream !== 'function'
+  ) {
+    // Needed to mint the dummy track the transfer probe sends.
+    return 'canvas.captureStream unavailable';
+  }
+  return null;
 }
 
-function waitForBoot(worker: Worker, timeoutMs: number): Promise<boolean> {
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+// A DOMException's name (DataCloneError, NotSupportedError) is the useful
+// part; it is not an Error subclass in every realm, so read it duck-typed.
+function errorName(e: unknown): string {
+  const name = (e as { name?: unknown } | null)?.name;
+  return typeof name === 'string' && name ? name : errorText(e);
+}
+
+// Waits for the worker's boot handshake: null when it reports itself
+// capable, otherwise why not.
+function waitForBoot(worker: WorkerLike, timeoutMs: number): Promise<string | null> {
   return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(false), timeoutMs);
+    const timer = setTimeout(() => resolve(`broadcast worker boot timed out after ${timeoutMs} ms`), timeoutMs);
     worker.onmessage = (e: MessageEvent) => {
       const msg = e.data as BroadcastWorkerOutbound;
       if (msg.type !== 'boot') return;
       clearTimeout(timer);
-      resolve(msg.supported);
+      if (msg.supported) {
+        resolve(null);
+      } else if (msg.missing && msg.missing.length > 0) {
+        resolve(`${msg.missing.join(', ')} unavailable in worker scope`);
+      } else {
+        resolve('broadcast worker reported itself unsupported');
+      }
     };
-    worker.onerror = () => {
+    worker.onerror = (e: ErrorEvent) => {
       clearTimeout(timer);
-      resolve(false);
+      // A script that fails to load (404, MIME, CSP worker-src) arrives here
+      // as a plain message-less Event, not as a throw from new Worker.
+      resolve(e?.message ? `broadcast worker failed to start: ${e.message}` : 'broadcast worker failed to load or start');
     };
   });
 }
@@ -432,19 +458,24 @@ function waitForBoot(worker: Worker, timeoutMs: number): Promise<boolean> {
 // path: postMessage throws DataCloneError *synchronously on the sender* for
 // non-transferable types, so a dummy canvas.captureStream track answers the
 // question without a roundtrip (getDisplayMedia tracks can't be minted
-// without a user prompt).
-function probeTrackTransfer(worker: Worker): boolean {
+// without a user prompt). Null on success, otherwise why it failed.
+function probeTrackTransfer(worker: WorkerLike): string | null {
+  let track: MediaStreamTrack | undefined;
   try {
     const canvas = document.createElement('canvas');
     canvas.width = 2;
     canvas.height = 2;
-    const track = canvas.captureStream(0).getVideoTracks()[0];
-    if (!track) return false;
-    worker.postMessage({ type: 'probeTrack', track }, [track as unknown as Transferable]);
-    return true;
+    track = canvas.captureStream(0).getVideoTracks()[0];
   } catch (e) {
-    log.info('MediaStreamTrack transfer unsupported; using main-thread pipeline:', e);
-    return false;
+    // Its own gate: a captureStream failure says nothing about transfer.
+    return `canvas.captureStream failed (${errorName(e)})`;
+  }
+  if (!track) return 'canvas.captureStream produced no track';
+  try {
+    worker.postMessage({ type: 'probeTrack', track }, [track as unknown as Transferable]);
+    return null;
+  } catch (e) {
+    return `MediaStreamTrack not transferable (${errorName(e)})`;
   }
 }
 
@@ -465,9 +496,9 @@ export async function createBroadcastSession(
   broadcastId?: string,
   grant?: Promise<DisplayStreamGrant>,
 ): Promise<BroadcastSessionLike> {
-  const worker = await tryCreateBroadcastWorker();
+  const { worker, reason } = await tryCreateBroadcastWorker();
   if (!worker) {
-    return new BroadcastPipeline(
+    const pipeline = new BroadcastPipeline(
       config,
       serverUrl,
       connectOpts,
@@ -476,6 +507,8 @@ export async function createBroadcastSession(
       undefined,
       captureMediaSourceFrom(grant),
     );
+    pipeline.setPipelineFallbackReason(reason);
+    return pipeline;
   }
   return new WorkerBroadcastSession(
     worker,
@@ -488,21 +521,51 @@ export async function createBroadcastSession(
   );
 }
 
-async function tryCreateBroadcastWorker(): Promise<Worker | null> {
-  if (!canAttemptWorker()) return null;
-  let worker: Worker;
+// The outcome of trying the worker path: the booted worker, or the gate that
+// rejected it, as a human-readable reason for the stats overlay and Copy
+// diagnostics (docs/16 Decision 1).
+export type BroadcastWorkerProbe<W extends WorkerLike = Worker> =
+  | { worker: W; reason: null }
+  | { worker: null; reason: string };
+
+// Every gate is injectable so each rejection is testable without a real
+// Worker; production uses the defaults.
+export interface BroadcastWorkerProbeDeps<W extends WorkerLike> {
+  mainThreadGate?: () => string | null;
+  spawn?: () => W;
+  probeTransfer?: (worker: W) => string | null;
+  bootTimeoutMs?: number;
+}
+
+function spawnBroadcastWorker(): Worker {
+  return new Worker(new URL('../../transport/broadcaster.worker.ts', import.meta.url), {
+    type: 'module',
+  });
+}
+
+// Four independent gates, in order: the main thread can host a worker at
+// all, the worker script loads, its boot handshake reports the APIs it needs,
+// and a MediaStreamTrack transfers into it.
+export async function tryCreateBroadcastWorker<W extends WorkerLike = Worker>(
+  deps: BroadcastWorkerProbeDeps<W> = {},
+): Promise<BroadcastWorkerProbe<W>> {
+  const fallback = (reason: string): BroadcastWorkerProbe<W> => {
+    log.info(`Broadcast worker unavailable (${reason}); using main-thread pipeline.`);
+    return { worker: null, reason };
+  };
+  const gate = (deps.mainThreadGate ?? mainThreadGateFailure)();
+  if (gate) return fallback(gate);
+  let worker: W;
   try {
-    worker = new Worker(new URL('../../transport/broadcaster.worker.ts', import.meta.url), {
-      type: 'module',
-    });
-  } catch {
-    return null;
+    worker = (deps.spawn ?? (spawnBroadcastWorker as unknown as () => W))();
+  } catch (e) {
+    return fallback(`broadcast worker failed to load: ${errorText(e)}`);
   }
-  const supported = await waitForBoot(worker, BOOT_TIMEOUT_MS);
-  if (!supported || !probeTrackTransfer(worker)) {
+  const bootFailure = await waitForBoot(worker, deps.bootTimeoutMs ?? BOOT_TIMEOUT_MS);
+  const failure = bootFailure ?? (deps.probeTransfer ?? probeTrackTransfer)(worker);
+  if (failure) {
     worker.terminate();
-    log.info('Broadcast worker unavailable; using main-thread pipeline.');
-    return null;
+    return fallback(failure);
   }
-  return worker;
+  return { worker, reason: null };
 }

@@ -849,7 +849,10 @@ Add to it when a new gotcha lands in `docs/`.
   non-transferable types throw `DataCloneError` *synchronously on the
   sender*, no roundtrip needed. Firefox lands on the untouched main-thread
   pipeline via the same boot-handshake fallback as the viewer; the overlay's
-  broadcaster "Pipeline" row shows which path is live.
+  broadcaster "Pipeline" row shows which path is live and, on the main
+  thread, which gate rejected the worker (`Main thread — MediaStreamTrackProcessor
+  unavailable in worker scope`; the same `pipelineFallbackReason` rides
+  Copy diagnostics).
   ([docs/16](16-broadcaster-worker-offload.md))
 - **Chrome on macOS exposes MSTP on `Window` only — worker scope has no
   `MediaStreamTrackProcessor`, no `MediaStreamTrackGenerator`, and no
@@ -864,7 +867,10 @@ Add to it when a new gotcha lands in `docs/`.
   from the spec or from another platform**. The *viewer's* offload is
   unaffected — it needs only `OffscreenCanvas` +
   `transferControlToOffscreen` + a worker-scope `VideoDecoder`, all present.
-  ([docs/16](16-broadcaster-worker-offload.md), [BUGS.md](../BUGS.md))
+  The broadcaster overlay's "Pipeline" row names this as the reason
+  (`Main thread — MediaStreamTrackProcessor unavailable in worker scope`),
+  so a regression on another platform is a one-glance read, not a probe
+  session. ([docs/16](16-broadcaster-worker-offload.md))
 - **`isConfigSupported({hardwareAcceleration: 'prefer-hardware'})` answering
   `supported: true` is Chromium's hardware commitment** — the spec has no
   "require hardware", but Chromium returns false when it can't do HW, which
