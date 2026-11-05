@@ -4,9 +4,14 @@
 // typed start failures, local teardown, and the jsdom fallback of
 // createBroadcastSession to the main-thread pipeline.
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createBroadcastSession, WorkerBroadcastSession, type WorkerLike } from './workerBroadcastSession';
+import {
+  createBroadcastSession,
+  WORKER_SILENCE_MS,
+  WorkerBroadcastSession,
+  type WorkerLike,
+} from './workerBroadcastSession';
 import {
   BroadcastPipeline,
   BroadcastStartError,
@@ -21,6 +26,7 @@ import { DEFAULT_CAPTURE_CONFIG } from '../../media/types';
 class FakeWorker implements WorkerLike {
   posted: { msg: BroadcastWorkerCommand; transfer?: Transferable[] }[] = [];
   onmessage: ((e: MessageEvent) => void) | null = null;
+  onerror: ((e: ErrorEvent) => void) | null = null;
   terminated = false;
 
   postMessage(msg: unknown, transfer?: Transferable[]): void {
@@ -33,6 +39,10 @@ class FakeWorker implements WorkerLike {
 
   emit(msg: unknown): void {
     this.onmessage?.({ data: msg } as MessageEvent);
+  }
+
+  crash(message: string): void {
+    this.onerror?.({ message, preventDefault: () => {} } as ErrorEvent);
   }
 
   commands(): BroadcastWorkerCommand[] {
@@ -79,6 +89,7 @@ function makeSession(overrides?: {
   broadcastId?: string;
   audio?: boolean;
   acquiredAudio?: boolean;
+  isHidden?: () => boolean;
 }) {
   const worker = new FakeWorker();
   const cbs = makeCallbacks();
@@ -94,6 +105,7 @@ function makeSession(overrides?: {
     cbs,
     overrides?.broadcastId,
     acquire,
+    { isHidden: overrides?.isHidden ?? (() => false) },
   );
   return { session, worker, cbs, acquired };
 }
@@ -312,6 +324,152 @@ describe('WorkerBroadcastSession end stop (R78)', () => {
     expect('end' in stops[0]).toBe(false);
     worker.emit({ type: 'ended' });
     await stopping;
+  });
+});
+
+// BUGS.md "Broadcaster screen shows LIVE indefinitely if the broadcast worker
+// dies silently": a killed worker posts nothing, so the session watches the
+// pipeline's 500 ms stats heartbeat; an uncaught worker exception arrives on
+// onerror and ends the broadcast the same way.
+describe('WorkerBroadcastSession worker liveness', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const stats = { encodedFrames: 1 } as BroadcastStats;
+
+  // Live session: started, heartbeat flowing.
+  function goLive(overrides?: Parameters<typeof makeSession>[0]) {
+    vi.useFakeTimers();
+    const made = makeSession(overrides);
+    void made.session.start().catch(() => {});
+    made.worker.emit({ type: 'started' });
+    made.worker.emit({ type: 'stats', stats });
+    return made;
+  }
+
+  // The worker keeps posting stats every 500 ms for `ms`.
+  function beat(worker: FakeWorker, ms: number): void {
+    for (let t = 0; t < ms; t += 500) {
+      vi.advanceTimersByTime(500);
+      worker.emit({ type: 'stats', stats });
+    }
+  }
+
+  it('a silent worker surfaces an error, terminates, then fires onEnded', () => {
+    const { worker, cbs } = goLive();
+    vi.advanceTimersByTime(WORKER_SILENCE_MS + 1500);
+    expect(cbs.onError).toHaveBeenCalledTimes(1);
+    expect(cbs.onError.mock.calls[0][0].message).toMatch(/stopped responding/i);
+    expect(worker.terminated).toBe(true);
+    expect(cbs.onEnded).toHaveBeenCalledTimes(1);
+    // onError lands before onEnded, so the screen keeps the error card.
+    expect(cbs.onError.mock.invocationCallOrder[0]).toBeLessThan(cbs.onEnded.mock.invocationCallOrder[0]);
+    // Fires once.
+    vi.advanceTimersByTime(WORKER_SILENCE_MS * 3);
+    expect(cbs.onError).toHaveBeenCalledTimes(1);
+    expect(cbs.onEnded).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops the preview tracks when the watchdog fires', async () => {
+    vi.useFakeTimers();
+    const { session, worker, acquired } = makeSession();
+    void session.start().catch(() => {});
+    worker.emit({ type: 'awaitingCapture' });
+    await vi.advanceTimersByTimeAsync(0);
+    worker.emit({ type: 'started' });
+    vi.advanceTimersByTime(WORKER_SILENCE_MS + 1500);
+    expect(acquired.track.stop).toHaveBeenCalled();
+  });
+
+  it('a steady heartbeat never fires', () => {
+    const { worker, cbs } = goLive();
+    beat(worker, WORKER_SILENCE_MS * 4);
+    expect(cbs.onError).not.toHaveBeenCalled();
+    expect(cbs.onEnded).not.toHaveBeenCalled();
+    expect(worker.terminated).toBe(false);
+  });
+
+  it('does not arm before started (the share picker can stay open indefinitely)', () => {
+    vi.useFakeTimers();
+    const { session, worker, cbs } = makeSession();
+    void session.start().catch(() => {});
+    worker.emit({ type: 'awaitingCapture' });
+    vi.advanceTimersByTime(WORKER_SILENCE_MS * 4);
+    expect(cbs.onError).not.toHaveBeenCalled();
+    expect(cbs.onEnded).not.toHaveBeenCalled();
+    expect(worker.terminated).toBe(false);
+  });
+
+  it('does not fire while stopping (the worker is tearing down; stop() owns the timeout)', async () => {
+    const { session, worker, cbs } = goLive();
+    void session.stop();
+    // STOP_TIMEOUT_MS (3 s) ends it, once; the watchdog adds no error.
+    await vi.advanceTimersByTimeAsync(WORKER_SILENCE_MS * 4);
+    expect(cbs.onError).not.toHaveBeenCalled();
+    expect(cbs.onEnded).toHaveBeenCalledTimes(1);
+    expect(worker.terminated).toBe(true);
+  });
+
+  it('does not judge while the tab is hidden, and gives a fresh window on return', () => {
+    let hidden = false;
+    const { worker, cbs } = goLive({ isHidden: () => hidden });
+    hidden = true;
+    // A hidden tab may throttle the worker's own timers: no verdict.
+    vi.advanceTimersByTime(WORKER_SILENCE_MS * 6);
+    expect(cbs.onError).not.toHaveBeenCalled();
+    hidden = false;
+    // Visible again: the silence window starts now, not at the last stats.
+    vi.advanceTimersByTime(WORKER_SILENCE_MS - 1000);
+    expect(cbs.onError).not.toHaveBeenCalled();
+    worker.emit({ type: 'stats', stats });
+    beat(worker, WORKER_SILENCE_MS * 2);
+    expect(cbs.onError).not.toHaveBeenCalled();
+    // A worker that is really dead is caught once visible.
+    vi.advanceTimersByTime(WORKER_SILENCE_MS + 1500);
+    expect(cbs.onError).toHaveBeenCalledTimes(1);
+    expect(cbs.onEnded).toHaveBeenCalledTimes(1);
+  });
+
+  it('a stalled main thread (late watchdog tick, e.g. system sleep) resets the window instead of firing', () => {
+    const { worker, cbs } = goLive();
+    // The clock jumps without the interval having run (sleep / frozen page).
+    vi.setSystemTime(Date.now() + WORKER_SILENCE_MS * 10);
+    vi.advanceTimersByTime(1000);
+    expect(cbs.onError).not.toHaveBeenCalled();
+    // The worker's queued stats arrive right after; heartbeat continues.
+    worker.emit({ type: 'stats', stats });
+    beat(worker, WORKER_SILENCE_MS * 2);
+    expect(cbs.onError).not.toHaveBeenCalled();
+    expect(cbs.onEnded).not.toHaveBeenCalled();
+  });
+
+  it('stops watching after the worker ends the broadcast itself', () => {
+    const { worker, cbs } = goLive();
+    worker.emit({ type: 'ended' });
+    vi.advanceTimersByTime(WORKER_SILENCE_MS * 4);
+    expect(cbs.onError).not.toHaveBeenCalled();
+    expect(cbs.onEnded).toHaveBeenCalledTimes(1);
+  });
+
+  it('an uncaught worker exception after start maps to onError + teardown + onEnded', () => {
+    const { worker, cbs } = goLive();
+    worker.crash('Uncaught TypeError: boom');
+    expect(cbs.onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('boom') }));
+    expect(worker.terminated).toBe(true);
+    expect(cbs.onEnded).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(WORKER_SILENCE_MS * 4);
+    expect(cbs.onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('an uncaught worker exception during start rejects start() without onEnded', async () => {
+    const { session, worker, cbs } = makeSession();
+    const started = session.start();
+    worker.crash('Uncaught TypeError: boom');
+    await expect(started).rejects.toThrow(/boom/);
+    expect(worker.terminated).toBe(true);
+    expect(cbs.onEnded).not.toHaveBeenCalled();
+    expect(cbs.onError).not.toHaveBeenCalled();
   });
 });
 

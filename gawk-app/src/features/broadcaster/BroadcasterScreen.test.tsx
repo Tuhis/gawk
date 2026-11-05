@@ -227,6 +227,35 @@ describe('BroadcasterScreen Stop ends the broadcast (R78)', () => {
   });
 });
 
+// BUGS.md "Broadcaster screen shows LIVE indefinitely if the broadcast worker
+// dies silently": WorkerBroadcastSession's liveness check reports a dead
+// worker as onError, then onEnded. The screen must land on the
+// stopped-while-live card, not back on a bare Start card or a frozen LIVE.
+describe('BroadcasterScreen worker lost mid-broadcast', () => {
+  it('onError then onEnded after LIVE shows "Your broadcast stopped" with the message', async () => {
+    scripts.push(async (cbs) => {
+      cbs.onBroadcastId?.('AB2CD3');
+      cbs.onSourceStream(fakeStream);
+    });
+    render(<BroadcasterScreen />);
+    startBroadcast();
+    await waitFor(() => expect(screen.getByText('LIVE')).toBeTruthy());
+
+    const { WORKER_SILENCE_MESSAGE } = await vi.importActual<typeof import('./workerBroadcastSession')>(
+      './workerBroadcastSession',
+    );
+    act(() => {
+      created[0].callbacks.onError(new Error(WORKER_SILENCE_MESSAGE));
+      created[0].callbacks.onEnded();
+    });
+
+    expect(screen.getByRole('heading', { name: 'Your broadcast stopped' })).toBeTruthy();
+    expect(screen.getByText(WORKER_SILENCE_MESSAGE)).toBeTruthy();
+    expect(screen.getByText('Try again')).toBeTruthy();
+    expect(screen.queryByText('LIVE')).toBeNull();
+  });
+});
+
 describe('BroadcasterScreen left while the session is being created', () => {
   // Nothing owns a session created after unmount: started, it would publish
   // under a fresh ID that no page will ever stop.
