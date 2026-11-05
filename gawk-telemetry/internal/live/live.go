@@ -612,8 +612,19 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 
 	// Every pod's answer is in hand now, so the broadcast-level facts can be
 	// derived from all of them at once rather than from whichever landed last.
+	//
+	// A pod that stopped carrying the broadcast (a re-home, a drained edge)
+	// must stop counting first, or its last answer's viewers and drops are
+	// summed until the broadcast ends. A complete round in which it did not
+	// list the broadcast proves it no longer holds it; a pod that did not
+	// answer is kept up to the relay staleness bound, as the legs are.
 	for key := range seen {
 		if b, ok := p.bcasts[key]; ok {
+			for pod, pv := range b.pods {
+				if (r.Complete && pv.at.Before(now)) || now.Sub(pv.at) > RelayStaleAfter {
+					delete(b.pods, pod)
+				}
+			}
 			b.aggregateLocked()
 		}
 	}

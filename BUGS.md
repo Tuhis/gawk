@@ -22,25 +22,6 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   before writing the hello. The PoP path (`sendPopTelemetry`) records after
   its own round trip and needs the same look.
 
-## Telemetry live view keeps counting a pod that stopped carrying the broadcast
-
-- **Found**: 2026-11-05, reading `gawk-telemetry/internal/live/live.go`
-  during R36 (docs/86), while adding stripe-leg attribution beside it.
-- **What**: `broadcastState.pods` gains an entry per pod that reports the
-  broadcast, and nothing ever removes one. `aggregateLocked` sums every
-  entry, so a pod whose last scrape still had the broadcast keeps adding
-  that scrape's subscriber count to `subscribers`/`subscribersFleetTotal`,
-  and its last drop delta to the drop totals, until the broadcast ends. A
-  re-homed broadcast, or an edge that drained, is the usual way in. The R36
-  leg tracking keeps its own state with an age bound and does not share it.
-- **Impact**: an inflated viewer count and drop totals on the live page, and
-  so a possible false `viewer-count-gap` or drop-based finding, for the rest
-  of a broadcast after a pod stops carrying it.
-- **Fix would start**: test-first in `internal/live`. Observe a broadcast on
-  two pods, then only on one, and assert `subscribers` falls back. Then skip
-  or prune a `podView` whose `at` is older than the relay staleness bound
-  (`RelayStaleAfter`), as the leg tracking does.
-
 ## Room footer: a round control sits on top of the quality pill at 390 px
 
 - **Found**: 2026-10-28, reading `e2e/voice-panel.mjs`'s `hold-to-talk-390.png`

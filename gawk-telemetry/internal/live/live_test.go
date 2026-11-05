@@ -863,6 +863,61 @@ func TestFleetSubscriberTotalSumsRealViewersAcrossPods(t *testing.T) {
 	}
 }
 
+// originOnly is clusterObs after the edge stopped carrying the broadcast: a
+// re-home, or an edge that drained. Only the origin's answers remain.
+func originOnly(gen uint64) []relayscrape.Observation {
+	return clusterObs(true, gen)[:2]
+}
+
+// BUGS.md (2026-11-05): a pod that stopped carrying the broadcast kept adding
+// its last scrape's subscribers and drop delta until the broadcast ended.
+func TestAPodThatStopsCarryingTheBroadcastStopsCounting(t *testing.T) {
+	p, c := newProj()
+	p.ObserveRelay(round(clusterObs(true, 1)))
+	c.add(5 * time.Second)
+	p.ObserveRelay(round(clusterObs(true, 2)))
+	c.add(5 * time.Second)
+	// Every pod answered and only the origin listed the broadcast: the edge
+	// does not hold it any more.
+	p.ObserveRelay(round(originOnly(3)))
+	bv := p.Snapshot().Live[0]
+	if got := bv.Metrics["subscribers"]; got != 1 {
+		t.Errorf("subscribers = %v, want 1 — the edge's two viewers left with the edge", got)
+	}
+	if got := bv.Metrics["subscribersFleetTotal"]; got != 1 {
+		t.Errorf("subscribersFleetTotal = %v, want 1", got)
+	}
+	if got := bv.Metrics["datagramsDropped"]; got != 10 {
+		t.Errorf("datagramsDropped = %v, want the origin's 10 alone", got)
+	}
+}
+
+// A partial round proves nothing about the pod that did not answer, so its
+// view is kept — but only up to the relay staleness bound.
+func TestAnUnansweringPodsViewAgesOutAtTheStalenessBound(t *testing.T) {
+	p, c := newProj()
+	p.ObserveRelay(round(clusterObs(true, 1)))
+	c.add(5 * time.Second)
+	p.ObserveRelay(round(clusterObs(true, 2)))
+	partial := func(gen uint64) relayscrape.Round {
+		return relayscrape.Round{Observations: originOnly(gen), Pods: 2, PodsAnswered: 1}
+	}
+	c.add(5 * time.Second)
+	p.ObserveRelay(partial(3))
+	if got := p.Snapshot().Live[0].Metrics["subscribers"]; got != 3 {
+		t.Errorf("subscribers = %v after one partial round, want 3 — the edge may just be slow", got)
+	}
+	gen := uint64(4)
+	for elapsed := 5 * time.Second; elapsed <= RelayStaleAfter; elapsed += 5 * time.Second {
+		c.add(5 * time.Second)
+		p.ObserveRelay(partial(gen))
+		gen++
+	}
+	if got := p.Snapshot().Live[0].Metrics["subscribers"]; got != 1 {
+		t.Errorf("subscribers = %v once the edge's view is older than RelayStaleAfter, want 1", got)
+	}
+}
+
 // projectionSink feeds a real Scraper's rounds into a Projection, so the live
 // path is exercised the way the service wires it rather than from rounds a
 // test built by hand.
