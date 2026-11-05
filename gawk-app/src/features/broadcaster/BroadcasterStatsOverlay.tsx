@@ -37,7 +37,18 @@ export function BroadcasterStatsOverlay({ stats, encoderInfo, bitrateBps, audioS
         // The probe-resolved auto targets ('—' on explicit selections).
         ['Auto ceiling', stats?.autoCeiling == null ? '—' : stats.autoCeiling === 'native' ? 'native' : `${stats.autoCeiling}p`],
         ['Auto fps', stats?.autoFps == null ? '—' : String(stats.autoFps)],
-        ['Pipeline', stats?.pipelineContext === 'worker' ? 'Worker' : stats?.pipelineContext === 'main-thread' ? 'Main thread' : '—'],
+        // A main-thread pipeline carries the worker gate that rejected it, so
+        // the row is the diagnosis rather than just the symptom.
+        [
+          'Pipeline',
+          stats?.pipelineContext === 'worker'
+            ? 'Worker'
+            : stats?.pipelineContext === 'main-thread'
+              ? stats.pipelineFallbackReason
+                ? `Main thread — ${stats.pipelineFallbackReason}`
+                : 'Main thread'
+              : '—',
+        ],
         ['Capture fps', fmt(stats?.captureFps ?? NaN)],
         ['Encoder fps', fmt(stats?.encoderFps ?? NaN)],
         ['Sent fps', fmt(stats?.sentFps ?? NaN)],

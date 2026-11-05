@@ -49,8 +49,11 @@ messages between them, media never crossing back.
    whole worker path *unreachable* on that platform rather than merely
    slower, and the boot handshake + `probeTrackTransfer` correctly fall back.
    Treat worker-scope MSTP as a runtime capability to probe, never as a
-   Chromium baseline. (`docs/gotchas.md`, and the BUGS.md entry on the silent
-   fallback.)
+   Chromium baseline. (`docs/gotchas.md`.) The fallback names its cause:
+   `tryCreateBroadcastWorker` returns the rejecting gate as a reason string
+   (the boot handshake lists the missing worker-scope APIs), the main-thread
+   pipeline carries it as `BroadcastStats.pipelineFallbackReason`, and the
+   overlay's Pipeline row reads `Main thread — <reason>` (2026-11-06).
 
    **Consequence, 2026-09-06.** On that main-thread path a hidden document
    stops the frames — and macOS Chrome reports a *fully occluded* window as

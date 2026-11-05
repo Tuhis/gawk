@@ -51,6 +51,7 @@ function fullStats(): BroadcastStats {
     autoCeiling: null,
     autoFps: null,
     pipelineContext: 'worker',
+    pipelineFallbackReason: null,
     viewerCount: 4,
     audioState: 'active',
     audioEncodedPackets: 1500,
@@ -116,6 +117,42 @@ describe('BroadcasterStatsOverlay', () => {
     expect(screen.getByText('Encode mode').nextSibling?.textContent).toBe('hardware');
     // The relay's live audience push.
     expect(screen.getByText('Watching').nextSibling?.textContent).toBe('4');
+  });
+
+  // docs/16 Decision 1: a main-thread pipeline
+  // says which worker gate rejected, so the overlay is the diagnosis.
+  it('shows why the pipeline fell back to the main thread', () => {
+    render(
+      <BroadcasterStatsOverlay
+        stats={{
+          ...fullStats(),
+          pipelineContext: 'main-thread',
+          pipelineFallbackReason: 'MediaStreamTrackProcessor unavailable in worker scope',
+        }}
+        encoderInfo={encoderInfo}
+        bitrateBps={null}
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    expect(screen.getByText('Pipeline').nextSibling?.textContent).toBe(
+      'Main thread — MediaStreamTrackProcessor unavailable in worker scope',
+    );
+  });
+
+  it('reads a plain "Main thread" when no fallback reason was recorded', () => {
+    render(
+      <BroadcasterStatsOverlay
+        stats={{ ...fullStats(), pipelineContext: 'main-thread', pipelineFallbackReason: null }}
+        encoderInfo={encoderInfo}
+        bitrateBps={null}
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    expect(screen.getByText('Pipeline').nextSibling?.textContent).toBe('Main thread');
   });
 
   // docs/75 RU9: a too-slow uplink (stale drops, superseded keyframes) is

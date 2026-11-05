@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createBroadcastSession,
+  tryCreateBroadcastWorker,
   WORKER_SILENCE_MS,
   WorkerBroadcastSession,
   type WorkerLike,
@@ -482,5 +483,104 @@ describe('createBroadcastSession fallback', () => {
       makeCallbacks(),
     );
     expect(session).toBeInstanceOf(BroadcastPipeline);
+  });
+
+  it('records the rejecting gate on the fallback pipeline\'s stats', async () => {
+    const session = await createBroadcastSession({ ...DEFAULT_CAPTURE_CONFIG }, 'https://relay.test:4433', {}, makeCallbacks());
+    expect(session).toBeInstanceOf(BroadcastPipeline);
+    expect((session as BroadcastPipeline).getPipelineFallbackReason()).toBe('Web Workers unavailable');
+  });
+});
+
+// A worker whose boot handshake the test scripts: `boot` is emitted on the
+// next macrotask after the session attaches its onmessage.
+class FakeBootWorker implements WorkerLike {
+  onmessage: ((e: MessageEvent) => void) | null = null;
+  onerror: ((e: ErrorEvent) => void) | null = null;
+  terminated = false;
+  posted: unknown[] = [];
+  postMessage(msg: unknown): void {
+    this.posted.push(msg);
+  }
+  terminate(): void {
+    this.terminated = true;
+  }
+  emit(msg: unknown): void {
+    this.onmessage?.({ data: msg } as MessageEvent);
+  }
+}
+
+// One test per gate of tryCreateBroadcastWorker (docs/16 Decision 1): each
+// rejection names itself, so a fallback is never silent.
+describe('tryCreateBroadcastWorker fallback reasons', () => {
+  function deps(worker: FakeBootWorker, over: Partial<Parameters<typeof tryCreateBroadcastWorker>[0]> = {}) {
+    return {
+      mainThreadGate: () => null,
+      spawn: () => worker,
+      probeTransfer: () => null,
+      bootTimeoutMs: 50,
+      ...over,
+    };
+  }
+
+  it('gate 1: names the missing main-thread capability', async () => {
+    const res = await tryCreateBroadcastWorker(
+      deps(new FakeBootWorker(), { mainThreadGate: () => 'canvas.captureStream unavailable' }),
+    );
+    expect(res).toEqual({ worker: null, reason: 'canvas.captureStream unavailable' });
+  });
+
+  it('gate 1 (real check): jsdom has no Worker', async () => {
+    const res = await tryCreateBroadcastWorker({ spawn: () => new FakeBootWorker() });
+    expect(res).toEqual({ worker: null, reason: 'Web Workers unavailable' });
+  });
+
+  it('gate 2: a worker that fails to construct says so', async () => {
+    const res = await tryCreateBroadcastWorker(
+      deps(new FakeBootWorker(), {
+        spawn: () => {
+          throw new Error('blocked by CSP');
+        },
+      }),
+    );
+    expect(res).toEqual({ worker: null, reason: 'broadcast worker failed to load: blocked by CSP' });
+  });
+
+  it('gate 3a: boot reporting supported:false names the APIs missing in worker scope', async () => {
+    const w = new FakeBootWorker();
+    const p = tryCreateBroadcastWorker(deps(w));
+    w.emit({ type: 'boot', supported: false, missing: ['MediaStreamTrackProcessor'] });
+    expect(await p).toEqual({ worker: null, reason: 'MediaStreamTrackProcessor unavailable in worker scope' });
+    expect(w.terminated).toBe(true);
+  });
+
+  it('gate 3b: a boot that never arrives is a timeout', async () => {
+    const w = new FakeBootWorker();
+    const res = await tryCreateBroadcastWorker(deps(w, { bootTimeoutMs: 5 }));
+    expect(res).toEqual({ worker: null, reason: 'broadcast worker boot timed out after 5 ms' });
+    expect(w.terminated).toBe(true);
+  });
+
+  it('gate 3c: a worker script error before boot says it failed to start', async () => {
+    const w = new FakeBootWorker();
+    const p = tryCreateBroadcastWorker(deps(w));
+    w.onerror?.({ message: 'SyntaxError: bad import' } as ErrorEvent);
+    expect(await p).toEqual({ worker: null, reason: 'broadcast worker failed to start: SyntaxError: bad import' });
+  });
+
+  it('gate 4: a track-transfer failure names itself', async () => {
+    const w = new FakeBootWorker();
+    const p = tryCreateBroadcastWorker(deps(w, { probeTransfer: () => 'MediaStreamTrack not transferable (DataCloneError)' }));
+    w.emit({ type: 'boot', supported: true, missing: [] });
+    expect(await p).toEqual({ worker: null, reason: 'MediaStreamTrack not transferable (DataCloneError)' });
+    expect(w.terminated).toBe(true);
+  });
+
+  it('every gate passing returns the worker and no reason', async () => {
+    const w = new FakeBootWorker();
+    const p = tryCreateBroadcastWorker(deps(w));
+    w.emit({ type: 'boot', supported: true, missing: [] });
+    expect(await p).toEqual({ worker: w, reason: null });
+    expect(w.terminated).toBe(false);
   });
 });

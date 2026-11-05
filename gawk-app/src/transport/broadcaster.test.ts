@@ -727,6 +727,41 @@ describe('BroadcastPipeline media-source seam', () => {
     }
   });
 
+  it('carries the recorded worker-fallback reason in its stats (Copy diagnostics)', async () => {
+    vi.useFakeTimers();
+    try {
+      const fake = makeFakeWT([ANNOUNCE_K7XQ2M]);
+      connectWebTransport.mockResolvedValue(fake.wt);
+      const cbs = makeCallbacks();
+      const pipeline = makeSeamPipeline(cbs, makeFakeSource());
+      pipeline.setPipelineFallbackReason('MediaStreamTrackProcessor unavailable in worker scope');
+      await pipeline.start();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(cbs.onStats.mock.calls[0][0].pipelineFallbackReason).toBe(
+        'MediaStreamTrackProcessor unavailable in worker scope',
+      );
+      await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports no fallback reason when none was recorded', async () => {
+    vi.useFakeTimers();
+    try {
+      const fake = makeFakeWT([ANNOUNCE_K7XQ2M]);
+      connectWebTransport.mockResolvedValue(fake.wt);
+      const cbs = makeCallbacks();
+      const pipeline = makeSeamPipeline(cbs, makeFakeSource());
+      await pipeline.start();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(cbs.onStats.mock.calls[0][0].pipelineFallbackReason).toBeNull();
+      await pipeline.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('detects pipelineContext "worker" when window is absent', async () => {
     vi.unstubAllGlobals(); // drop the window stub — a worker realm has none
     vi.useFakeTimers();

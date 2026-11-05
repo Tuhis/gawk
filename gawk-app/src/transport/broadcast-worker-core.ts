@@ -85,8 +85,25 @@ export type BroadcastWorkerEvent =
 // Shell-level boot handshake (posted by broadcaster.worker.ts on load, before
 // any command): whether this worker's global scope has the codecs, transport
 // and MSTP the pipeline needs. The main thread falls back to the main-thread
-// pipeline otherwise.
-export type BroadcastWorkerBoot = { type: 'boot'; supported: boolean };
+// pipeline otherwise, and `missing` names the absent APIs so that fallback
+// can say why (the stats overlay's Pipeline row).
+export type BroadcastWorkerBoot = { type: 'boot'; supported: boolean; missing?: string[] };
+
+// The worker-scope globals the offloaded pipeline needs. MSTP pumps the
+// transferred track; OffscreenCanvas backs the preprocessor's scaling rungs.
+const BROADCAST_WORKER_REQUIRED_APIS = [
+  'VideoEncoder',
+  'WebTransport',
+  'MediaStreamTrackProcessor',
+  'OffscreenCanvas',
+] as const;
+
+// The required APIs absent from `scope` (the worker's global object), in a
+// fixed order. Empty means the worker can run the pipeline.
+export function missingBroadcastWorkerApis(scope: object): string[] {
+  const g = scope as Record<string, unknown>;
+  return BROADCAST_WORKER_REQUIRED_APIS.filter((name) => g[name] === undefined);
+}
 export type BroadcastWorkerOutbound = BroadcastWorkerEvent | BroadcastWorkerBoot;
 
 export interface BroadcastWorkerHost {

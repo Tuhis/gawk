@@ -190,6 +190,11 @@ export interface BroadcastStats {
   // Where the pipeline runs, detected via `window` absence — 'worker' on the
   // offloaded path.
   pipelineContext: 'worker' | 'main-thread';
+  // Why a main-thread pipeline is not in the worker: the broadcast-worker
+  // gate that rejected (createBroadcastSession), e.g. "MediaStreamTrackProcessor
+  // unavailable in worker scope". Null on the worker path, and on a
+  // main-thread pipeline nobody tried to offload.
+  pipelineFallbackReason: string | null;
   // The live "N watching" number the relay pushes
   // to this publisher session (~1 s cadence, change-driven). Null until the
   // first push lands; survives transport resumes (the new session re-pushes
@@ -289,6 +294,7 @@ const EMPTY_BROADCAST_STATS: BroadcastStats = {
   autoCeiling: null,
   autoFps: null,
   pipelineContext: 'main-thread',
+  pipelineFallbackReason: null,
   viewerCount: null,
   audioState: 'off',
   audioEncodedPackets: 0,
@@ -595,6 +601,16 @@ export class BroadcastPipeline {
         },
       },
     });
+  }
+
+  // Records why this pipeline runs on the main thread instead of the
+  // broadcast worker; it rides every stats sample from here on.
+  setPipelineFallbackReason(reason: string): void {
+    this.stats.pipelineFallbackReason = reason;
+  }
+
+  getPipelineFallbackReason(): string | null {
+    return this.stats.pipelineFallbackReason;
   }
 
   async start(): Promise<void> {

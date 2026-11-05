@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   BroadcastWorkerCore,
+  missingBroadcastWorkerApis,
   type BroadcastPipelineFactory,
   type BroadcastWorkerEvent,
   type BroadcastWorkerHost,
@@ -272,5 +273,29 @@ describe('BroadcastWorkerCore stop', () => {
     const { core, events } = makeCore();
     await core.stop();
     expect(events).toContainEqual({ type: 'ended' });
+  });
+});
+
+// The boot handshake names what is missing, so the main thread can say why it
+// fell back (docs/16 Decision 1).
+describe('missingBroadcastWorkerApis', () => {
+  const full = { VideoEncoder: class {}, WebTransport: class {}, MediaStreamTrackProcessor: class {}, OffscreenCanvas: class {} };
+
+  it('is empty when every required API is in scope', () => {
+    expect(missingBroadcastWorkerApis(full)).toEqual([]);
+  });
+
+  it('names MSTP on the Chrome/macOS shape (codecs + transport present, breakout box absent)', () => {
+    const { MediaStreamTrackProcessor: _mstp, ...chromeMac } = full;
+    expect(missingBroadcastWorkerApis(chromeMac)).toEqual(['MediaStreamTrackProcessor']);
+  });
+
+  it('names every missing API in a fixed order', () => {
+    expect(missingBroadcastWorkerApis({})).toEqual([
+      'VideoEncoder',
+      'WebTransport',
+      'MediaStreamTrackProcessor',
+      'OffscreenCanvas',
+    ]);
   });
 });

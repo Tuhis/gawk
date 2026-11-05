@@ -8,6 +8,7 @@
 
 import {
   BroadcastWorkerCore,
+  missingBroadcastWorkerApis,
   type BroadcastWorkerCommand,
   type BroadcastWorkerOutbound,
 } from './broadcast-worker-core';
@@ -26,14 +27,9 @@ const ctx = self as unknown as WorkerScope;
 type ProbeCommand = { type: 'probeTrack'; track: MediaStreamTrack };
 
 // Boot handshake: report capability before the main thread commits to the
-// worker path. MSTP is required here (the transferred track is pumped in this
-// scope); OffscreenCanvas backs the preprocessor's scaling rungs.
-const supported =
-  typeof VideoEncoder !== 'undefined' &&
-  typeof WebTransport !== 'undefined' &&
-  typeof MediaStreamTrackProcessor !== 'undefined' &&
-  typeof OffscreenCanvas !== 'undefined';
-ctx.postMessage({ type: 'boot', supported });
+// worker path, naming whatever is missing so the fallback can say why.
+const missing = missingBroadcastWorkerApis(self);
+ctx.postMessage({ type: 'boot', supported: missing.length === 0, missing });
 
 const core = new BroadcastWorkerCore({ post: (ev) => ctx.postMessage(ev) });
 
