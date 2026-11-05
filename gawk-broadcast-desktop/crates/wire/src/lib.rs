@@ -98,6 +98,11 @@ pub const TYPE_VOICE_HELLO: u8 = 0x1A;
 pub const TYPE_VOICE_FRAME: u8 = 0x1B;
 pub const TYPE_VOICE_STATE: u8 = 0x1C;
 pub const TYPE_VOICE_CONTROL: u8 = 0x1D;
+// VideoUndeliverable (docs/24 finding 19): relay→viewer datagram, "I hold video for
+// you and cannot deliver it". The broadcasters never receive it; the iOS native
+// viewer acts on it (gawk-ios viewer crate). Layout lives in messages.rs.
+pub const TYPE_VIDEO_UNDELIVERABLE: u8 = 0x1E;
+pub const VIDEO_UNDELIVERABLE_SIZE: usize = 10;
 
 // Size constants. A change to any of these is a protocol change, not a
 // tuning knob — the constants test pins every one.

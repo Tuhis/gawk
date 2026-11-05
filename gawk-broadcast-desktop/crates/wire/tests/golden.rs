@@ -2436,3 +2436,40 @@ fn golden_session_closing_capacity_refusals() {
         assert!(!terminal_for_viewer(code));
     }
 }
+
+// The relay's "video I cannot deliver" notice (docs/24 finding 19). Byte-identical to
+// gawk-server/wire wire_test.go goldenVideoUndeliverableHex.
+const GOLDEN_VIDEO_UNDELIVERABLE: &str = "011e0102030400000bb8";
+
+#[test]
+fn golden_video_undeliverable() {
+    assert_eq!(TYPE_VIDEO_UNDELIVERABLE, 0x1E);
+    assert_eq!(VIDEO_UNDELIVERABLE_SIZE, 10);
+    let mut out = Vec::new();
+    append_video_undeliverable(
+        &mut out,
+        VideoUndeliverable {
+            keyframe_id: 0x01020304,
+            stalled_ms: 3000,
+        },
+    );
+    assert_eq!(to_hex(&out), GOLDEN_VIDEO_UNDELIVERABLE);
+    assert_eq!(
+        parse_video_undeliverable(&out).unwrap(),
+        VideoUndeliverable {
+            keyframe_id: 0x01020304,
+            stalled_ms: 3000,
+        }
+    );
+    // Strict: exact length, right version and type.
+    assert!(parse_video_undeliverable(&out[..VIDEO_UNDELIVERABLE_SIZE - 1]).is_err());
+    let mut trailing = out.clone();
+    trailing.push(0);
+    assert!(parse_video_undeliverable(&trailing).is_err());
+    let mut version = out.clone();
+    version[0] = 0x02;
+    assert!(parse_video_undeliverable(&version).is_err());
+    let mut kind = out.clone();
+    kind[1] = TYPE_VIEWER_COUNT;
+    assert!(parse_video_undeliverable(&kind).is_err());
+}
