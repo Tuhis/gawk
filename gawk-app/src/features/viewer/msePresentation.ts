@@ -623,10 +623,11 @@ export class MsePresenter {
         break;
       }
     }
-    // The newest keyframe is the head: the GOP it starts is itself longer than
+    // Nothing but inits ahead of the newest keyframe (it heads the queue, or
+    // sits behind a re-queued init): the GOP it starts is itself longer than
     // the bound (a WHIP/OBS GOP can reach ~2.2 s, docs/83 D7). Drop it too and
     // resume at the next keyframe, or the queue would grow with the GOP.
-    if (cut === 0) cut = t.queue.length;
+    if (!t.queue.slice(0, cut).some((s) => s.kind === 'media')) cut = t.queue.length;
     const dropped = t.queue.slice(0, cut);
     const kept = t.queue.slice(cut);
     // The init governing the kept head may be among the dropped (a parameter
