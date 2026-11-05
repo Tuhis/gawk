@@ -6,27 +6,37 @@
 //! A keyframe is the one burst the stream sends often: tens of kilobytes,
 //! twice a second, on a reliable stream whose `finish` resolves only once
 //! every byte is acknowledged (`transport::WtKeyframeWriter`). The rate it
-//! drained at — its bits over the time to acknowledgement less one minimum
-//! round trip — is what the path delivered while it carried the stream, so
-//! it is a bandwidth measurement taken by the stream itself. quinn's own
+//! drained at — its bits over the time to acknowledgement less
+//! [`DRAIN_RTTS`] minimum round trips — is what the path delivered while it
+//! carried the stream, so it is a bandwidth measurement taken by the stream
+//! itself. quinn's own
 //! estimates cannot stand in for it (docs/85 §2): BBR's bottleneck estimate
 //! updates only on samples that were not application-limited, which a video
 //! stream almost never produces, so on a clean 30 Mbps uplink it read
-//! 6.8 Mbps under an 11.6 Mbps stream (and 0 for a whole run); Cubic's
+//! 7.5 Mbps under an 11.4 Mbps stream (and 0 for a whole run); Cubic's
 //! window over RTT grows without bound while the stream is app-limited.
 //!
-//! A keyframe is **slow** when it drained at under [`SLOW_DRAIN_SHARE`] of
-//! the stream's wire rate over the last [`RATE_WINDOW_US`]. Radio outages
-//! and random loss stretch a keyframe now and then; a full uplink stretches
-//! every one (docs/85 §2), which is what the monitor (`uplink`) looks for.
+//! A keyframe is **slow** when it drained at under [`SLOW_DRAIN_FACTOR`]
+//! times the stream's wire rate over the last [`RATE_WINDOW_US`]: an uplink
+//! with room delivers a burst faster than the stream's average, one that is
+//! full cannot. Radio outages and random loss stretch a keyframe now and
+//! then; a full uplink stretches every one (docs/85 §2), which is what the
+//! monitor (`uplink`) looks for.
 
 use std::collections::VecDeque;
 
 use crate::relay::PathCounters;
 
-/// A keyframe is slow when it drained at under this share of the stream's
-/// wire rate (docs/85 D3, tuned on §5's matrix).
-pub const SLOW_DRAIN_SHARE: f64 = 0.85;
+/// A keyframe is slow when it drained at under this many times the
+/// stream's wire rate (docs/85 D3, F3: every gated row passes from 1.1 to
+/// 2.0; 1.0 misses the thin cell beside an upload in 2 runs of 32, 2.5
+/// raises on 30 Mbps alone).
+pub const SLOW_DRAIN_FACTOR: f64 = 1.2;
+/// Minimum round trips taken off a keyframe's time to acknowledgement: one
+/// that every write costs, and one for a loss recovery, so that on a long
+/// lossy path a keyframe that met a loss is not read as a slow link
+/// (docs/85 F3: with one, 1.0 already raised on 100 ms with 1–2 % loss).
+pub const DRAIN_RTTS: u64 = 2;
 /// The stream's wire rate is averaged over this much of the recent past.
 pub const RATE_WINDOW_US: u64 = 5_000_000;
 /// …and is unknown until the samples span at least this much.
@@ -79,12 +89,12 @@ impl KeyframeDrain {
             return None;
         }
         let rate_bps = (c.wire_bytes - b0) as f64 * 8.0 * 1e6 / span_us as f64;
-        let drain_us = elapsed_us.saturating_sub(c.min_rtt_us);
+        let drain_us = elapsed_us.saturating_sub(DRAIN_RTTS * c.min_rtt_us);
         if drain_us == 0 {
-            return Some(false); // inside one round trip: as fast as the path goes
+            return Some(false); // inside the round trips: as fast as the path goes
         }
         let drain_bps = bytes as f64 * 8.0 * 1e6 / drain_us as f64;
-        Some(drain_bps < SLOW_DRAIN_SHARE * rate_bps)
+        Some(drain_bps < SLOW_DRAIN_FACTOR * rate_bps)
     }
 }
 
@@ -121,22 +131,29 @@ mod tests {
     }
 
     #[test]
-    fn a_keyframe_draining_under_85_percent_of_the_stream_is_slow() {
-        // 75 kB is 0.6 Mbit: at the stream's 12 Mbps it drains in 50 ms, at
-        // 10.2 Mbps (the threshold) in 58.8 ms. 10 ms of minimum RTT on top.
-        assert_eq!(judge(75_000, 60, 10), Some(false), "12 Mbps");
-        assert_eq!(judge(75_000, 68, 10), Some(false), "10.3 Mbps");
-        assert_eq!(judge(75_000, 70, 10), Some(true), "10.0 Mbps");
-        assert_eq!(judge(75_000, 310, 10), Some(true), "2 Mbps");
+    fn a_keyframe_draining_under_1_2_times_the_stream_is_slow() {
+        // 75 kB is 0.6 Mbit: against the stream's 12 Mbps the threshold is
+        // 14.4 Mbps, 41.7 ms of drain; two 10 ms round trips on top.
+        assert_eq!(judge(75_000, 50, 10), Some(false), "20 Mbps");
+        assert_eq!(judge(75_000, 60, 10), Some(false), "15 Mbps");
+        assert_eq!(judge(75_000, 63, 10), Some(true), "14 Mbps");
+        assert_eq!(
+            judge(75_000, 70, 10),
+            Some(true),
+            "12 Mbps: no faster than the stream"
+        );
+        assert_eq!(judge(75_000, 320, 10), Some(true), "2 Mbps");
     }
 
     #[test]
-    fn one_round_trip_is_not_drain_time() {
-        // A 100 ms path: the same keyframe at the same rate takes 150 ms.
-        assert_eq!(judge(75_000, 150, 100), Some(false));
-        // Acknowledged within the minimum RTT (an RTT that dropped since):
-        // as fast as it gets.
-        assert_eq!(judge(75_000, 90, 100), Some(false));
+    fn two_round_trips_are_not_drain_time() {
+        // A 100 ms path: the same keyframe at 20 Mbps takes 230 ms, a loss
+        // recovery included.
+        assert_eq!(judge(75_000, 230, 100), Some(false));
+        // Acknowledged within the two round trips: as fast as it gets.
+        assert_eq!(judge(75_000, 190, 100), Some(false));
+        // 130 ms past them is 4.6 Mbps: slow, however long the path.
+        assert_eq!(judge(75_000, 330, 100), Some(true), "130 ms of drain");
     }
 
     #[test]

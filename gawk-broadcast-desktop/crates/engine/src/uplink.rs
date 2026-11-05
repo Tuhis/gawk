@@ -20,7 +20,8 @@
 //! - frames dropped at send: sends are failing;
 //! - sent fps far below encode fps: most frames never leave the box;
 //! - every keyframe acknowledged in the second drained slowly
-//!   ([`crate::drain`]: under 85 % of the stream's own wire rate).
+//!   ([`crate::drain`]: under 1.2 times the stream's own wire rate — an
+//!   uplink with room delivers a burst faster than the stream's average).
 //!   This is the one that sees a full uplink under BBR (R75, docs/85): BBR
 //!   holds the stream's rate and the network drops the excess, so nothing
 //!   backs up on this side and the counters above stay clean, but every

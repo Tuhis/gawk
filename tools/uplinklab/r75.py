@@ -5,16 +5,19 @@ engine sender's runs (bin/sender-engine; its T, B, K, F, N and Y lines).
   r75.py seconds <run-dir> [--from S]     one row a second, for reading a run
   r75.py fair [<fair-dir>] [--replay]     docs/85 tables U1 and U3 (fair/run.sh's runs)
   r75.py matrix [<results-dir>] [--replay] docs/85 table U4 (matrix.py's engine runs)
+  r75.py sweep <results-dir> <fair-dir>...  docs/85 F3: the drain threshold, replayed
 
 --replay replays the R75 monitor over each run's own counters (keyframe
 drain from K and F lines against the wire rate from T lines, OR-ed with the
 RU4 signals from Y lines, carrier expiries gated on the T lines' minimum RTT,
 through the monitor's hysteresis): how §2 judged runs made before the engine
-had the rule; R75_SLOW_SHARE sweeps its drain threshold (default 0.85).
+had the rule. R75_SLOW_FACTOR (default 1.2), R75_RTTS (2) and R75_RATE
+(wire, or media) vary the rule; `sweep` tries the factors in R75_SWEEP.
 Without --replay the warning columns are the run's own Y lines: what the
 engine in the run actually showed.
 Undecodable is analyze.py's, over the run from 25 s (fair) or whole (matrix).
 """
+import bisect
 import glob
 import json
 import os
@@ -25,7 +28,9 @@ from collections import defaultdict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.environ.get("UPLINK_OUT", os.path.join(HERE, "out"))
-SLOW_SHARE = float(os.environ.get("R75_SLOW_SHARE", "0.85"))  # drain::SLOW_DRAIN_SHARE
+SLOW_SHARE = float(os.environ.get("R75_SLOW_FACTOR", "1.2"))   # drain::SLOW_DRAIN_FACTOR
+RTTS = float(os.environ.get("R75_RTTS", "2"))                  # drain::DRAIN_RTTS
+RATE = os.environ.get("R75_RATE", "wire")  # wire: udp_tx (the engine's); media: the encoder's frames
 WARN_AFTER, CLEAR_AFTER = 5, 15                                 # uplink.rs
 EXPIRY_MAX_MIN_RTT_S = 0.05                                     # CARRIER_EXPIRY_MAX_MIN_RTT_MS
 FROM_S, TO_S = 25, 80                                           # table O3's window
@@ -86,7 +91,7 @@ def keyframes(lg):
         if outcome != "sent":
             out.append((b, 0.0))
             continue
-        dur = max((b - a) / 1e9 - min_rtt, 1e-3)
+        dur = max((b - a) / 1e9 - RTTS * min_rtt, 1e-3)
         out.append((b, size.get(fid, 0) * 8 / dur / 1e6))
     return out
 
@@ -112,6 +117,11 @@ def replayed(d, lg):
     ys, ts = lg["Y"], [p for p in lg["T"] if len(p) >= 12]
     kfs = keyframes(lg)
     rates, flags, secs = [], [], []
+    frames = sorted((int(p[6]), int(p[3])) for p in lg["F"])
+    ft = [t for t, _ in frames]
+    cum = [0]
+    for _, sz in frames:
+        cum.append(cum[-1] + sz)
     for i in range(1, len(ys)):
         a = [float(x) for x in ys[i - 1][1:]]
         b = [float(x) for x in ys[i][1:]]
@@ -124,6 +134,11 @@ def replayed(d, lg):
             dt = (int(ts[i][1]) - int(ts[i - 1][1])) / 1e9
             rates.append((int(ts[i][10]) - int(ts[i - 1][10])) * 8 / dt / 1e6 if dt > 0 else 0)
         rate = sum(rates[-5:]) / len(rates[-5:]) if rates else 0
+        if RATE == "media":
+            hi_ = bisect.bisect_right(ft, b[0])
+            lo_ = bisect.bisect_right(ft, b[0] - 5e9)
+            span = min(5.0, (b[0] - ft[0]) / 1e9) if ft else 0
+            rate = (cum[hi_] - cum[lo_]) * 8 / span / 1e6 if span >= 1 else 0
         drains = [g for k, g in kfs if a[0] < k <= b[0]]
         slow = [g for g in drains if g < SLOW_SHARE * rate]
         flags.append(ru4 or (len(slow) >= 1 and len(slow) == len(drains)))
@@ -262,6 +277,41 @@ def matrix(base, replay):
     print(f"\n{fails} row(s) fail.")
 
 
+def sweep(results, fairs):
+    """F3: per drain threshold, the rule replayed over every run given."""
+    global SLOW_SHARE
+    runs = []
+    for base in fairs:
+        for d in sorted(glob.glob(f"{base}/r*-*-s*")):
+            m = re.match(r"r(\d+)-(datagram|carrier)-engine-(bbr|cubic)-(tcp|alone)-s\d+$", os.path.basename(d))
+            if m and os.path.exists(f"{d}/done") and m[1] in ("15", "30"):
+                runs.append((m.groups(), d, load(d), undecodable(d, FROM_S)))
+    cells = []
+    for cell in sorted(glob.glob(f"{results}/*/")):
+        name = os.path.basename(cell.rstrip("/"))
+        for mode in sorted(os.listdir(cell)):
+            d = f"{cell}{mode}"
+            if not os.path.exists(f"{d}/transport.json"):
+                continue
+            bbr = mode.endswith("-bbr")
+            lossless = "clean" in name or ("rate" in name and "out" not in name)
+            if bbr or lossless or name.startswith("rtt10-out"):
+                cells.append((f"{name} {mode}", d, load(d)))
+    print("| Slow below | 15 Mbps beside the upload: raised within 5 s | 15 Mbps alone, damaged runs: raised "
+          "| 30 Mbps alone: raised | Matrix runs that must not raise and do |")
+    print("|---|---|---|---|---|")
+    for k in [float(x) for x in os.environ.get("R75_SWEEP", "0.75 0.85 1.0 1.1 1.2 1.5 2.0 2.5").split()]:
+        SLOW_SHARE = k
+        beside = [verdict(replayed(d, lg))[0] for (r, _, _, t), d, lg, _ in runs if r == "15" and t == "tcp"]
+        dmg = [verdict(replayed(d, lg))[0] for (r, _, _, t), d, lg, u in runs if r == "15" and t == "alone" and u >= 1]
+        alone30 = [verdict(replayed(d, lg))[0] for (r, _, _, t), d, lg, _ in runs if r == "30" and t == "alone"]
+        bad = [n for n, d, lg in cells if verdict(replayed(d, lg))[0] is not None]
+        ok = sum(1 for f in beside if f is not None and f <= 20 + WARN_AFTER + 1)
+        print(f"| {k:.2f} × wire rate | {ok} of {len(beside)} | {sum(f is not None for f in dmg)} of {len(dmg)} "
+              f"| {sum(f is not None for f in alone30)} of {len(alone30)} | {len(bad)} of {len(cells)}"
+              + (f" ({', '.join(bad)})" if bad else "") + " |")
+
+
 def seconds(d, lo):
     lg = load(d)
     print("t\twire\tpace\tcwnd/rtt\tqd ms\tloss")
@@ -281,6 +331,8 @@ def main():
         seconds(a[1], lo)
     elif a[0] == "fair":
         fair(a[1] if len(a) > 1 else f"{OUT}/fair", replay)
+    elif a[0] == "sweep":
+        sweep(a[1], a[2:])
     elif a[0] == "matrix":
         matrix(a[1] if len(a) > 1 else f"{OUT}/results", replay)
     else:
