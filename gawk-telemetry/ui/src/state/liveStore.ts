@@ -95,6 +95,15 @@ export const useLiveStore = create<LiveState>((set, get) => ({
     if (get().paused) return;
     try {
       const snap = await fetchLive();
+      // Re-checked after the await: the page may have frozen meanwhile (the
+      // answer is held for the resume), or the stream may already have
+      // delivered something newer.
+      const s = get();
+      if (s.paused) {
+        if (!s.held || snap.atMs > s.held.atMs) set({ held: snap });
+        return;
+      }
+      if (s.snapshot && snap.atMs < s.snapshot.atMs) return;
       set({ snapshot: snap, error: null, lastOkAt: Date.now() });
     } catch (e) {
       // The page KEEPS the last good snapshot and says the feed is stale.

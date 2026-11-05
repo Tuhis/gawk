@@ -77,6 +77,18 @@ describe('useStack', () => {
     expect(result.current.viewTo).toBe(10_000);
   });
 
+  // A → B → A: the first subject's zoom is not kept for its return
+  // (round-3 review: "a new subject starts at the full range").
+  it('does not bring an old subject’s zoom back', () => {
+    const { result, rerender } = renderHook(({ g }) => useStack(0, 10_000, g), { initialProps: { g: 'a' } });
+    const chart = new FakeChart();
+    act(() => result.current.register(chart as unknown as EChartsType));
+    act(() => chart.userZoom(20, 60));
+    rerender({ g: 'b' });
+    rerender({ g: 'a' });
+    expect(result.current.zoomOf()).toEqual({ start: 0, end: 100 });
+  });
+
   it('ignores an empty pointer report and clears only on leaving', () => {
     const { result } = renderHook(() => useStack(0, 10_000));
     const a = new FakeChart();

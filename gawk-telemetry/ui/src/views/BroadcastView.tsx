@@ -58,6 +58,13 @@ export function BroadcastView({ broadcastKey }: { broadcastKey: string }) {
       setLoading(false);
       return;
     }
+    // Another broadcast is another page: never the last one's lanes under
+    // the new heading while its fetch is out, and a fresh chart stack (and
+    // zoom) when it lands — as the session page already does.
+    setDetail(null);
+    setReport(null);
+    setError(null);
+    setLoading(true);
     const ac = new AbortController();
     const load = () =>
       fetchBroadcast(broadcastKey, { sinceMs: Date.now() - 7 * 24 * 3600_000 }, ac.signal)
@@ -98,7 +105,16 @@ export function BroadcastView({ broadcastKey }: { broadcastKey: string }) {
   }
   if (loading || !detail) return <p className={view.loading}>Assembling the lanes…</p>;
 
-  return <BroadcastPage broadcastKey={broadcastKey} detail={detail} report={report} notes={notes} reloadNotes={reloadNotes} />;
+  return (
+    <BroadcastPage
+      key={broadcastKey}
+      broadcastKey={broadcastKey}
+      detail={detail}
+      report={report}
+      notes={notes}
+      reloadNotes={reloadNotes}
+    />
+  );
 }
 
 function BroadcastPage({

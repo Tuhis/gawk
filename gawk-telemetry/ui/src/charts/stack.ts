@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import type { EChartsType } from './echarts.ts';
 
@@ -73,9 +73,17 @@ export function useStack(fromMs: number, toMs: number, subject = ''): Stack {
     return z.subject === subject ? { start: z.start, end: z.end } : FULL;
   }, [subject]);
 
-  useEffect(() => {
+  // A layout effect, not a passive one: ECharts listens with native DOM
+  // listeners, so a wheel event can land between a commit and its passive
+  // effects, and must already see the new subject. A subject change also
+  // drops the old zoom, so returning to an earlier subject starts over too.
+  useLayoutEffect(() => {
     current.current = subject;
     range.current = { fromMs, toMs };
+    if (zoom.current.subject !== subject) zoom.current = { subject, ...FULL };
+  }, [subject, fromMs, toMs]);
+
+  useEffect(() => {
     const { start, end } = zoomOf();
     const span = toMs - fromMs;
     setView({ from: fromMs + (span * start) / 100, to: fromMs + (span * end) / 100 });

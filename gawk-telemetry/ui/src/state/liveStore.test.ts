@@ -383,6 +383,32 @@ describe('pause (TH11, Q11)', () => {
     stop();
   });
 
+  // A poll checked `paused` only before its await. One that resolved after
+  // a freeze changed the frozen page, and one that resolved after a newer
+  // stream snapshot put the older one back (round-3 review).
+  it('does not let a late poll move a frozen page or step back in time', async () => {
+    let resolve!: (r: Response) => void;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => new Promise<Response>((r) => (resolve = r))),
+    );
+    useLiveStore.setState({ snapshot });
+    const late = useLiveStore.getState().poll();
+    useLiveStore.getState().setPaused(true);
+    resolve(new Response(JSON.stringify({ ...snapshot, atMs: snapshot.atMs + 5_000 }), { status: 200 }));
+    await late;
+    expect(useLiveStore.getState().snapshot?.atMs).toBe(snapshot.atMs);
+    useLiveStore.getState().setPaused(false);
+    // The poll's answer was held, and shows on resume.
+    expect(useLiveStore.getState().snapshot?.atMs).toBe(snapshot.atMs + 5_000);
+
+    useLiveStore.setState({ snapshot: { ...snapshot, atMs: snapshot.atMs + 60_000 } });
+    const older = useLiveStore.getState().poll();
+    resolve(new Response(JSON.stringify({ ...snapshot, atMs: snapshot.atMs + 10_000 }), { status: 200 }));
+    await older;
+    expect(useLiveStore.getState().snapshot?.atMs).toBe(snapshot.atMs + 60_000);
+  });
+
   it('refuses to poll while paused', async () => {
     useLiveStore.getState().setPaused(true);
     await useLiveStore.getState().poll();
