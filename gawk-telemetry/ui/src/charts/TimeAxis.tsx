@@ -63,16 +63,20 @@ export function ZoomBar({
   toMs,
   group,
   onInit,
+  zoom,
 }: {
   fromMs: number;
   toMs: number;
   group: string;
   onInit?: (chart: EChartsType) => void;
+  /** The stack's current zoom, so a rebuild (a theme switch) keeps it. */
+  zoom?: () => { start: number; end: number };
 }) {
   const p = usePalette();
   const option = useMemo<EChartsOption>(
-    () =>
-      ({
+    () => {
+      const z = zoom?.() ?? { start: 0, end: 100 };
+      return {
         animation: false,
         grid: { left: 0, right: 0, top: 0, bottom: 0 },
         xAxis: { type: 'time', min: fromMs, max: toMs, show: false },
@@ -83,6 +87,8 @@ export function ZoomBar({
             id: ZOOM_ID,
             type: 'slider',
             filterMode: 'none',
+            start: z.start,
+            end: z.end,
             left: 8,
             right: 8,
             top: 2,
@@ -100,7 +106,9 @@ export function ZoomBar({
             dataBackground: { lineStyle: { opacity: 0 }, areaStyle: { opacity: 0 } },
           },
         ],
-      }) as EChartsOption,
+      } as EChartsOption;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [p, fromMs, toMs],
   );
   const ref = useChart(option, { group, onInit });

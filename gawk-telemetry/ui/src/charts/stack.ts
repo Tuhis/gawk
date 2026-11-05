@@ -24,6 +24,12 @@ export interface StackView {
 export interface Stack extends StackView {
   /** Pass to every member chart's `onInit`. */
   register: (chart: EChartsType) => void;
+  /**
+   * The stack's current zoom, in percent of the range. A member reads it
+   * whenever its option is rebuilt (new data, a theme, a re-render), because
+   * the rebuild replaces the option and would otherwise reset the zoom.
+   */
+  zoomOf: () => { start: number; end: number };
 }
 
 interface AxisInfo {
@@ -114,7 +120,9 @@ export function useStack(fromMs: number, toMs: number): Stack {
     [schedule],
   );
 
-  return { cursorMs, viewFrom: view.from, viewTo: view.to, register };
+  const zoomOf = useCallback(() => zoom.current, []);
+
+  return { cursorMs, viewFrom: view.from, viewTo: view.to, register, zoomOf };
 }
 
 /**
@@ -206,7 +214,7 @@ function tickLabel(t: number, step: number): string {
     hour: '2-digit',
     minute: '2-digit',
     ...(step < 60_000 ? { second: '2-digit' } : {}),
-    hour12: false,
+    hourCycle: 'h23',
   });
 }
 
@@ -216,7 +224,7 @@ export function cursorLabel(t: number): string {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
-    hour12: false,
+    hourCycle: 'h23',
   });
 }
 

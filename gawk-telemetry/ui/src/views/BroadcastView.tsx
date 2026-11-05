@@ -4,7 +4,8 @@ import { fetchBroadcast, fetchBroadcastDiagnose } from '../api/client.ts';
 import type { BroadcastDetail, Lane, LegLane, Report, Severity } from '../api/types.ts';
 import { lastValue, niceMax, readoutValue, stepOf, useStack, valueAt, type Stack } from '../charts/stack.ts';
 import { usePalette } from '../charts/palette.ts';
-import { StackChart, type StackBand, type StackMark } from '../charts/StackChart.tsx';
+import { StackChart } from '../charts/StackChart.tsx';
+import type { StackBand, StackMark } from '../charts/stackOption.ts';
 import { TimeAxis, ZoomBar } from '../charts/TimeAxis.tsx';
 import { AnnotationPanel } from '../components/Annotations.tsx';
 import { CoverageNote, DesktopOnly } from '../components/Chrome.tsx';
@@ -131,6 +132,10 @@ function BroadcastPage({
     [detail.rehomes],
   );
 
+  // Stable arrays: a new one per render would rebuild the chart's option on
+  // every crosshair frame.
+  const relayMarks = useMemo(() => [...rehomeMarks, ...noteMarks], [rehomeMarks, noteMarks]);
+
   const worst = detail.lanes.reduce<Severity>((acc, l) => (rank(l.severity) > rank(acc) ? l.severity : acc), 'unknown');
   const viewers = detail.lanes.filter((l) => l.kind === 'viewer').length;
   const anyLegs = detail.lanes.some((l) => l.legs?.length);
@@ -212,13 +217,13 @@ function BroadcastPage({
               detail={detail}
               group={group}
               stack={stack}
-              marks={lane.kind === 'relay' ? [...rehomeMarks, ...noteMarks] : noteMarks}
+              marks={lane.kind === 'relay' ? relayMarks : noteMarks}
             />
           ))}
 
           <div className={styles.zoomRow}>
             <span />
-            <ZoomBar fromMs={detail.fromMs} toMs={detail.toMs} group={group} onInit={stack.register} />
+            <ZoomBar fromMs={detail.fromMs} toMs={detail.toMs} group={group} onInit={stack.register} zoom={stack.zoomOf} />
             <span />
           </div>
         </div>
@@ -394,6 +399,7 @@ function LaneRows({
           height={96}
           group={group}
           onInit={stack.register}
+          zoom={stack.zoomOf}
           empty={lane.rollupOnly || data.length === 0 ? emptyText : undefined}
           ariaLabel={`${lane.kind} ${lane.sessionId ?? ''} ${lane.primary ?? 'rate'} over the broadcast`}
         />
@@ -450,6 +456,7 @@ function LegRow({
   // A canvas cannot read a CSS variable: the slate series colour comes from
   // the palette, which read it from the same token.
   const series = useMemo(() => [{ key: 'leg', label: 'leg', data, color: p.series[4] }], [data, p]);
+  const noteMarks = useMemo(() => marks.filter((m) => m.kind === 'note'), [marks]);
   return (
     <div className={`${styles.lrow} ${styles.sub}`}>
       <div className={styles.lab}>
@@ -464,12 +471,13 @@ function LegRow({
       </div>
       <StackChart
         series={series}
-        marks={marks.filter((m) => m.kind === 'note')}
+        marks={noteMarks}
         fromMs={fromMs}
         toMs={toMs}
         height={34}
         group={group}
         onInit={stack.register}
+        zoom={stack.zoomOf}
         quiet
         empty={data.length === 0 ? 'no stored series for this leg' : undefined}
         ariaLabel={`stripe leg ${leg.member + 1} of ${leg.n}`}

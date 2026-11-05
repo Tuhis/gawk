@@ -4,7 +4,8 @@ import { fetchCompare, fetchDiagnose, fetchDips, fetchSession } from '../api/cli
 import type { Comparison, DipReport, FieldDoc, Report, Severity, Timeline } from '../api/types.ts';
 import { usePalette } from '../charts/palette.ts';
 import { cursorLabel, lastValue, readoutValue, useStack, valueAt, type Stack } from '../charts/stack.ts';
-import { StackChart, Y_GUTTER, type StackBand, type StackMark, type StackSeries } from '../charts/StackChart.tsx';
+import { StackChart } from '../charts/StackChart.tsx';
+import { Y_GUTTER, type StackBand, type StackMark, type StackSeries } from '../charts/stackOption.ts';
 import { TimeAxis, ZoomBar } from '../charts/TimeAxis.tsx';
 import { AnnotationPanel } from '../components/Annotations.tsx';
 import { DipTable } from '../components/DipPanel.tsx';
@@ -324,7 +325,7 @@ function TimelinePanel({
             <TimeAxis viewFrom={stack.viewFrom} viewTo={stack.viewTo} cursorMs={stack.cursorMs} />
           </div>
           <div className={styles.zoom} style={{ marginLeft: 14 + Y_GUTTER }}>
-            <ZoomBar fromMs={startedAtMs} toMs={endedAtMs} group={group} onInit={stack.register} />
+            <ZoomBar fromMs={startedAtMs} toMs={endedAtMs} group={group} onInit={stack.register} zoom={stack.zoomOf} />
           </div>
           <div className={styles.timelineFoot}>
             {hidden > 0 || showAll ? (
@@ -401,6 +402,7 @@ function ChartRow({
         height={chart.height}
         group={group}
         onInit={stack.register}
+        zoom={stack.zoomOf}
         yLabels
         ariaLabel={`${chart.title} (${chart.unit || 'unitless'}) over the session`}
       />
