@@ -17,6 +17,7 @@ use crate::carrier::{
     CarrierLane, Delivery, FrameRecords, KEYFRAME_STREAM_PRIORITY, UplinkMode, engage,
 };
 use crate::clock::Clock;
+use crate::drain::KeyframeDrain;
 use crate::media::{AUDIO_CONFIG_RESEND_MS, AccessUnit, AudioFormat, AudioPacket};
 use crate::memory;
 use crate::relay::{KeyframeOutcome, PathCounters, RelaySession, SendDatagramError};
@@ -122,6 +123,9 @@ struct State {
     delivery: Delivery,
     /// How the current GOP's deltas leave, decided at its keyframe.
     gop_mode: UplinkMode,
+    /// R75 (docs/85 D1): each acknowledged keyframe's drain rate against
+    /// the stream's recent wire rate.
+    drain: KeyframeDrain,
 }
 
 /// Datagrams one connection accepted but never wrote into a packet: the
@@ -190,6 +194,7 @@ impl Sender {
                 relay_offers_carriers: false,
                 delivery: Delivery::default(),
                 gop_mode: UplinkMode::Datagram,
+                drain: KeyframeDrain::new(),
             })),
             kf: Arc::new(Mutex::new(KfSlot {
                 cancel: None,
@@ -238,6 +243,7 @@ impl Sender {
             // keyframe after that (the shell forces one on resume) opens it.
             st.relay_offers_carriers = false;
             st.gop_mode = UplinkMode::Datagram;
+            st.drain.reset();
         }
         self.lane.new_gop(false);
         let (cancel, had_pending) = {
@@ -482,7 +488,7 @@ impl Sender {
                         }
                     };
 
-                    let (cancel_rx, my_generation) = {
+                    let (cancel_rx, my_generation, started_us) = {
                         let mut kf = kf_slot.lock().unwrap();
                         if kf.closed {
                             drop(kf);
@@ -501,7 +507,7 @@ impl Sender {
                         kf.cancel = Some(tx);
                         kf.generation += 1;
                         kf.write_started_us = clock.now_us();
-                        (rx, kf.generation)
+                        (rx, kf.generation, kf.write_started_us)
                     };
 
                     let msg_len = msg.len() as u64;
@@ -517,10 +523,20 @@ impl Sender {
                             }
                         }
                     }
+                    // Read before the state lock: the transport takes its own.
+                    let counters = matches!(outcome, KeyframeOutcome::Sent)
+                        .then(|| session.path_counters())
+                        .flatten();
+                    let now_us = clock.now_us();
                     let mut s = state.lock().unwrap();
                     match outcome {
                         KeyframeOutcome::Sent => {
                             s.st.keyframe_streams_sent += 1;
+                            let elapsed_us = now_us.saturating_sub(started_us);
+                            if s.drain.observe(now_us, msg_len, elapsed_us, counters) == Some(true)
+                            {
+                                s.st.keyframe_streams_slow += 1;
+                            }
                             s.st.keyframe_bytes_sent += msg_len;
                             s.st.bytes_sent += msg_len;
                             s.st.sent_frames += 1;
@@ -835,6 +851,7 @@ impl Sender {
             st.uplink_packets_sent = s.uplink_base.sent + c.sent;
             st.uplink_packets_lost = s.uplink_base.lost + c.lost;
             st.uplink_datagrams_dropped = s.uplink_dropped_base + datagrams_dropped(&c);
+            st.uplink_min_rtt_ms = c.min_rtt_us as f64 / 1000.0;
         }
         st
     }
@@ -931,6 +948,8 @@ mod tests {
     #[derive(Clone, Default)]
     struct GatedRelay {
         writes: Arc<Mutex<Vec<GatedWrite>>>,
+        /// `None` until a test scripts the connection's counters.
+        counters: Arc<Mutex<Option<PathCounters>>>,
     }
 
     struct GatedWrite {
@@ -980,6 +999,9 @@ mod tests {
         fn closed(&self) -> BoxFuture<'_, SessionClose> {
             Box::pin(std::future::pending())
         }
+        fn path_counters(&self) -> Option<PathCounters> {
+            *self.counters.lock().unwrap()
+        }
     }
 
     impl GatedRelay {
@@ -1001,6 +1023,75 @@ mod tests {
             timestamp_us: u64::from(marker) * 500_000,
             keyframe: true,
         }
+    }
+
+    // R75 (docs/85 D1): each acknowledged keyframe is timed from its write to
+    // its acknowledgement and judged against the stream's recent wire rate.
+    // A 12 Mbps stream; 75 kB keyframes, one a GOP: acknowledged 20 ms after
+    // the write (30 Mbps) they are not slow, 300 ms after (2 Mbps) they are.
+    #[tokio::test]
+    async fn a_keyframe_acknowledged_slowly_against_the_stream_counts_as_slow() {
+        let relay = GatedRelay::default();
+        let clock = Arc::new(FakeClock::default());
+        let sender = Sender::new(Arc::new(relay.clone()), clock.clone());
+        let big = |i: u64| AccessUnit {
+            data: vec![0x5A; 75_000],
+            timestamp_us: i * 500_000,
+            keyframe: true,
+        };
+        let mut wire = 0u64;
+        for (i, hold_ms) in [20, 20, 20, 20, 300, 300, 20].into_iter().enumerate() {
+            *relay.counters.lock().unwrap() = Some(PathCounters {
+                wire_bytes: wire,
+                min_rtt_us: 10_000,
+                ..Default::default()
+            });
+            sender.send_video(big(i as u64)).await;
+            settle().await;
+            clock.advance_ms(hold_ms + 10);
+            wire += 750_000 * (hold_ms + 10) / 500;
+            *relay.counters.lock().unwrap() = Some(PathCounters {
+                wire_bytes: wire,
+                min_rtt_us: 10_000,
+                ..Default::default()
+            });
+            relay.release(i, KeyframeOutcome::Sent);
+            settle().await;
+            let rest = 500 - (hold_ms + 10).min(500);
+            clock.advance_ms(rest);
+            wire += 750_000 * rest / 500;
+        }
+        let st = sender.stats();
+        assert_eq!(st.keyframe_streams_sent, 7);
+        assert_eq!(st.keyframe_streams_slow, 2, "the two held 300 ms");
+    }
+
+    // A resume's connection starts its own rate history (`set_relay`).
+    #[tokio::test]
+    async fn a_resume_forgets_the_old_connections_rate() {
+        let relay = GatedRelay::default();
+        let clock = Arc::new(FakeClock::default());
+        let sender = Sender::new(Arc::new(relay.clone()), clock.clone());
+        assert!(
+            sender
+                .state
+                .lock()
+                .unwrap()
+                .drain
+                .observe(0, 0, 0, Some(PathCounters::default()))
+                .is_none()
+        );
+        sender.set_relay(Arc::new(relay.clone()));
+        let mut s = sender.state.lock().unwrap();
+        let c = Some(PathCounters {
+            wire_bytes: 1_500_000,
+            ..Default::default()
+        });
+        assert_eq!(
+            s.drain.observe(1_000_000, 75_000, 1_000_000, c),
+            None,
+            "no history after the resume"
+        );
     }
 
     async fn settle() {

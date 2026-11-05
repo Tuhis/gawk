@@ -14,6 +14,7 @@ pub mod carrier;
 pub mod clock;
 pub mod config;
 pub mod dispatch;
+pub mod drain;
 pub mod gate;
 #[cfg(feature = "self-update")]
 pub mod install;
