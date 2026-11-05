@@ -2,14 +2,15 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { fetchHistorySessions } from '../api/client.ts';
 import type { HistoryPage, Severity } from '../api/types.ts';
-import { CoverageNote } from '../components/Chrome.tsx';
+import { CoverageNote, DataSince } from '../components/Chrome.tsx';
+import { DragLine, WidthsNote } from '../components/Columns.tsx';
+import { GridHead, GridRow } from '../components/SessionGrid.tsx';
+import { HISTORY_COLUMNS, useSessionGrid } from '../components/sessionGridColumns.ts';
 import { SeverityBadge } from '../components/SeverityBadge.tsx';
-import { timeZoneLabel } from '../lib/format.ts';
 import { groupByBroadcast } from '../lib/rooms.ts';
 import { rank } from '../lib/severity.ts';
 import { href, isRoomKey, useDocumentTitle, useUrlState } from '../router/router.ts';
-import { Row } from './HistoryView.tsx';
-import history from './HistoryView.module.css';
+import t from '../components/tables.module.css';
 import styles from './RoomView.module.css';
 import view from './view.module.css';
 
@@ -44,6 +45,8 @@ export function RoomView({ roomKey }: Props) {
   const [page, setPage] = useState<HistoryPage | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // The instant the loaded range starts, kept with the load it belongs to.
+  const [fromMs, setFromMs] = useState(0);
 
   const rangeMs = RANGES.find((r) => r.label === range)?.ms ?? 7 * 24 * 3600_000;
   const valid = isRoomKey(roomKey);
@@ -58,7 +61,9 @@ export function RoomView({ roomKey }: Props) {
     // One room is small (a handful of broadcasts, tens of viewers), so the
     // page asks for the history browser's ceiling rather than paging: a
     // grouped view that stopped mid-broadcast would misreport that broadcast.
-    fetchHistorySessions({ fromMs: Date.now() - rangeMs, room: roomKey, limit: 2000 }, ac.signal)
+    const from = Date.now() - rangeMs;
+    setFromMs(from);
+    fetchHistorySessions({ fromMs: from, room: roomKey, limit: 2000 }, ac.signal)
       .then((p) => {
         setPage(p);
         setError(null);
@@ -72,6 +77,10 @@ export function RoomView({ roomKey }: Props) {
   }, [roomKey, rangeMs, valid]);
 
   const groups = useMemo(() => groupByBroadcast(page?.rows ?? []), [page]);
+  // One set of widths for every group on the page, measured over all of
+  // them, so the groups' columns line up with each other.
+  const allRows = useMemo(() => page?.rows ?? [], [page]);
+  const columns = useSessionGrid('room', allRows, `${roomKey}:${rangeMs}`);
 
   if (!valid) {
     return (
@@ -91,25 +100,28 @@ export function RoomView({ roomKey }: Props) {
 
   return (
     <div className={view.page}>
+      <div className={view.crumbs}>
+        <a href={href('history')}>History</a>
+        <span>/</span>
+        <span>room</span>
+      </div>
       <header className={view.head}>
         <SeverityBadge severity={worst} />
-        <h1 className={view.title}>room</h1>
-        <span className={view.subtitle}>{roomKey}</span>
+        <h1 className={view.title}>
+          Room <span className={view.titleId}>{roomKey}</span>
+        </h1>
         <span className={view.subtitle}>
-          {page ? `${groups.length} broadcasts · ${page.total} sessions` : '…'} · times in{' '}
-          {timeZoneLabel()}
+          {page ? `${groups.length} broadcast${groups.length === 1 ? '' : 's'} · ${page.total} sessions` : '…'}
         </span>
         <span className={view.spacer} />
-        <label className={view.control}>
-          range
-          <select className={view.select} value={range} onChange={(e) => setRange(e.target.value)}>
-            {RANGES.map((r) => (
-              <option key={r.label} value={r.label}>
-                {r.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <DataSince coverage={page?.coverage} fromMs={fromMs} />
+        <div className={view.seg} role="group" aria-label="Range">
+          {RANGES.map((r) => (
+            <button key={r.label} type="button" aria-pressed={range === r.label} onClick={() => setRange(r.label)}>
+              {r.label}
+            </button>
+          ))}
+        </div>
       </header>
 
       <p className={view.note}>
@@ -124,38 +136,44 @@ export function RoomView({ roomKey }: Props) {
       {!loading && !error && groups.length === 0 ? (
         <p className={view.rollupOnly}>
           No sessions reported from this room in the last {range}.{' '}
-          {page?.coverage.note
-            ? 'See the note above: part of this range is not answerable, which is different from empty.'
-            : 'The range is fully covered — nothing reported, rather than nothing kept.'}
+          {page?.coverage.reason === 'none'
+            ? 'This service has nothing stored at all yet — the range is unanswerable, not empty.'
+            : page?.coverage.reason === 'before-data'
+              ? 'Nothing is missing: the service has only been collecting since the date beside the range.'
+              : 'The range is fully covered — nothing reported, rather than nothing kept.'}
         </p>
       ) : (
         groups.map((g) => (
-          <section key={g.broadcastKey} className={styles.group} aria-label={`broadcast ${g.broadcastKey}`}>
-            <h2 className={styles.groupTitle}>
-              <a href={href('broadcast', g.broadcastKey)} className={styles.groupLink}>
-                broadcast {g.broadcastKey} →
-              </a>
-              <span className={styles.groupMeta}>
+          <section key={g.broadcastKey} className={`${view.panel} ${view.panelClip}`} aria-label={`broadcast ${g.broadcastKey}`}>
+            <div className={view.panelH}>
+              <h2 className={view.panelT}>
+                <a href={href('broadcast', g.broadcastKey)} className={styles.groupLink}>
+                  Broadcast {g.broadcastKey} →
+                </a>
+              </h2>
+              <span className={view.note}>
                 {g.broadcaster ? 'broadcaster reporting' : 'no broadcaster session'} · {g.viewers}{' '}
                 {g.viewers === 1 ? 'viewer' : 'viewers'}
                 {g.live ? ' · live' : ''}
               </span>
-            </h2>
-            <div className={history.headRow} aria-hidden>
-              <span className={history.cSev} />
-              <span className={history.cWhen}>started</span>
-              <span className={history.cDur}>duration</span>
-              <span className={history.cRole}>role</span>
-              <span className={history.cId}>session</span>
-              <span className={history.cClient}>client</span>
-              <span className={history.cNum}>stalls</span>
-              <span className={history.cVerdict}>verdict</span>
             </div>
-            {g.rows.map((r) => (
-              <Row key={r.sessionId} row={r} />
-            ))}
+            <div className={t.wrap}>
+              <div style={{ minWidth: columns.minTotal }} role="table" aria-label={`sessions of broadcast ${g.broadcastKey}`}>
+                <GridHead columns={columns} />
+                {g.rows.map((r) => (
+                  <GridRow key={r.sessionId} row={r} columns={columns} />
+                ))}
+              </div>
+              <DragLine columns={columns} cols={HISTORY_COLUMNS} />
+            </div>
           </section>
         ))
+      )}
+      {groups.length > 0 && (
+        <p className={`${t.foot} ${styles.widths}`}>
+          <span className={view.spacer} />
+          <WidthsNote columns={columns} cols={HISTORY_COLUMNS} />
+        </p>
       )}
       {loading && <p className={view.loading}>Loading…</p>}
     </div>

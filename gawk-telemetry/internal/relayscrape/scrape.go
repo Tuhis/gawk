@@ -169,6 +169,25 @@ type Subscriber struct {
 	// relay reserves for R17 edges. Stored lines carry it from this field's
 	// introduction on; older ones have no marker and cannot be corrected.
 	StripeLeg bool `json:"stripeLeg,omitempty"`
+	// StripeN and StripeMember are a leg's (n, member) filter: it carries the
+	// delta datagrams whose share falls on member of n (docs/35 §5.1). On a
+	// primary StripeN is the width its viewer last reported and Striped says
+	// its legs currently carry its deltas, so its own delta egress is
+	// suppressed by design. Member 0 is a real member and arrives absent.
+	StripeN      int  `json:"stripeN,omitempty"`
+	StripeMember int  `json:"stripeMember,omitempty"`
+	Striped      bool `json:"striped,omitempty"`
+	// StripeOwner joins one viewer's sessions (R36 TU5): the relay's keyed
+	// HMAC of the viewer's ?owner= token, 12 hex characters, equal on the
+	// primary and every one of its legs, on any pod of the fleet (the HMAC
+	// key is the fleet-shared stats key). A leg carries no sessionId — it
+	// dials before, and is never sent, the telemetry hello — so this is the
+	// only handle that attributes a leg to its viewer. An opaque equality
+	// key, minted per connection attempt: a reconnect or a re-home gives the
+	// viewer a new one. Empty from a relay that predates it or runs with
+	// striping disabled, on a viewer that sent no owner token (reliable and
+	// DVR delivery included), on edge sessions, and on every PoP record.
+	StripeOwner string `json:"stripeOwner,omitempty"`
 }
 
 // IsAudience reports whether a /statusz subscriber entry is a viewer rather
@@ -441,12 +460,15 @@ func observations(bs map[string]Broadcast, pod, rolePrefix, popName string, atMs
 		})
 		for i := range b.SubscriberDetails {
 			sub := b.SubscriberDetails[i]
-			// Edge sessions and stripe legs are excluded from the per-viewer
-			// store entirely: they are fan-out plumbing, never an audience
-			// member. An edge has no telemetry identity at all; a leg is
-			// dialled from its viewer's URL and carries the viewer's
-			// sessionId, so storing it would also overwrite the viewer's own
-			// relay-side figures with a leg's.
+			// Edge sessions and stripe legs get no per-subscriber record:
+			// they are fan-out plumbing, never an audience member, and a
+			// subscriber record is keyed by the telemetry sessionId neither
+			// has (an edge is never issued one; a leg is never sent the
+			// telemetry hello). Legs are not lost: the broadcast record above
+			// keeps every subscriberDetails entry, legs included, with their
+			// stripe fields and owner key, which is where the leg
+			// attribution (R36 TU5) reads them from — a second record per
+			// leg would store each one twice.
 			if !sub.Audience() {
 				continue
 			}

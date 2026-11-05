@@ -308,6 +308,8 @@ func TestOIDCModeGatesEveryDataRoute(t *testing.T) {
 
 	gated := []func() *http.Request{
 		func() *http.Request { return httptest.NewRequest("GET", "/live", nil) },
+		// R36 TU7: under /live/, so gated like the stream.
+		func() *http.Request { return httptest.NewRequest("GET", "/live/sparks?broadcast=1a2b3c4d5e6f", nil) },
 		func() *http.Request { return httptest.NewRequest("GET", "/v1/fleet", nil) },
 		func() *http.Request { return httptest.NewRequest("GET", "/v1/sessions/"+tmSession+"/diagnose", nil) },
 		func() *http.Request { return httptest.NewRequest("POST", "/v1/resolve", strings.NewReader(`{}`)) },

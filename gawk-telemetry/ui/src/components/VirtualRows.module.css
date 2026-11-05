@@ -4,12 +4,10 @@
   60 fps and hold bounded memory, which is TH3's measured criterion.
 */
 .scroller {
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   position: relative;
   contain: strict;
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--panel);
 }
 
 .spacer {

@@ -6,9 +6,20 @@
 
 .rule {
   border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--panel);
-  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-lg);
+  background: var(--surface-1);
+  padding: 10px 14px;
+}
+
+/* The trace input is an id field that shrinks with the toolbar (R36 item 6). */
+.traceForm {
+  flex: 1 1 28rem;
+  justify-content: flex-end;
+}
+
+.traceLabel {
+  flex: 1 1 auto;
+  justify-content: flex-end;
 }
 
 .ruleOpen {
@@ -17,14 +28,14 @@
 
 .head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--sp-2);
 }
 
 .disclosure {
   background: none;
   border: 0;
-  color: var(--text-dim);
+  color: var(--text-2);
   cursor: pointer;
   padding: 0;
   width: 1rem;
@@ -33,27 +44,32 @@
 .id {
   font-family: var(--mono);
   font-size: var(--fs-sm);
+  font-weight: 500;
 }
 
 .scope {
-  font-size: var(--fs-xs);
-  color: var(--text-dimmer);
-  border: 1px solid var(--line);
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
   border-radius: var(--r-sm);
-  padding: 0 4px;
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--text-2);
 }
 
 /* D7's cap, stated on the rule rather than discovered on a finding. */
 .cap {
   font-size: var(--fs-xs);
-  color: var(--text-dimmer);
+  color: var(--text-3);
   font-style: italic;
 }
 
 .verdict {
   margin: 2px 0 0 1.5rem;
   font-size: var(--fs-sm);
-  color: var(--text-dim);
+  color: var(--text-2);
 }
 
 .body {
@@ -86,7 +102,7 @@
   font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--text-dimmer);
+  color: var(--text-3);
 }
 
 .sigList {
@@ -98,7 +114,7 @@
 .sig {
   font-family: var(--mono);
   font-size: var(--fs-xs);
-  color: var(--text-dim);
+  color: var(--text-2);
 }
 
 .read {
@@ -114,14 +130,14 @@
 .traceText {
   margin: 0;
   font-size: var(--fs-sm);
-  color: var(--text-dim);
+  color: var(--text-2);
   max-width: 90ch;
 }
 
 .none {
   margin: 0;
   font-size: var(--fs-xs);
-  color: var(--text-dimmer);
+  color: var(--text-3);
 }
 
 .chip,
@@ -130,7 +146,7 @@
   border: 1px solid var(--line-strong);
   border-radius: var(--r-sm);
   padding: 0 4px;
-  color: var(--text-dim);
+  color: var(--text-2);
   white-space: nowrap;
 }
 
@@ -144,7 +160,7 @@
 
 .unavailable {
   border-style: dashed;
-  color: var(--text-dimmer);
+  color: var(--text-3);
 }
 
 .passed {

@@ -295,7 +295,7 @@ row, several lanes visible without scrolling — the idiom that fits the job of
 scanning for the anomaly. Deliberately *not* gawk-app's R6 monochrome tokens:
 those were designed for a cinematic viewer, and a data console is a different
 problem. Hue stays reserved for severity; density carries everything else. The
-README's existing no-layout-shift rules (`table-layout: fixed`, percentage
+no-layout-shift rules in `gawk-telemetry/docs/development.md` (`table-layout: fixed`, percentage
 colgroup, `tabular-nums`, reserved slots) become harder, not softer, at this
 density and bind every new surface.
 
@@ -952,3 +952,87 @@ this whole decision was about actually loaded".
 - **A phone pass** for UD17's read-only triage. The dense views declare
   themselves desktop-only at ≤ 720 px; that the triage set is legible on a real
   390 px viewport is unverified.
+
+### 9.5 Later additions to the read surface (R36)
+
+R36 (`ROADMAP.md`) added these fields to the surfaces above. All are
+additive and `omitempty`; no existing default moved (UD1), and none is a new
+measurement (UD3).
+
+**Stripe legs (TU5).** A striped viewer is one participant with up to four
+R30 leg sessions. A leg has no sessionId — it is never sent the telemetry
+hello — so the join is the relay's `stripeOwner` (an HMAC of the viewer's
+`?owner=` token under the fleet-shared stats key, equal on the primary and
+every leg on any pod). The token is minted per connection attempt, so the
+key changes on a reconnect: the live view joins on the primary's key as last
+scraped, and the timeline gives a reconnected viewer each attempt's legs. A
+primary scraped before its telemetry hello landed has no sessionId and names
+nobody. The scraper stores the key, with `stripeLeg`, `stripeN`,
+`stripeMember` and `striped`, on every `subscriberDetails` entry of the
+broadcast record; a leg still gets no per-subscriber record, so no count,
+peer baseline or session join can read one.
+
+- `/live` and its stream: `BroadcastView.stripeLegs` is the number of legs
+  the relay holds for the broadcast now, attributed or not.
+  `SessionView.legs` is `[{member, n, pod, role, datagramsDropped?,
+  queueDepth, relayAgeMs}]`: `datagramsDropped` is the relay's per-subscriber
+  `dropped` (queue overflows plus bandwidth-cap drops) as a scrape-window
+  delta, absent until two scrapes exist. The relay has no per-subscriber
+  sent counter, so there is no sent figure. A PoP's records carry no owner
+  key, so a PoP's legs are counted and attached to nobody, and a leg is
+  never joined across relays.
+- `GET /v1/broadcasts/{key}`: a viewer `Lane` gains `legs: [{member, n,
+  pod, role, points, unit, datagramsDropped, downsampled?}]` and
+  `legsOmitted`. `points` are dropped datagrams per second over each scrape
+  interval (`unit: "dropped datagrams/s"`), at most 300 per leg, reduced
+  worst-of; `datagramsDropped` is the leg's last cumulative count. Legs never
+  take a lane (`MaxLanes`); a lane carries at most 16 leg sessions, the
+  newest.
+- A leg whose owner key matches no primary (a relay predating the key or
+  running with striping disabled, a PoP's, or a primary never scraped) is
+  counted in `stripeLegs` and attached nowhere.
+
+**Coverage says why (TU4).** Every `coverage` object (history pages, the
+broadcast timeline, the fleet timeline, trends, cohorts) gains `reason`,
+empty exactly when `note` is, and `note`'s text is unchanged:
+
+| `reason` | When | What it is |
+|---|---|---|
+| `none` | no rollup is stored at all | nothing is answerable |
+| `before-data` | the range starts before the first stored rollup | the service's age — rollups are never pruned (`store.Prune` deletes raw partitions only), so this is not a retention limit |
+| `raw-pruned` | the range starts before the raw-retention boundary | a retention caveat: the older rows are rollup-only |
+
+A range past both edges reports `before-data`, as its note does;
+`rawFromMs > rollupsFromMs` then says the rows between them are rollup-only.
+
+**PoP-served sessions (TU6).** `SessionView.pop` is the display name of the
+PoP that served the session, beside `issuer`, from the PoP's own
+observations (docs/78 D7). A broadcast-timeline `Lane` gains `issuer` and
+`pop` for such a session: the timeline reads the home fleet's relay records
+only (docs/78 D8), so that lane has no relay-side figures, and the label
+says why. The name comes from the row's join (`config.pop`), else from the
+same PoP's records on the span's dates; nothing else is read from them.
+
+**Live fps tails (TU7).** UD14's sparkline is a separate read, not a field
+of `/live`: a tail per session per tick would grow the snapshot and its
+stream (UD1, UD22) on exactly the broadcasts where they are largest. The
+page polls `GET /live/sparks?broadcast=<key>` only while that broadcast's
+card is open; it is under `/live/`, so the read listener gates it like the
+stream. It answers from a bounded ring per session in the projection (no
+file is read) with `{atMs, stepMs, windowMs: 120000, sessions: {<sessionId>:
+{field, values, throughMs}}}`. `field` is the live table's second fps
+figure: `decoderFps` (else `receivedFps`) for a viewer, `encoderFps` for a
+broadcaster. `values` run oldest to newest, one per `stepMs` bucket ending at
+`atMs`: the lowest sample in the bucket, rounded to 0.1, or `null` where none
+landed (UD9). `atMs` is the step boundary at or after the poll, not the
+poll's own instant, so bucket edges hold still from one poll to the next
+and a sample never hops between buckets with nothing new to show. Samples are placed on this service's clock by a measured
+offset (the minimum, over recent batches, of arrival minus the newest
+sample's client time). `stepMs` follows the broadcast's cadence — the
+narrowest of 4, 5, 6, 8, 10, 12, 15, 20, 24 or 30 s that is at least 1.6×
+the median sample gap, 4 s at the default 2 s report interval — so a null
+always means a missing sample: a web client's samples come 2.0 or 2.5 s
+apart, and a 2 s grid would show empty buckets with nothing missing.
+`throughMs` is the newest sample's time; buckets after it are empty because
+the client's next batch (every ~10 s) has not arrived. 400 for a malformed
+key, 404 for a broadcast the projection does not hold.

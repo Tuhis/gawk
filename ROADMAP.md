@@ -54,7 +54,7 @@ feature set exists).
 | R33 | [WHIP ingest for OBS through `gawk-whip-gateway`](#r33--whip-ingest-for-obs-through-gawk-whip-gateway) | 🔧 **implemented 2026-11-02** (WG1–WG9; designed 2026-11-01, [docs/83](docs/83-whip-gateway.md), owner decisions OD1–OD10), open: WG0's lab pass with real OBS (latency, loss, the reorder window's numbers, per-session CPU for `maxSessions`), WG10's owner pass on the reference deployment, and the OBS page's Room row (docs/83 §12.4); **WG11 (per-session broadcaster telemetry) implemented 2026-11-03**, its ioio pass open — a separate default-off deployable terminates OBS's WHIP with pion and republishes through the now-public Go publisher engine; the stream key is the broadcast ID + resume token, minted in the web app's OBS page (`#/broadcast/obs`) through a mint-only `CONNECT /publish?mint=1` (close 4017); the relay trusts the gateway's `Gawk-Publisher-Ip` with `-publish-proxy-token`; several replicas behind an Ingress hashing on the key, a UDP port per pod; `docker compose --profile whip up` streams a test pattern through it |
 | R34 | [Native Windows broadcaster](#r34--native-windows-broadcaster) | 🔧 designed 2026-07-30 (Rust + Media Foundation + Slint; owner decisions OD1–OD13); **WB0–WB8 implemented 2026-07-30/31** (Cargo workspace + path-filtered CI + release-please component; wire mirror with golden vectors incl. Go-generated GF(256) parity pins; engine core seam-tested + wtransport with 5 vendored interop patches + real-relay integration suite; WGC capture + VideoProcessor + drop-only gating; trial-gated MFT cascade with the G3 refusal; WASAPI process/endpoint loopback + Opus under the R25 contract; Slint GUI with the full D12 card set; R28 reporter; single static EXE + INSTALL doc in the CI artifact); **WB9 (build version in the window) 2026-08-01**; **remaining: the on-hardware acceptance pass** — G1/G2/G6–G9 and the docs/38 §10 V-register on the gaming PC ([docs/38](docs/38-windows-native-broadcaster.md)) |
 | R35 | [Single-app sharing (window + app audio) in the native Linux broadcaster](#r35--single-app-sharing-window--app-audio-in-the-native-linux-broadcaster) | 🔧 designed + **implemented 2026-08-01** (AS1–AS6: portal `source_type`/`size`, bounding-box fit geometry, `gawk-pw-helper` virtual-sink tee, engine + GUI whose-audio step). Audio plane integration-tested against a real headless PipeWire daemon; AS7 was never run on the Go app: its register folded into R56's (docs/58 D15). **The Go app was removed on 2026-10-08** (R56 LX9, [docs/58](docs/58-linux-desktop-broadcaster.md) D15), `gawk-pw-helper` with it ([docs/39](docs/39-linux-app-sharing.md)) |
-| R36 | [Telemetry UI usability pass](#r36--telemetry-ui-usability-pass) | 💡 proposed 2026-08-01, not started — no design doc yet; `gawk-telemetry` read surface only (UI + the relay scrape it reads from), zero wire/relay/viewer/broadcaster change |
+| R36 | [Telemetry UI usability pass and facelift](#r36--telemetry-ui-usability-pass-and-facelift) | 🔧 **implemented 2026-11-05** (TU1–TU12, [docs/86](docs/86-telemetry-facelift.md); relay half of TU5 in #714); open: the owner's pass on the reference deployment — built to the Claude Design canvas: IBM Plex bundled, dark and light from one token set, tables measured to their content and resizable by the operator, broadcast lanes and the session timeline read through one time axis and a readout rail with no text inside a lane, the service's age drawn as an axis extent instead of a coverage warning, a striped viewer as one participant with its legs (keyed `stripeOwner` in `/statusz`), PoP-served viewers labelled, 2-minute sparklines per live session, a two-column session page with one row per dip, and phone triage rows
 | R37 | [Streamlined relay server picker](#r37--streamlined-relay-server-picker) | 🔧 designed 2026-08-06, revised 2026-08-13 after adversarial review (F1–F11) + extended with relay-advertised telemetry (D14–D17); **SP1–SP9 + SP11–SP13 implemented 2026-08-14** — ?relay= links + picker + in-session indicator, wire 0x11/0x12 in all four mirrors with golden vectors, /echo identity probe, server directory, native profiles in both GUIs, telemetry-follows-the-relay (wildcard-CORS ingest + text/plain beacon); gates green in all five modules. **Remaining: SP10's manual cross-deployment pass + the native GUI probe display (deferred, docs/40 implementation status)** ([docs/40](docs/40-relay-server-picker.md)) |
 | R38 | [Local development stack](#r38--local-development-stack) | 🔧 designed 2026-08-14, **LD1–LD7 implemented 2026-08-17** — `docker compose up` gives a working broadcast with nothing to copy-paste; the relay's dev certificate now persists (`-dev-cert` + `-cert-file`), its hash reaches the frontend through `/config.js` so the chrome-free viewer route works in a fresh profile, and `dev/certs.sh` switches between the self-signed and ACME lanes. Profiles for a synthetic broadcaster, telemetry and Vite HMR; a `dev-stack` CI job that round-trips a datagram through the published port. The **Firefox pass is done** — it joins the default lane unchanged, which is why the mkcert lane was withdrawn (no browser does WebTransport over a locally-installed CA, [docs/41](docs/41-local-dev-stack.md) §6). **Remaining: lane C's live issuance** ([docs/41](docs/41-local-dev-stack.md) §10) |
 | R39 | [Admin portal for moderation](#r39--admin-portal-for-moderation) | ✅ designed 2026-08-20, **AP1–AP8 implemented 2026-08-20** — a fleet-wide kill that actually reaches every pod (`Ban` CRs the relays watch, close code 4006 terminal in all four wire mirrors, HTTP 451 on the publish path), durable ID/IP bans with longest-prefix CIDR matching, and **`gawk-admin`**: the fourth top-level module and fourth deployable — an OIDC-gated operator SPA over Postgres (the chart takes a connection to a database it does not create), horizontally scaled from v1 with leader-elected background work, signed multi-webhook notifications, and forward-only migrations applied by a Helm hook Job under an expand–contract policy CI enforces. Deliberately deviating from the sketch below, the portal is **internet-exposable behind OIDC** rather than internal-only, so a paged operator can judge and kill from a phone. Verified by the four modules' suites, `helm` render assertions, an image smoke run and a kind two-pod tier that applies a real `Ban` and watches both pods drop the broadcast. **Closed 2026-09-14 by the manual pass on the reference deployment** — a real Windows-broadcaster stream killed from a phone (Firefox, Keycloak), all eleven steps, no deviations ([docs/42](docs/42-admin-moderation-portal.md) §11.2) |
@@ -3053,132 +3053,333 @@ compositor rather than whether it exists.
 
 ---
 
-## R36 — Telemetry UI usability pass
+## R36 — Telemetry UI usability pass and facelift
 
 **Goal**: make the `gawk-telemetry` dashboard pleasant to *use*, not just
-correct. R31 built the diagnosis SPA and its answers are right; the surfaces
-that carry them have accumulated a set of small frictions that cost an
-operator time on every single visit. This milestone is the sweep that clears
-them, plus one gap that is more than cosmetic — the broadcast view cannot
-tell a viewer from that viewer's stripe legs.
+correct. R31 built the diagnosis SPA and its answers are right, but the
+surfaces that carry them have picked up small frictions that cost an operator
+time on every visit. This milestone clears them, along with one gap that is
+more than cosmetic: the UI cannot show a striped viewer's legs at all. Since
+2026-11-05 it also includes the visual facelift R31 left out (§ The facelift).
 
-**Why now**: every item below is something the owner hits on a normal
-session, and none of them is deep. They are cheap individually and only look
-unserious in aggregate; left alone they are the reason the tool gets used
-less than it should be.
+**Why now**: the owner hits every item below in a normal session, and none of
+them is deep. Each is cheap to fix and only looks careless in aggregate.
+Left alone, they are why the tool gets used less than it should be.
 
-**Scope sketch**:
+**Revised 2026-11-05.** Every claim below was re-checked against `main` at
+a4c78cf9. All the UI frictions are still present, in files no commit has
+touched since R31 landed (0fad1397). Things that changed after the first
+draft:
+- R42 added the room view, which reuses the history grid.
+- R53 added the OIDC sign-in chrome.
+- R82 added the Ask box above the SQL console.
+- #657 and #669 fixed the counting half of the stripe item.
 
-- **Column widths that fit their content.** Every table in the UI declares
-  its widths ahead of the data and truncates whatever does not fit — there
-  is no auto-sizing anywhere and no way for the operator to widen a column.
-  The offenders are known: the history browser is a virtualized CSS grid with
-  a hardcoded track list (`ui/src/views/HistoryView.module.css:10` — a `<tr>`
-  cannot be absolutely positioned, which is *why* it is a grid and therefore
-  why it gets no table auto-layout for free), `SessionTable.module.css` uses
-  `table-layout: fixed` with percentage widths, `FleetView.module.css:25` is
-  `14ch 1fr 12ch`, and the SQL view ellipsises every cell past `max-width:
-  40ch` regardless of what the query returned. The wanted behaviour, in
-  order: **columns size to their content when the viewport allows it**, and
-  when it does not, **the operator can resize them** (and the choice should
-  survive a reload, like every other view preference the URL/store already
-  carries). The virtualized grid is the interesting one — content-sizing a
-  grid whose rows are absolutely positioned means measuring, so this needs a
-  deliberate answer rather than a CSS tweak.
-- **A tooltip that stays put.** `TimeChart` sets `trigger: 'axis'` but no
-  `position`/`confine` (`ui/src/charts/TimeChart.tsx:135`), so ECharts places
-  each tooltip relative to the cursor and flips it near an edge. On the
-  broadcast view — whose lanes are *separate* ECharts instances joined by
-  `echarts.connect()` so one crosshair governs all of them — the crosshair is
-  shared but the tooltip is not: it lands in a different horizontal position
-  depending on which lane you are over and which way you approached, which
-  reads as a bug rather than as a placement policy. The lanes share an axis
-  by design; the tooltip should be pinned to a stable position so that
-  comparing lanes is a vertical eye movement and nothing else.
-- **Retire the pointless coverage banner.** `readapi.coverage()`
-  (`internal/readapi/history.go:359–366`) emits *"nothing is stored before
-  …; the earlier part of this range is unanswerable, not empty"* whenever the
-  requested `from` predates the first stored rollup — which, for any default
-  window wider than the service's own install date, is **every page load**.
-  `CoverageNote` renders it undismissibly on purpose (a coverage limit is not
-  a thing to hide), and that reasoning is right for the case it was written
-  for: a range that genuinely reaches past the retention boundary. It is
-  wrong for "you asked for 14 days and this service is 5 days old", which is
-  not a caveat, it is the service's age. The distinction to build is between
-  *the range was truncated by retention* (worth saying, once, quietly) and
-  *the range was truncated by the service not existing yet* (worth showing as
-  the axis extent, not as a warning). The same applies to the empty-state
-  copy in `HistoryView` that defers to the note.
-- **Make the broadcast view striping-aware.** This is the one that is not
-  cosmetic. Since R30 a live-edge viewer can carry its deltas on N stripe
-  legs, and a leg is an ordinary `hub.Subscriber` — so one human is up to
-  `1 + N` relay-side subscriber records, potentially spread across pods after
-  a re-home. The relay already publishes the join: `SubscriberStats` carries
-  `stripeLeg` / `stripeN` / `stripeMember` / `striped`
-  (`gawk-server/internal/hub/hub.go:377–380`), whose doc comment calls them
-  *"the operator-visible join of one viewer's sessions"*. Telemetry then
-  throws it away three times over:
-  - `relayscrape.Subscriber` (`internal/relayscrape/scrape.go:88`) does not
-    declare those four fields, so the scrape drops them at the JSON boundary;
-  - a leg is deliberately issued no telemetry hello (`server.go` ~1072), so
-    its `sessionId` is empty and `internal/live/live.go:422` `continue`s past
-    it — legs are invisible in the live and broadcast views entirely;
-  - but `broadcast.go:589` still counts every non-internal subscriber detail,
-    so `subscribers` inflates by the leg count against a lane list that draws
-    one lane per viewer, and `peerMedianDropped` — the baseline the R28
-    playbook's outlier rule compares a viewer against
-    (`internal/rules/playbook.go:306`) — is computed over a population padded
-    with legs.
+Re-checking the other half of the stripe item showed that its first-draft
+premise was wrong (item 4 below). The owner then widened the milestone from a
+usability sweep to a facelift and asked for the facelift to be designed. That
+design is a Claude Design canvas, [gawk telemetry facelift
+(R36)](https://claude.ai/artifact/UuTW23kL5wtEJZWYCD6e8x) (private to the
+owner).
 
-  The user-visible symptom is worse than a wrong count: a striped primary's
-  own delta flow is *suppressed* at the relay (docs/35 §5.8), so the only
-  session the UI draws for a **healthy** striped viewer shows near-zero delta
-  egress, with its real delivery happening on legs the UI does not know
-  exist. The fix is to carry the stripe fields through the scrape and render
-  a striped viewer as **one participant with N legs** — one lane, its legs
-  attributed to it (including which pod each leg landed on, which is exactly
-  the R17-era question striping makes interesting again) — and to exclude
-  legs from viewer counts and peer baselines, matching what the relay already
-  does for its own viewer count.
-- **And the rest of the same kind.** The three above are examples, not the
-  list. Part of this milestone is one deliberate pass over the UI collecting
-  the peers — cramped or unresizable panels, truncation with no way to see
-  the whole value, hover targets that move, copy that fires when it has
-  nothing to say — so the design doc opens with an inventory rather than
-  starting from these four.
+**Scope**:
+
+1. **Column widths that fit their content.** Every table declares its widths
+   before it has data and truncates anything that does not fit. Nothing in the
+   UI auto-sizes a column, and the operator cannot widen one: the only
+   `ResizeObserver` in the code resizes charts (`ui/src/charts/useChart.ts:59`).
+   The offenders:
+   - **History browser.** A virtualized CSS grid with a hardcoded track list,
+     `24px 15ch 7ch 8ch 14ch minmax(10ch, 1fr) 6ch minmax(12ch, 2fr)`
+     (`ui/src/views/HistoryView.module.css:10–11`), with every cell ellipsised
+     (:38–49). It is a grid because a `<tr>` cannot be absolutely positioned,
+     which is also why it gets no automatic table layout. The R42 room view
+     reuses the same grid (`RoomView.tsx:12`), so it shares the defect and
+     will share the fix.
+   - **Live session table.** `table-layout: fixed`
+     (`components/SessionTable.module.css:12`) with percentage widths
+     (:60–87, colgroup at `SessionTable.tsx:45–57`).
+   - **Fleet stripes.** `14ch 1fr 12ch` (`FleetView.module.css:25`).
+   - **SQL results.** Every cell is ellipsised past `max-width: 40ch`
+     (`SqlView.module.css:50–52`), and cells carry no `title`
+     (`SqlView.tsx:303`), so a truncated value cannot be read at all. R82's
+     Ask box left this table alone.
+   - **Findings evidence and dip movers.** The same fixed layout, with
+     percentage colgroups of 34/20/12/34 (`Findings.tsx:78–83`) and
+     38/32/14/16 (`DipPanel.tsx:47–52`).
+   - **Explore field picker.** `260px 1fr` with ellipsised field names
+     (`ExploreView.module.css:3`, :47).
+
+   `view.module.css:172–195` also holds a fixed-layout `.table` that nothing
+   uses; delete it.
+
+   The behaviour wanted, in order: **columns size to their content when the
+   viewport allows it**, and when it does not, **the operator can resize
+   them**, with the choice surviving a reload.
+
+   This collides with the no-layout-shift rule
+   (`gawk-telemetry/docs/development.md:114–121`). The fixed percentage
+   colgroups exist because a `ch`-based colgroup once summed past its
+   container and pushed the last column off-screen. Content-fit therefore
+   has to keep two guarantees: the table always fits its container, and no
+   width changes while values tick.
+
+   The canvas proposes this answer:
+   - Widths are measured once per data load, then frozen.
+   - The free-text column (verdict) takes the remainder and is the only one
+     that ellipsises.
+   - Every header boundary has a drag grip, and double-clicking a grip fits
+     that column to its content.
+   - A *reset widths* action restores the measured layout.
+   - Widths persist per table in `localStorage`, not in the URL.
+
+   docs/36:298 still points to "the README's no-layout-shift rules", which
+   moved to `docs/development.md` in 030a057c. Fix that pointer while here.
+2. **A tooltip that stays put.** `TimeChart` sets `trigger: 'axis'` with no
+   `position` or `confine` (`ui/src/charts/TimeChart.tsx:135–136`), so
+   ECharts places each tooltip relative to the cursor and flips it near an
+   edge. The broadcast view's lanes are separate ECharts instances joined by
+   `echarts.connect()` (`useChart.ts:83`, group `broadcast-<key>` at
+   `BroadcastView.tsx:94`), so the crosshair is shared but the tooltip is
+   not. Its horizontal position depends on which lane the cursor is over and
+   which way it arrived, which reads as a bug rather than a placement policy.
+
+   The canvas proposes two changes:
+   - **Lane stacks get a readout rail instead of a tooltip.** Each lane's
+     value at the crosshair is printed in a fixed column at that lane's right
+     edge, and the crosshair time sits in a sticky header above the stack.
+     Comparing lanes becomes a vertical eye movement and nothing else.
+   - **Single charts pin the tooltip** to the plot's top-right corner, with
+     `confine` set.
+3. **Retire the pointless coverage banner.** `readapi.coverage()`
+   (`internal/readapi/history.go:358`, note text at :381–383) emits *"nothing
+   is stored before …; the earlier part of this range is unanswerable, not
+   empty"* whenever the requested `from` predates the first stored rollup.
+   It is worse than the first draft said, for two reasons:
+   - The broadcast view always asks for now − 7 days (`BroadcastView.tsx:51`),
+     so while the service is younger than a week, every broadcast page shows
+     the banner.
+   - The fleet view renders only the timeline's coverage and ignores the
+     trend and cohort coverage it also receives (`FleetView.tsx:132`).
+
+   Where the note comes from and where it shows:
+   - **Callers of `coverage()`:** `history.go:133` and :274,
+     `broadcast.go:166`, `trends.go:78`, :265 and :412, and `readapi.go:1551`.
+   - **Renderer:** `CoverageNote` (`components/Chrome.tsx:66–73`), a bare
+     `<p role="note">` that cannot be dismissed. That is on purpose: a
+     coverage limit is not a thing to hide.
+   - **Empty-state copy that defers to it:** `HistoryView.tsx:201–207`,
+     `RoomView.tsx:124–130` and `FleetView.tsx:142–145`.
+
+   The undismissible design is right for a range that really reaches past the
+   retention boundary. It is wrong for "you asked for 14 days and this
+   service is 5 days old", which is not a caveat but the service's age. The
+   distinction to build:
+   - **Truncated by retention:** worth saying, once, quietly.
+   - **Truncated because the service did not exist yet:** shown as the axis
+     extent, not as a warning. On the canvas, that is a hatched *"not
+     installed yet"* region on the time axis and a *"data since 31 Oct"*
+     label on the range control.
+4. **Show a striped viewer as one participant with N legs.** This is the item
+   that is not cosmetic. Since R30, a live-edge viewer can carry its deltas on
+   N stripe legs, and each leg is an ordinary `hub.Subscriber`.
+
+   *Fixed since the first draft:*
+   - #657 (2026-10-31) decodes `stripeLeg` (`internal/relayscrape/scrape.go:171`)
+     and filters every audience loop through one predicate,
+     `relayscrape.IsAudience`. Legs no longer inflate `subscribers` or pad
+     the population behind `peerMedianDropped`, the baseline that
+     `leg-b-single-viewer` compares against (`setAudienceFacts`,
+     `internal/readapi/readapi.go:875–893`; the live aggregate,
+     `internal/live/live.go:718–736`; the rule,
+     `internal/rules/playbook.go:421–441`).
+   - #669 (2026-11-01) repaired stored history that was poisoned before #657
+     and routes every reader through `viewerOf`.
+
+   *Still open, and now by design:* the scraper drops legs before storing
+   anything (`scrape.go:443–452`). A healthy striped viewer's primary has its
+   own delta flow suppressed at the relay (docs/35 §5.8), so the UI still
+   shows that viewer with near-zero delta egress. Its real delivery happens
+   on legs that appear nowhere.
+
+   *Premise corrected:* the first draft said `/statusz` "already publishes the
+   join" of a viewer to its legs. It does not:
+   - `stripeMember` is the leg's residue index, member *j* of *N*
+     (`gawk-server/internal/hub/hub.go:366–369`). It does not identify a
+     viewer.
+   - A leg's dial returns before the telemetry hello
+     (`gawk-server/internal/transport/server.go:1460–1474`; the hello is at
+     :1520), so a leg's `sessionId` is always empty.
+   - That contradicts the comments #657 and #669 left behind
+     (`scrape.go:447–449`, `live.go:724–725`: a leg "carries the viewer's
+     sessionId"), which need correcting.
+   - The only handle that ties a viewer's sessions together is the
+     viewer-minted `?owner=` token (`hub/stripe.go:68–75`), and `/statusz`
+     does not publish it.
+
+   Attributing legs to their viewer therefore needs **one relay change**: an
+   owner key on the primary's and each leg's subscriber stats, keyed with the
+   stats key so it joins across pods and the token itself is never exposed.
+   This touches `/statusz` only; the wire does not change.
+
+   With that key, the scrape keeps legs as attributed records and the UI
+   renders one row or lane per viewer. The canvas shows a `striped ×3 · 2
+   pods` tag on the viewer's row and the legs as sub-rows, each with its pod,
+   datagrams sent and datagrams dropped. Legs stay out of every count and
+   baseline, as #657 made them.
+5. **Say when a viewer is on a PoP.** This item is new since the first draft.
+   The broadcast view reads only the home relay's lines
+   (`internal/readapi/broadcast.go:363`, :504, `FilterIssuer(lines, "")`).
+   A viewer served by an R77 PoP therefore gets a client lane but no
+   relay-side figures, and nothing in `ui/src` says the viewer was on a PoP.
+   The session view already filters by the row's issuer (`readapi.go:631`,
+   :1168). The fix: tag lanes and rows with the PoP that served them, and say
+   *"relay figures are on the PoP"* instead of drawing an empty relay
+   reading.
+6. **And the rest of the same kind.** The design doc opens with a complete
+   inventory. Seen on the reference deployment (headless screenshots,
+   2026-11-05):
+   - **Lane labels collide.** Every `markArea` and `markLine` on a broadcast
+     lane carries a text label at the lane's top edge. Overlapping labels
+     merge into runs like *"not joitabl hidden"* and
+     *"taltatdipbhidipdipdipdipden"*.
+   - **Event markers form a picket fence.** The broadcaster lane draws one
+     labelled marker per stored event, which fills the whole lane.
+   - **Axes and notes repeat on every lane.** Each lane repeats its own time
+     axis, y-axis and *"worst of every N samples"* note, so axis furniture
+     takes about a third of every lane's height.
+   - **History headers do not line up with their columns.** The `session`
+     and `client` headers sit 20–30 px left of their values.
+   - **History cells truncate their own content.** The `started` column cuts
+     the time off (*"11/04/2026 08:2…"*), the role reads *"broadca…"*, and
+     the headers read *"DURA…"* and *"STAL…"*. The 24 px severity column
+     cuts the badge's word to one letter, so rows read *"● B"*, *"△ W"* and
+     *"○ O"*.
+   - **The session page is about 5,900 px tall.** The dip report expands all
+     13 episodes, each with about 15 movers, so the notes are a long scroll
+     below the charts.
+   - **The fleet trend can be blank with no explanation.** When every bucket
+     is thin (fewer than 5 sessions, drawn as a break), the chart draws
+     nothing while its legend still lists five series, and nothing says why
+     the plot is empty. Its zoom slider also overprints the time-axis labels.
+   - **Fleet stripes have no ticks.** The stripe axis is labelled only at its
+     two ends.
+
+   Found in the code:
+   - **Hardcoded dark-theme colours.** These bypass the tokens, so light mode
+     paints them wrong:
+     - the "not joined" and "left" lane veils are `rgba(11,12,14,0.55)`
+       (`BroadcastView.tsx:179`, :182), which draws a black veil on a white
+       chart;
+     - note markers are `#58a6ff` (`SessionView.tsx:143`,
+       `BroadcastView.tsx:77`);
+     - the re-home marker is `#a371f7` (`BroadcastView.tsx:98`);
+     - the crosshair is `#58a6ff` (`TimeChart.tsx:137`);
+     - the series palette is a dark-tuned list (`charts/echarts.ts:73–`).
+   - **No sparklines.** UD14 promised "a sparkline on every row", and none
+     shipped. The canvas draws a 2-minute fps sparkline per live session. That
+     needs a short tail in the live projection: a read-surface addition, not
+     a new measurement (UD3).
+   - **Truncation with no way to see the whole value:**
+     - lane meta (`BroadcastView.module.css:44–50`);
+     - the header's background-gap and clock slots, at 46ch and 28ch
+       (`Chrome.module.css:82`, :125).
+   - **Fixed-width session-id inputs** in Explore (32rem,
+     `ExploreView.tsx:139`) and Rules (26rem, `RulesView.tsx:75`).
+   - **Session chart titles** are unit names (`by fps`, `by ms`;
+     `SessionView.tsx` `buildCharts`) rather than what each chart answers.
+
+**The facelift.** UD14 settled the idiom (a dense ops console, dark by
+default, hue reserved for severity), and the canvas keeps it. What it adds is
+the visual layer R31 never got:
+- **Type.** One type pair, IBM Plex Sans and Plex Mono, bundled as
+  latin-subset woff2, because UD7 forbids fetching a font. 13 px body, 11 px
+  labels, tabular figures everywhere, and mono for every identifier.
+- **Surfaces.** A four-step surface scale replaces today's two panel tones.
+- **Severity.** Severity stays hue plus glyph plus word. Badges become tinted
+  pills, and a `bad` or `warn` broadcast card gets a severity edge.
+- **Series colours.** A categorical palette (blue, violet, teal, pink,
+  slate) that never borrows a severity hue. Event markers are neutral;
+  operator notes use the accent colour.
+- **Light theme.** The same tokens with new values, which removes the
+  dark-only literals listed in item 6.
+- **Phone.** Read-only triage on a phone (UD17) gets its own board.
+
+The canvas has eight boards: Live, Broadcast, Session, History, Fleet,
+SQL with Ask, Foundations (tokens and components) and Phone. Measured
+against the production screenshots, they change the layout in these ways:
+- **Broadcast lanes.** A lane stack shares one sticky time axis instead of
+  repeating it per lane. No text is drawn inside a lane: events become ticks
+  on the lane's floor, and their names live in the readout rail and on hover.
+- **Session page.** Two columns: the verdict, timeline and dips on the left;
+  identity, the fleet comparison and notes on the right. Dips become one
+  table row per episode, and any row expands to show everything that moved.
+- **Charts.** Timeline charts are titled by the question they answer
+  (*"Did frames arrive, decode and render?"*), not by their unit.
+- **Fleet trend.** Thin trend buckets are drawn hollow, and the plot explains
+  itself when every bucket is thin.
+
+R31's information architecture stands: the nav, routes, URL state and
+landing view (UD13) do not change.
 
 **Key design questions**:
 
-- **Auto-size vs. resize, and where the state lives.** Content-fitting and
-  user-resizing are different mechanisms; the ask is "auto when it fits, hand
-  control over when it doesn't". Whether that is one mechanism with a
-  measured default or two, and whether widths persist in the URL (R31's
-  "send me the link" rule, Q10) or in local storage, is the first thing to
-  settle — a URL that carries eight column widths stops being pasteable.
-- **Whether the virtualized history grid stays a grid.** Content measurement
-  over a windowed row set means measuring only what is rendered, which
-  reintroduces exactly the reflow-as-you-scroll that TH11's no-layout-shift
-  rule forbids. A measure-on-page-load-then-freeze compromise probably wins,
-  but it needs stating.
-- **What "one viewer, N legs" looks like** when the legs are on different
-  pods and the viewer re-homes mid-session — sub-lanes, a collapsed badge on
-  the viewer lane, or legs drawn only on demand. This is a real information
-  design question, not a rendering detail, and it interacts with the ~24-lane
-  ceiling the view already enforces.
-- **Whether the coverage note should ever be silent.** The R31 reasoning that
-  made it undismissible is sound; the change proposed here narrows *when it
-  fires*, and the doc should re-derive that boundary rather than assume it.
+- **Where widths live, and whether one mechanism covers both.** The canvas
+  proposes `localStorage` per table, because a URL carrying eight column
+  widths stops being pasteable. It also proposes one mechanism: a measured
+  default plus operator overrides. Confirm both, and say what "reset" resets.
+- **Whether the virtualized history grid stays a grid.** Measuring content
+  over a windowed row set means measuring only what is rendered, which brings
+  back the reflow-while-scrolling that TH11 forbids. Measure on page load,
+  then freeze, probably wins, but the design doc should state it.
+- **The owner key.** Its exact `/statusz` shape and keying, and whether a
+  leg that re-homes mid-session keeps its attribution across pods. After that
+  comes the information-design question of *one viewer, N legs*: sub-rows,
+  sub-lanes on demand, or a badge. It interacts with the 24-lane ceiling
+  (`MaxLanes`, `internal/readapi/broadcast.go:42–46`), since legs must not
+  consume lanes.
+- **Whether the coverage note should ever be silent.** The R31 reasoning
+  that made it undismissible is sound. This milestone narrows *when it
+  fires*, and the design doc should re-derive that boundary rather than
+  assume it.
+- **The cost of bundled fonts.** Today the bundle is 873 kB raw (docs/36
+  §9.2). Two latin-subset Plex weights per family add roughly 100–150 kB.
+  Weigh that against TH11's first-paint budget, and keep the no-external-fetch
+  test green.
+- **The sparkline tail.** How many points the live projection carries, and
+  at what cadence, without breaking UD1's bounds on the default payloads.
+- **Hollow thin buckets.** R31 drew a bucket of fewer than 5 sessions as a
+  break, never a point (UD9's spirit: no claim from a thin baseline). On a
+  small fleet, that stance blanks the whole trend chart. Drawing thin buckets
+  as hollow, unconnected points softens it. Decide whether hollow is honest
+  enough or whether the in-plot explanation alone should carry it.
 
-**Non-goals**: any change to what telemetry *collects* (ingest, the wire, the
-reporter contract) beyond the four stripe fields the relay already publishes
-and the scrape currently discards; any change to the rules playbook's
-thresholds — this milestone fixes the *population* `peerMedianDropped` is
-computed over, not the ratio it is compared to; a visual redesign — R31's
-information architecture stands, this is the usability layer on top of it.
+**Non-goals**:
+- Changes to what telemetry *collects*: ingest, the wire and the reporter
+  contract stay as they are.
+- Relay changes beyond the one keyed owner field in `/statusz` subscriber
+  stats.
+- Changes to the rules playbook's thresholds. This milestone fixes
+  *populations* and presentation, not the ratios they are compared against.
+- Information-architecture changes. R31's sections, routes and URL state
+  stand.
 
-**Status**: proposed 2026-08-01, not started — no design doc yet. Chunk
-prefix `TU` is reserved for it (every single-letter prefix is claimed;
-`TU` collides with nothing existing).
+A visual redesign is no longer a non-goal, by owner decision on 2026-11-05.
+
+**Status**: proposed 2026-08-01, revised 2026-11-05, and **implemented
+2026-11-05** as chunks TU1–TU12. [docs/86](docs/86-telemetry-facelift.md)
+records the decisions and acceptance criteria, including answers to every
+design question above:
+- widths are measured once per load and kept per table in `localStorage`;
+- the history grid stays a grid, measured with a canvas over every loaded row;
+- the owner key is a keyed HMAC, new per transport attempt, absent on PoPs;
+- the coverage note is silent only for the service's own age;
+- the bundled fonts add about 101 kB, and the whole change about 153 kB;
+- the sparkline tail comes from its own endpoint;
+- thin trend buckets are drawn hollow and confident ones as points.
+
+The relay half of TU5 shipped first, in #714. Open: the owner's pass on the
+reference deployment.
 
 ---
 

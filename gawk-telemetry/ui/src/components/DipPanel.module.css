@@ -1,102 +1,118 @@
-.panel {
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--panel);
-  padding: var(--sp-2) var(--sp-3);
+/*
+  The dips table (R36, docs/86 TU8). Auto layout: it is static per load, so
+  fitting its content costs nothing, and the movers column takes what is left.
+*/
+.wrap {
+  overflow-x: auto;
 }
 
-.title {
-  margin: 0 0 var(--sp-2);
-  font-size: var(--fs-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-dimmer);
-}
-
-.episode {
-  border-top: 1px solid var(--line);
-  padding: var(--sp-2) 0;
-}
-
-.epHead {
-  display: flex;
-  gap: var(--sp-3);
-  align-items: baseline;
-  flex-wrap: wrap;
+.dips,
+.moverTable {
+  width: 100%;
+  border-collapse: collapse;
   font-size: var(--fs-sm);
 }
 
-.when {
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
+.moverTable {
+  width: auto;
+  min-width: min(60%, 100%);
 }
 
-.dim {
-  color: var(--text-dimmer);
+.dips th,
+.moverTable th {
+  height: 30px;
+  padding: 0 12px;
+  text-align: left;
   font-size: var(--fs-xs);
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  color: var(--text-3);
+  white-space: nowrap;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.dips td,
+.moverTable td {
+  height: 30px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.dips > tbody > tr:last-child > td {
+  border-bottom: 0;
+}
+
+.dips td:first-child,
+.dips th:first-child {
+  width: 1%;
+  padding-right: 0;
+}
+
+.r {
+  text-align: right !important;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+.disc {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.disc:hover {
+  background: var(--surface-3);
+  color: var(--text);
 }
 
 .movers {
+  white-space: normal !important;
   width: 100%;
-  table-layout: fixed;
-  border-collapse: collapse;
-  font-size: var(--fs-sm);
-  margin-top: var(--sp-1);
 }
 
-.movers th,
-.movers td {
-  text-align: left;
-  font-weight: 400;
-  padding: 1px 6px 1px 0;
-  vertical-align: top;
+.mv {
+  display: inline-flex;
+  gap: 4px;
+  align-items: baseline;
+  margin-right: 12px;
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  white-space: nowrap;
 }
 
-.signal {
+.mv b {
   font-family: var(--mono);
-  font-size: var(--fs-xs);
-  color: var(--text-dim);
-  overflow-wrap: anywhere;
+  font-weight: 500;
+  color: var(--text);
 }
 
-.value {
-  font-variant-numeric: tabular-nums;
+/* Others dipped too: evidence about a shared leg, worth the eye. */
+.shared {
+  color: var(--text);
 }
 
-.chip {
-  display: inline-block;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-sm);
-  padding: 0 4px;
-  font-size: var(--fs-xs);
-  color: var(--text-dim);
+.open td {
+  background: var(--surface-2);
 }
 
-/* Relay provenance is the anchor (D7) and reads as one, whatever its magnitude. */
-.relay {
-  border-color: var(--accent);
-  color: var(--accent);
+.detail > td {
+  height: auto;
+  padding: 10px 12px 12px 40px;
+  white-space: normal;
+  background: var(--bg);
 }
 
-.client {
-  border-style: dashed;
+.detail .moverTable td {
+  height: 28px;
 }
 
-/*
-  The co-occurrence sentence. Bordered rather than styled as a finding, because
-  it is explicitly NOT a verdict: it reports that things happened together and
-  states how much that is worth.
-*/
-.correlation {
-  margin: var(--sp-2) 0 0;
-  padding-left: var(--sp-2);
-  border-left: 2px solid var(--line-strong);
-  font-size: var(--fs-sm);
-  color: var(--text-dim);
-}
-
-.none {
-  margin: var(--sp-1) 0 0;
-  font-size: var(--fs-xs);
-  color: var(--text-dimmer);
+.statement {
+  margin-top: 8px;
 }

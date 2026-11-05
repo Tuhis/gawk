@@ -36,6 +36,14 @@ export const POLL_MS = 2000;
  */
 export const STALE_AFTER_MS = POLL_MS * 3;
 
+/**
+ * The stream's own bound. It sends only changes, so an idle fleet's stream is
+ * silent but for a keepalive comment every 20 s (readapi.StreamHeartbeat);
+ * judging it by the poll's 6 s would call every quiet fleet stale. Heartbeat
+ * plus slack for a slow proxy.
+ */
+export const STREAM_STALE_AFTER_MS = 25_000;
+
 export type FeedMode = 'stream' | 'poll' | 'connecting';
 
 interface LiveState {
@@ -53,6 +61,18 @@ interface LiveState {
    * backfills, because the data for that window was never delivered to it.
    */
   gapMs: number | null;
+  /**
+   * The newest snapshot that arrived while paused. The stream sends only
+   * changes, so one discarded here might never be sent again; resuming
+   * applies it.
+   */
+  held: Snapshot | null;
+  /**
+   * When the stream last delivered ANY bytes, paused or not. A pause freezes
+   * what is shown, not the feed's health: resume takes its freshness from
+   * here, so a stream that kept talking is fresh and one that died is not.
+   */
+  aliveAt: number | null;
 
   poll: () => Promise<void>;
   start: () => () => void;
@@ -68,11 +88,22 @@ export const useLiveStore = create<LiveState>((set, get) => ({
   paused: false,
   pausedAtMs: null,
   gapMs: null,
+  held: null,
+  aliveAt: null,
 
   poll: async () => {
     if (get().paused) return;
     try {
       const snap = await fetchLive();
+      // Re-checked after the await: the page may have frozen meanwhile (the
+      // answer is held for the resume), or the stream may already have
+      // delivered something newer.
+      const s = get();
+      if (s.paused) {
+        if (!s.held || snap.atMs > s.held.atMs) set({ held: snap });
+        return;
+      }
+      if (s.snapshot && snap.atMs < s.snapshot.atMs) return;
       set({ snapshot: snap, error: null, lastOkAt: Date.now() });
     } catch (e) {
       // The page KEEPS the last good snapshot and says the feed is stale.
@@ -82,14 +113,24 @@ export const useLiveStore = create<LiveState>((set, get) => ({
     }
   },
 
-  setPaused: (paused) =>
+  setPaused: (paused) => {
     set((s) => ({
       paused,
       pausedAtMs: paused ? (s.snapshot?.atMs ?? Date.now()) : null,
       // Resuming clears the gap marker: the next update is live again, and a
       // stale "you missed 4 minutes" banner would be its own small lie.
       gapMs: paused ? s.gapMs : null,
-    })),
+      // ...shows what changed while frozen, which a quiet stream would not
+      // send again, and takes its freshness from the feed rather than from
+      // the moment of resuming.
+      ...(!paused && s.held ? { snapshot: s.held } : {}),
+      ...(!paused && s.mode === 'stream' && s.aliveAt !== null ? { lastOkAt: Math.max(s.aliveAt, s.lastOkAt ?? 0) } : {}),
+      held: null,
+    }));
+    // The poll skipped every tick while frozen; ask now rather than show a
+    // stale page for up to a poll interval.
+    if (!paused && get().mode === 'poll') void get().poll();
+  },
 
   noteGap: (ms) => set({ gapMs: ms }),
 
@@ -187,10 +228,13 @@ export const useLiveStore = create<LiveState>((set, get) => ({
               expired = true;
               return;
             }
-            if (ev.event !== 'snapshot' || get().paused) return;
+            if (ev.event !== 'snapshot') return;
             try {
               const snap = JSON.parse(ev.data) as Snapshot;
-              set({ snapshot: snap, error: null, lastOkAt: Date.now(), mode: 'stream' });
+              // Frozen: nothing moves while it is read, but the newest
+              // change is kept for the resume.
+              if (get().paused) set({ held: snap });
+              else set({ snapshot: snap, error: null, lastOkAt: Date.now(), mode: 'stream' });
             } catch {
               // A frame we cannot parse is a frame we ignore; the next one is
               // 2 s away and the last good snapshot is still on screen.
@@ -198,6 +242,14 @@ export const useLiveStore = create<LiveState>((set, get) => ({
           },
           (ms) => {
             retryMs = ms;
+          },
+          // Any bytes — a keepalive comment above all — prove the stream is
+          // alive while nothing changes (R36: see isStale). A frozen page
+          // records it for its resume and shows nothing new.
+          () => {
+            const at = Date.now();
+            if (get().paused) set({ aliveAt: at });
+            else set({ aliveAt: at, lastOkAt: at });
           },
         );
       } catch {
@@ -243,6 +295,6 @@ function canStream(): boolean {
  * from the error flag: a feed that has been failing for one cycle is not yet
  * worth shouting about, and the last good data stays on screen either way.
  */
-export function isStale(lastOkAt: number | null, now = Date.now()): boolean {
-  return lastOkAt !== null && now - lastOkAt > STALE_AFTER_MS;
+export function isStale(lastOkAt: number | null, now = Date.now(), mode?: string): boolean {
+  return lastOkAt !== null && now - lastOkAt > (mode === 'stream' ? STREAM_STALE_AFTER_MS : STALE_AFTER_MS);
 }

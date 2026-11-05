@@ -75,9 +75,9 @@ const (
 	sweepEvery = 5 * time.Second
 	// DipWindowSamples is the rolling window the dip detector runs over
 	// (docs/33 D16) — 60 samples is ~2 minutes at the default 2 s report
-	// interval. Bounded per session because this is the ONE place the live
-	// projection keeps history, and a thousand-viewer fleet must not grow with
-	// session length.
+	// interval. Bounded per session because this is one of the two places the
+	// live projection keeps history (the other is the fps tail, sparks.go),
+	// and a thousand-viewer fleet must not grow with session length.
 	//
 	// The window is what makes an episode survive hysteresis: an instantaneous
 	// fact cannot hold for EscalateSamples consecutive evaluations, which is
@@ -96,7 +96,11 @@ type SessionView struct {
 	RoomKey string `json:"roomKey,omitempty"`
 	// Issuer is the issuer key of the PoP that served the session (docs/78
 	// D3, from its token or from the PoP's observations), empty for home's.
-	Issuer      string          `json:"issuer,omitempty"`
+	Issuer string `json:"issuer,omitempty"`
+	// Pop is that PoP's display name, as home's operator named it (docs/78
+	// D7), from the PoP's own observations; empty until one arrives, and for
+	// home's sessions (R36 TU6).
+	Pop         string          `json:"pop,omitempty"`
 	Role        string          `json:"role"`
 	Browser     string          `json:"browser,omitempty"`
 	OS          string          `json:"os,omitempty"`
@@ -115,6 +119,29 @@ type SessionView struct {
 	// Metrics is the small curated set a row shows without expanding.
 	Metrics map[string]float64 `json:"metrics,omitempty"`
 	Config  map[string]string  `json:"config,omitempty"`
+	// Legs are this viewer's R30 stripe leg sessions (R36 TU5), joined by
+	// the relay's stripeOwner key — the one handle a leg shares with its
+	// primary. A striped primary's own delta egress is suppressed at the
+	// relay (docs/35 §5.8), so for a healthy striped viewer these are where
+	// its delivery actually happens. Never counted as viewers.
+	Legs []LegView `json:"legs,omitempty"`
+}
+
+// LegView is one stripe leg as the relay sees it now (R36 TU5).
+type LegView struct {
+	Member int    `json:"member"`
+	N      int    `json:"n"`
+	Pod    string `json:"pod"`
+	Role   string `json:"role"` // origin | edge (pop-origin | pop-edge on a PoP)
+	// DatagramsDropped is how many delta datagrams the relay dropped for this
+	// leg in the latest scrape window — the relay's per-subscriber `dropped`
+	// (queue overflows plus bandwidth-cap drops), as a window delta like every
+	// other live relay counter. Absent until two scrapes of the leg exist, or
+	// across a counter that went backwards. The relay reports no per-
+	// subscriber sent counter, so there is no sent figure beside it.
+	DatagramsDropped *float64 `json:"datagramsDropped,omitempty"`
+	QueueDepth       int      `json:"queueDepth"`
+	RelayAgeMs       int64    `json:"relayAgeMs"`
 }
 
 // BroadcastView is one row in the fleet view.
@@ -133,6 +160,10 @@ type BroadcastView struct {
 	Findings    []rules.Finding    `json:"findings,omitempty"`
 	Sessions    []SessionView      `json:"sessions,omitempty"`
 	Metrics     map[string]float64 `json:"metrics,omitempty"`
+	// StripeLegs is how many R30 stripe leg sessions the relay holds for this
+	// broadcast right now, attributed to a viewer or not (R36 TU5). Stated
+	// beside Viewers rather than in it: a leg is a connection, not a viewer.
+	StripeLegs int `json:"stripeLegs,omitempty"`
 }
 
 // Snapshot is what `/live` returns.
@@ -158,6 +189,10 @@ type sessionState struct {
 	// can only ratchet upward.
 	prevSub     relayscrape.Subscriber
 	havePrevSub bool
+	// stripeOwner is the relay's owner key on this viewer's primary
+	// subscriber entry as last scraped: what its stripe legs are joined by
+	// (R36 TU5). Per connection attempt, so it changes on a reconnect.
+	stripeOwner string
 	// The native broadcaster's cumulative QUIC packet counters at the end of
 	// the previous batch, so uplinkPacketLossRatio is this window's.
 	prevUplinkSent, prevUplinkLost float64
@@ -168,6 +203,9 @@ type sessionState struct {
 	// the middle of a batch is exactly what the last-sample-only fold used to
 	// throw away.
 	dipWindow []rollup.Sample
+	// spark is the two-minute fps tail GET /live/sparks serves (R36 TU7):
+	// the other bounded history this projection keeps.
+	spark sparkRing
 	// Hysteresis state.
 	pendingSeverity rules.Severity
 	pendingCount    int
@@ -191,6 +229,11 @@ type broadcastState struct {
 	// cadence. The card is derived from all of them instead (aggregateLocked).
 	pods     map[string]*podView
 	sessions map[string]*sessionState
+	// legs are the broadcast's R30 stripe leg sessions on every pod, keyed by
+	// pod and /statusz key (R36 TU5). Kept apart from sessions on purpose: a
+	// leg has no telemetry identity and is never a viewer, so nothing that
+	// iterates sessions — counts, peer baselines, verdicts — can meet one.
+	legs map[string]*legState
 	// missedRounds counts CONSECUTIVE complete scrape rounds that did not
 	// mention this broadcast. Only meaningful once the relay has seen it at
 	// all: a broadcast the relay has never observed (client-only, or shorter
@@ -218,6 +261,15 @@ type podView struct {
 	have   bool // a previous answer exists, so a delta is meaningful
 	at     time.Time
 	prevAt time.Time
+}
+
+// legState is one stripe leg's latest /statusz entry and the one before it,
+// so its drops are reported as a window like every other live counter.
+type legState struct {
+	pod, role, issuer string
+	cur, prev         relayscrape.Subscriber
+	have              bool
+	lastRelay         time.Time
 }
 
 // endedEntry keeps the end INSTANT beside the stored view. The view carries
@@ -301,6 +353,7 @@ func (p *Projection) ObserveClient(a ingest.Accepted, browser, os, appVersion st
 	s.lastClient = now
 	b.lastSeen = now
 	defer p.sweepLocked(now)
+	s.spark.fold(a, s.view.Role, now)
 
 	// EVERY sample feeds the rolling dip window (D16). Folding only the last
 	// one — as this did — discarded four of every five samples at a 2 s report
@@ -438,6 +491,9 @@ func (p *Projection) relaySessionLocked(b *broadcastState, o relayscrape.Observa
 	}
 	if iss := o.Issuer(); iss != "" {
 		s.view.Issuer = iss
+		if o.PopName != "" {
+			s.view.Pop = o.PopName
+		}
 	}
 	return s
 }
@@ -462,6 +518,9 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 			if o.Broadcast == nil {
 				continue
 			}
+			// A PoP's legs too: counted in the broadcast's legs, and joined
+			// only within the relay that holds them.
+			b.observeLegsLocked(o, now)
 			if issuer != "" {
 				if o.SessionID != "" {
 					s := p.relaySessionLocked(b, o, "broadcaster")
@@ -523,9 +582,16 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 			}
 			if issuer != "" {
 				s.view.Issuer = issuer
+				if o.PopName != "" {
+					s.view.Pop = o.PopName
+				}
 			}
 			sub := o.Subscriber
 			s.lastRelay = now
+			// The CURRENT key, cleared too: the token is minted per connection
+			// attempt, so a reconnect's primary carries a new key (or none),
+			// and the dead attempt's legs are nobody's.
+			s.stripeOwner = sub.StripeOwner
 			// Gauges are read as they stand; counters become this window's
 			// delta, and are ABSENT until there is a window to measure (the
 			// alternative — reporting the lifetime total for one scrape — is
@@ -593,6 +659,20 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 		}
 	}
 
+	// A home leg a complete round did not list has ended: every pod answered,
+	// and none holds it. A partial round proves nothing about the pods that
+	// did not answer, and a PoP's legs arrive through a best-effort side
+	// route, so those age out by staleness instead (sweepLocked).
+	if r.Complete {
+		for _, b := range p.bcasts {
+			for id, l := range b.legs {
+				if l.issuer == "" && l.lastRelay.Before(now) {
+					delete(b.legs, id)
+				}
+			}
+		}
+	}
+
 	// A broadcast the relay has stopped listing has ENDED — but only a round
 	// in which every pod answered is allowed to say so (see relayscrape.Round).
 	if r.Complete {
@@ -632,6 +712,11 @@ func (p *Projection) sweepLocked(now time.Time) {
 			}
 			if !last.IsZero() && now.Sub(last) > SessionQuietAfter {
 				delete(b.sessions, id)
+			}
+		}
+		for id, l := range b.legs {
+			if now.Sub(l.lastRelay) > RelayStaleAfter {
+				delete(b.legs, id)
 			}
 		}
 		if now.Sub(b.lastSeen) > EndedAfterQuiet {
@@ -723,8 +808,10 @@ func (b *broadcastState) aggregateLocked() {
 		// of this discriminator eventually accuses every healthy fleet.
 		was := map[string]uint64{}
 		for _, sub := range pv.prev.SubscriberDetails {
-			// A stripe leg carries its viewer's sessionId, so letting it in
-			// here would key the viewer's baseline to a leg's counter.
+			// A stripe leg carries no sessionId (it is never sent the
+			// telemetry hello), so it would be keyed by its /statusz key and
+			// counted as a viewer of its own. Legs are attributed separately
+			// (observeLegsLocked) and never counted here.
 			if !sub.Audience() {
 				continue
 			}
@@ -867,6 +954,7 @@ func (p *Projection) broadcast(key string, now time.Time) *broadcastState {
 			key: key, firstSeen: now, relayFacts: map[string]float64{},
 			pods:     map[string]*podView{},
 			sessions: map[string]*sessionState{},
+			legs:     map[string]*legState{},
 		}
 		p.bcasts[key] = b
 		// A key that is streaming again cannot also be a recently-ended one.
@@ -983,10 +1071,14 @@ func (p *Projection) renderBroadcastLocked(b *broadcastState, now time.Time) Bro
 	bv.Severity = rep.Severity()
 	bv.Findings = rep.Findings
 
+	legs, nLegs := b.legViewsLocked(now)
+	bv.StripeLegs = nLegs
+
 	worst := rules.SeverityOK
 	haveViewer := false
 	for _, s := range b.sessions {
 		sv := p.renderSession(s, now)
+		sv.Legs = legs[s]
 		bv.Sessions = append(bv.Sessions, sv)
 		if sv.Role == "viewer" {
 			haveViewer = true

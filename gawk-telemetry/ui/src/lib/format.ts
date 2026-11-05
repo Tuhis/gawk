@@ -61,12 +61,20 @@ export function ago(msValue: number | undefined | null): string {
   return `${Math.round(m / 60)}h ago`;
 }
 
+/**
+ * Every time of day on this page is on a 24-hour clock (R36): an ops console
+ * whose axis says 21:00 while its table says 09:00 PM makes the reader do
+ * arithmetic at exactly the wrong moment.
+ */
+const H24 = { hourCycle: 'h23' } as const;
+
 /** Wall-clock, for the "updated" stamp. Fixed width by construction. */
 export function clockTime(atMs: number): string {
   return new Date(atMs).toLocaleTimeString(undefined, {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
+    ...H24,
   });
 }
 
@@ -114,9 +122,38 @@ export function absoluteTime(atMs: number | undefined | null): string {
   const d = new Date(atMs);
   return `${d.toLocaleDateString(undefined, {
     year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  })} ${d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
+    month: 'short',
+    day: 'numeric',
+  })} ${d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', ...H24 })}`;
+}
+
+/** "31 Oct" — a day, for a range's boundary ("data since 31 Oct"). */
+export function shortDate(atMs: number | undefined | null): string {
+  if (atMs === undefined || atMs === null || !Number.isFinite(atMs) || atMs <= 0) return EMPTY;
+  return new Date(atMs).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+}
+
+/**
+ * "4 Nov 20:23:58" — a table cell's absolute time (R36). The year appears
+ * only when it is not this one, so the column fits the content it actually
+ * holds; R31's numeric form cut the time off ("11/04/2026 08:2…").
+ */
+export function compactTime(atMs: number | undefined | null, now = Date.now()): string {
+  if (atMs === undefined || atMs === null || !Number.isFinite(atMs) || atMs <= 0) return EMPTY;
+  const d = new Date(atMs);
+  const sameYear = d.getFullYear() === new Date(now).getFullYear();
+  const date = d.toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    ...(sameYear ? {} : { year: 'numeric' }),
+  });
+  const time = d.toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    ...H24,
+  });
+  return `${date} ${time}`;
 }
 
 /** Time only, for a row in a table whose date is already stated. */
@@ -126,6 +163,7 @@ export function timeOfDay(atMs: number | undefined | null): string {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
+    ...H24,
   });
 }
 
@@ -140,12 +178,13 @@ export function axisTime(value: number): string {
     return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   }
   if (d.getSeconds() === 0) {
-    return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', ...H24 });
   }
   return d.toLocaleTimeString(undefined, {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
+    ...H24,
   });
 }
 

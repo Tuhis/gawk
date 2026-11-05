@@ -6,10 +6,11 @@ import { confidence, withUnit } from '../lib/format.ts';
 import { copyToClipboard, findingToMarkdown, reportToMarkdown } from '../lib/export.ts';
 import { href } from '../router/router.ts';
 import styles from './Findings.module.css';
+import view from '../views/view.module.css';
 
 // TH6: findings render as ARGUMENTS, not as assertions.
 //
-// The defect this replaces was small and total: `BroadcastCard` rendered
+// The defect this replaced was small and total: `BroadcastCard` rendered
 // `finding.verdict` as a bare sentence, and `Evidence`, `Confidence`, `Action`,
 // `Report.Passed` and `Report.Unavailable` — D6/D7's entire provenance
 // apparatus, the thing that makes a verdict inspectable rather than believed —
@@ -25,6 +26,11 @@ import styles from './Findings.module.css';
 //   * `passed` is shown, so a healthy session is distinguishable from one
 //     nothing ever analysed;
 //   * `unavailable` names the missing signal, so a silence has a reason.
+//
+// R36 (docs/86): one panel, a finding per row. The evidence table is laid out
+// by the browser's own auto layout — it is static, so fitting its content
+// costs nothing and nothing in it ever ticks — where R31 forced fixed
+// percentage columns on it (R36 item 1).
 
 interface FindingProps {
   finding: Finding;
@@ -43,6 +49,9 @@ export function FindingCard({ finding, sessionId, fromMs, toMs }: FindingProps) 
       <header className={styles.head}>
         <SeverityBadge severity={finding.severity} />
         <span className={styles.verdict}>{finding.verdict}</span>
+        <a href={href('rules', undefined, { rule: finding.id })} className={view.tag} title="What this rule reads, and its thresholds">
+          {finding.id}
+        </a>
         <span className={styles.spacer} />
         <span
           className={`${styles.confidence} ${anchored ? '' : styles.capped}`}
@@ -52,12 +61,11 @@ export function FindingCard({ finding, sessionId, fromMs, toMs }: FindingProps) 
               : 'No relay number corroborates this: a wedged client’s own accounting is the least reliable evidence in the system, so confidence is capped at 60 % (D7).'
           }
         >
-          {confidence(finding.confidence)}
-          {anchored ? ' relay-anchored' : ' client only'}
+          {confidence(finding.confidence)} ·{anchored ? ' relay-anchored' : ' client only'}
         </span>
         <button
           type="button"
-          className={styles.copy}
+          className={`${view.button} ${view.buttonQuiet} ${view.buttonSmall}`}
           onClick={() => {
             void copyToClipboard(findingToMarkdown(finding)).then((ok) => setCopied(ok));
           }}
@@ -67,20 +75,16 @@ export function FindingCard({ finding, sessionId, fromMs, toMs }: FindingProps) 
         </button>
       </header>
 
-      <p className={styles.ruleId}>
-        <a href={href('rules', undefined, { rule: finding.id })} className={styles.ruleLink}>
-          {finding.id}
-        </a>
-      </p>
-
       {finding.evidence && finding.evidence.length > 0 && (
         <table className={styles.evidence}>
-          <colgroup>
-            <col style={{ width: '34%' }} />
-            <col style={{ width: '20%' }} />
-            <col style={{ width: '12%' }} />
-            <col style={{ width: '34%' }} />
-          </colgroup>
+          <thead>
+            <tr>
+              <th>signal</th>
+              <th className={styles.r}>value</th>
+              <th>from</th>
+              <th>against</th>
+            </tr>
+          </thead>
           <tbody>
             {finding.evidence.map((e, i) => (
               <EvidenceRow key={`${e.signal}-${i}`} evidence={e} sessionId={sessionId} fromMs={fromMs} toMs={toMs} />
@@ -115,6 +119,7 @@ function EvidenceRow({
     sessionId && evidence.from !== 'relay'
       ? href('explore', undefined, { sessions: sessionId, fields: signal, from: fromMs, to: toMs })
       : null;
+  const from = evidence.from ?? 'derived';
 
   return (
     <tr>
@@ -127,13 +132,9 @@ function EvidenceRow({
           evidence.signal
         )}
       </th>
-      <td className={`${styles.value} tnum`}>
-        {evidence.text ? evidence.text : withUnit(evidence.value, evidence.unit)}
-      </td>
+      <td className={styles.r}>{evidence.text ? evidence.text : withUnit(evidence.value, evidence.unit)}</td>
       <td>
-        <span className={`${styles.chip} ${styles[evidence.from ?? 'derived']}`}>
-          {evidence.from ?? 'derived'}
-        </span>
+        <span className={`${view.prov} ${view[`prov_${from}`] ?? ''}`}>{from}</span>
       </td>
       <td className={styles.comparison}>{evidence.comparison ?? ''}</td>
     </tr>
@@ -145,16 +146,47 @@ interface ReportProps {
   sessionId?: string;
   fromMs?: number;
   toMs?: number;
+  /** Markdown export title. */
   title?: string;
+  /** The panel's heading. */
+  heading?: string;
 }
 
-/** A whole report: findings, caveats, what passed, and what could not run. */
-export function ReportPanel({ report, sessionId, fromMs, toMs, title }: ReportProps) {
+/** A whole report as one panel: findings, caveats, what passed, what could not run. */
+export function ReportPanel({ report, sessionId, fromMs, toMs, title, heading = 'Verdict' }: ReportProps) {
   const [showPassed, setShowPassed] = useState(false);
   const [copied, setCopied] = useState(false);
+  const fired = report.findings?.length ?? 0;
+  const passed = report.passed?.length ?? 0;
+  const unavailable = report.unavailable?.length ?? 0;
 
   return (
-    <section className={styles.report}>
+    <section className={`${view.panel} ${styles.report}`}>
+      <div className={view.panelH}>
+        <h2 className={view.panelT}>{heading}</h2>
+        <span className={view.note}>
+          {fired} finding{fired === 1 ? '' : 's'}
+        </span>
+        <span className={styles.spacer} />
+        <button
+          type="button"
+          className={`${view.button} ${view.buttonQuiet} ${view.buttonSmall}`}
+          aria-expanded={showPassed}
+          onClick={() => setShowPassed((v) => !v)}
+        >
+          {showPassed ? '▾' : '▸'} {passed} passed · {unavailable} unavailable
+        </button>
+        <button
+          type="button"
+          className={`${view.button} ${view.buttonQuiet} ${view.buttonSmall}`}
+          onClick={() => {
+            void copyToClipboard(reportToMarkdown(report, { title })).then((ok) => setCopied(ok));
+          }}
+        >
+          {copied ? 'copied' : 'copy report md'}
+        </button>
+      </div>
+
       {report.caveats && report.caveats.length > 0 && (
         <ul className={styles.caveats}>
           {report.caveats.map((c) => (
@@ -163,8 +195,8 @@ export function ReportPanel({ report, sessionId, fromMs, toMs, title }: ReportPr
         </ul>
       )}
 
-      {report.findings && report.findings.length > 0 ? (
-        report.findings.map((f) => (
+      {fired > 0 ? (
+        report.findings!.map((f) => (
           <FindingCard key={f.id} finding={f} sessionId={sessionId} fromMs={fromMs} toMs={toMs} />
         ))
       ) : (
@@ -172,32 +204,16 @@ export function ReportPanel({ report, sessionId, fromMs, toMs, title }: ReportPr
           {/* Positive, with its basis. "No issues found" and "nothing was ever
               analysed" are different claims and this is where they separate. */}
           No rule fired.{' '}
-          {report.passed?.length
-            ? `${report.passed.length} check${report.passed.length === 1 ? '' : 's'} passed.`
+          {passed
+            ? `${passed} check${passed === 1 ? '' : 's'} passed.`
             : 'And no check could be evaluated — this is an absence of analysis, not health.'}
         </p>
       )}
 
-      <footer className={styles.reportFoot}>
-        <button type="button" className={styles.toggle} onClick={() => setShowPassed((v) => !v)}>
-          {showPassed ? '▾' : '▸'} {report.passed?.length ?? 0} passed ·{' '}
-          {report.unavailable?.length ?? 0} unavailable
-        </button>
-        <button
-          type="button"
-          className={styles.copy}
-          onClick={() => {
-            void copyToClipboard(reportToMarkdown(report, { title })).then((ok) => setCopied(ok));
-          }}
-        >
-          {copied ? 'copied' : 'copy report md'}
-        </button>
-      </footer>
-
       {showPassed && (
         <div className={styles.checks}>
           <div>
-            <h4 className={styles.checksTitle}>Passed</h4>
+            <h4 className={view.eyebrow}>Passed</h4>
             {report.passed?.length ? (
               <ul className={styles.checkList}>
                 {report.passed.map((id) => (
@@ -207,11 +223,11 @@ export function ReportPanel({ report, sessionId, fromMs, toMs, title }: ReportPr
                 ))}
               </ul>
             ) : (
-              <p className={styles.none}>None.</p>
+              <p className={view.note}>None.</p>
             )}
           </div>
           <div>
-            <h4 className={styles.checksTitle}>Could not be evaluated</h4>
+            <h4 className={view.eyebrow}>Could not be evaluated</h4>
             {report.unavailable?.length ? (
               <ul className={styles.checkList}>
                 {report.unavailable.map((u) => (
@@ -222,7 +238,7 @@ export function ReportPanel({ report, sessionId, fromMs, toMs, title }: ReportPr
                 ))}
               </ul>
             ) : (
-              <p className={styles.none}>None — every rule in scope had what it needed.</p>
+              <p className={view.note}>None — every rule in scope had what it needed.</p>
             )}
           </div>
         </div>

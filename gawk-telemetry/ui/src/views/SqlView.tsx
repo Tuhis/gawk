@@ -3,6 +3,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { askQuery, fetchQueryStatus, runQuery } from '../api/client.ts';
 import type { AskAnswer, AskStatus, QueryResult, QueryStatus } from '../api/types.ts';
 import { TimeChart, type Series } from '../charts/TimeChart.tsx';
+import { ResultsTable } from '../components/ResultsTable.tsx';
+import { cell } from '../lib/cells.ts';
+import { SqlEditor } from '../components/SqlEditor.tsx';
 import { download, seriesToCsv } from '../lib/export.ts';
 import { useDocumentTitle, useUrlState } from '../router/router.ts';
 import styles from './SqlView.module.css';
@@ -165,14 +168,22 @@ export function SqlView() {
     );
   }
 
+  const submit = () => {
+    setSql(draft);
+    void run(draft);
+  };
+
   return (
-    <div className={view.page}>
+    <div className={`${view.page} ${styles.page}`}>
       <header className={view.head}>
         <h1 className={view.title}>SQL</h1>
-        <span className={view.subtitle}>
-          read-only · {status?.rowLimit ?? 0} row cap · {Math.round((status?.timeoutMs ?? 0) / 1000)} s
-          timeout
-        </span>
+        <span className={view.tag}>read-only</span>
+        {status ? (
+          <>
+            <span className={view.tag}>{status.rowLimit.toLocaleString()} row cap</span>
+            <span className={view.tag}>{Math.round(status.timeoutMs / 1000)} s timeout</span>
+          </>
+        ) : null}
         <span className={view.spacer} />
         {result && (
           <button
@@ -191,7 +202,10 @@ export function SqlView() {
         )}
       </header>
 
-      <div className={view.controls}>
+      {status?.ask && <AskBox status={status.ask} onDraft={takeDraft} reading={answer && draft === answer.sql ? answer : null} />}
+
+      <div className={view.toolbar}>
+        <span className={view.eyebrow}>examples</span>
         {EXAMPLES.map((ex) => (
           <button
             key={ex.label}
@@ -209,42 +223,50 @@ export function SqlView() {
         ))}
       </div>
 
-      {status?.ask && <AskBox status={status.ask} onDraft={takeDraft} />}
-      {/* The reading describes the draft it came with; once the editor holds
-          something else, it would describe SQL that is no longer there. */}
-      {answer && draft === answer.sql && <ReadAs answer={answer} />}
-
       <form
+        className={styles.form}
         onSubmit={(e) => {
           e.preventDefault();
-          setSql(draft);
-          void run(draft);
+          submit();
         }}
       >
-        <textarea
-          className={styles.editor}
-          value={draft}
-          spellCheck={false}
-          rows={7}
-          placeholder="SELECT … FROM rollups"
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-              e.preventDefault();
-              setSql(draft);
-              void run(draft);
-            }
-          }}
-        />
-        <div className={view.controls}>
+        <SqlEditor value={draft} onChange={setDraft} onRun={submit} placeholder="SELECT … FROM rollups" />
+        <div className={view.toolbar}>
           <button type="submit" className={view.button} disabled={busy}>
-            {busy ? 'running…' : 'run (⌘⏎)'}
+            {busy ? 'running…' : 'run'} <span className={styles.kbd}>⌘⏎</span>
           </button>
           {result && (
             <span className={view.dim}>
-              {result.rowCount} row{result.rowCount === 1 ? '' : 's'} in {result.elapsedMs} ms
+              {result.rowCount.toLocaleString()} row{result.rowCount === 1 ? '' : 's'} in {result.elapsedMs} ms
               {result.truncated ? ' · truncated at the row cap' : ''}
             </span>
+          )}
+          <span className={view.spacer} />
+          {result && result.rows.length > 0 && (
+            <>
+              <label className={view.control}>
+                chart x
+                <select className={view.select} value={chartX} onChange={(e) => setChartX(e.target.value)}>
+                  <option value="">—</option>
+                  {result.columns.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className={view.control}>
+                y
+                <select className={view.select} value={chartY} onChange={(e) => setChartY(e.target.value)}>
+                  <option value="">—</option>
+                  {result.columns.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </>
           )}
         </div>
       </form>
@@ -253,64 +275,21 @@ export function SqlView() {
 
       {result && result.rows.length > 0 && (
         <>
-          <div className={view.controls}>
-            <label className={view.control}>
-              chart x
-              <select className={view.select} value={chartX} onChange={(e) => setChartX(e.target.value)}>
-                <option value="">—</option>
-                {result.columns.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className={view.control}>
-              y
-              <select className={view.select} value={chartY} onChange={(e) => setChartY(e.target.value)}>
-                <option value="">—</option>
-                {result.columns.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
           {chart.length > 0 && (
-            <TimeChart
-              series={chart}
-              height={220}
-              showZoom
-              note="Charted from the result set: the x column is read as a timestamp (epoch ms or an ISO string)."
-              ariaLabel="query result"
-            />
+            <section className={`${view.panel} ${view.panelB}`}>
+              <TimeChart
+                series={chart}
+                height={220}
+                showZoom
+                note="Charted from the result set: the x column is read as a timestamp (epoch ms or an ISO string)."
+                ariaLabel="query result"
+              />
+            </section>
           )}
-
-          <div className={styles.tableWrap}>
-            <table className={styles.table}>
-              <thead>
-                <tr>
-                  {result.columns.map((c) => (
-                    <th key={c}>{c}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {result.rows.map((row, i) => (
-                  <tr key={i}>
-                    {row.map((v, j) => (
-                      <td key={j} className="tnum">
-                        {cell(v)}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <ResultsTable result={result} />
         </>
       )}
+      {result && result.rows.length === 0 && <p className={view.note}>The query returned no rows.</p>}
     </div>
   );
 }
@@ -324,7 +303,16 @@ const MAX_QUESTION_BYTES = 2000;
  * "no engine" (the page above) and from "the model could not answer" (an
  * error under the box).
  */
-function AskBox({ status, onDraft }: { status: AskStatus; onDraft: (a: AskAnswer) => void }) {
+function AskBox({
+  status,
+  onDraft,
+  reading,
+}: {
+  status: AskStatus;
+  onDraft: (a: AskAnswer) => void;
+  /** The reading of the draft the editor still holds, if it does. */
+  reading: AskAnswer | null;
+}) {
   const [question, setQuestion] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -358,7 +346,10 @@ function AskBox({ status, onDraft }: { status: AskStatus; onDraft: (a: AskAnswer
   };
 
   return (
-    <section className={styles.ask} aria-label="ask in English">
+    <section className={`${view.panel} ${view.panelB} ${styles.ask}`} aria-label="ask in English">
+      <label className={view.eyebrow} htmlFor="sql-ask">
+        Ask in English
+      </label>
       <form
         className={styles.askRow}
         onSubmit={(e) => {
@@ -367,17 +358,25 @@ function AskBox({ status, onDraft }: { status: AskStatus; onDraft: (a: AskAnswer
         }}
       >
         <input
-          className={styles.askInput}
+          id="sql-ask"
+          className={`${view.text} ${styles.askInput}`}
           type="text"
           value={question}
-          placeholder="Ask in English — e.g. how does stalling compare between Linux and Windows viewers?"
+          placeholder="e.g. how does stalling compare between Linux and Windows viewers?"
           aria-label="question"
           onChange={(e) => setQuestion(e.target.value)}
         />
-        <button type="submit" className={view.button} disabled={busy || !question.trim() || tooLong}>
+        <button
+          type="submit"
+          className={`${view.button} ${view.buttonOn}`}
+          disabled={busy || !question.trim() || tooLong}
+        >
           {busy ? 'drafting…' : 'ask'}
         </button>
       </form>
+      {/* The reading describes the draft it came with; once the editor holds
+          something else, it would describe SQL that is no longer there. */}
+      {reading && <ReadAs answer={reading} />}
       <p className={view.note}>
         {status.model} drafts SQL from the schema and puts it in the editor; nothing runs until you press run. It
         never sees a row.
@@ -398,9 +397,12 @@ function AskBox({ status, onDraft }: { status: AskStatus; onDraft: (a: AskAnswer
 function ReadAs({ answer }: { answer: AskAnswer }) {
   return (
     <div className={styles.readAs}>
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+        <path d="M2 8h9M8 4l4 4-4 4" />
+      </svg>
       <p>
-        <span className={view.dim}>Read as:</span> {answer.interpretation || '(the model gave no reading)'}{' '}
-        <span className={view.note}>— {answer.model}</span>
+        <b>Read as:</b> {answer.interpretation || '(the model gave no reading)'}{' '}
+        <span className={view.dimmer}>— {answer.model}</span>
       </p>
       {answer.check.startsWith('ERROR') && (
         <p className={view.error}>This draft does not bind: {answer.check.replace(/^ERROR: /, '')}</p>
@@ -410,12 +412,6 @@ function ReadAs({ answer }: { answer: AskAnswer }) {
       )}
     </div>
   );
-}
-
-function cell(v: unknown): string {
-  if (v === null || v === undefined) return '';
-  if (typeof v === 'object') return JSON.stringify(v);
-  return String(v);
 }
 
 function toNumber(v: unknown): number | null {

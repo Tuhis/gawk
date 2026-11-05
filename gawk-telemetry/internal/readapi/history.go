@@ -122,7 +122,29 @@ type Coverage struct {
 	// Note states, in one sentence, any way the requested range exceeds what is
 	// answerable. Empty means the range is fully covered.
 	Note string `json:"note,omitempty"`
+	// Reason names which limit Note is about (R36 TU4), so a page can tell
+	// a caveat from the service's age without parsing the sentence. Empty
+	// exactly when Note is.
+	//
+	// Rollups are never pruned (store.Prune deletes raw partitions only), so
+	// a range reaching before the first rollup is not a retention limit: the
+	// service was not running yet. When a range reaches past both edges the
+	// reason is CoverageBeforeData, like the note; RawFromMs > RollupsFromMs
+	// then says the rows between the two are rollup-only as well.
+	Reason string `json:"reason,omitempty"`
 }
+
+// The coverage reasons.
+const (
+	// CoverageNone: there are no rollups at all — nothing is answerable.
+	CoverageNone = "none"
+	// CoverageBeforeData: the range starts before the first stored rollup,
+	// which is the service's age, not a retention limit.
+	CoverageBeforeData = "before-data"
+	// CoverageRawPruned: the range starts before the raw-retention boundary,
+	// so its older rows are rollup-only — span and verdict, no samples.
+	CoverageRawPruned = "raw-pruned"
+)
 
 // SearchSessions is the history browser's query (TH3).
 func (a *API) SearchSessions(q HistoryQuery) (*HistoryPage, error) {
@@ -377,11 +399,14 @@ func (a *API) coverage(q HistoryQuery) (Coverage, error) {
 	}
 	switch {
 	case cov.RollupsFromMs == 0:
+		cov.Reason = CoverageNone
 		cov.Note = "this service has no stored rollups at all — the range is unanswerable, not empty"
 	case !q.From.IsZero() && q.From.UnixMilli() < cov.RollupsFromMs:
+		cov.Reason = CoverageBeforeData
 		cov.Note = fmt.Sprintf("nothing is stored before %s; the earlier part of this range is unanswerable, not empty",
 			time.UnixMilli(cov.RollupsFromMs).UTC().Format(time.RFC3339))
 	case !q.From.IsZero() && cov.RawFromMs > 0 && q.From.UnixMilli() < cov.RawFromMs:
+		cov.Reason = CoverageRawPruned
 		cov.Note = fmt.Sprintf("raw samples are kept for %d days; rows before %s are rollup-only",
 			a.retentionDays, time.UnixMilli(cov.RawFromMs).UTC().Format(time.RFC3339))
 	}

@@ -1,0 +1,55 @@
+.frame {
+  position: relative;
+}
+
+.cell {
+  cursor: default;
+}
+
+.cell:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.cellOpen {
+  box-shadow: inset 0 0 0 1px var(--accent);
+  background: var(--accent-bg) !important;
+}
+
+.null {
+  color: var(--text-3);
+  font-style: italic;
+}
+
+.pop {
+  position: absolute;
+  z-index: 5;
+  width: 440px;
+  max-width: calc(100% - 16px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--surface-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+  font-size: 12.5px;
+}
+
+.popHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.popValue {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--sans);
+  font-size: 12.5px;
+  user-select: text;
+}

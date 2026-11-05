@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 
-import { ClockNote, IdpBanner, Nav, PauseBar, SignedIn } from './components/Chrome.tsx';
+import { Header, IdpBanner } from './components/Chrome.tsx';
 import { CommandPalette } from './components/CommandPalette.tsx';
 import { href, useRoute } from './router/router.ts';
 import { useLiveStore } from './state/liveStore.ts';
@@ -58,16 +58,7 @@ export function App() {
 
   return (
     <div className={styles.app}>
-      <header className={styles.header}>
-        <a className={styles.title} href={href('live')}>
-          gawk telemetry
-        </a>
-        <Nav />
-        <span className={styles.spacer} />
-        <PauseBar />
-        <ClockNote />
-        <SignedIn />
-      </header>
+      <Header />
 
       <main className={styles.main}>
         <IdpBanner />

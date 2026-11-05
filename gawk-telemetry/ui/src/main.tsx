@@ -4,7 +4,12 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App.tsx';
 import { bootstrapAuth } from './auth/auth.ts';
 import { AuthGate } from './auth/AuthGate.tsx';
+import { installTheme } from './state/theme.ts';
 import './styles/global.css';
+
+// The theme is written to <html> before the first render, so a reader who
+// chose light never sees a dark flash (R36, docs/86 TU1).
+installTheme();
 
 // The mode probe runs before React renders, so in OIDC mode the redirect flow
 // starts at once — against a live IdP session that is an invisible bounce —

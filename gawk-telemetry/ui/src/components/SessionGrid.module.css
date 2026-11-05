@@ -1,0 +1,123 @@
+/*
+  The history grid (R36, docs/86 TU2). Header and rows share one track list of
+  measured pixels plus the verdict's remainder, so they line up by
+  construction, and they share one horizontal scroll.
+*/
+.head,
+.row {
+  display: grid;
+  align-items: center;
+  font-size: var(--fs-sm);
+}
+
+.head {
+  height: 30px;
+  border-bottom: 1px solid var(--line-strong);
+  background: var(--surface-1);
+}
+
+.th {
+  position: relative;
+  padding: 0 12px;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  color: var(--text-3);
+  white-space: nowrap;
+  height: 100%;
+  display: flex;
+  align-items: center;
+}
+
+.th.r {
+  justify-content: flex-end;
+}
+
+.row {
+  height: 30px;
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px solid var(--line);
+}
+
+.row:hover {
+  background: var(--surface-2);
+  text-decoration: none;
+}
+
+.td {
+  padding: 0 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.r {
+  text-align: right;
+}
+
+.id {
+  font-family: var(--mono);
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+.strong {
+  font-weight: 500;
+}
+
+.dim {
+  color: var(--text-2);
+}
+
+.dimmer {
+  color: var(--text-3);
+}
+
+.verdict {
+  color: var(--text-2);
+}
+
+/*
+  The retention boundary, on the row. It has to be visible BEFORE the click,
+  or an operator opens a session expecting charts and finds a rollup — which
+  reads as a bug rather than as a retention policy.
+*/
+.tag {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: var(--r-sm);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  font-family: var(--sans);
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+.live {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.live i {
+  display: block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text);
+}

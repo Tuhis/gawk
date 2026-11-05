@@ -1,0 +1,55 @@
+/*
+  IBM Plex Sans and Plex Mono, BUNDLED (UD7: nothing is fetched at runtime,
+  fonts included — the page must work on a port-forward with no network).
+
+  These are IBM's own latin subsets, copied unmodified from the @ibm/plex-sans
+  and @ibm/plex-mono packages (SIL OFL 1.1, Reserved Font Name "Plex"; the
+  licence travels beside them as OFL.txt). They are vendored rather than
+  installed because those packages run an install-time telemetry hook, and a
+  CI job that phones home is not a font dependency worth having.
+
+  Five files, ~100 kB: Sans at the three weights the page uses, Mono at the
+  two its identifiers use. Glyphs outside Latin-1 (○ △ ● ★ ⌘) fall back to the
+  system font per glyph, which is what `font-display: swap` plus the fallback
+  stacks in global.css are for.
+*/
+
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../assets/fonts/IBMPlexSans-Regular-Latin1.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('../assets/fonts/IBMPlexSans-Medium-Latin1.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('../assets/fonts/IBMPlexSans-SemiBold-Latin1.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../assets/fonts/IBMPlexMono-Regular-Latin1.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 500 600;
+  font-display: swap;
+  src: url('../assets/fonts/IBMPlexMono-Medium-Latin1.woff2') format('woff2');
+}

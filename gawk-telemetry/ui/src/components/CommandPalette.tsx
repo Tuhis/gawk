@@ -4,6 +4,7 @@ import { resolveCode } from '../api/client.ts';
 import { href, isBroadcastKey, isSessionId, navigate } from '../router/router.ts';
 import { useMetaStore } from '../state/metaStore.ts';
 import { useLiveStore } from '../state/liveStore.ts';
+import { useUiStore } from '../state/uiStore.ts';
 import styles from './CommandPalette.module.css';
 
 // TH11's command palette: ⌘K reaches every view and every addressable object.
@@ -24,7 +25,10 @@ interface Item {
 }
 
 export function CommandPalette() {
-  const [open, setOpen] = useState(false);
+  // Shared with the header's search button, so the palette has one opener
+  // for the mouse and one for the keyboard and they cannot disagree.
+  const open = useUiStore((s) => s.paletteOpen);
+  const setOpen = useUiStore((s) => s.setPaletteOpen);
   const [q, setQ] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -37,14 +41,14 @@ export function CommandPalette() {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
-        setOpen((v) => !v);
+        setOpen(!useUiStore.getState().paletteOpen);
         return;
       }
       if (e.key === 'Escape') setOpen(false);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [setOpen]);
 
   useEffect(() => {
     if (open) {
@@ -129,7 +133,7 @@ export function CommandPalette() {
       }
     }
     return out.slice(0, 25);
-  }, [q, fields, snapshot, resolveEnabled]);
+  }, [q, fields, snapshot, resolveEnabled, setOpen]);
 
   if (!open) return null;
 

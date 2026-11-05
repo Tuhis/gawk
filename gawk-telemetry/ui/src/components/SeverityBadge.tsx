@@ -4,7 +4,7 @@ import styles from './SeverityBadge.module.css';
 
 interface Props {
   severity: Severity;
-  /** `compact` drops the word where the row already names the state nearby. */
+  /** `compact` drops the visible word where the row already names the state nearby. */
   compact?: boolean;
 }
 
@@ -15,10 +15,28 @@ interface Props {
  */
 export function SeverityBadge({ severity, compact }: Props) {
   return (
-    <span className={`${styles.badge} ${styles[severity]}`} title={severity}>
-      <span aria-hidden>{GLYPH[severity]}</span>
+    <span
+      className={`${styles.badge} ${styles[severity]} ${compact ? styles.compact : ''}`}
+      title={severity}
+    >
+      <span className={styles.glyph} aria-hidden>
+        {GLYPH[severity]}
+      </span>
       {!compact && <span className={styles.word}>{severity}</span>}
       {compact && <span className={styles.srOnly}>{severity}</span>}
+    </span>
+  );
+}
+
+/**
+ * The quietest severity mark: a dot. Only where the verdict is written out
+ * right beside it, so hue is still never the sole carrier — and the word stays
+ * in the accessibility tree.
+ */
+export function SeverityDot({ severity }: { severity: Severity }) {
+  return (
+    <span className={`${styles.dot} ${styles[severity]}`} title={severity}>
+      <span className={styles.srOnly}>{severity}</span>
     </span>
   );
 }

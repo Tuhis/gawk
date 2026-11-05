@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { fetchSession } from '../api/client.ts';
 import type { FieldDoc, Timeline } from '../api/types.ts';
 import { TimeChart, type Series } from '../charts/TimeChart.tsx';
-import { SERIES_COLORS } from '../charts/echarts.ts';
 import { DesktopOnly } from '../components/Chrome.tsx';
 import { download, seriesToCsv } from '../lib/export.ts';
 import { toRate } from '../lib/series.ts';
@@ -132,11 +131,10 @@ export function ExploreView() {
           setSessions(pending);
         }}
       >
-        <label className={view.control}>
+        <label className={`${view.control} ${styles.sessions}`}>
           sessions
           <input
-            className={view.text}
-            style={{ maxWidth: '32rem', width: '32rem' }}
+            className={`${view.text} ${view.idInput}`}
             value={pending}
             placeholder="one or more session ids, comma-separated"
             onChange={(e) => setPending(e.target.value)}
@@ -167,8 +165,8 @@ export function ExploreView() {
       ) : (
         <>
           <div className={styles.layout}>
-            <aside className={styles.picker}>
-              <h2 className={view.panelTitle}>Fields</h2>
+            <aside className={`${view.panel} ${styles.picker}`}>
+              <h2 className={view.eyebrow}>Fields</h2>
               <ul className={styles.fieldList}>
                 {known.map((f) => (
                   <li key={f.name}>
@@ -178,7 +176,9 @@ export function ExploreView() {
                         checked={selected.includes(f.name)}
                         onChange={() => toggleField(f.name)}
                       />
-                      <span className={styles.fieldName}>{f.name}</span>
+                      <span className={styles.fieldName} title={f.name}>
+                        {f.name}
+                      </span>
                       <span className={styles.fieldKind}>
                         {f.semantic}
                         {f.unit ? ` · ${f.unit}` : ''}
@@ -189,7 +189,7 @@ export function ExploreView() {
               </ul>
               {unknown.length > 0 && (
                 <>
-                  <h2 className={view.panelTitle} title="D15 keeps a field this build has no type for verbatim on disk; it is plottable, but its kind and unit are not known here">
+                  <h2 className={view.eyebrow} title="D15 keeps a field this build has no type for verbatim on disk; it is plottable, but its kind and unit are not known here">
                     Unknown type
                   </h2>
                   <ul className={styles.fieldList}>
@@ -211,7 +211,7 @@ export function ExploreView() {
               )}
             </aside>
 
-            <div className={styles.plot}>
+            <div className={`${view.panel} ${styles.plot}`}>
               {selected.length === 0 ? (
                 <p className={view.rollupOnly}>Pick a field.</p>
               ) : (
@@ -256,7 +256,6 @@ function buildSeries(
   for (const name of selected) units.add(fieldDoc(catalogue, name)?.unit ?? '');
   const unitList = [...units];
 
-  let colour = 0;
   for (const [id, tl] of Object.entries(timelines)) {
     const start = tl.startedAtMs ?? 0;
     for (const name of selected) {
@@ -278,7 +277,6 @@ function buildSeries(
         key: `${id}:${name}`,
         label: Object.keys(timelines).length > 1 ? `${shortId(id, 6)} ${name}` : name,
         data,
-        color: SERIES_COLORS[colour++ % SERIES_COLORS.length],
         unit: isCounter && !cumulative ? `${unit}/s` : unit,
         // A bool is a STATE: a step line holds its value until it changes,
         // which is what happened. A straight interpolation between 0 and 1

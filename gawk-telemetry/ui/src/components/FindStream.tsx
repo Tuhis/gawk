@@ -59,12 +59,16 @@ export function FindStream() {
 
   return (
     <form className={styles.form} onSubmit={submit}>
+      <label className={styles.label} htmlFor="find-stream">
+        find stream
+      </label>
       <input
+        id="find-stream"
         className={styles.input}
         value={code}
         onChange={(e) => setCode(e.target.value)}
         maxLength={6}
-        placeholder="code"
+        placeholder="join code"
         autoComplete="off"
         spellCheck={false}
         aria-label="Find a stream by its broadcast code"

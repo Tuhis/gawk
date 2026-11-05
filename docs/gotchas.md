@@ -110,6 +110,26 @@ Add to it when a new gotcha lands in `docs/`.
   gives null on every sample. `tMs` itself is not an epoch: through
   `to_timestamp` it draws a 1970 axis. In the NQ0 spike, all three Claude
   models made one of these mistakes in at least one run. ([docs/84](84-telemetry-ask-in-english.md) §12.3)
+- **An ECharts tooltip forces its axis pointer to snap, whatever
+  `tooltip.axisPointer.snap` says.** Only the axis's own
+  `xAxis.axisPointer.snap: false` turns it off. In a connected chart stack
+  the snap happens per member, so hovering over a lane whose participant
+  had left pulled the whole stack's crosshair back to that lane's last
+  sample. ([docs/86](86-telemetry-facelift.md) D4)
+- **`echarts.connect()` relays an inside-zoom between charts but not a
+  slider's.** The telemetry stacks relay the zoom themselves to every
+  member, and stop when a member reports the zoom it was just given; the
+  echo can arrive after a synchronous guard flag has already been reset,
+  so the guard compares values instead. ([docs/86](86-telemetry-facelift.md) D4)
+- **In a connected ECharts group, `updateAxisPointer` fires on every member,
+  and the members the mouse is NOT over report an empty `axesInfo`.**
+  Taking the last event as the crosshair makes it null on every move; only
+  `globalout` means the cursor left. ([docs/86](86-telemetry-facelift.md) D4)
+- **The telemetry live stream is silent while nothing changes.** Identical
+  snapshots are skipped and only a keepalive comment arrives, every 20 s, so
+  judging the stream by the poll's 6 s staleness called every idle fleet
+  "stale". Any received bytes count, and stream mode allows 25 s.
+  ([docs/86](86-telemetry-facelift.md) D11)
 - **`encoding/json` refuses NaN, ±Inf and a map not keyed by strings, and
   fails the whole value.** A DuckDB DOUBLE is NaN or infinite after any
   0/0 or 1/0 (an `avg` of a ratio over an empty session is enough), and the

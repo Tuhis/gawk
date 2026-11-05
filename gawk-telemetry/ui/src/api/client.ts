@@ -18,6 +18,7 @@ import type {
   Report,
   RuleDoc,
   Snapshot,
+  Sparks,
   Timeline,
   Trend,
 } from './types.ts';
@@ -75,6 +76,15 @@ function qs(params: Record<string, string | number | boolean | undefined | null>
 
 export function fetchLive(signal?: AbortSignal): Promise<Snapshot> {
   return getJSON<Snapshot>('live', signal);
+}
+
+/**
+ * R36 (docs/86 TU7): one broadcast's 2-minute tails for the live table's
+ * sparklines. Polled only while that broadcast's card is open — the SSE
+ * snapshot stays the small thing UD1 bounds it to.
+ */
+export function fetchSparks(broadcastKey: string, signal?: AbortSignal): Promise<Sparks> {
+  return getJSON<Sparks>(`live/sparks${qs({ broadcast: broadcastKey })}`, signal);
 }
 
 export function fetchMeta(signal?: AbortSignal): Promise<Meta> {

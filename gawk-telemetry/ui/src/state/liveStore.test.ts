@@ -108,6 +108,8 @@ beforeEach(() => {
     paused: false,
     pausedAtMs: null,
     gapMs: null,
+    held: null,
+    aliveAt: null,
   });
 });
 
@@ -159,6 +161,50 @@ describe('the live feed (UD22)', () => {
     await es.emit('snapshot', JSON.stringify(snapshot));
     await es.emit('snapshot', '{ this is not json');
     expect(useLiveStore.getState().snapshot?.atMs).toBe(snapshot.atMs);
+    stop();
+  });
+
+  // The stream sends only CHANGES: an idle fleet's identical snapshots are
+  // skipped and the connection carries a keepalive comment every 20 s
+  // (readapi.StreamHeartbeat). Judging it by the poll's 6 s threshold called
+  // every quiet fleet "stale" six seconds after it went quiet — which R36's
+  // header, showing feed health on every page, made impossible to miss.
+  it('does not call a quiet stream stale inside the heartbeat window', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(1_000_000);
+    const stop = useLiveStore.getState().start();
+    const es = FakeStream.instances[0];
+    await es.emit('open');
+    await es.emit('snapshot', JSON.stringify(snapshot));
+
+    vi.setSystemTime(1_000_000 + 15_000);
+    const s = useLiveStore.getState();
+    expect(isStale(s.lastOkAt, Date.now(), s.mode)).toBe(false);
+    stop();
+  });
+
+  it('counts a keepalive as the stream being alive, and only silence past it as stale', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(2_000_000);
+    const stop = useLiveStore.getState().start();
+    const es = FakeStream.instances[0];
+    await es.emit('open');
+    await es.emit('snapshot', JSON.stringify(snapshot));
+
+    vi.setSystemTime(2_000_000 + 20_000);
+    es.write(': keepalive\n\n');
+    await flush();
+    expect(useLiveStore.getState().lastOkAt).toBe(2_000_000 + 20_000);
+
+    vi.setSystemTime(2_000_000 + 40_000);
+    let s = useLiveStore.getState();
+    expect(isStale(s.lastOkAt, Date.now(), s.mode)).toBe(false);
+
+    // A stream that has said nothing at all for well past its heartbeat IS
+    // stale, whatever mode it is in.
+    vi.setSystemTime(2_000_000 + 20_000 + 30_000);
+    s = useLiveStore.getState();
+    expect(isStale(s.lastOkAt, Date.now(), s.mode)).toBe(true);
     stop();
   });
 
@@ -282,6 +328,85 @@ describe('pause (TH11, Q11)', () => {
     await es.emit('snapshot', JSON.stringify({ ...snapshot, atMs: snapshot.atMs + 60_000 }));
     expect(useLiveStore.getState().snapshot?.atMs).toBe(snapshot.atMs + 60_000);
     stop();
+  });
+
+  // The stream sends only CHANGES. A change that arrives while the page is
+  // frozen, followed by a quiet fleet, would never be sent again: discarding
+  // it left the resumed page on the pre-pause snapshot indefinitely, with
+  // the next keepalive calling it fresh (R36 round-1 review).
+  it('shows on resume the change that arrived while it was paused', async () => {
+    const stop = useLiveStore.getState().start();
+    const es = FakeStream.instances[0];
+    await es.emit('open');
+    await es.emit('snapshot', JSON.stringify(snapshot));
+
+    useLiveStore.getState().setPaused(true);
+    await es.emit('snapshot', JSON.stringify({ ...snapshot, atMs: snapshot.atMs + 30_000 }));
+    expect(useLiveStore.getState().snapshot?.atMs).toBe(snapshot.atMs);
+
+    // The fleet goes quiet; nothing else is sent. Resuming must not leave
+    // the page on the frozen snapshot.
+    useLiveStore.getState().setPaused(false);
+    expect(useLiveStore.getState().snapshot?.atMs).toBe(snapshot.atMs + 30_000);
+    stop();
+  });
+
+  // Freshness is about the FEED, not the freeze: a stream that kept talking
+  // through a long pause is fresh on resume, and one that died is not —
+  // whether or not a snapshot was held (round-2 review).
+  it('resumes with the freshness the stream actually had while paused', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(5_000_000);
+    const stop = useLiveStore.getState().start();
+    const es = FakeStream.instances[0];
+    await es.emit('open');
+    await es.emit('snapshot', JSON.stringify(snapshot));
+    useLiveStore.getState().setPaused(true);
+
+    // A quiet fleet: only a keepalive arrives, well into the pause.
+    vi.setSystemTime(5_000_000 + 40_000);
+    es.write(': keepalive\n\n');
+    await flush();
+    vi.setSystemTime(5_000_000 + 45_000);
+    useLiveStore.getState().setPaused(false);
+    let s = useLiveStore.getState();
+    expect(isStale(s.lastOkAt, Date.now(), s.mode)).toBe(false);
+
+    // A held snapshot does not make a feed that then went silent fresh.
+    useLiveStore.getState().setPaused(true);
+    await es.emit('snapshot', JSON.stringify({ ...snapshot, atMs: snapshot.atMs + 1 }));
+    vi.setSystemTime(5_000_000 + 45_000 + 60_000);
+    useLiveStore.getState().setPaused(false);
+    s = useLiveStore.getState();
+    expect(s.snapshot?.atMs).toBe(snapshot.atMs + 1);
+    expect(isStale(s.lastOkAt, Date.now(), s.mode)).toBe(true);
+    stop();
+  });
+
+  // A poll checked `paused` only before its await. One that resolved after
+  // a freeze changed the frozen page, and one that resolved after a newer
+  // stream snapshot put the older one back (round-3 review).
+  it('does not let a late poll move a frozen page or step back in time', async () => {
+    let resolve!: (r: Response) => void;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => new Promise<Response>((r) => (resolve = r))),
+    );
+    useLiveStore.setState({ snapshot });
+    const late = useLiveStore.getState().poll();
+    useLiveStore.getState().setPaused(true);
+    resolve(new Response(JSON.stringify({ ...snapshot, atMs: snapshot.atMs + 5_000 }), { status: 200 }));
+    await late;
+    expect(useLiveStore.getState().snapshot?.atMs).toBe(snapshot.atMs);
+    useLiveStore.getState().setPaused(false);
+    // The poll's answer was held, and shows on resume.
+    expect(useLiveStore.getState().snapshot?.atMs).toBe(snapshot.atMs + 5_000);
+
+    useLiveStore.setState({ snapshot: { ...snapshot, atMs: snapshot.atMs + 60_000 } });
+    const older = useLiveStore.getState().poll();
+    resolve(new Response(JSON.stringify({ ...snapshot, atMs: snapshot.atMs + 10_000 }), { status: 200 }));
+    await older;
+    expect(useLiveStore.getState().snapshot?.atMs).toBe(snapshot.atMs + 60_000);
   });
 
   it('refuses to poll while paused', async () => {

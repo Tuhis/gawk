@@ -77,6 +77,49 @@ export interface SessionView {
   relayState: Freshness;
   metrics?: Record<string, number>;
   config?: Record<string, string>;
+  /** docs/78 D3: the issuer key of the PoP that served it; empty for home. */
+  issuer?: string;
+  /** R36 item 5 (TU6): that PoP's display name. */
+  pop?: string;
+  /** R36 item 4 (TU5): this viewer's stripe legs, joined by the relay's owner key. */
+  legs?: LegView[];
+}
+
+/** One live stripe leg of a viewer (TU5): plumbing, never an audience member. */
+export interface LegView {
+  member: number;
+  n: number;
+  pod: string;
+  role: string;
+  /**
+   * The relay's per-subscriber `dropped` counter over the last scrape window
+   * (queue overflow plus bandwidth-cap drops). Absent until scraped twice.
+   * The relay keeps no per-subscriber SENT counter, so there is none here.
+   */
+  datagramsDropped?: number;
+  queueDepth: number;
+  relayAgeMs: number;
+}
+
+/** `GET /live/sparks` (TU7): one broadcast's 2-minute tails. */
+export interface Sparks {
+  atMs: number;
+  /** Adaptive: the narrowest bucket ≥ 1.6× the broadcast's sample gap. */
+  stepMs: number;
+  windowMs: number;
+  sessions: Record<
+    string,
+    {
+      field: string;
+      /** Lowest sample per bucket, oldest first; null is a gap (UD9). */
+      values: Array<number | null>;
+      /**
+       * The newest instant this session's samples cover. Clients upload in
+       * ~10 s batches, so buckets after it are "not arrived yet", not gaps.
+       */
+      throughMs?: number;
+    }
+  >;
 }
 
 export interface BroadcastView {
@@ -93,6 +136,8 @@ export interface BroadcastView {
   findings?: Finding[];
   sessions?: SessionView[];
   metrics?: Record<string, number>;
+  /** TU5: live stripe legs on this broadcast, attributed or not. Not viewers. */
+  stripeLegs?: number;
 }
 
 export interface Snapshot {
@@ -146,6 +191,12 @@ export interface Coverage {
   rollupsFromMs?: number;
   retentionDays?: number;
   note?: string;
+  /**
+   * R36 (docs/86 TU4): WHY the note fires. `before-data` is the service's own
+   * age — drawn as the axis extent, never as a warning; `raw-pruned` is
+   * retention, said once and quietly; `none` is a store with nothing in it.
+   */
+  reason?: 'none' | 'before-data' | 'raw-pruned';
 }
 
 // --- session detail (TH2) ---------------------------------------------------
@@ -312,6 +363,31 @@ export interface Lane {
   hidden?: Interval[];
   rollupOnly?: boolean;
   note?: string;
+  downsampled?: boolean;
+  /**
+   * R36 item 4 (docs/86 TU5): a striped viewer's stripe legs, attributed to
+   * it through the relay's keyed owner field. Never a lane of their own and
+   * never counted as viewers.
+   */
+  legs?: LegLane[];
+  /** Leg sessions beyond the 16 a lane carries. */
+  legsOmitted?: number;
+  /** R36 item 5 (TU6): the PoP that served this viewer, when not home. */
+  issuer?: string;
+  pop?: string;
+}
+
+/** One stripe leg of a viewer lane (TU5). */
+export interface LegLane {
+  member: number;
+  n: number;
+  pod: string;
+  role?: string;
+  /** Dropped datagrams per second over each scrape interval; a counter reset is a break. */
+  points?: LanePoint[];
+  unit?: string;
+  /** The leg's last cumulative `dropped`. */
+  datagramsDropped?: number;
   downsampled?: boolean;
 }
 

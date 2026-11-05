@@ -867,6 +867,13 @@ type relaySubscriber struct {
 	Dropped   uint64 `json:"dropped"`
 	Internal  bool   `json:"internal"`
 	StripeLeg bool   `json:"stripeLeg"`
+	// The leg attribution's inputs (R36 TU5, broadcast.go's attachLegs):
+	// the /statusz key that names one leg session across scrapes, its
+	// (n, member) and the owner key it shares with its viewer's primary.
+	Key          string `json:"key"`
+	StripeN      int    `json:"stripeN"`
+	StripeMember int    `json:"stripeMember"`
+	StripeOwner  string `json:"stripeOwner"`
 }
 
 // setAudienceFacts publishes the subscriber counts of one stored broadcast
@@ -988,11 +995,12 @@ type relayObservation struct {
 }
 
 // viewerOf reports whether o is the relay's view of the viewer session
-// sessionID itself. A stripe leg carries its viewer's sessionId (docs/35
-// §5.8), so matching on the id alone let the LAST line — often a leg on
-// another pod — put a leg's drops, pod and role on the permanent row and in
-// the verdict. The scraper stops storing legs since #657, but lines stored
-// before it (marked by the startup repair, internal/repair) still carry them.
+// sessionID itself, and never an edge session's or a stripe leg's. A leg
+// carries no sessionId of its own (it is never sent the telemetry hello), and
+// the scraper writes no subscriber record for one since #657; the predicate
+// still judges every record by relayscrape.IsAudience, so a line stored before
+// #657, or one the startup repair (internal/repair) marked as a leg, can never
+// put a leg's drops, pod and role on the permanent row or in a verdict.
 func (o *relayObservation) viewerOf(sessionID string) bool {
 	return o.SessionID == sessionID && o.Subscriber != nil &&
 		relayscrape.IsAudience(o.Subscriber.Internal, o.Subscriber.StripeLeg)
@@ -1233,6 +1241,24 @@ func (a *API) LiveSnapshot() live.Snapshot {
 		return live.Snapshot{AtMs: a.now().UnixMilli()}
 	}
 	return a.live.Snapshot()
+}
+
+// LiveSparks is one live broadcast's two-minute fps tails (R36 TU7), from
+// the projection's per-session rings — no file is read. A key the projection
+// does not hold (ended, or never live) is ErrNotFound, and so is every key
+// where no projection is wired.
+func (a *API) LiveSparks(broadcastKey string) (*live.Sparks, error) {
+	if err := (store.SessionRef{Date: "2000-01-01", BroadcastKey: broadcastKey, SessionID: "000000000000000000000000"}).Validate(); err != nil {
+		return nil, err
+	}
+	if a.live == nil {
+		return nil, store.ErrNotFound
+	}
+	s, ok := a.live.Sparks(broadcastKey)
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+	return &s, nil
 }
 
 // --- shared helpers -------------------------------------------------------
@@ -1518,6 +1544,15 @@ func (a *API) mountR31(mux *http.ServeMux) {
 	})
 	// UD22 — SSE, with the poll as fallback.
 	mux.HandleFunc("GET /live/stream", a.handleLiveStream)
+	// R36 TU7 — one live broadcast's fps tails, polled only while its card
+	// is open. A read of its own rather than a field of /live, so neither the
+	// snapshot nor its stream grows by a tail per session per tick (UD1,
+	// UD22). Under /live/ like the stream, so the read listener gates it the
+	// same way.
+	mux.HandleFunc("GET /live/sparks", func(w http.ResponseWriter, r *http.Request) {
+		out, err := a.LiveSparks(r.URL.Query().Get("broadcast"))
+		writeJSON(w, out, err)
+	})
 }
 
 // Meta describes this deployment's capabilities and boundaries.

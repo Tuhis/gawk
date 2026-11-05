@@ -1,69 +1,30 @@
-.editor {
-  width: 100%;
-  background: var(--bg-raised);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-md);
-  color: var(--text);
+/* The SQL console (R36, docs/86 TU10): read-only, with its cost paid honestly. */
+.page {
+  max-width: 1280px;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.kbd {
   font-family: var(--mono);
-  font-size: var(--fs-sm);
-  line-height: 1.5;
-  padding: var(--sp-2);
-  resize: vertical;
-  tab-size: 2;
-}
-
-/*
-  A wide result must scroll inside its own container. A page body that scrolls
-  horizontally because one query returned forty columns is a page whose nav has
-  just walked off the screen.
-*/
-.tableWrap {
-  overflow-x: auto;
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--panel);
-  max-height: 60vh;
-  overflow-y: auto;
-}
-
-.table {
-  border-collapse: collapse;
   font-size: var(--fs-xs);
-  font-family: var(--mono);
-  white-space: nowrap;
+  color: var(--text-2);
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--r-sm);
+  padding: 0 4px;
+  line-height: 1.3;
 }
 
-.table th {
-  position: sticky;
-  top: 0;
-  background: var(--bg-raised);
-  text-align: left;
-  font-weight: 400;
-  color: var(--text-dimmer);
-  border-bottom: 1px solid var(--line-strong);
-  padding: 3px 8px;
-}
-
-.table td {
-  padding: 2px 8px;
-  border-bottom: 1px solid var(--line);
-  max-width: 40ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.views {
-  margin: 0;
-  padding-left: 1rem;
-  font-size: var(--fs-sm);
-  color: var(--text-dim);
-}
-
-/* R82: the Ask box above the editor, and the reading above a draft. */
+/* R82's Ask box. */
 .ask {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
+  gap: 10px;
 }
 
 .askRow {
@@ -74,22 +35,39 @@
 
 .askInput {
   flex: 1;
-  min-width: 0;
-  background: var(--bg-raised);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-md);
-  color: var(--text);
-  font-size: var(--fs-sm);
-  padding: var(--sp-1) var(--sp-2);
+  width: auto;
+  height: 36px;
+  font-size: var(--fs-md);
 }
 
 .readAs {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-  font-size: var(--fs-sm);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  font-size: 12.5px;
+  color: var(--text-2);
 }
 
-.readAs p {
+.readAs svg {
+  margin-top: 3px;
+}
+
+.readAs > :not(svg) {
+  grid-column: 2;
   margin: 0;
+}
+
+.readAs b {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.views {
+  margin: 0;
+  padding-left: var(--sp-4);
+  font-size: var(--fs-sm);
 }

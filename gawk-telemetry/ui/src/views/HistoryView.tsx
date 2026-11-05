@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { fetchHistorySessions, type HistoryParams } from '../api/client.ts';
-import type { HistoryPage, HistoryRow } from '../api/types.ts';
-import { CoverageNote } from '../components/Chrome.tsx';
+import type { HistoryPage, HistoryRow, Severity } from '../api/types.ts';
+import { CoverageNote, DataSince } from '../components/Chrome.tsx';
+import { DragLine, WidthsNote } from '../components/Columns.tsx';
 import { FindStream } from '../components/FindStream.tsx';
-import { SeverityBadge } from '../components/SeverityBadge.tsx';
+import { GridHead, GridRow } from '../components/SessionGrid.tsx';
+import { HISTORY_COLUMNS, useSessionGrid } from '../components/sessionGridColumns.ts';
 import { VirtualRows } from '../components/VirtualRows.tsx';
-import { absoluteTime, dur, EMPTY, shortId, timeZoneLabel } from '../lib/format.ts';
-import { href, useDocumentTitle, useUrlState } from '../router/router.ts';
+import { useWidth } from '../lib/columns.ts';
+import { shortId } from '../lib/format.ts';
+import { useDocumentTitle, useUrlState } from '../router/router.ts';
 import { useUiStore } from '../state/uiStore.ts';
-import styles from './HistoryView.module.css';
+import t from '../components/tables.module.css';
 import view from './view.module.css';
 
 // TH3: the history browser. Q2 — *"it was bad at 21:04, show me"* — is
@@ -20,8 +23,9 @@ import view from './view.module.css';
 // rollups to a browser to filter them there is the same category error as
 // returning 80 fields to a model, and the request shape is what a test asserts.
 //
-// The columns are `SessionSummary`'s projection, which R28 built for exactly
-// this and nothing consumed.
+// R36 (docs/86): the columns fit their content and the operator can resize
+// them (TU2); a range older than the service says "data since …" beside the
+// range instead of raising a banner (TU4).
 
 const RANGES: Array<{ label: string; ms: number }> = [
   { label: '1h', ms: 3600_000 },
@@ -31,7 +35,7 @@ const RANGES: Array<{ label: string; ms: number }> = [
   { label: '30d', ms: 30 * 24 * 3600_000 },
 ];
 
-const ROW_HEIGHT = 26;
+const ROW_HEIGHT = 30;
 
 export function HistoryView() {
   useDocumentTitle('history — gawk telemetry');
@@ -51,15 +55,16 @@ export function HistoryView() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const foundKey = useUiStore((s) => s.foundKey);
+  const setFoundKey = useUiStore((s) => s.setFoundKey);
 
   const rangeMs = RANGES.find((r) => r.label === range)?.ms ?? 24 * 3600_000;
-  // The Find box scopes the browser rather than merely highlighting a live row
-  // — which is what it did before, and is the smaller half of what it is for.
+  // The Find box scopes the browser rather than merely highlighting a live row.
   const effectiveBroadcast = broadcast || foundKey || '';
+  const [fromMs, setFromMs] = useState(() => Date.now() - rangeMs);
 
   const params = useMemo<HistoryParams>(
     () => ({
-      fromMs: Date.now() - rangeMs,
+      fromMs,
       role: role || undefined,
       verdict: verdict || undefined,
       broadcast: effectiveBroadcast || undefined,
@@ -69,8 +74,12 @@ export function HistoryView() {
       sort,
       limit: 200,
     }),
-    [rangeMs, role, verdict, effectiveBroadcast, appVersion, findingsOnly, distrusted, sort],
+    [fromMs, role, verdict, effectiveBroadcast, appVersion, findingsOnly, distrusted, sort],
   );
+
+  useEffect(() => {
+    setFromMs(Date.now() - rangeMs);
+  }, [rangeMs]);
 
   useEffect(() => {
     const ac = new AbortController();
@@ -105,39 +114,61 @@ export function HistoryView() {
       .finally(() => setLoading(false));
   }, [page?.nextCursor, params, loading]);
 
+  // One data load = one set of query params. Paging appends to the load and
+  // does not re-measure: the widths a reader is looking at never move.
+  const loadKey = JSON.stringify(params);
+  const [frame, width] = useWidth();
+  const columns = useSessionGrid('history', rows, loadKey, width);
+
+  const counts = useMemo(() => {
+    const c: Record<Severity, number> = { bad: 0, warn: 0, ok: 0, unknown: 0 };
+    for (const r of rows) c[r.severity] += 1;
+    return c;
+  }, [rows]);
+
+
   return (
     <div className={view.page}>
       <header className={view.head}>
         <h1 className={view.title}>History</h1>
         <span className={view.subtitle}>
-          {page ? `${rows.length} of ${page.total}` : '…'} · times in {timeZoneLabel()}
+          {page ? (
+            <>
+              {page.total} session{page.total === 1 ? '' : 's'}
+              {(['bad', 'warn', 'ok', 'unknown'] as const)
+                .filter((s) => counts[s] > 0)
+                .map((s) => ` · ${counts[s]} ${s}`)
+                .join('')}
+              {rows.length < page.total ? ` (first ${rows.length} loaded)` : ''}
+            </>
+          ) : (
+            '…'
+          )}
         </span>
         <span className={view.spacer} />
         <FindStream />
       </header>
 
-      <div className={view.controls}>
-        <label className={view.control}>
-          range
-          <select className={view.select} value={range} onChange={(e) => setRange(e.target.value)}>
-            {RANGES.map((r) => (
-              <option key={r.label} value={r.label}>
-                {r.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className={view.control}>
+      <div className={view.toolbar}>
+        <div className={view.seg} role="group" aria-label="Range">
+          {RANGES.map((r) => (
+            <button key={r.label} type="button" aria-pressed={range === r.label} onClick={() => setRange(r.label)}>
+              {r.label}
+            </button>
+          ))}
+        </div>
+        <DataSince coverage={page?.coverage} fromMs={fromMs} />
+        <label className={view.chip}>
           role
-          <select className={view.select} value={role} onChange={(e) => setRole(e.target.value)}>
+          <select value={role} onChange={(e) => setRole(e.target.value)} aria-label="role">
             <option value="">any</option>
             <option value="viewer">viewer</option>
             <option value="broadcaster">broadcaster</option>
           </select>
         </label>
-        <label className={view.control}>
+        <label className={view.chip}>
           verdict
-          <select className={view.select} value={verdict} onChange={(e) => setVerdict(e.target.value)}>
+          <select value={verdict} onChange={(e) => setVerdict(e.target.value)} aria-label="verdict">
             <option value="">any</option>
             <option value="bad">bad</option>
             <option value="warn">warn</option>
@@ -145,6 +176,43 @@ export function HistoryView() {
             <option value="unknown">unknown</option>
           </select>
         </label>
+        <label className={view.chip}>
+          version
+          <input value={appVersion} placeholder="any" onChange={(e) => setAppVersion(e.target.value)} aria-label="app version" />
+        </label>
+        <button
+          type="button"
+          className={`${view.button} ${findingsOnly === '1' ? view.buttonOn : ''}`}
+          aria-pressed={findingsOnly === '1'}
+          onClick={() => setFindingsOnly(findingsOnly === '1' ? '' : '1')}
+        >
+          has findings
+        </button>
+        <button
+          type="button"
+          className={`${view.button} ${distrusted === '1' ? view.buttonOn : ''}`}
+          aria-pressed={distrusted === '1'}
+          onClick={() => setDistrusted(distrusted === '1' ? '' : '1')}
+        >
+          distrusted
+        </button>
+        {effectiveBroadcast && (
+          <span className={view.chip}>
+            broadcast <b className={view.mono}>{shortId(effectiveBroadcast)}</b>
+            <button
+              type="button"
+              className={view.chipX}
+              aria-label="Clear the broadcast filter"
+              onClick={() => {
+                setBroadcast('');
+                setFoundKey(null);
+              }}
+            >
+              ×
+            </button>
+          </span>
+        )}
+        <span className={view.spacer} />
         <label className={view.control}>
           sort
           <select className={view.select} value={sort} onChange={(e) => setSort(e.target.value)}>
@@ -154,101 +222,52 @@ export function HistoryView() {
             <option value="stalls">most stalls</option>
           </select>
         </label>
-        <label className={view.control}>
-          version
-          <input
-            className={view.text}
-            value={appVersion}
-            placeholder="any"
-            onChange={(e) => setAppVersion(e.target.value)}
-          />
-        </label>
-        <button
-          type="button"
-          className={`${view.button} ${findingsOnly === '1' ? view.buttonOn : ''}`}
-          onClick={() => setFindingsOnly(findingsOnly === '1' ? '' : '1')}
-        >
-          has findings
-        </button>
-        <button
-          type="button"
-          className={`${view.button} ${distrusted === '1' ? view.buttonOn : ''}`}
-          onClick={() => setDistrusted(distrusted === '1' ? '' : '1')}
-        >
-          distrusted
-        </button>
-        {effectiveBroadcast && (
-          <button type="button" className={view.button} onClick={() => setBroadcast('')}>
-            broadcast {shortId(effectiveBroadcast)} ×
-          </button>
-        )}
       </div>
 
       <CoverageNote coverage={page?.coverage} />
       {error && <p className={view.error}>{error}</p>}
 
-      <div className={styles.headRow} aria-hidden>
-        <span className={styles.cSev} />
-        <span className={styles.cWhen}>started</span>
-        <span className={styles.cDur}>duration</span>
-        <span className={styles.cRole}>role</span>
-        <span className={styles.cId}>session</span>
-        <span className={styles.cClient}>client</span>
-        <span className={styles.cNum}>stalls</span>
-        <span className={styles.cVerdict}>verdict</span>
-      </div>
-
-      {rows.length === 0 && !loading ? (
-        <p className={view.rollupOnly}>
-          No sessions in this range.{' '}
-          {page?.coverage.note
-            ? 'See the note above: part of this range is not answerable, which is different from empty.'
-            : 'The range is fully covered — this really is nothing rather than nothing kept.'}
-        </p>
-      ) : (
-        <VirtualRows
-          rows={rows}
-          rowHeight={ROW_HEIGHT}
-          height={Math.min(640, Math.max(200, rows.length * ROW_HEIGHT + 8))}
-          keyOf={(r) => r.sessionId}
-          ariaLabel="sessions"
-          onEndReached={loadMore}
-          renderRow={(r) => <Row row={r} />}
-        />
-      )}
-      {loading && <p className={view.loading}>Loading…</p>}
+      <section className={`${view.panel} ${view.panelClip}`}>
+        {rows.length === 0 && !loading ? (
+          <p className={`${view.note} ${view.panelB}`}>
+            No sessions in this range.{' '}
+            {page?.coverage.reason === 'none'
+              ? 'This service has nothing stored at all yet — the range is unanswerable, not empty.'
+              : page?.coverage.reason === 'before-data'
+                ? 'Nothing is missing: the service has only been collecting since the date beside the range.'
+                : 'The range is fully covered — this really is nothing rather than nothing kept.'}
+          </p>
+        ) : (
+          <div className={t.wrap} ref={frame}>
+            <div style={{ minWidth: columns.minTotal }} role="table" aria-label="sessions">
+              <GridHead columns={columns} />
+              <VirtualRows
+                rows={rows}
+                rowHeight={ROW_HEIGHT}
+                height={Math.min(720, Math.max(120, rows.length * ROW_HEIGHT + 2))}
+                keyOf={(r) => r.sessionId}
+                ariaLabel="sessions"
+                onEndReached={loadMore}
+                renderRow={(r) => <GridRow row={r} columns={columns} />}
+              />
+            </div>
+            <DragLine columns={columns} cols={HISTORY_COLUMNS} />
+          </div>
+        )}
+        <div className={t.foot}>
+          <span>
+            {loading
+              ? 'Loading…'
+              : page
+                ? rows.length < page.total
+                  ? `${rows.length} of ${page.total} · scroll for more`
+                  : `${rows.length} of ${page.total} · the whole range is shown`
+                : ''}
+          </span>
+          <span className={view.spacer} />
+          <WidthsNote columns={columns} cols={HISTORY_COLUMNS} />
+        </div>
+      </section>
     </div>
-  );
-}
-
-/**
- * One history row as a link to its session. Exported for the room view (R42),
- * which lists the same rows grouped by broadcast — one row shape, one renderer.
- */
-export function Row({ row }: { row: HistoryRow }) {
-  return (
-    <a className={styles.row} href={href('session', row.sessionId)}>
-      <span className={styles.cSev}>
-        <SeverityBadge severity={row.severity} />
-      </span>
-      <span className={`${styles.cWhen} tnum`}>{absoluteTime(row.startedAtMs)}</span>
-      <span className={`${styles.cDur} tnum`}>{dur(row.durationMs)}</span>
-      <span className={styles.cRole}>{row.role}</span>
-      <span className={`${styles.cId} ${styles.mono}`}>
-        {shortId(row.sessionId)}
-        {/* UD10's boundary, drawn on the row itself: this one has a permanent
-            verdict and no samples left behind it. */}
-        {row.rollupOnly && <span className={styles.tag} title="raw samples pruned — rollup only">R</span>}
-        {row.live && <span className={styles.tagLive} title="still running">●</span>}
-      </span>
-      <span className={styles.cClient}>
-        {[row.browser, row.os].filter(Boolean).join(' / ') || EMPTY}
-        {row.appVersion ? ` · ${row.appVersion}` : ''}
-      </span>
-      <span className={`${styles.cNum} tnum`}>{row.stalls}</span>
-      <span className={styles.cVerdict} title={row.distrust || row.verdict}>
-        {row.distrust ? `⚠ ${row.distrust}` : row.verdict || EMPTY}
-      </span>
-    </a>
   );
 }
