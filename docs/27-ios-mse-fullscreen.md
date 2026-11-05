@@ -779,6 +779,37 @@ first proved native fullscreen works at all — landing them separately keeps pa
    `TARGET_LAG_S` of ~0.4–0.6 s is the fix; with audio now muxed it costs
    fullscreen latency but no lip-sync, since both tracks come off the same
    timeline.
+
+   **Fix landed, on-device confirmation pending (2026-11-06).** One shared
+   policy, `gawk-app/src/lib/liveEdge.ts` (`liveEdgePolicy`,
+   `liveEdgeSeekTarget`), replaces both copies. The target lag scales with the
+   delivery mode, because the cushion is fullscreen-only latency and the
+   resilient and Deep-buffer viewers have already traded latency for
+   smoothness:
+
+   | Delivery mode | Target lag | Catch-up trigger | Why this value |
+   |---|---|---|---|
+   | live | 0.5 s | 2.0 s (unchanged) | ~3× the worst measured jitter (158 ms); middle of the 0.4–0.6 s band |
+   | resilient | 1.0 s | 2.5 s | covers resilient's ~150–500 ms playout envelope plus the live cushion |
+   | deep | 1.5 s | 3.0 s | Deep-buffer viewers are seconds behind already |
+
+   Every seek lands **at** the target lag, never nearer the end. The trigger
+   sits 1.5 s above the target, so a landed seek can't re-trigger on a jitter
+   excursion. That fixes the DVR catch-up burst: a burst that crosses the
+   trigger leaves the target cushion instead of `end − 0.1`, and one that stays
+   inside the band only adds cushion. The entry seek also works in the other
+   direction: a playhead pinned at the very end is backed off to the target.
+   The mode comes from the screen's own state, not the transport module flag,
+   which lives in the viewer worker when one runs. Unit tests cover the
+   landing, the per-mode scaling, the burst and the entry back-off
+   (`liveEdge.test.ts`, `msePresentation.test.ts`, `useFullscreen.test.ts`).
+   **None of this has run on an iPhone yet.** It counts as confirmed only when
+   an on-device pass shows `presentationSurface.bufferedAheadMs` near the
+   mode's target, no longer pinned at ~100 ms, and `elementPaused` staying
+   false through normal playback with `appendErrors: 0` and
+   `bufferedRanges === 1`. Until then the `BUGS.md` entry stays, rewritten to
+   list exactly that.
+
 4. **Nothing watches for a stalled element.** WebKit's pause-on-underrun (finding
    1) and any hole in either track leave the native player stopped with no
    recovery path — no listener for `waiting`/`stalled`/`ended`/`pause` exists.

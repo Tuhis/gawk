@@ -92,12 +92,18 @@ export class PresentationWatchdog {
     playErrors: 0,
     lastCause: null,
   };
-  private readonly rejoinS: number;
+  private rejoinS: number;
   private readonly now: () => number;
 
   constructor(opts: PresentationWatchdogOptions) {
     this.rejoinS = opts.rejoinS;
     this.now = opts.now ?? (() => performance.now());
+  }
+
+  // The viewer can switch delivery mode mid-session, which moves the live-edge
+  // cushion (liveEdge.ts); later recovery seeks land at the new one.
+  setRejoinS(rejoinS: number): void {
+    this.rejoinS = rejoinS;
   }
 
   // Binds an element (listeners only; guarding starts with start()). Counters

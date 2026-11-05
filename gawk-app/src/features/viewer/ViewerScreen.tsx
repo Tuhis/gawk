@@ -309,6 +309,8 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   const nativeAudio = mseAudioProbe?.supported === true;
   const audioMimeRef = useRef<string | null>(null);
   audioMimeRef.current = mseAudioProbe?.mime ?? null;
+  const deliveryModeRef = useRef(deliveryMode);
+  deliveryModeRef.current = deliveryMode;
 
   // The main-thread presenter — MMS + SourceBuffer behind the hidden <video>. One per screen, created lazily on the gated
   // path only; survives re-renders in a ref (its cached init segment is what
@@ -327,6 +329,7 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
       // The audio verdict can land first; the effect below only reaches a
       // presenter that already exists.
       presenterRef.current.setExpectedAudioMime(audioMimeRef.current);
+      presenterRef.current.setDeliveryMode(deliveryModeRef.current);
     }
     const presenter = presenterRef.current;
     setSegmentSink((seg) => {
@@ -359,6 +362,12 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   useEffect(() => {
     presenterRef.current?.setExpectedAudioMime(mseAudioProbe?.mime ?? null);
   }, [mseAudioProbe]);
+
+  // The live-edge cushion follows the delivery mode (liveEdge.ts): created
+  // presenters take it above, existing ones on change.
+  useEffect(() => {
+    presenterRef.current?.setDeliveryMode(deliveryMode);
+  }, [deliveryMode]);
 
   // Presenter teardown on real unmount. (On StrictMode's synchronous initial
   // cleanup→remount nothing exists yet — arming starts at `watching` — so a
@@ -431,7 +440,7 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     tier,
     toggle: toggleFullscreen,
     stallRecoveries,
-  } = useFullscreen(rootRef, presentationVideo, { onNativeEnter, onNativeExit });
+  } = useFullscreen(rootRef, presentationVideo, { onNativeEnter, onNativeExit }, deliveryMode);
 
   // The native player has no access to the viewer's volume slider, so mirror it
   // onto the element. (Mute rides the declarative `muted` prop below.)

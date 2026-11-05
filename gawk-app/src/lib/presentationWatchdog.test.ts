@@ -114,6 +114,21 @@ describe('PresentationWatchdog — recovery', () => {
     expect(dog.getStats()).toMatchObject({ recoveries: 1, seeks: 1, lastCause: 'waiting' });
   });
 
+  it('lands recovery seeks at a rejoin offset changed mid-session (delivery-mode switch)', async () => {
+    dog.setRejoinS(1.0);
+    dog.start();
+    media.ranges = [
+      [0, 10],
+      [10.5, 14],
+    ];
+    media.at(10);
+    media.readyState = HAVE_CURRENT_DATA;
+    media.fire('waiting');
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(media.seeks).toEqual([14 - 1.0]);
+  });
+
   it('lands no earlier than the newest range start when the range is shorter than the rejoin offset', async () => {
     dog.start();
     media.ranges = [

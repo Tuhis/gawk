@@ -11,9 +11,11 @@
 // buffered ranges itself — but on iPhone it was observed holding 21 s of 7 MP
 // media, so the presenter prunes to a byte budget on every MediaSource.
 
+import { liveEdgePolicy, liveEdgeSeekTarget } from '../../lib/liveEdge';
 import { log } from '../../lib/logger';
 import { aacMime, opusMime, type AudioMuxCodec, type Fmp4Track } from '../../transport/fmp4-muxer';
 import { AAC_CODEC } from '../../transport/audio-transcode';
+import type { ViewerDeliveryMode } from '../../transport/resilient';
 
 // ---------------------------------------------------------------------------
 // Capability probe
@@ -224,8 +226,9 @@ export const MAX_QUEUED_SEGMENTS = 128;
 // playhead is its own GOP: MSE's remove() also drops every frame depending on a
 // removed one up to the next keyframe, so a cut inside the playhead's GOP would
 // take the frames ahead of it too. Hence keyframe-aligned cuts, plus one second
-// of margin — more than the entry seek's live-edge offset (≤ ~0.6 s), so the
-// GOP it lands in is always kept, and enough to absorb a stale currentTime.
+// of margin to absorb a stale currentTime. A paused element is pruned to the
+// live edge minus the delivery mode's target lag (liveEdge.ts) minus that
+// margin, so the GOP the entry seek lands in is always kept.
 //
 // 8 MiB is ~2.5 s at 7 MP / 25 Mbps and ~10 s at 1080p / 6 Mbps: past any
 // reasonable GOP plus the 2 s catch-up lag, so it only ever removes history,
@@ -245,11 +248,6 @@ export const PRUNE_BEHIND_S = 1;
 // transcoder to warm up, short enough that nobody watches a blank fullscreen.
 export const AUDIO_FIRST_SAMPLE_TIMEOUT_MS = 3000;
 
-// While the (fullscreen) video is playing, jumping this far behind the
-// buffered end triggers a catch-up seek, which keeps native fullscreen near
-// live. Paused (inline, armed) playback never seeks.
-export const LIVE_CATCHUP_LAG_S = 2;
-export const LIVE_EDGE_REJOIN_S = 0.1;
 
 // HTMLMediaElement.HAVE_METADATA — the readiness `webkitEnterFullscreen`
 // requires (useFullscreen tier 2 checks the same bar).
@@ -343,6 +341,9 @@ export class MsePresenter {
   private ledgerBytes = 0;
   private pruneTo = 0;
   private prunedBytes = 0;
+  // Sizes the catch-up seek's cushion (liveEdge.ts). Set by the screen from
+  // its own state — the transport flag lives in the worker when one runs.
+  private deliveryMode: ViewerDeliveryMode = 'live';
 
   private readonly onSourceOpen = () => {
     this.sourceOpen = true;
@@ -408,6 +409,13 @@ export class MsePresenter {
       bufferedBytes: this.ledgerBytes,
       prunedBytes: this.prunedBytes,
     };
+  }
+
+  // The viewer's delivery mode: how much live-edge cushion (and catch-up
+  // slack) the playing presentation keeps. Read on every catch-up check, so a
+  // change applies from the next append.
+  setDeliveryMode(mode: ViewerDeliveryMode): void {
+    this.deliveryMode = mode;
   }
 
   // Declare which audio mime this presentation will carry, as soon as the
@@ -799,19 +807,24 @@ export class MsePresenter {
   }
 
   // While the (fullscreen) video plays, a playhead that fell behind the
-  // buffered end beyond the lag bound jumps back to the live edge. Paused
+  // buffered end past the mode's catch-up trigger jumps back to the mode's
+  // target lag (liveEdge.ts, shared with useFullscreen's entry seek). Paused
   // (armed, inline) video never seeks: it stays loaded-but-paused until the
   // in-gesture play.
+  //
+  // It lands AT the target lag, never nearer the end: appends arrive at 1×,
+  // so the cushion this seek leaves is the session's whole jitter budget. That
+  // matters most during a DVR catch-up burst — the one time real cushion
+  // arrives for free — which used to be thrown away by a seek to `end − 0.1`
+  // (docs/27 finding 3). Inside the trigger band nothing seeks, so a burst
+  // that stays under it only adds cushion.
   private maybeCatchUp(): void {
     const video = this.video;
     if (!video || video.paused) return;
     try {
-      const b = video.buffered;
-      if (b.length === 0) return;
-      const end = b.end(b.length - 1);
-      if (end - video.currentTime > LIVE_CATCHUP_LAG_S) {
-        video.currentTime = Math.max(b.start(b.length - 1), end - LIVE_EDGE_REJOIN_S);
-      }
+      const { targetLagS, catchUpLagS } = liveEdgePolicy(this.deliveryMode);
+      const to = liveEdgeSeekTarget(video.buffered, video.currentTime, targetLagS, catchUpLagS);
+      if (to !== null) video.currentTime = to;
     } catch {
       // buffered/seek quirks must never break the append loop
     }
@@ -831,8 +844,13 @@ export class MsePresenter {
         if (this.ledgerBytes > PRUNE_BUDGET_BYTES || span > PRUNE_CEILING_S) {
           // A paused element is the armed one, and the entry seek replaces its
           // playhead with the live edge — so that is what history is kept for.
+          // The entry seek then lands the mode's target lag behind that edge
+          // (liveEdge.ts, up to 1.5 s in Deep buffer), so keep that much too.
+          const behind = video.paused
+            ? liveEdgePolicy(this.deliveryMode).targetLagS + PRUNE_BEHIND_S
+            : PRUNE_BEHIND_S;
           const playhead = video.paused ? end : Math.min(video.currentTime, end);
-          this.advancePruneTarget(playhead - PRUNE_BEHIND_S);
+          this.advancePruneTarget(playhead - behind);
         }
       }
     } catch {

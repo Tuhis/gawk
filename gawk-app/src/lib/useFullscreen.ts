@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
+import type { ViewerDeliveryMode } from '../transport/resilient';
 import type { FullscreenTier } from './featureGates';
+import { ENTRY_SEEK_SLACK_S, liveEdgePolicy, liveEdgeSeekTarget } from './liveEdge';
 import { PresentationWatchdog, type PresentationWatchdogStats } from './presentationWatchdog';
 
 // Fullscreen for a target element, in tiers. Where the Element Fullscreen API
@@ -31,23 +33,28 @@ export function elementFullscreenAvailable(): boolean {
 // webkitEnterFullscreen needs media at readyState ≥ HAVE_METADATA.
 const HAVE_METADATA = 1;
 
-// How far behind the buffered end the playhead may sit before the in-gesture
-// entry seeks it forward, and where the seek lands (a hair inside the buffered
-// range: seeking to the exact end can stall at HAVE_CURRENT_DATA).
-const SEEK_IF_BEHIND_S = 0.5;
-const LIVE_EDGE_REJOIN_S = 0.1;
-
-// The armed video is paused at (near) the live edge; its buffered ranges keep
-// growing under it. Jump to the newest range's end before playing, or the
-// native player would resume seconds — eventually minutes — behind live.
-// Best-effort: a seek failure must not void the gesture path.
-function seekToLiveEdge(video: HTMLVideoElement): void {
+// The armed video is paused near the live edge; its buffered ranges keep
+// growing under it. Land it the delivery mode's target lag behind the newest
+// range's end before playing (liveEdge.ts — the one definition the presenter's
+// catch-up shares), or the native player would resume seconds — eventually
+// minutes — behind live. Both directions: a playhead pinned at the very end
+// has no cushion, and appends only ever arrive at 1×, so the first jitter
+// excursion would underrun it (docs/27 finding 3). Seeking exactly to the end
+// can also stall at HAVE_CURRENT_DATA. Best-effort: a seek failure must not
+// void the gesture path.
+function seekToLiveEdge(video: HTMLVideoElement, targetLagS: number): void {
   try {
     const b = video.buffered;
     if (b.length === 0) return;
+    const behind = liveEdgeSeekTarget(b, video.currentTime, targetLagS, targetLagS + ENTRY_SEEK_SLACK_S);
+    if (behind !== null) {
+      video.currentTime = behind;
+      return;
+    }
     const end = b.end(b.length - 1);
-    if (end - video.currentTime > SEEK_IF_BEHIND_S) {
-      video.currentTime = Math.max(b.start(b.length - 1), end - LIVE_EDGE_REJOIN_S);
+    if (end - video.currentTime < targetLagS - ENTRY_SEEK_SLACK_S) {
+      const back = Math.max(b.start(b.length - 1), end - targetLagS);
+      if (back < video.currentTime) video.currentTime = back;
     }
   } catch {
     // buffered/seek quirks — the entry attempt proceeds from wherever it is
@@ -78,6 +85,10 @@ export function useFullscreen(
   // re-attach when it mounts.
   presentationVideo: HTMLVideoElement | null = null,
   hooks: FullscreenHooks = {},
+  // Sizes the tier-2 entry seek's cushion (liveEdge.ts). The caller's state,
+  // not the transport module flag: that flag lives in whichever context runs
+  // the pipeline, which is the viewer worker when one is in use.
+  deliveryMode: ViewerDeliveryMode = 'live',
 ) {
   // Read through a ref: the hooks close over live state (mute preference, the
   // audio sink) and must not re-create `toggle` — which is a dependency of the
@@ -97,7 +108,13 @@ export function useFullscreen(
 
   // One watchdog per hook, re-attached as the presentation video changes, so
   // its recovery counters describe the whole viewing session.
-  const [watchdog] = useState(() => new PresentationWatchdog({ rejoinS: LIVE_EDGE_REJOIN_S }));
+  // Its recovery seeks land at the same per-mode cushion as the entry seek.
+  const [watchdog] = useState(
+    () => new PresentationWatchdog({ rejoinS: liveEdgePolicy(deliveryMode).targetLagS }),
+  );
+  useEffect(() => {
+    watchdog.setRejoinS(liveEdgePolicy(deliveryMode).targetLagS);
+  }, [watchdog, deliveryMode]);
   const stallRecoveries = useCallback(
     (): PresentationWatchdogStats | null => (tier1Available ? null : watchdog.getStats()),
     [tier1Available, watchdog],
@@ -189,7 +206,7 @@ export function useFullscreen(
       video.readyState >= HAVE_METADATA
     ) {
       try {
-        seekToLiveEdge(video);
+        seekToLiveEdge(video, liveEdgePolicy(deliveryMode).targetLagS);
         // Hand the audio over before play(): still inside the gesture, so an
         // unmuted start is allowed, and the inline sink goes quiet before the
         // native player's first sample instead of overlapping it.
@@ -211,7 +228,7 @@ export function useFullscreen(
 
     // Tier 3: CSS pseudo-fullscreen. The caller styles its root off `tier`.
     setState({ fullscreen: true, tier: 'pseudo' });
-  }, [tier1Available, ref, presentationVideo, watchdog]);
+  }, [tier1Available, ref, presentationVideo, watchdog, deliveryMode]);
 
   return {
     isFullscreen: state.fullscreen,

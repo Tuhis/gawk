@@ -5,8 +5,10 @@
 // how iPhone-vs-desktop divergence (ManagedMediaSource streaming pacing vs
 // classic MediaSource) is simulated.
 
+import { liveEdgePolicy } from '../../lib/liveEdge';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Fmp4Track } from '../../transport/fmp4-muxer';
+import type { ViewerDeliveryMode } from '../../transport/resilient';
 import {
   AUDIO_FIRST_SAMPLE_TIMEOUT_MS,
   MAX_QUEUED_SEGMENTS,
@@ -959,7 +961,88 @@ describe('MsePresenter', () => {
     paused = false;
     p.pushSegment(media(true));
     instances[0].sb!.finishUpdate(); // playing, 9 s behind: catch up
-    expect(currentTime).toBeCloseTo(9.9, 5);
+    // …to the shared live target lag, not a hair inside the end: the cushion
+    // this seek leaves is the whole jitter budget (docs/27 finding 3).
+    expect(10 - currentTime).toBeCloseTo(liveEdgePolicy('live').targetLagS, 5);
+  });
+
+  // Appends arrive at 1× (after the paced release), so whatever a catch-up
+  // seek leaves is the cushion for the rest of the session. It must be the
+  // mode's target lag — never the old 0.1 s that sat below the measured
+  // arrival jitter.
+  function playingPresenter(mode?: ViewerDeliveryMode) {
+    const { ctor, instances } = makeFakeMsCtor();
+    const p = new MsePresenter(ctor);
+    if (mode) p.setDeliveryMode(mode);
+    const { video } = makeVideo();
+    let end = 10;
+    Object.defineProperty(video, 'buffered', {
+      configurable: true,
+      get: () => ({ length: 1, start: () => 0, end: () => end }),
+    });
+    let currentTime = 0;
+    Object.defineProperty(video, 'currentTime', {
+      configurable: true,
+      get: () => currentTime,
+      set: (v: number) => {
+        currentTime = v;
+      },
+    });
+    Object.defineProperty(video, 'paused', { configurable: true, get: () => false });
+    p.attach(video);
+    instances[0].open();
+    p.pushSegment(init());
+    instances[0].sb!.finishUpdate();
+    let n = 0;
+    return {
+      get lag() {
+        return end - currentTime;
+      },
+      setPlayhead(t: number) {
+        currentTime = t;
+      },
+      // One append that extends the buffered end — the burst a DVR catch-up
+      // (or any arrival faster than 1×) produces.
+      append(toEnd: number) {
+        end = toEnd;
+        p.pushSegment(media(true, ++n));
+        instances[0].sb!.finishUpdate();
+      },
+    };
+  }
+
+  it('scales the catch-up landing by delivery mode', () => {
+    for (const mode of ['live', 'resilient', 'deep'] as const) {
+      const h = playingPresenter(mode);
+      h.setPlayhead(1);
+      h.append(20);
+      expect(h.lag).toBeCloseTo(liveEdgePolicy(mode).targetLagS, 5);
+    }
+  });
+
+  it('keeps the target cushion through a DVR catch-up burst', () => {
+    const h = playingPresenter('deep');
+    const { targetLagS, catchUpLagS } = liveEdgePolicy('deep');
+    h.setPlayhead(10 - targetLagS); // landed at target
+    // The burst lands seconds of media at once: one catch-up, which must keep
+    // the target cushion rather than seeking to the very end…
+    h.append(10 + catchUpLagS + 1);
+    expect(h.lag).toBeCloseTo(targetLagS, 5);
+    const landed = 10 + catchUpLagS + 1 - targetLagS;
+    // …and burst appends that stay inside the trigger band only ADD cushion:
+    // no seek throws it away.
+    h.append(10 + catchUpLagS + 1 + (catchUpLagS - targetLagS) / 2);
+    expect(h.lag).toBeGreaterThan(targetLagS);
+    expect(h.lag).toBeLessThan(catchUpLagS);
+    // (the playhead did not move)
+    expect(h.lag).toBeCloseTo(10 + catchUpLagS + 1 + (catchUpLagS - targetLagS) / 2 - landed, 5);
+  });
+
+  it('does not catch up a resilient viewer inside its (wider) trigger', () => {
+    const h = playingPresenter('resilient');
+    h.setPlayhead(0);
+    h.append(liveEdgePolicy('live').catchUpLagS + 0.2); // past live's trigger only
+    expect(h.lag).toBeCloseTo(liveEdgePolicy('live').catchUpLagS + 0.2, 5);
   });
 
   describe('pruning', () => {
@@ -1067,6 +1150,26 @@ describe('MsePresenter', () => {
       // The entry seek lands near the edge; what it needs is kept.
       expect(lastCut).toBeLessThanOrEqual(end - PRUNE_BEHIND_S);
       expect(p.getStats().bufferedBytes).toBeLessThanOrEqual(PRUNE_BUDGET_BYTES + GOP * FRAME_BYTES);
+    });
+
+    it('keeps the Deep buffer entry seek cushion when pruning a paused element', () => {
+      const { ctor, instances } = makeFakeMsCtor();
+      const p = new MsePresenter(ctor);
+      p.setDeliveryMode('deep');
+      const ranges: Array<[number, number]> = [[0, 0]];
+      const { video, el } = makePlayingVideo(ranges, false);
+      p.attach(video);
+      instances[0].open();
+      p.pushSegment(init());
+      settle(instances[0]);
+
+      feed(p, instances[0], ranges, el, 12, { followPlayhead: false });
+      const removed = instances[0].buffers[0].removed;
+      expect(removed.length).toBeGreaterThan(0);
+      const end = ranges[0][1];
+      const lastCut = removed[removed.length - 1][1];
+      // The entry seek lands liveEdgePolicy('deep').targetLagS behind the edge.
+      expect(lastCut).toBeLessThanOrEqual(end - liveEdgePolicy('deep').targetLagS - PRUNE_BEHIND_S);
     });
 
     it('still prunes small segments by the time ceiling', () => {
