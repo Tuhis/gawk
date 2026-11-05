@@ -421,6 +421,13 @@ function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+// A DOMException's name (DataCloneError, NotSupportedError) is the useful
+// part; it is not an Error subclass in every realm, so read it duck-typed.
+function errorName(e: unknown): string {
+  const name = (e as { name?: unknown } | null)?.name;
+  return typeof name === 'string' && name ? name : errorText(e);
+}
+
 // Waits for the worker's boot handshake: null when it reports itself
 // capable, otherwise why not.
 function waitForBoot(worker: WorkerLike, timeoutMs: number): Promise<string | null> {
@@ -440,7 +447,9 @@ function waitForBoot(worker: WorkerLike, timeoutMs: number): Promise<string | nu
     };
     worker.onerror = (e: ErrorEvent) => {
       clearTimeout(timer);
-      resolve(e?.message ? `broadcast worker failed to start: ${e.message}` : 'broadcast worker failed to start');
+      // A script that fails to load (404, MIME, CSP worker-src) arrives here
+      // as a plain message-less Event, not as a throw from new Worker.
+      resolve(e?.message ? `broadcast worker failed to start: ${e.message}` : 'broadcast worker failed to load or start');
     };
   });
 }
@@ -451,17 +460,22 @@ function waitForBoot(worker: WorkerLike, timeoutMs: number): Promise<string | nu
 // question without a roundtrip (getDisplayMedia tracks can't be minted
 // without a user prompt). Null on success, otherwise why it failed.
 function probeTrackTransfer(worker: WorkerLike): string | null {
+  let track: MediaStreamTrack | undefined;
   try {
     const canvas = document.createElement('canvas');
     canvas.width = 2;
     canvas.height = 2;
-    const track = canvas.captureStream(0).getVideoTracks()[0];
-    if (!track) return 'canvas.captureStream produced no track';
+    track = canvas.captureStream(0).getVideoTracks()[0];
+  } catch (e) {
+    // Its own gate: a captureStream failure says nothing about transfer.
+    return `canvas.captureStream failed (${errorName(e)})`;
+  }
+  if (!track) return 'canvas.captureStream produced no track';
+  try {
     worker.postMessage({ type: 'probeTrack', track }, [track as unknown as Transferable]);
     return null;
   } catch (e) {
-    const name = e instanceof Error && e.name ? e.name : errorText(e);
-    return `MediaStreamTrack not transferable (${name})`;
+    return `MediaStreamTrack not transferable (${errorName(e)})`;
   }
 }
 

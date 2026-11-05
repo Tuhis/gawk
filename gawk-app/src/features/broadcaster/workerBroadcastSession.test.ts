@@ -538,12 +538,15 @@ describe('tryCreateBroadcastWorker fallback reasons', () => {
   it('gate 2: a worker that fails to construct says so', async () => {
     const res = await tryCreateBroadcastWorker(
       deps(new FakeBootWorker(), {
+        // new Worker throws synchronously only for a bad URL or a
+        // cross-origin SecurityError; a 404/MIME/CSP failure arrives later
+        // as a message-less error event (gate 3d).
         spawn: () => {
-          throw new Error('blocked by CSP');
+          throw new Error('cross-origin worker script');
         },
       }),
     );
-    expect(res).toEqual({ worker: null, reason: 'broadcast worker failed to load: blocked by CSP' });
+    expect(res).toEqual({ worker: null, reason: 'broadcast worker failed to load: cross-origin worker script' });
   });
 
   it('gate 3a: boot reporting supported:false names the APIs missing in worker scope', async () => {
@@ -568,12 +571,56 @@ describe('tryCreateBroadcastWorker fallback reasons', () => {
     expect(await p).toEqual({ worker: null, reason: 'broadcast worker failed to start: SyntaxError: bad import' });
   });
 
+  it('gate 3d: a message-less error event (404, MIME, CSP worker-src) reads as load-or-start', async () => {
+    const w = new FakeBootWorker();
+    const p = tryCreateBroadcastWorker(deps(w));
+    w.onerror?.({} as ErrorEvent);
+    expect(await p).toEqual({ worker: null, reason: 'broadcast worker failed to load or start' });
+  });
+
   it('gate 4: a track-transfer failure names itself', async () => {
     const w = new FakeBootWorker();
     const p = tryCreateBroadcastWorker(deps(w, { probeTransfer: () => 'MediaStreamTrack not transferable (DataCloneError)' }));
     w.emit({ type: 'boot', supported: true, missing: [] });
     expect(await p).toEqual({ worker: null, reason: 'MediaStreamTrack not transferable (DataCloneError)' });
     expect(w.terminated).toBe(true);
+  });
+
+  // The real probe, against a stubbed captureStream (jsdom has none).
+  describe('the real track-transfer probe', () => {
+    const proto = HTMLCanvasElement.prototype as unknown as { captureStream?: unknown };
+    afterEach(() => {
+      delete proto.captureStream;
+    });
+
+    async function probeWith(captureStream: () => unknown, worker = new FakeBootWorker()) {
+      proto.captureStream = captureStream;
+      const p = tryCreateBroadcastWorker({ mainThreadGate: () => null, spawn: () => worker, bootTimeoutMs: 50 });
+      worker.emit({ type: 'boot', supported: true, missing: [] });
+      return { res: await p, worker };
+    }
+
+    it('a DataCloneError on postMessage is a transfer failure', async () => {
+      const w = new FakeBootWorker();
+      w.postMessage = () => {
+        throw new DOMException('Value at index 0 does not have a transferable type', 'DataCloneError');
+      };
+      const { res } = await probeWith(() => ({ getVideoTracks: () => [{}] }), w);
+      expect(res).toEqual({ worker: null, reason: 'MediaStreamTrack not transferable (DataCloneError)' });
+    });
+
+    it('a captureStream throw is its own gate, not a transfer failure', async () => {
+      const { res } = await probeWith(() => {
+        throw new DOMException('no', 'NotSupportedError');
+      });
+      expect(res).toEqual({ worker: null, reason: 'canvas.captureStream failed (NotSupportedError)' });
+    });
+
+    it('a track that transfers passes the probe', async () => {
+      const { res, worker } = await probeWith(() => ({ getVideoTracks: () => [{}] }));
+      expect(res).toEqual({ worker, reason: null });
+      expect(worker.posted).toContainEqual(expect.objectContaining({ type: 'probeTrack' }));
+    });
   });
 
   it('every gate passing returns the worker and no reason', async () => {
