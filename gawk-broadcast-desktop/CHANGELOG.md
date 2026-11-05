@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.14.1](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.14.0...gawk-broadcast-desktop/v2.14.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **broadcast-desktop:** show the upload warning on a full uplink under BBR (R75) ([#711](https://github.com/Tuhis/gawk/issues/711)) ([75291af](https://github.com/Tuhis/gawk/commit/75291af0dc4f5f651535b346f97fb0a3b2508d73))
+
 ## [2.14.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.13.1...gawk-broadcast-desktop/v2.14.0) (2026-11-02)
 
 

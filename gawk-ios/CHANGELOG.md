@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.1](https://github.com/Tuhis/gawk/compare/gawk-ios/v1.7.0...gawk-ios/v1.7.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **broadcast-desktop:** show the upload warning on a full uplink under BBR (R75) ([#711](https://github.com/Tuhis/gawk/issues/711)) ([75291af](https://github.com/Tuhis/gawk/commit/75291af0dc4f5f651535b346f97fb0a3b2508d73))
+
 ## [1.7.0](https://github.com/Tuhis/gawk/compare/gawk-ios/v1.6.0...gawk-ios/v1.7.0) (2026-11-02)
 
 

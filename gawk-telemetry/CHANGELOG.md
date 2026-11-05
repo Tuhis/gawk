@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.17.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.16.0...gawk-telemetry/v1.17.0) (2026-11-05)
+
+
+### Features
+
+* **telemetry:** ask in English above the SQL console (R82 NQ1–NQ4) ([#706](https://github.com/Tuhis/gawk/issues/706)) ([af9a8a1](https://github.com/Tuhis/gawk/commit/af9a8a15ed4812fa9c9064e13222f4fef0f0fdf3))
+
+
+### Bug Fixes
+
+* **broadcast-desktop:** show the upload warning on a full uplink under BBR (R75) ([#711](https://github.com/Tuhis/gawk/issues/711)) ([75291af](https://github.com/Tuhis/gawk/commit/75291af0dc4f5f651535b346f97fb0a3b2508d73))
+
 ## [1.16.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.15.0...gawk-telemetry/v1.16.0) (2026-11-04)
 
 
