@@ -1243,6 +1243,24 @@ func (a *API) LiveSnapshot() live.Snapshot {
 	return a.live.Snapshot()
 }
 
+// LiveSparks is one live broadcast's two-minute fps tails (R36 TU7), from
+// the projection's per-session rings — no file is read. A key the projection
+// does not hold (ended, or never live) is ErrNotFound, and so is every key
+// where no projection is wired.
+func (a *API) LiveSparks(broadcastKey string) (*live.Sparks, error) {
+	if err := (store.SessionRef{Date: "2000-01-01", BroadcastKey: broadcastKey, SessionID: "000000000000000000000000"}).Validate(); err != nil {
+		return nil, err
+	}
+	if a.live == nil {
+		return nil, store.ErrNotFound
+	}
+	s, ok := a.live.Sparks(broadcastKey)
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+	return &s, nil
+}
+
 // --- shared helpers -------------------------------------------------------
 
 func (a *API) rollups(since time.Time) ([]rollup.Row, error) {
@@ -1526,6 +1544,15 @@ func (a *API) mountR31(mux *http.ServeMux) {
 	})
 	// UD22 — SSE, with the poll as fallback.
 	mux.HandleFunc("GET /live/stream", a.handleLiveStream)
+	// R36 TU7 — one live broadcast's fps tails, polled only while its card
+	// is open. A read of its own rather than a field of /live, so neither the
+	// snapshot nor its stream grows by a tail per session per tick (UD1,
+	// UD22). Under /live/ like the stream, so the read listener gates it the
+	// same way.
+	mux.HandleFunc("GET /live/sparks", func(w http.ResponseWriter, r *http.Request) {
+		out, err := a.LiveSparks(r.URL.Query().Get("broadcast"))
+		writeJSON(w, out, err)
+	})
 }
 
 // Meta describes this deployment's capabilities and boundaries.

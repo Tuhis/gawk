@@ -75,9 +75,9 @@ const (
 	sweepEvery = 5 * time.Second
 	// DipWindowSamples is the rolling window the dip detector runs over
 	// (docs/33 D16) — 60 samples is ~2 minutes at the default 2 s report
-	// interval. Bounded per session because this is the ONE place the live
-	// projection keeps history, and a thousand-viewer fleet must not grow with
-	// session length.
+	// interval. Bounded per session because this is one of the two places the
+	// live projection keeps history (the other is the fps tail, sparks.go),
+	// and a thousand-viewer fleet must not grow with session length.
 	//
 	// The window is what makes an episode survive hysteresis: an instantaneous
 	// fact cannot hold for EscalateSamples consecutive evaluations, which is
@@ -203,6 +203,9 @@ type sessionState struct {
 	// the middle of a batch is exactly what the last-sample-only fold used to
 	// throw away.
 	dipWindow []rollup.Sample
+	// spark is the two-minute fps tail GET /live/sparks serves (R36 TU7):
+	// the other bounded history this projection keeps.
+	spark sparkRing
 	// Hysteresis state.
 	pendingSeverity rules.Severity
 	pendingCount    int
@@ -350,6 +353,7 @@ func (p *Projection) ObserveClient(a ingest.Accepted, browser, os, appVersion st
 	s.lastClient = now
 	b.lastSeen = now
 	defer p.sweepLocked(now)
+	s.spark.fold(a, s.view.Role, now)
 
 	// EVERY sample feeds the rolling dip window (D16). Folding only the last
 	// one — as this did — discarded four of every five samples at a 2 s report

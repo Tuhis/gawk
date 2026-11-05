@@ -1012,3 +1012,25 @@ observations (docs/78 D7). A broadcast-timeline `Lane` gains `issuer` and
 only (docs/78 D8), so that lane has no relay-side figures, and the label
 says why. The name comes from the row's join (`config.pop`), else from the
 same PoP's records on the span's dates; nothing else is read from them.
+
+**Live fps tails (TU7).** UD14's sparkline is a separate read, not a field
+of `/live`: a tail per session per tick would grow the snapshot and its
+stream (UD1, UD22) on exactly the broadcasts where they are largest. The
+page polls `GET /live/sparks?broadcast=<key>` only while that broadcast's
+card is open; it is under `/live/`, so the read listener gates it like the
+stream. It answers from a bounded ring per session in the projection (no
+file is read) with `{atMs, stepMs, windowMs: 120000, sessions: {<sessionId>:
+{field, values, throughMs}}}`. `field` is the live table's second fps
+figure: `decoderFps` (else `receivedFps`) for a viewer, `encoderFps` for a
+broadcaster. `values` run oldest to newest, one per `stepMs` bucket ending at
+`atMs`: the lowest sample in the bucket, rounded to 0.1, or `null` where none
+landed (UD9). Samples are placed on this service's clock by a measured
+offset (the minimum, over recent batches, of arrival minus the newest
+sample's client time). `stepMs` follows the broadcast's cadence — the
+narrowest of 4, 5, 6, 8, 10, 12, 15, 20, 24 or 30 s that is at least 1.6×
+the median sample gap, 4 s at the default 2 s report interval — so a null
+always means a missing sample: a web client's samples come 2.0 or 2.5 s
+apart, and a 2 s grid would show empty buckets with nothing missing.
+`throughMs` is the newest sample's time; buckets after it are empty because
+the client's next batch (every ~10 s) has not arrived. 400 for a malformed
+key, 404 for a broadcast the projection does not hold.
