@@ -34,11 +34,17 @@ export function Sparkline({ values, width = 96, height = 20, max, quiet, label }
   const y = (v: number) => height - 1 - (Math.max(0, Math.min(top, v)) / top) * (height - 2);
   let d = '';
   let pen = false;
+  // A bucket with no neighbour is a lone `M` — a subpath with no length,
+  // which draws nothing. It is still a sample, so it gets a dot.
+  const dots: Array<[number, number]> = [];
   values.forEach((v, i) => {
     if (v === null) {
       pen = false;
       return;
     }
+    const prev = i > 0 ? values[i - 1] : null;
+    const next = i < n - 1 ? values[i + 1] : null;
+    if (prev === null && next === null) dots.push([x(i), y(v)]);
     d += `${pen ? 'L' : 'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)} `;
     pen = true;
   });
@@ -52,6 +58,9 @@ export function Sparkline({ values, width = 96, height = 20, max, quiet, label }
       aria-label={label ?? 'last two minutes'}
     >
       <path d={d} />
+      {dots.map(([cx, cy]) => (
+        <circle key={cx} cx={cx} cy={cy} r={1.4} />
+      ))}
     </svg>
   );
 }

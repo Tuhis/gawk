@@ -1,7 +1,7 @@
 import { Fragment, useMemo } from 'react';
 
 import type { LegView, SessionView, Sparks } from '../api/types.ts';
-import { useColumns, useWidth, type ColumnSpec } from '../lib/columns.ts';
+import { membershipKey, useColumns, useWidth, type ColumnSpec } from '../lib/columns.ts';
 import { ago, bitrate, EMPTY, fps, ms, shortId } from '../lib/format.ts';
 import { freshnessTone } from '../lib/severity.ts';
 import { href } from '../router/router.ts';
@@ -98,7 +98,7 @@ function Freshness({ state, ageMs }: { state: string; ageMs: number }) {
 export function SessionTable({ sessions, sparks }: Props) {
   // A new LOAD is a change in WHO is on the table — a joiner, a leaver — never
   // a value ticking. Widths are measured then, and frozen in between.
-  const loadKey = useMemo(() => sessions.map((s) => s.sessionId).join(','), [sessions]);
+  const loadKey = useMemo(() => membershipKey(sessions.map((s) => s.sessionId)), [sessions]);
   const [frame, width] = useWidth();
   const columns = useColumns('live-sessions', COLUMNS, sessions, loadKey, width);
 

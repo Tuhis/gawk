@@ -108,6 +108,7 @@ beforeEach(() => {
     paused: false,
     pausedAtMs: null,
     gapMs: null,
+    held: null,
   });
 });
 
@@ -325,6 +326,27 @@ describe('pause (TH11, Q11)', () => {
     useLiveStore.getState().setPaused(false);
     await es.emit('snapshot', JSON.stringify({ ...snapshot, atMs: snapshot.atMs + 60_000 }));
     expect(useLiveStore.getState().snapshot?.atMs).toBe(snapshot.atMs + 60_000);
+    stop();
+  });
+
+  // The stream sends only CHANGES. A change that arrives while the page is
+  // frozen, followed by a quiet fleet, would never be sent again: discarding
+  // it left the resumed page on the pre-pause snapshot indefinitely, with
+  // the next keepalive calling it fresh (R36 round-1 review).
+  it('shows on resume the change that arrived while it was paused', async () => {
+    const stop = useLiveStore.getState().start();
+    const es = FakeStream.instances[0];
+    await es.emit('open');
+    await es.emit('snapshot', JSON.stringify(snapshot));
+
+    useLiveStore.getState().setPaused(true);
+    await es.emit('snapshot', JSON.stringify({ ...snapshot, atMs: snapshot.atMs + 30_000 }));
+    expect(useLiveStore.getState().snapshot?.atMs).toBe(snapshot.atMs);
+
+    // The fleet goes quiet; nothing else is sent. Resuming must not leave
+    // the page on the frozen snapshot.
+    useLiveStore.getState().setPaused(false);
+    expect(useLiveStore.getState().snapshot?.atMs).toBe(snapshot.atMs + 30_000);
     stop();
   });
 

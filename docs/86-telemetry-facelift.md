@@ -114,6 +114,10 @@ read through `charts/stack.ts`.
   instant back to that viewer's last sample.
 - **Zoom.** Zoom is relayed explicitly to every member. `connect` relays an
   inside-zoom but not the slider's, and the relay stops on its own echo.
+  Every member also reads the stack's zoom whenever its option is rebuilt
+  (new data, a theme switch, a re-render). `setOption` replaces the option
+  outright, and a rebuild that left the zoom out reset that one member while
+  its neighbours stayed zoomed (round-1 review).
 - **Single charts.** Explore, the fleet trend and SQL keep a tooltip,
   pinned to the plot's top-right corner and confined.
 
@@ -180,6 +184,8 @@ PoP viewer's lane says so with a tag, and an empty relay reading says
   `null` is a gap (UD9).
 - **Step.** It adapts: the narrowest width dividing 120 s that is at least
   1.6× the broadcast's median sample gap, which is 4 s at default rates.
+- **Grid.** The window ends at the step boundary at or after the poll, so
+  bucket edges hold still between polls.
 - **`throughMs`.** It marks buckets not yet uploaded, as distinct from a
   real gap.
 - **Source.** A bounded per-session ring in the live projection, so no
@@ -198,13 +204,16 @@ This answers the design question.
 - **All thin.** When every bucket is thin, the plot explains itself in
   place.
 
-**D11 — A quiet stream is not a stale one.** This is a bug fix, test-first.
+**D11 — A quiet stream is not a stale one, and a pause loses nothing.** This is a bug fix, test-first.
 - **The cause.** The SSE stream sends only changes, plus a keepalive every
   20 s. R31 judged it by the poll's 6 s threshold, so every idle fleet read
   "feed stale" six seconds after going quiet. The new header shows feed
   health on every page, which made it visible everywhere.
 - **The fix.** Any received bytes (a keepalive included) refresh the feed,
-  and stream mode uses a 25 s threshold. The indicator re-checks every 2 s,
+  and stream mode uses a 25 s threshold.
+- **Pause.** For the same reason a change that arrives while the page is
+  frozen is held, not dropped, and shown on resume: a quiet stream would
+  never send it again. The indicator re-checks every 2 s,
   because staleness is time passing with nothing arriving, which changes no
   store.
 

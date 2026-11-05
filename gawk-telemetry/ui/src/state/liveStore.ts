@@ -61,6 +61,12 @@ interface LiveState {
    * backfills, because the data for that window was never delivered to it.
    */
   gapMs: number | null;
+  /**
+   * The newest snapshot that arrived while paused. The stream sends only
+   * changes, so one discarded here might never be sent again; resuming
+   * applies it.
+   */
+  held: Snapshot | null;
 
   poll: () => Promise<void>;
   start: () => () => void;
@@ -76,6 +82,7 @@ export const useLiveStore = create<LiveState>((set, get) => ({
   paused: false,
   pausedAtMs: null,
   gapMs: null,
+  held: null,
 
   poll: async () => {
     if (get().paused) return;
@@ -97,6 +104,10 @@ export const useLiveStore = create<LiveState>((set, get) => ({
       // Resuming clears the gap marker: the next update is live again, and a
       // stale "you missed 4 minutes" banner would be its own small lie.
       gapMs: paused ? s.gapMs : null,
+      // ...and shows what changed while frozen, which a quiet stream would
+      // not send again.
+      ...(!paused && s.held ? { snapshot: s.held, lastOkAt: Date.now() } : {}),
+      held: null,
     })),
 
   noteGap: (ms) => set({ gapMs: ms }),
@@ -195,10 +206,13 @@ export const useLiveStore = create<LiveState>((set, get) => ({
               expired = true;
               return;
             }
-            if (ev.event !== 'snapshot' || get().paused) return;
+            if (ev.event !== 'snapshot') return;
             try {
               const snap = JSON.parse(ev.data) as Snapshot;
-              set({ snapshot: snap, error: null, lastOkAt: Date.now(), mode: 'stream' });
+              // Frozen: nothing moves while it is read, but the newest
+              // change is kept for the resume.
+              if (get().paused) set({ held: snap });
+              else set({ snapshot: snap, error: null, lastOkAt: Date.now(), mode: 'stream' });
             } catch {
               // A frame we cannot parse is a frame we ignore; the next one is
               // 2 s away and the last good snapshot is still on screen.

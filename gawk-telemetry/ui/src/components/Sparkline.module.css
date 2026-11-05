@@ -10,6 +10,14 @@
   stroke-linejoin: round;
 }
 
+.spark circle {
+  fill: var(--s1);
+}
+
+.quiet circle {
+  fill: var(--text-3);
+}
+
 .quiet path {
   stroke: var(--text-3);
   stroke-width: 1;

@@ -60,6 +60,13 @@ describe('Sparkline (TU7)', () => {
     expect(d.match(/M/g)?.length).toBe(2);
   });
 
+  it('draws a lone bucket as a dot, not as nothing', () => {
+    const { container } = render(<Sparkline values={[null, 50, null, 40, 41]} />);
+    // The 50 has no neighbour: its subpath has no length and would be
+    // invisible. The 40–41 run is a line and needs no dot.
+    expect(container.querySelectorAll('circle')).toHaveLength(1);
+  });
+
   it('shows a dash, never a flat line, when there is no tail', () => {
     render(<Sparkline values={[null, null]} />);
     expect(screen.getByText('—')).toBeTruthy();

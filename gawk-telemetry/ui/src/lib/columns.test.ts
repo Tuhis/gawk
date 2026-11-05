@@ -2,7 +2,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { CELL_PAD, measureColumns, squeezeColumns, useColumns, type ColumnSpec } from './columns.ts';
+import { CELL_PAD, measureColumns, membershipKey, objectLoadKey, squeezeColumns, useColumns, type ColumnSpec } from './columns.ts';
 
 // R36 item 1 (docs/86 TU2). jsdom has no canvas, so widths come from the
 // per-character estimate — the RULES are what is under test here: what is
@@ -41,6 +41,23 @@ describe('measureColumns', () => {
     expect(measureColumns(tiny, [{ name: '', n: 0 }]).n).toBe(64);
     const huge: ColumnSpec<Row>[] = [{ key: 'name', label: 'name', text: (r) => r.name, max: 100 }];
     expect(measureColumns(huge, [{ name: 'x'.repeat(200), n: 0 }]).name).toBe(100);
+  });
+});
+
+describe('load keys', () => {
+  // A live table re-sorts by severity as values tick; a key that followed
+  // the order re-measured on a tick, which TH11 forbids (round-1 review).
+  it('treats the same sessions in another order as the same load', () => {
+    expect(membershipKey(['b', 'a', 'c'])).toBe(membershipKey(['c', 'b', 'a']));
+    expect(membershipKey(['a', 'b'])).not.toBe(membershipKey(['a', 'b', 'c']));
+  });
+
+  it('gives every result object its own load, whatever it holds', () => {
+    // "1 row in 23 ms" and "12 rows in 3 ms" collided under the old key.
+    const one = { rows: 1, ms: 23 };
+    const other = { rows: 12, ms: 3 };
+    expect(objectLoadKey(one)).not.toBe(objectLoadKey(other));
+    expect(objectLoadKey(one)).toBe(objectLoadKey(one));
   });
 });
 

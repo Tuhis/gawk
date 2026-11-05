@@ -139,6 +139,28 @@ function saveOverrides(tableId: string, o: Record<string, number>) {
   }
 }
 
+/**
+ * A load key for "who is on the table": the same set of ids in any order is
+ * the same load. A live table re-sorts by severity as values tick, and a key
+ * that followed the order would re-measure on a tick (TH11).
+ */
+export function membershipKey(ids: string[]): string {
+  return [...ids].sort().join(',');
+}
+
+const loadIds = new WeakMap<object, number>();
+let nextLoadId = 0;
+
+/** A load key for one result object: a new object is a new load, whatever it holds. */
+export function objectLoadKey(o: object): string {
+  let id = loadIds.get(o);
+  if (id === undefined) {
+    id = ++nextLoadId;
+    loadIds.set(o, id);
+  }
+  return `load-${id}`;
+}
+
 /** A container's width, following resizes — what `useColumns` fits into. */
 export function useWidth(): [(el: HTMLElement | null) => void, number] {
   const [width, setWidth] = useState(0);
@@ -194,7 +216,7 @@ export function squeezeColumns<T>(
   available: number,
 ): Record<string, number> {
   const total = cols.reduce((n, c) => n + (widths[c.key] ?? 0), 0);
-  let excess = total - available;
+  const excess = total - available;
   if (!(available > 0) || excess <= 0) return widths;
   const give = cols
     .filter((c) => c.squeeze && !c.flex && overridden[c.key] === undefined)
@@ -205,7 +227,6 @@ export function squeezeColumns<T>(
   const out = { ...widths };
   const take = Math.min(excess, pool);
   for (const g of give) out[g.key] = Math.floor(out[g.key] - (take * g.can) / pool);
-  excess -= take;
   return out;
 }
 

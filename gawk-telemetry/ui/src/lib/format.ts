@@ -66,7 +66,7 @@ export function ago(msValue: number | undefined | null): string {
  * whose axis says 21:00 while its table says 09:00 PM makes the reader do
  * arithmetic at exactly the wrong moment.
  */
-const H24 = { hour12: false } as const;
+const H24 = { hourCycle: 'h23' } as const;
 
 /** Wall-clock, for the "updated" stamp. Fixed width by construction. */
 export function clockTime(atMs: number): string {

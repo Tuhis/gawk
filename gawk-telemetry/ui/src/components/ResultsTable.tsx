@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { QueryResult } from '../api/types.ts';
-import { useColumns, type ColumnSpec } from '../lib/columns.ts';
+import { objectLoadKey, useColumns, type ColumnSpec } from '../lib/columns.ts';
 import { cell } from '../lib/cells.ts';
 import { copyToClipboard } from '../lib/export.ts';
 import { DragLine, Grip, WidthsNote } from './Columns.tsx';
@@ -52,7 +52,7 @@ export function ResultsTable({ result }: { result: QueryResult }) {
     [result.columns],
   );
   const numeric = useMemo(() => result.columns.map((_, i) => looksNumeric(result.rows, i)), [result]);
-  const columns = useColumns(`sql:${result.columns.join(',')}`, cols, result.rows, String(result.rows.length) + result.elapsedMs);
+  const columns = useColumns(`sql:${result.columns.join(',')}`, cols, result.rows, objectLoadKey(result));
   const [open, setOpen] = useState<Open | null>(null);
   const frame = useRef<HTMLDivElement | null>(null);
 

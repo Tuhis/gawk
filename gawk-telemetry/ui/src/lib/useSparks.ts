@@ -14,26 +14,24 @@ const POLL_MS = 2000;
 export function useSparks(broadcastKey: string, enabled: boolean): Sparks | null {
   const [sparks, setSparks] = useState<Sparks | null>(null);
   const paused = useLiveStore((s) => s.paused);
-  const [gone, setGone] = useState(false);
 
   useEffect(() => {
-    if (!enabled || paused || gone) return;
+    if (!enabled || paused) return;
     const ac = new AbortController();
     const load = () =>
       fetchSparks(broadcastKey, ac.signal)
         .then(setSparks)
-        .catch((e: unknown) => {
-          // A server without the endpoint answers 404: stop asking, and the
-          // column says so rather than spinning.
-          if ((e as { status?: number }).status === 404) setGone(true);
-        });
+        // A miss (the projection no longer holds the broadcast, or a server
+        // predating the endpoint) leaves the column on "—" and the poll
+        // carries on: the card it serves may still be there next time.
+        .catch(() => setSparks(null));
     void load();
     const id = setInterval(load, POLL_MS);
     return () => {
       clearInterval(id);
       ac.abort();
     };
-  }, [broadcastKey, enabled, paused, gone]);
+  }, [broadcastKey, enabled, paused]);
 
   return sparks;
 }
