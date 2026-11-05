@@ -228,7 +228,12 @@ var BroadcasterFields = map[string]Kind{
 	"keyframeIntervalMs":        KindNumber,
 	"sentFrames":                KindNumber,
 	"keyframeStreamsSuperseded": KindNumber,
-	"framesDroppedAtSend":       KindNumber,
+	// R75 (docs/85 D4): keyframes the native broadcaster saw drain at
+	// under three quarters of the stream's own rate — the upload warning's
+	// full-uplink input.
+	"keyframeStreamsSlow": KindNumber,
+	"uplinkMinRttMs":      KindNumber,
+	"framesDroppedAtSend": KindNumber,
 	// R55 (docs/57 D5): the desktop broadcaster's QUIC packet counters —
 	// the first local view of leg-A loss. Loss in the air after a
 	// successful send moves no other broadcaster counter.
