@@ -60,6 +60,9 @@ export interface Fmp4MediaSegment {
   // always true there — the presenter's resync-at-keyframe policy is a no-op
   // for audio, which is correct: any audio packet is a decodable restart point.
   keyframe: boolean;
+  // The segment's start on the SourceBuffer timeline, in seconds (its tfdt over
+  // the track timescale). The presenter's byte-budget pruning cuts by it.
+  timeS: number;
   data: Uint8Array;
 }
 
@@ -1067,6 +1070,7 @@ export class Fmp4Muxer {
       kind: 'media',
       track: 'video',
       keyframe: pending.keyframe,
+      timeS: pending.outputUs / MOVIE_TIMESCALE,
       data: buildMediaSegment(pending.sample, {
         sequence: this.sequence,
         decodeTime: pending.outputUs,
@@ -1188,6 +1192,7 @@ export class Fmp4Muxer {
       kind: 'media',
       track: 'audio',
       keyframe: true, // every audio packet is a sync sample
+      timeS: prev.dts / rate,
       data: buildMediaSegment(prev.data, {
         sequence: this.audioSequence,
         decodeTime: prev.dts,

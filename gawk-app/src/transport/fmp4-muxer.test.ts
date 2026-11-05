@@ -426,6 +426,16 @@ describe('Fmp4Muxer on the Annex-B fixture', () => {
     expect(times).toEqual(FIXTURE_FRAMES.map((_, i) => i * FRAME_US));
   });
 
+  it("reports each media segment's start (timeS) as its tfdt in seconds", () => {
+    // The presenter's byte-budget pruning cuts at these times, so they must be
+    // the SourceBuffer timeline itself, not a parallel clock.
+    const { segments } = muxAll(FIXTURE_FRAMES.map((_, i) => annexBFrame(i)));
+    for (const seg of medias(segments)) {
+      const dts = u64At(find(parseBoxes(seg.data), 'moof.traf.tfdt').body, 4);
+      expect(seg.timeS).toBeCloseTo(dts / 1_000_000, 9);
+    }
+  });
+
   it('strips AUD/SPS/PPS from samples and length-prefixes the rest', () => {
     const { segments } = muxAll([annexBFrame(0)]);
     const seg = medias(segments)[0];
@@ -798,6 +808,8 @@ describe('Fmp4Muxer audio track', () => {
       expect(seg.track).toBe('audio');
       expect(seg.keyframe).toBe(true); // every Opus packet is a sync sample
       timings.push(sampleTiming(seg));
+      // timeS is on the SourceBuffer timeline: the sample-rate timescale.
+      expect(seg.timeS).toBeCloseTo(sampleTiming(seg).dts / 48_000, 9);
     }
 
     expect(timings[0].dts).toBe(0);

@@ -11,8 +11,9 @@ import {
   AUDIO_FIRST_SAMPLE_TIMEOUT_MS,
   MAX_QUEUED_SEGMENTS,
   MsePresenter,
-  PRUNE_KEEP_S,
-  PRUNE_TRIGGER_S,
+  PRUNE_BEHIND_S,
+  PRUNE_BUDGET_BYTES,
+  PRUNE_CEILING_S,
   getMediaSourceCtor,
   probeMseAudio,
   probeMsePresentation,
@@ -204,12 +205,46 @@ const init = (
   mime,
   data: new Uint8Array([1, 1, 1]),
 });
-const media = (keyframe: boolean, tag = 0, track: Fmp4Track = 'video'): PresenterSegment => ({
+const media = (
+  keyframe: boolean,
+  tag = 0,
+  track: Fmp4Track = 'video',
+  timeS = tag / 60,
+): PresenterSegment => ({
   kind: 'media',
   track,
   keyframe,
+  timeS,
   data: new Uint8Array([2, keyframe ? 1 : 0, tag & 0xff, (tag >> 8) & 0xff]),
 });
+
+// A playable element whose playhead the test drives: `buffered` is the given
+// ranges array (mutated in place by the caller) and currentTime/paused are
+// plain settable values.
+function makePlayingVideo(ranges: Array<[number, number]>, playing = true) {
+  const { video } = makeVideo();
+  setElementMedia(video, 4, ranges);
+  const el = { currentTime: 0, paused: !playing };
+  Object.defineProperty(video, 'currentTime', {
+    configurable: true,
+    get: () => el.currentTime,
+    set: (v: number) => {
+      el.currentTime = v;
+    },
+  });
+  Object.defineProperty(video, 'paused', { configurable: true, get: () => el.paused });
+  return { video, el };
+}
+
+// Settle every in-flight append/remove on a source, as the browser would
+// between frames.
+function settle(ms: { buffers: FakeSourceBuffer[] }): void {
+  for (let guard = 0; guard < 16; guard++) {
+    const busy = ms.buffers.filter((b) => b.updating);
+    if (busy.length === 0) return;
+    for (const b of busy) b.finishUpdate();
+  }
+}
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -649,22 +684,26 @@ describe('MsePresenter', () => {
   it('prunes both tracks to the same window, so the intersection cannot shrink', () => {
     const { ctor, instances } = makeFakeMsCtor();
     const p = new MsePresenter(ctor);
-    const { video } = makeVideo();
-    setBuffered(video, [[0, PRUNE_TRIGGER_S + 5]]);
+    const ranges: Array<[number, number]> = [[0, 0]];
+    const { video, el } = makePlayingVideo(ranges);
     p.attach(video);
     instances[0].open();
 
     p.pushSegment(init());
-    p.pushSegment(media(true));
     p.pushSegment(init(AUDIO_MIME, 'audio'));
-    p.pushSegment(media(true, 1, 'audio'));
+    // Keyframes every second; the span alone crosses the ceiling.
+    const fps = 10;
+    for (let i = 0; i <= (PRUNE_CEILING_S + 5) * fps; i++) {
+      const t = i / fps;
+      p.pushSegment(media(i % fps === 0, i, 'video', t));
+      p.pushSegment(media(true, i, 'audio', t));
+      ranges[0] = [0, t + 1 / fps];
+      el.currentTime = t;
+      settle(instances[0]);
+    }
     const [videoSb, audioSb] = instances[0].buffers;
-    videoSb.finishUpdate();
-    audioSb.finishUpdate();
-
-    const window: [number, number] = [0, PRUNE_TRIGGER_S + 5 - PRUNE_KEEP_S];
-    expect(videoSb.removed).toContainEqual(window);
-    expect(audioSb.removed).toContainEqual(window);
+    expect(videoSb.removed.length).toBeGreaterThan(0);
+    expect(audioSb.removed).toEqual(videoSb.removed);
   });
 
   it('falls back to an object URL when srcObject rejects the MediaSource (Chromium)', () => {
@@ -923,16 +962,165 @@ describe('MsePresenter', () => {
     expect(currentTime).toBeCloseTo(9.9, 5);
   });
 
-  it('prunes old buffered ranges past the trigger', () => {
-    const { ctor, instances } = makeFakeMsCtor();
-    const p = new MsePresenter(ctor);
-    const { video } = makeVideo();
-    setBuffered(video, [[0, PRUNE_TRIGGER_S + 5]]);
-    p.attach(video);
-    instances[0].open();
-    p.pushSegment(init());
-    instances[0].sb!.finishUpdate();
-    expect(instances[0].sb!.removed).toEqual([[0, PRUNE_TRIGGER_S + 5 - PRUNE_KEEP_S]]);
+  describe('pruning', () => {
+    // The capture behind BUGS.md: 3360×2100 at 60 fps. ~25 Mbps is a
+    // conservative hardware-H.264 rate for 7 MP, i.e. ~52 KB per frame.
+    const FPS = 60;
+    const FRAME_BYTES = Math.round(25e6 / 8 / FPS);
+    const GOP = 2 * FPS;
+    const frame = (i: number): Extract<PresenterSegment, { kind: 'media' }> => ({
+      kind: 'media',
+      track: 'video',
+      keyframe: i % GOP === 0,
+      timeS: i / FPS,
+      data: new Uint8Array(FRAME_BYTES),
+    });
+
+    function feed(
+      p: MsePresenter,
+      ms: { buffers: FakeSourceBuffer[] },
+      ranges: Array<[number, number]>,
+      el: { currentTime: number },
+      seconds: number,
+      opts: { followPlayhead?: boolean } = {},
+    ): void {
+      for (let i = 0; i < seconds * FPS; i++) {
+        p.pushSegment(frame(i));
+        const end = (i + 1) / FPS;
+        // Our own removes move the buffered start, as the browser's would.
+        const sb = ms.buffers[0];
+        const cut = sb.removed.length > 0 ? sb.removed[sb.removed.length - 1][1] : 0;
+        ranges[0] = [Math.max(ranges[0][0], cut), end];
+        if (opts.followPlayhead !== false) el.currentTime = Math.max(0, end - 0.1);
+        settle(ms);
+      }
+    }
+
+    it('prunes 3360×2100-sized segments well before 20 s, by bytes', () => {
+      const { ctor, instances } = makeFakeMsCtor({ managed: true });
+      const p = new MsePresenter(ctor);
+      const ranges: Array<[number, number]> = [[0, 0]];
+      const { video, el } = makePlayingVideo(ranges);
+      p.attach(video);
+      instances[0].open();
+      p.pushSegment(init());
+      settle(instances[0]);
+
+      feed(p, instances[0], ranges, el, 6);
+      const sb = instances[0].buffers[0];
+      // The old 30 s time trigger had not fired by 21 s; this must within 6 s.
+      expect(sb.removed.length).toBeGreaterThan(0);
+
+      feed(p, instances[0], ranges, el, 20);
+      const stats = p.getStats();
+      // Bounded by the budget plus at most one GOP kept behind the playhead.
+      expect(stats.bufferedBytes).toBeLessThanOrEqual(PRUNE_BUDGET_BYTES + GOP * FRAME_BYTES);
+      expect(stats.prunedBytes).toBeGreaterThan(0);
+      expect(ranges[0][1] - ranges[0][0]).toBeLessThan(10);
+    });
+
+    it('cuts only at a keyframe at or before the playhead minus the margin', () => {
+      const { ctor, instances } = makeFakeMsCtor();
+      const p = new MsePresenter(ctor);
+      const ranges: Array<[number, number]> = [[0, 0]];
+      const { video, el } = makePlayingVideo(ranges);
+      p.attach(video);
+      instances[0].open();
+      p.pushSegment(init());
+      settle(instances[0]);
+
+      // A playhead that lags the edge: cuts must follow it, not the edge.
+      for (let i = 0; i < 12 * FPS; i++) {
+        p.pushSegment(frame(i));
+        ranges[0] = [ranges[0][0], (i + 1) / FPS];
+        el.currentTime = Math.max(0, (i + 1) / FPS - 1.5);
+        const sb = instances[0].buffers[0];
+        const before = sb.removed.length;
+        settle(instances[0]);
+        for (const [, cut] of sb.removed.slice(before)) {
+          // On a GOP boundary — removing mid-GOP would take the playhead's
+          // own GOP (its dependents up to the next keyframe) with it.
+          expect((cut * FPS) % GOP).toBeCloseTo(0, 6);
+          expect(cut).toBeLessThanOrEqual(el.currentTime - PRUNE_BEHIND_S);
+          ranges[0] = [cut, ranges[0][1]];
+        }
+      }
+      expect(instances[0].buffers[0].removed.length).toBeGreaterThan(0);
+    });
+
+    it('prunes a paused (armed) element relative to the live edge, not the stale playhead', () => {
+      const { ctor, instances } = makeFakeMsCtor();
+      const p = new MsePresenter(ctor);
+      const ranges: Array<[number, number]> = [[0, 0]];
+      const { video, el } = makePlayingVideo(ranges, false);
+      p.attach(video);
+      instances[0].open();
+      p.pushSegment(init());
+      settle(instances[0]);
+
+      feed(p, instances[0], ranges, el, 12, { followPlayhead: false });
+      expect(el.currentTime).toBe(0);
+      const removed = instances[0].buffers[0].removed;
+      expect(removed.length).toBeGreaterThan(0);
+      const end = ranges[0][1];
+      const lastCut = removed[removed.length - 1][1];
+      // The entry seek lands near the edge; what it needs is kept.
+      expect(lastCut).toBeLessThanOrEqual(end - PRUNE_BEHIND_S);
+      expect(p.getStats().bufferedBytes).toBeLessThanOrEqual(PRUNE_BUDGET_BYTES + GOP * FRAME_BYTES);
+    });
+
+    it('still prunes small segments by the time ceiling', () => {
+      const { ctor, instances } = makeFakeMsCtor();
+      const p = new MsePresenter(ctor);
+      const ranges: Array<[number, number]> = [[0, 0]];
+      const { video, el } = makePlayingVideo(ranges);
+      p.attach(video);
+      instances[0].open();
+      p.pushSegment(init());
+      settle(instances[0]);
+      for (let i = 0; i < (PRUNE_CEILING_S + 5) * 10; i++) {
+        p.pushSegment(media(i % 10 === 0, i, 'video', i / 10));
+        ranges[0] = [0, (i + 1) / 10];
+        el.currentTime = (i + 1) / 10 - 0.1;
+        settle(instances[0]);
+      }
+      expect(p.getStats().bufferedBytes).toBeLessThan(PRUNE_BUDGET_BYTES);
+      expect(instances[0].buffers[0].removed.length).toBeGreaterThan(0);
+    });
+
+    it('does not prune inside the only GOP', () => {
+      const { ctor, instances } = makeFakeMsCtor();
+      const p = new MsePresenter(ctor);
+      const ranges: Array<[number, number]> = [[0, 0]];
+      const { video, el } = makePlayingVideo(ranges);
+      p.attach(video);
+      instances[0].open();
+      p.pushSegment(init());
+      settle(instances[0]);
+      // One keyframe, then deltas far past the budget: nothing is removable.
+      for (let i = 0; i < 6 * FPS; i++) {
+        p.pushSegment({ ...frame(i), keyframe: i === 0 });
+        ranges[0] = [0, (i + 1) / FPS];
+        el.currentTime = (i + 1) / FPS - 0.1;
+        settle(instances[0]);
+      }
+      expect(instances[0].buffers[0].removed).toEqual([]);
+    });
+
+    it('re-attaching starts the byte accounting over', () => {
+      const { ctor, instances } = makeFakeMsCtor();
+      const p = new MsePresenter(ctor);
+      const ranges: Array<[number, number]> = [[0, 0]];
+      const { video, el } = makePlayingVideo(ranges);
+      p.attach(video);
+      instances[0].open();
+      p.pushSegment(init());
+      settle(instances[0]);
+      feed(p, instances[0], ranges, el, 1);
+      expect(p.getStats().bufferedBytes).toBeGreaterThan(0);
+      p.detach();
+      expect(p.getStats().bufferedBytes).toBe(0);
+    });
   });
 
   it('a SourceBuffer error event marks the surface failed', () => {

@@ -602,21 +602,6 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   surfaced neither new streams nor resets, consistent with an accept-path or
   stream-credit wedge rather than with the relay having stopped writing.
 
-## MSE presentation buffers 20+ s of high-resolution media on a phone
-
-- **Found**: 2026-07-26, same capture: `bufferedMs: 21225` at **3360×2100**
-  (7 MP), decoded twice on the device — inline WebCodecs plus the native player.
-- **Impact**: memory pressure on the one platform that can least afford it.
-  Unproven as a cause of anything, but it is a plausible contributor to WebKit
-  tearing down the media pipeline mid-session, which is the failure above.
-- **Cause**: `PRUNE_TRIGGER_S` (30 s, keep 10 s) was sized as "generous — the
-  point is boundedness over a long session", without frames this large in mind,
-  and `ManagedMediaSource` did not evict on its own either.
-- **Fix would start**: scale the prune trigger by frame area rather than time
-  alone (a fixed byte budget is the honest bound), and consider whether the armed
-  element needs 10 s of history at all — the fullscreen player only ever seeks
-  forward, toward live.
-
 ## Long-lived publisher connections die on a source-address change (fleet LB)
 
 - **Found**: 2026-07-27, investigating broadcast `DE6G6P` — a native

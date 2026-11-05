@@ -337,6 +337,7 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
               kind: 'media',
               track: seg.track,
               keyframe: seg.keyframe,
+              timeS: seg.timeS,
               data: new Uint8Array(seg.data),
             },
       );
@@ -552,6 +553,8 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     bufferedMs,
     bufferedAheadMs,
     bufferedRanges,
+    bufferedBytes: presenterStats?.bufferedBytes ?? 0,
+    prunedBytes: presenterStats?.prunedBytes ?? 0,
     elementReadyState: presentationVideo?.readyState ?? null,
     elementPaused: presentationVideo?.paused ?? null,
     elementWidth: presentationVideo?.videoWidth ?? null,

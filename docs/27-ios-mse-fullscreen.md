@@ -194,7 +194,10 @@ all normal viewing and given up only inside the native player — see Decision 9
 
 6. **Live-edge management leans on MMS's managed buffering.** Appends are paced
    by MMS `startstreaming` / `endstreaming` (the system also evicts old
-   buffered ranges, which keeps a long session bounded). The video is kept near
+   buffered ranges, which keeps a long session bounded). *(Revised 2026-11-06:
+   on iPhone it did not evict enough — 21 s held at 3360×2100 — so the
+   presenter now prunes every MediaSource to a byte budget; see "Pruning: a
+   byte budget, cut at a keyframe" below.)* The video is kept near
    live by seeking to `buffered.end` on play and a small catch-up if it drifts.
    Mid-stream config changes (R4/R13 resolution steps, codec pin) emit a fresh
    init segment (or `SourceBuffer.changeType` on a codec change); a broadcaster
@@ -696,7 +699,60 @@ Also recorded from the same capture: the stream was **3360×2100** (7 MP, decode
 twice on the phone — inline WebCodecs plus the native player) with 21 s buffered,
 so `PRUNE_TRIGGER_S`'s 30 s was sized without frames this large in mind. A
 plausible contributor to WebKit tearing down the pipeline, unproven from this
-capture, and left open.
+capture, and left open. *(Fixed 2026-11-06 — next section.)*
+
+### Pruning: a byte budget, cut at a keyframe (fixed 2026-11-06)
+
+The original bound was time only — past a 30 s buffered span, keep the newest
+10 s — and it ran as a backstop for classic MediaSource on the assumption that
+MMS evicts by itself. Both halves failed at 7 MP: 21 s is under the trigger, and
+MMS had not evicted. A time window costs ~10× more memory at 3360×2100 than at
+720p, so the bound is now what it protects, bytes:
+
+- **Accounting.** The muxer stamps each media segment with `timeS`, its tfdt
+  over the track timescale — the SourceBuffer timeline itself. The presenter
+  records every appended video media segment's `(timeS, bytes, keyframe)` in a
+  per-MediaSource ledger. Audio is cut alongside video but not counted
+  (~16 KB/s). A re-attach starts the ledger over with the fresh MediaSource.
+  MMS eviction the presenter cannot see only makes it overcount, which prunes
+  earlier — the safe direction.
+- **Trigger.** Ledger bytes over `PRUNE_BUDGET_BYTES` (8 MiB), or the buffered
+  span over `PRUNE_CEILING_S` (30 s, the old trigger kept as a ceiling so a
+  near-static low-bitrate stream stays bounded too). It runs on every
+  MediaSource, MMS included.
+- **Cut.** `remove(0, K)` on both SourceBuffers, where K is the newest keyframe
+  at or before `playhead − PRUNE_BEHIND_S` (1 s). The playhead is
+  `currentTime` while playing and the buffered end while paused: the paused
+  element is the armed one, and the fullscreen entry seek replaces its stale
+  playhead with the live edge. A track busy when the target moves takes it at
+  its next idle moment, so the tracks converge on the same window and the
+  intersection is not shortened.
+- **Why so little history.** Nothing seeks backwards: native fullscreen only
+  seeks forward toward live (the entry seek, `maybeCatchUp`). What the playhead
+  does need is its own GOP — MSE's `remove()` also drops every frame that
+  depends on a removed one, up to the next random-access point, so a cut inside
+  the playhead's GOP removes the frames *ahead* of it. Keyframe alignment makes
+  that impossible, and the 1 s margin exceeds the entry seek's live-edge offset
+  (0.1 s today, ~0.6 s at most under finding 3's proposed target lag), so the
+  GOP that seek lands in is always kept. It also absorbs a stale `currentTime`.
+- **The budget's size.** 8 MiB is ~2.5 s at 7 MP / 25 Mbps and ~10 s at
+  1080p / 6 Mbps — past a GOP plus the 2 s catch-up lag. It is a soft bound:
+  with keyframe-aligned cuts the held bytes are at most the budget plus one GOP
+  (a single GOP longer than the budget is never cut into).
+- **Diagnostics.** `presenter.getStats()` and `presentationSurface` carry
+  `bufferedBytes` (the ledger) and `prunedBytes` (cumulative), shown as the
+  "Buffered bytes" row in the stats overlay.
+
+| Goal | Verified by |
+|---|---|
+| 3360×2100-sized segments (~52 KB at 60 fps) are pruned well before 20 s; held bytes stay ≤ budget + one GOP | `msePresentation.test.ts` "prunes 3360×2100-sized segments well before 20 s, by bytes" |
+| Every cut lands on a keyframe at or before `playhead − PRUNE_BEHIND_S` | "cuts only at a keyframe at or before the playhead minus the margin" |
+| A paused (armed) element is pruned against the live edge, not its stale playhead | "prunes a paused (armed) element relative to the live edge…" |
+| The 30 s time ceiling still bounds low-bitrate streams | "still prunes small segments by the time ceiling" |
+| A single GOP is never cut into | "does not prune inside the only GOP" |
+| Both tracks are cut to the same window | "prunes both tracks to the same window…" |
+| `timeS` equals the segment's tfdt on both tracks | `fmp4-muxer.test.ts` (video: "reports each media segment's start…"; audio: "holds one packet back…") |
+| A re-attach resets the ledger | "re-attaching starts the byte accounting over" |
 
 ### Still open from the same investigation (diagnosed, not fixed)
 
