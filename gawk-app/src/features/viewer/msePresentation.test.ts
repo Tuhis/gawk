@@ -983,6 +983,63 @@ describe('MsePresenter', () => {
     // Video's trim stops exactly at its resume keyframe (a GOP boundary).
     const vStart = vsb.buffered.start(0) / FRAME_S;
     expect(Math.round(vStart) % 30).toBe(0);
+    // One resume, one discontinuity — not one per track.
+    expect(p.getStats().discontinuities).toBe(1);
+  });
+
+  it('issues a heal trim even when MMS parks again right after the resume', () => {
+    const { ctor, instances } = makeFakeMsCtor({ managed: true });
+    const p = new MsePresenter(ctor);
+    const { video } = makeVideo();
+    setElementMedia(video, 4, [[0, 1]]);
+    p.setExpectedAudioMime(AUDIO_MIME);
+    p.attach(video);
+    instances[0].open();
+    const drainAll = () => {
+      let guard = 0;
+      while (instances[0].buffers.some((b) => b.updating) && guard++ < 2000) {
+        for (const b of instances[0].buffers) if (b.updating) b.finishUpdate();
+      }
+    };
+    p.pushSegment(init());
+    p.pushSegment(init(AUDIO_MIME, 'audio'));
+    for (let i = 0; i < 10; i++) {
+      p.pushSegment(media(i === 0, i));
+      p.pushSegment(media(true, i, 'audio'));
+      drainAll();
+    }
+    instances[0].streaming = false;
+    for (let i = 10; i < 10 + MAX_QUEUED_SEGMENTS + 40; i++) {
+      p.pushSegment(media(i % 30 === 0, i));
+      p.pushSegment(media(true, i, 'audio'));
+    }
+    instances[0].setStreaming(true); // the resume keyframes go out…
+    instances[0].streaming = false; // …and MMS parks again before they land
+    drainAll();
+    const [vsb, asb] = instances[0].buffers;
+    // The trim ran in pump()'s parked branch: removes, never appends.
+    expect(vsb.buffered.length).toBe(1);
+    expect(asb.buffered.length).toBe(1);
+  });
+
+  it('keeps the queue bounded when a parked GOP is longer than the bound', () => {
+    const { ctor, instances } = makeFakeMsCtor({ managed: true });
+    const p = new MsePresenter(ctor);
+    const { video } = makeVideo();
+    setElementMedia(video, 4, [[0, 1]]);
+    p.attach(video);
+    instances[0].open();
+    p.pushSegment(init());
+    let guard = 0;
+    p.pushSegment(media(true, 0));
+    while (instances[0].sb?.updating && guard++ < 100) instances[0].sb.finishUpdate();
+    instances[0].streaming = false;
+    // A 2.2 s WHIP/OBS GOP at 60 fps (docs/83 D7's ceiling) is 132 frames.
+    const LONG_GOP = MAX_QUEUED_SEGMENTS + 40;
+    for (let i = 1; i < 3 * LONG_GOP; i++) {
+      p.pushSegment(media(i % LONG_GOP === 0, i));
+      expect(p.getStats().queued).toBeLessThanOrEqual(MAX_QUEUED_SEGMENTS);
+    }
   });
 
   it('re-primes a fresh MediaSource from the cached init on re-attach and waits for a keyframe', () => {

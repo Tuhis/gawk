@@ -215,10 +215,11 @@ export interface MsePresenterStats {
 // queued keyframe (media segments are a dependent stream, so resuming anywhere
 // else would append deltas whose references were dropped) and marks the track
 // discontinuous: what it appends next cannot abut what it appended last, so the
-// resume is healed as a discontinuity (see healDiscontinuity) rather than left
-// as a hole in the buffered timeline. On iPhone this is the steady state of a
-// long arming period: MMS parks a fed, paused element (docs/27 Decision 5)
-// while the live stream keeps arriving.
+// resume is healed as a discontinuity (see maybeHeal) rather than left as a
+// hole in the buffered timeline. On iPhone this is the steady state of a long
+// arming period: MMS parks a fed, paused element (docs/27 Decision 5) while the
+// live stream keeps arriving. A single GOP longer than the bound (a WHIP/OBS
+// GOP can reach ~2.2 s, docs/83 D7) is dropped whole, so the bound is hard.
 export const MAX_QUEUED_SEGMENTS = 128;
 
 // Pruning, on every MediaSource: MMS is supposed to evict on its own, but an
@@ -255,6 +256,8 @@ export const MAX_QUEUED_SEGMENTS = 128;
 export const PRUNE_BUDGET_BYTES = 8 * 1024 * 1024;
 export const PRUNE_CEILING_S = 30;
 export const PRUNE_BEHIND_S = 1;
+// Well under a frame (16.7 ms at 60 fps): absorbs `buffered` rounding only.
+const LEDGER_TIME_EPSILON_S = 0.001;
 
 // How long the audio SourceBuffer may exist without receiving a single sample
 // before audio is given up on. Creating it up front is what makes the pair
@@ -361,6 +364,9 @@ export class MsePresenter {
   private droppedNoInit = 0;
   private droppedOverflow = 0;
   private discontinuities = 0;
+  // Set by an overflow, cleared by the heal that counts it: one resume is one
+  // discontinuity however many tracks' updateends re-run maybeHeal.
+  private healArmed = false;
   private lastError: string | null = null;
   // Per-MediaSource: whether duration = Infinity stuck (see declareLive).
   private liveDuration = false;
@@ -617,6 +623,10 @@ export class MsePresenter {
         break;
       }
     }
+    // The newest keyframe is the head: the GOP it starts is itself longer than
+    // the bound (a WHIP/OBS GOP can reach ~2.2 s, docs/83 D7). Drop it too and
+    // resume at the next keyframe, or the queue would grow with the GOP.
+    if (cut === 0) cut = t.queue.length;
     const dropped = t.queue.slice(0, cut);
     const kept = t.queue.slice(cut);
     // The init governing the kept head may be among the dropped (a parameter
@@ -628,6 +638,7 @@ export class MsePresenter {
     this.droppedOverflow += dropped.filter((s) => s.kind === 'media').length;
     t.needKeyframe = true;
     t.gap = true;
+    this.healArmed = true;
   }
 
   dispose(): void {
@@ -926,7 +937,10 @@ export class MsePresenter {
           healed = true;
         }
       }
-      if (healed) this.discontinuities++;
+      if (healed && this.healArmed) {
+        this.healArmed = false;
+        this.discontinuities++;
+      }
     } catch {
       // buffered/seek quirks must never break the append loop
     }
@@ -994,10 +1008,12 @@ export class MsePresenter {
   }
 
   // A heal's trim removes the stale video ranges outside the prune target; the
-  // byte ledger counts what is buffered, so it forgets them too.
+  // byte ledger counts what is buffered, so it forgets them too. `timeS` is the
+  // tfdt while `buffered.start()` is rounded to the UA's timescale, hence the
+  // tolerance: the resume keyframe's own entry must survive.
   private retireLedgerBefore(timeS: number): void {
     let n = 0;
-    while (n < this.ledger.length && this.ledger[n].timeS < timeS) n++;
+    while (n < this.ledger.length && this.ledger[n].timeS < timeS - LEDGER_TIME_EPSILON_S) n++;
     for (const e of this.ledger.splice(0, n)) {
       this.ledgerBytes -= e.bytes;
       this.prunedBytes += e.bytes;
