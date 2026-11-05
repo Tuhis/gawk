@@ -1154,7 +1154,10 @@ mod stats_tests {
             ),
             (9_000, 12, 5)
         );
-        assert_eq!((st.keyframe_streams_sent, st.keyframe_streams_slow), (40, 7));
+        assert_eq!(
+            (st.keyframe_streams_sent, st.keyframe_streams_slow),
+            (40, 7)
+        );
     }
 
     #[test]
