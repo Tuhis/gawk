@@ -13,6 +13,7 @@ import {
   type ViewerErrorKind,
 } from '../../transport/viewer-session';
 import { CLOSE_CODE_POP_UPLINK_FULL, CLOSE_CODE_SERVER_DRAINING } from '../../transport/wire';
+import { fullKind } from './fullRefusal';
 import { setInterpolationEnabled as setLocalInterpolation } from '../../transport/interpolation';
 import { setStripeMode as setLocalStripeMode, type StripeMode } from '../../transport/stripe';
 import {
@@ -114,7 +115,10 @@ export interface ViewerConnectionState {
   error: string | null;
   // What the failure means to the user; drives the error-card copy. The raw
   // `error` message is console-only detail ("handshake failed" means nothing
-  // to a viewer).
+  // to a viewer). 'broadcast-full' / 'relay-full' are set while status is
+  // 'reconnecting': the relay refused this viewer for capacity (4018 / 4019)
+  // and the session retries every 20 s. They hold across those retries
+  // (each connects before it is refused again) until frames arrive.
   errorKind: ViewerErrorKind | null;
   errorFatal: boolean;
   // 'moderated' when close code 4006 ended the broadcast, 'stopped' when the
@@ -215,6 +219,8 @@ export function useViewerConnection(
   const [retryNote, setRetryNote] = useState<string | null>(null);
   const [popFull, setPopFull] = useState(false);
   const popFullRef = useRef(false);
+  // A 4018/4019 refusal is showing; mirrors errorKind for the event funnel.
+  const fullRef = useRef(false);
   const [stageStale, setStageStale] = useState(false);
   const stageStaleRef = useRef(false);
   // The MSE capability verdict, computed on the main thread from the
@@ -409,6 +415,7 @@ export function useViewerConnection(
     setRetryNote(null);
     popFullRef.current = false;
     setPopFull(false);
+    fullRef.current = false;
     stageStaleRef.current = false;
     setStageStale(false);
   }, []);
@@ -446,9 +453,9 @@ export function useViewerConnection(
   const applyEvent = useCallback((ev: ViewerWorkerEvent) => {
     switch (ev.type) {
       case 'connected':
-        // A retry after 4012 connects before the relay refuses it again: the
-        // party-full state holds until frames prove the slot is ours.
-        if (popFullRef.current) break;
+        // A retry after 4012, 4018 or 4019 connects before the relay refuses
+        // it again: the full state holds until frames prove the slot is ours.
+        if (popFullRef.current || fullRef.current) break;
         setRetryNote(null);
         setStatus('watching');
         break;
@@ -456,6 +463,12 @@ export function useViewerConnection(
         setStatus('reconnecting');
         popFullRef.current = ev.closeCode === CLOSE_CODE_POP_UPLINK_FULL;
         setPopFull(popFullRef.current);
+        {
+          // 4018/4019: the card says why, so no attempt counter goes over it.
+          const kind = fullKind(ev.closeCode);
+          fullRef.current = kind !== null;
+          setErrorKind(kind);
+        }
         // An event, not a sample: a 2 s grid cannot represent a reconnect, and
         // the close code is exactly what a human narrates about what went
         // wrong.
@@ -466,11 +479,13 @@ export function useViewerConnection(
         // A 4002 drain is a planned relay rollout with an instant retry —
         // show calmer copy than the generic attempt counter.
         setRetryNote(
-          ev.closeCode === CLOSE_CODE_POP_UPLINK_FULL
-            ? POP_UPLINK_FULL_NOTE
-            : ev.closeCode === CLOSE_CODE_SERVER_DRAINING
-              ? 'Stream server is updating — reconnecting…'
-              : `Reconnecting — attempt ${ev.attempt}/${RECONNECT_MAX_ATTEMPTS}`,
+          fullRef.current
+            ? null
+            : ev.closeCode === CLOSE_CODE_POP_UPLINK_FULL
+              ? POP_UPLINK_FULL_NOTE
+              : ev.closeCode === CLOSE_CODE_SERVER_DRAINING
+                ? 'Stream server is updating — reconnecting…'
+                : `Reconnecting — attempt ${ev.attempt}/${RECONNECT_MAX_ATTEMPTS}`,
         );
         log.info('viewer reconnecting:', ev.reason);
         break;
@@ -489,9 +504,13 @@ export function useViewerConnection(
           stageStaleRef.current = false;
           setStageStale(false);
         }
-        if (popFullRef.current && (ev.stats.framesCompleted ?? 0) > 0) {
+        if ((popFullRef.current || fullRef.current) && (ev.stats.framesCompleted ?? 0) > 0) {
           popFullRef.current = false;
           setPopFull(false);
+          if (fullRef.current) {
+            fullRef.current = false;
+            setErrorKind(null);
+          }
           setRetryNote(null);
           setStatus('watching');
         }
@@ -588,6 +607,7 @@ export function useViewerConnection(
       case 'ended':
         popFullRef.current = false;
         setPopFull(false);
+        fullRef.current = false;
         setRetryNote(null);
         setEndReason(ev.reason);
         // A clean end is the one moment the service can finalize this session
@@ -604,6 +624,10 @@ export function useViewerConnection(
       case 'stopped':
         popFullRef.current = false;
         setPopFull(false);
+        if (fullRef.current) {
+          fullRef.current = false;
+          setErrorKind(null);
+        }
         setRetryNote(null);
         setEndReason('stopped');
         stageStaleRef.current = true;

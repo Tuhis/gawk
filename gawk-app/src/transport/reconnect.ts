@@ -4,9 +4,11 @@
 
 import {
   CLOSE_CODE_BROADCAST_ENDED,
+  CLOSE_CODE_BROADCAST_FULL,
   CLOSE_CODE_BROADCASTER_STOPPED,
   CLOSE_CODE_POP_UPLINK_FULL,
   CLOSE_CODE_PUBLISHER_SUPERSEDED,
+  CLOSE_CODE_RELAY_FULL,
   CLOSE_CODE_ROOM_ENDED,
   CLOSE_CODE_SERVER_DRAINING,
   CLOSE_CODE_TERMINATED_BY_OPERATOR,
@@ -61,16 +63,27 @@ export function isTerminalRoomClose(code: number | null | undefined): code is nu
   return code != null && TERMINAL_ROOM_CLOSE_CODES.has(code);
 }
 
-// R74 (docs/76 item 28): 4012 PopUplinkFull means the broadcast is at a LAN
-// party whose internet is already carrying all the streams it may. It is NOT
-// terminal and deliberately absent from TERMINAL_VIEWER_CLOSE_CODES: the slot
-// frees when another outside viewer leaves, so the viewer retries on this
-// fixed cadence for as long as it is refused, and the refusals do not spend
-// the reconnect budget (isPopUplinkFull lets ViewerSession tell them apart).
-export const POP_UPLINK_FULL_RETRY_MS = 20_000;
+// Capacity refusals: the relay answered, and the answer was "full". R74's
+// 4012 PopUplinkFull (docs/76 item 28: the broadcast is at a LAN party whose
+// internet already carries all the streams it may), 4018 BroadcastFull (the
+// broadcast is at its viewer limit) and 4019 RelayFull (the relay is). None
+// is terminal, and all are deliberately absent from
+// TERMINAL_VIEWER_CLOSE_CODES: a slot frees when another viewer leaves, so
+// the viewer retries on this fixed cadence for as long as it is refused, and
+// the refusals never spend the reconnect budget. Each refused session
+// connected before it was closed, so without the fixed cadence every refusal
+// would restart the ladder at 1 s.
+export const FULL_RETRY_MS = 20_000;
+export const POP_UPLINK_FULL_RETRY_MS = FULL_RETRY_MS;
 
-export function isPopUplinkFull(code: number | null | undefined): boolean {
-  return code === CLOSE_CODE_POP_UPLINK_FULL;
+const CAPACITY_REFUSAL_CLOSE_CODES: ReadonlySet<number> = new Set([
+  CLOSE_CODE_POP_UPLINK_FULL,
+  CLOSE_CODE_BROADCAST_FULL,
+  CLOSE_CODE_RELAY_FULL,
+]);
+
+export function isCapacityRefusal(code: number | null | undefined): boolean {
+  return code != null && CAPACITY_REFUSAL_CLOSE_CODES.has(code);
 }
 
 // R78 (docs/79 D7): 4014 BroadcasterStopped means the broadcaster pressed
@@ -115,7 +128,7 @@ export const ABRUPT_DROP_RETRY_DELAY_MS = 250;
 // isTerminalPublisherClose first and stop. There is deliberately no "never"
 // return value — a delay of Infinity would still schedule a timer.
 export function reconnectDelayMs(attempt: number, closeCode?: number | null): number {
-  if (closeCode === CLOSE_CODE_POP_UPLINK_FULL) return POP_UPLINK_FULL_RETRY_MS;
+  if (isCapacityRefusal(closeCode)) return FULL_RETRY_MS;
   if (attempt === 1) {
     if (closeCode === CLOSE_CODE_SERVER_DRAINING) return 0;
     if (closeCode == null) return ABRUPT_DROP_RETRY_DELAY_MS;

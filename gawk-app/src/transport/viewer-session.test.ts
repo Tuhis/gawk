@@ -16,16 +16,20 @@ import {
 } from './viewer-session';
 import {
   BROADCASTER_STOPPED_RETRY_MS,
+  FULL_RETRY_MS,
   POP_UPLINK_FULL_RETRY_MS,
   isBroadcasterStopped,
+  isCapacityRefusal,
   isTerminalPublisherClose,
   isTerminalViewerClose,
 } from './reconnect';
 import {
   CLOSE_CODE_BROADCAST_ENDED,
+  CLOSE_CODE_BROADCAST_FULL,
   CLOSE_CODE_BROADCASTER_STOPPED,
   CLOSE_CODE_POP_UPLINK_FULL,
   CLOSE_CODE_PUBLISHER_SUPERSEDED,
+  CLOSE_CODE_RELAY_FULL,
   CLOSE_CODE_SERVER_DRAINING,
   CLOSE_CODE_TERMINATED_BY_OPERATOR,
 } from './wire';
@@ -154,6 +158,21 @@ describe('isBroadcasterStopped', () => {
   });
 });
 
+// BUGS.md fix 2026-11-06: the relay refuses a viewer for capacity with an
+// upgraded session closed 4018 (the broadcast is full) or 4019 (the relay
+// is), because the browser cannot read a refused CONNECT's 429.
+describe('isCapacityRefusal', () => {
+  it('is 4012, 4018 and 4019, none of them terminal', () => {
+    for (const code of [CLOSE_CODE_POP_UPLINK_FULL, CLOSE_CODE_BROADCAST_FULL, CLOSE_CODE_RELAY_FULL]) {
+      expect(isCapacityRefusal(code)).toBe(true);
+      expect(isTerminalViewerClose(code)).toBe(false);
+    }
+    for (const code of [4000, 4001, 4002, 4006, 4014, 4017, 429]) expect(isCapacityRefusal(code)).toBe(false);
+    expect(isCapacityRefusal(null)).toBe(false);
+    expect(isCapacityRefusal(undefined)).toBe(false);
+  });
+});
+
 describe('reconnectDelayMs', () => {
   it('doubles from 1s and caps at 15s (coded non-drain close)', () => {
     // 4001 stands in for any coded, non-drain close — the ladder base case.
@@ -166,6 +185,14 @@ describe('reconnectDelayMs', () => {
   it('waits 20 s after 4012 on every attempt', () => {
     for (const attempt of [1, 2, 5, 10]) {
       expect(reconnectDelayMs(attempt, CLOSE_CODE_POP_UPLINK_FULL)).toBe(20_000);
+    }
+  });
+
+  it('waits 20 s after a 4018 or 4019 capacity refusal on every attempt', () => {
+    expect(FULL_RETRY_MS).toBe(20_000);
+    expect(POP_UPLINK_FULL_RETRY_MS).toBe(FULL_RETRY_MS);
+    for (const code of [CLOSE_CODE_BROADCAST_FULL, CLOSE_CODE_RELAY_FULL]) {
+      for (const attempt of [1, 2, 5, 10]) expect(reconnectDelayMs(attempt, code)).toBe(FULL_RETRY_MS);
     }
   });
 
@@ -275,6 +302,29 @@ describe('ViewerSession', () => {
     expect(events.some((e) => e.startsWith('error:'))).toBe(false);
     await session.stop();
   });
+
+  // A refused viewer's session connects and is then closed, so without this
+  // every refusal would restart the 1 s ladder and redial a full broadcast
+  // once a second, forever.
+  for (const [name, code] of [
+    ['4018 BroadcastFull', CLOSE_CODE_BROADCAST_FULL],
+    ['4019 RelayFull', CLOSE_CODE_RELAY_FULL],
+  ] as const) {
+    it(`retries every 20 s after ${name}, without spending the reconnect budget`, async () => {
+      const { session, pipelines, events } = makeHarness();
+      await session.start();
+      for (let i = 0; i < RECONNECT_MAX_ATTEMPTS + 2; i++) {
+        pipelines[i].crash('full', code);
+        expect(events.at(-1)).toBe(`reconnecting:1:${FULL_RETRY_MS}`);
+        await vi.advanceTimersByTimeAsync(FULL_RETRY_MS - 1);
+        expect(pipelines).toHaveLength(i + 1);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(pipelines).toHaveLength(i + 2);
+      }
+      expect(events.some((e) => e.startsWith('error:') || e === 'ended')).toBe(false);
+      await session.stop();
+    });
+  }
 
   it('resets the attempt counter after a successful reconnect', async () => {
     const { session, pipelines, events } = makeHarness();

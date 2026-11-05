@@ -232,6 +232,44 @@ describe('ViewerScreen states', () => {
     expect(screen.queryByText(copy)).toBeNull();
   });
 
+  // BUGS.md fix 2026-11-06: a viewer refused for capacity used to read
+  // "Streamer offline" about a live stream. The relay now says why (4018:
+  // this broadcast is full; 4019: the stream server is), and the card says
+  // so, holds across the 20 s retries (each retry connects before the relay
+  // refuses it again, and must not flash "live"), and clears with frames.
+  for (const [code, title, body] of [
+    [4018, 'This stream is full', /has all the viewers it can take/],
+    [4019, 'The stream server is full', /can’t take any more viewers/],
+  ] as const) {
+    it(`shows the ${code} full card, not "Streamer offline", until frames arrive`, async () => {
+      render(<ViewerScreen broadcastId="AB2CD3" />);
+      await waitFor(() => expect(sessions).toHaveLength(1));
+      act(() => sessions[0].cbs.onConnected());
+      act(() =>
+        (sessions[0].cbs.onReconnecting as (i: unknown) => void)({
+          attempt: 1,
+          reason: 'full',
+          closeCode: code,
+          delayMs: 20_000,
+        }),
+      );
+      expect(screen.getByText(title)).toBeTruthy();
+      expect(screen.getByText(body)).toBeTruthy();
+      expect(screen.getByText(/keep trying/)).toBeTruthy();
+      expect(screen.queryByText('Streamer offline')).toBeNull();
+      expect(screen.queryByText(/Reconnecting — attempt/)).toBeNull();
+      // It retries by itself, so no Retry button; Home leaves.
+      expect(screen.queryByText('Retry')).toBeNull();
+      expect(screen.getByText('Home')).toBeTruthy();
+      act(() => sessions[0].cbs.onConnected());
+      expect(screen.getByText(title)).toBeTruthy();
+      act(() => sessions[0].cbs.onStats({ viewerCount: 1, framesCompleted: 0 }));
+      expect(screen.getByText(title)).toBeTruthy();
+      act(() => sessions[0].cbs.onStats({ viewerCount: 1, framesCompleted: 3 }));
+      expect(screen.queryByText(title)).toBeNull();
+    });
+  }
+
   it('renders the watching badge from the pushed viewer count', async () => {
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));

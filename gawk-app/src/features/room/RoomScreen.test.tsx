@@ -272,6 +272,25 @@ describe('RoomScreen modes', () => {
     expect(within(tile).queryByText('Party-only right now')).toBeNull();
   });
 
+  // BUGS.md fix 2026-11-06: a tile refused for capacity (4018: the
+  // broadcast is full; 4019: the relay is) says so instead of
+  // "Reconnecting…", retrying every 20 s, and joins when frames arrive.
+  for (const code of [4018, 4019]) {
+    it(`a tile refused with ${code} reads "Full right now" until frames arrive`, async () => {
+      await joinAs();
+      await waitFor(() => expect(activeViewerIds()).toEqual(['AAAAAA', 'BBBBBB', 'CCCCCC']));
+      const alpha = viewerSessions.find((v) => v.id === 'AAAAAA')!;
+      act(() => alpha.cbs.onReconnecting({ attempt: 1, delayMs: 20_000, reason: 'full', closeCode: code }));
+      const tile = screen.getAllByTestId('room-tile')[0];
+      expect(within(tile).getByText('Full right now')).toBeTruthy();
+      expect(within(tile).queryByText('Reconnecting…')).toBeNull();
+      act(() => alpha.cbs.onConnected());
+      expect(within(tile).getByText('Full right now')).toBeTruthy();
+      act(() => alpha.cbs.onStats({ viewerCount: 2, framesCompleted: 4 }));
+      expect(within(tile).queryByText('Full right now')).toBeNull();
+    });
+  }
+
   it('a number key focuses that POV; 0 returns to grid; neither fires while typing', async () => {
     await joinAs();
     fireEvent.keyDown(window, { key: '2' });
