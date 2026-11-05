@@ -4,24 +4,6 @@ Confirmed, not-yet-fixed defects. Each entry says how it was found, what the
 impact is, and where a fix would start. Remove entries when fixed (and move
 anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 
-## Relay sends the telemetry hello before it records the session ID (flaky test)
-
-- **Found**: 2026-11-01, while parallelising gawk-server's slow tests for CI
-  speed: `TestTelemetryHelloJoinsBothSidesOfASession` (internal/transport,
-  still serial) failed once under `go test -race` with
-  `subscriberDetails[0].sessionId = ""`.
-- **What**: `sendSessionTelemetry` (`internal/transport/telemetry.go`) runs
-  `record(s.sendTelemetryHello(...))`: the hello is written to the client
-  first, and the publisher's/subscriber's `SetTelemetrySession` runs only
-  after the write returns. A reader that acts on the hello (the test reads
-  `/statusz` as soon as its client has it) can see the session with no ID.
-- **Impact**: a test flake, plus a momentary `/statusz` row without its
-  telemetry session ID. No data is lost; the ID appears a moment later.
-- **Fix would start**: test-first — make the test read `/statusz` the instant
-  the hello arrives (or hold the write), watch it fail, then record the ID
-  before writing the hello. The PoP path (`sendPopTelemetry`) records after
-  its own round trip and needs the same look.
-
 ## Room footer: a round control sits on top of the quality pill at 390 px
 
 - **Found**: 2026-10-28, reading `e2e/voice-panel.mjs`'s `hold-to-talk-390.png`

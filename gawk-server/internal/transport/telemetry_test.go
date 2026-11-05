@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -336,6 +337,163 @@ func TestTelemetryHelloNotSentToInternalSubscribe(t *testing.T) {
 	for _, d := range st.SubscriberDetails {
 		if d.Internal && d.SessionID != "" {
 			t.Errorf("edge session carries sessionId %q, want none", d.SessionID)
+		}
+	}
+}
+
+// helloRecordProbe installs testHookTelemetryHelloSent and, at the instant
+// each hello is on the wire, snapshots the session ID /statusz shows for that
+// role. A client acts on its hello as soon as it has it, so the relay must
+// already have recorded the ID by then (BUGS.md 2026-11-01: the hello was
+// written first and recorded after, so /statusz briefly had no ID).
+type helloRecordProbe struct {
+	mu   sync.Mutex
+	seen map[wire.TelemetryRole]string
+}
+
+func probeHelloRecord(srv *Server, r *hub.Registry) *helloRecordProbe {
+	p := &helloRecordProbe{seen: map[wire.TelemetryRole]string{}}
+	hook := func(id string, role wire.TelemetryRole) {
+		st := r.Stats().Broadcasts[r.ObfuscateID(id)]
+		sid := st.PublisherSessionID
+		if role == wire.TelemetryRoleViewer {
+			sid = ""
+			if len(st.SubscriberDetails) == 1 {
+				sid = st.SubscriberDetails[0].SessionID
+			}
+		}
+		p.mu.Lock()
+		p.seen[role] = sid
+		p.mu.Unlock()
+	}
+	srv.testHookTelemetryHelloSent.Store(&hook)
+	return p
+}
+
+func (p *helloRecordProbe) at(role wire.TelemetryRole) (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	sid, ok := p.seen[role]
+	return sid, ok
+}
+
+// checkHelloRecorded asserts the role's hello had fired the probe with want
+// already in /statusz.
+func checkHelloRecorded(t *testing.T, p *helloRecordProbe, role wire.TelemetryRole, want string) {
+	t.Helper()
+	var got string
+	waitFor(t, 5*time.Second, func() bool {
+		var ok bool
+		got, ok = p.at(role)
+		return ok
+	}, "the hello-sent hook fired")
+	if got != want {
+		t.Errorf("%s: /statusz session ID when the hello was sent = %q, want %q (the ID must be recorded before the hello is written)", role, got, want)
+	}
+}
+
+func helloSessionID(t *testing.T, msg []byte, role wire.TelemetryRole) string {
+	t.Helper()
+	h, err := wire.ParseTelemetryHello(msg)
+	if err != nil {
+		t.Fatalf("ParseTelemetryHello: %v", err)
+	}
+	sid, err := wire.VerifyTelemetrySessionToken(testTelemetryKey, h.Token, h.BroadcastKey, role, time.Now())
+	if err != nil {
+		t.Fatalf("%s token: %v", role, err)
+	}
+	return sid
+}
+
+// A relay holding the fleet key records each session's ID before writing
+// its hello, for the broadcaster and the viewer.
+func TestTelemetryHelloSentAfterSessionIDRecorded(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	port, clientTLS, r, _, srv := startTestServerCfgLogSrv(t, ctx, telemetryCfg(), discardLog)
+	probe := probeHelloRecord(srv, r)
+
+	pub := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/publish", port), clientTLS)
+	defer pub.CloseWithError(0, "")
+	msgs := readUniMessages(t, ctx, pub, 3)
+	id, err := wire.ParseBroadcastAnnounce(msgs[wire.TypeBroadcastAnnounce])
+	if err != nil {
+		t.Fatalf("ParseBroadcastAnnounce: %v", err)
+	}
+	checkHelloRecorded(t, probe, wire.TelemetryRoleBroadcaster,
+		helloSessionID(t, msgs[wire.TypeTelemetryHello], wire.TelemetryRoleBroadcaster))
+
+	sub := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/subscribe/%s", port, id), clientTLS)
+	defer sub.CloseWithError(0, "")
+	subMsgs := readUniMessages(t, ctx, sub, 1)
+	checkHelloRecorded(t, probe, wire.TelemetryRoleViewer,
+		helloSessionID(t, subMsgs[wire.TypeTelemetryHello], wire.TelemetryRoleViewer))
+}
+
+// fakePopTelemetry stands in for popclient.Client: home's minted hello,
+// here minted locally under testTelemetryKey.
+type fakePopTelemetry struct{ r *hub.Registry }
+
+func (fakePopTelemetry) LocalRelayInfo(string) wire.LocalRelayInfo { return wire.LocalRelayInfo{} }
+
+func (f fakePopTelemetry) TelemetryHello(_ context.Context, id string, role wire.TelemetryRole) (wire.TelemetryHello, string, bool) {
+	key, err := hex.DecodeString(f.r.ObfuscateID(id))
+	if err != nil {
+		return wire.TelemetryHello{}, "", false
+	}
+	token, err := wire.MintTelemetrySessionToken(testTelemetryKey, key, role, time.Now())
+	if err != nil {
+		return wire.TelemetryHello{}, "", false
+	}
+	return wire.TelemetryHello{Enabled: true, ReportIntervalMs: 2000, Token: token, BroadcastKey: key}, "", true
+}
+
+// The PoP path (docs/78 D5) records the home-minted ID before writing the
+// hello too.
+func TestPopTelemetryHelloSentAfterSessionIDRecorded(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cfg := telemetryCfg()
+	cfg.TelemetryKey = nil // a PoP never holds the fleet key (D1)
+	port, clientTLS, r, _, srv := startTestServerCfgLogSrv(t, ctx, cfg, discardLog)
+	srv.SetLocalRelay(fakePopTelemetry{r: r})
+	probe := probeHelloRecord(srv, r)
+
+	pub := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/publish", port), clientTLS)
+	defer pub.CloseWithError(0, "")
+	msgs := readUniUntil(t, ctx, pub, wire.TypeBroadcastAnnounce, wire.TypeTelemetryHello)
+	id, err := wire.ParseBroadcastAnnounce(msgs[wire.TypeBroadcastAnnounce])
+	if err != nil {
+		t.Fatalf("ParseBroadcastAnnounce: %v", err)
+	}
+	checkHelloRecorded(t, probe, wire.TelemetryRoleBroadcaster,
+		helloSessionID(t, msgs[wire.TypeTelemetryHello], wire.TelemetryRoleBroadcaster))
+
+	sub := dial(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/subscribe/%s", port, id), clientTLS)
+	defer sub.CloseWithError(0, "")
+	checkHelloRecorded(t, probe, wire.TelemetryRoleViewer,
+		helloSessionID(t, readUniUntil(t, ctx, sub, wire.TypeTelemetryHello)[wire.TypeTelemetryHello], wire.TelemetryRoleViewer))
+}
+
+// readUniUntil reads server-initiated uni streams, in whatever order they
+// arrive, until every wanted type has been seen; other types are kept too.
+func readUniUntil(t *testing.T, ctx context.Context, sess *webtransport.Session, want ...uint8) map[uint8][]byte {
+	t.Helper()
+	out := map[uint8][]byte{}
+	for {
+		missing := false
+		for _, w := range want {
+			if _, ok := out[w]; !ok {
+				missing = true
+			}
+		}
+		if !missing {
+			return out
+		}
+		for typ, data := range readUniMessages(t, ctx, sess, 1) {
+			out[typ] = data
 		}
 	}
 }

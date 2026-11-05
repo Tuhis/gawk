@@ -3879,7 +3879,7 @@ func (s *Subscriber) RecordDownstreamViewers(count uint32) {
 // SetTelemetrySession records the telemetry session handle this
 // subscriber was told in its TelemetryHello (docs/33), so /statusz can
 // carry it and the two sides of one viewer become joinable. Called by the
-// transport right after the hello is sent; a no-op with an empty id, which is
+// transport just before the hello is sent; a no-op with an empty id, which is
 // the telemetry-disabled path.
 func (s *Subscriber) SetTelemetrySession(sessionID string) {
 	if sessionID == "" {
