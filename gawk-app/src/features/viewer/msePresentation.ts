@@ -39,6 +39,9 @@ export interface SourceBufferLike {
   updating: boolean;
   appendBuffer(data: BufferSource): void;
   remove(start: number, end: number): void;
+  // This buffer's own ranges (the element's are the tracks' intersection).
+  // Optional only so minimal fakes can omit it; every real SourceBuffer has it.
+  readonly buffered?: TimeRanges;
   changeType?(mime: string): void;
   addEventListener(type: string, cb: () => void): void;
   removeEventListener(type: string, cb: () => void): void;
@@ -177,6 +180,13 @@ export interface MsePresenterStats {
   // appender produce identical stats (appended 0, errors 0).
   received: number;
   droppedNoInit: number;
+  // Segments shed because a track's queue overflowed MAX_QUEUED_SEGMENTS — the
+  // MMS-parking signature (docs/27 finding 3 item 5): nonzero is what tells a
+  // parked-and-overflowed appender apart from every other cause of a short
+  // `segmentsAppended`. `discontinuities` counts the resumes after such a drop
+  // that found a hole and healed it (seek into the newest range, trim the rest).
+  droppedOverflow: number;
+  discontinuities: number;
   // Whether an audio SourceBuffer exists (i.e. audio segments are
   // actually being presented), and how many samples it has taken.
   audioTrack: boolean;
@@ -201,9 +211,14 @@ export interface MsePresenterStats {
 }
 
 // Bound on segments waiting for the SourceBuffer (one segment per frame ⇒
-// ~2 s at 60 fps). Overflow drops from the FRONT and then discards up to the
-// next keyframe-starting segment: media segments are a dependent stream, so
-// resuming anywhere else would append deltas whose references were dropped.
+// ~2 s at 60 fps). Overflow discards the whole stale backlog up to the NEWEST
+// queued keyframe (media segments are a dependent stream, so resuming anywhere
+// else would append deltas whose references were dropped) and marks the track
+// discontinuous: what it appends next cannot abut what it appended last, so the
+// resume is healed as a discontinuity (see healDiscontinuity) rather than left
+// as a hole in the buffered timeline. On iPhone this is the steady state of a
+// long arming period: MMS parks a fed, paused element (docs/27 Decision 5)
+// while the live stream keeps arriving.
 export const MAX_QUEUED_SEGMENTS = 128;
 
 // Pruning, on every MediaSource: MMS is supposed to evict on its own, but an
@@ -283,6 +298,14 @@ interface TrackState {
   // The presenter's prune target already removed from THIS SourceBuffer; a
   // track busy when the target moved catches up at its next idle moment.
   prunedTo: number;
+  // Set when the queue overflowed: the next keyframe this track appends opens a
+  // new buffered range after a hole. Becomes `healPending` once that append is
+  // issued, and the heal runs at its updateend (when `buffered` includes it).
+  gap: boolean;
+  healPending: boolean;
+  // Where a heal decided this track's stale ranges end; removed before the next
+  // append (one SourceBuffer operation in flight at a time).
+  trimBefore: number | null;
 }
 
 function newTrackState(track: Fmp4Track): TrackState {
@@ -297,6 +320,9 @@ function newTrackState(track: Fmp4Track): TrackState {
     initAppended: false,
     onError: null,
     prunedTo: 0,
+    gap: false,
+    healPending: false,
+    trimBefore: null,
   };
 }
 
@@ -333,6 +359,8 @@ export class MsePresenter {
   private appendErrors = 0;
   private segmentsReceived = 0;
   private droppedNoInit = 0;
+  private droppedOverflow = 0;
+  private discontinuities = 0;
   private lastError: string | null = null;
   // Per-MediaSource: whether duration = Infinity stuck (see declareLive).
   private liveDuration = false;
@@ -353,6 +381,7 @@ export class MsePresenter {
     this.pump();
   };
   private readonly onUpdateEnd = () => {
+    this.maybeHeal();
     this.maybeCatchUp();
     this.prune();
     this.pump();
@@ -400,6 +429,8 @@ export class MsePresenter {
       streaming: this.ms?.streaming ?? null,
       received: this.segmentsReceived,
       droppedNoInit: this.droppedNoInit,
+      droppedOverflow: this.droppedOverflow,
+      discontinuities: this.discontinuities,
       liveDuration: this.liveDuration,
       audioTrack: this.audioBuf.sb !== null,
       audioSegmentsAppended: this.audioBuf.appended,
@@ -518,6 +549,10 @@ export class MsePresenter {
       t.sbMime = null;
       t.initAppended = false;
       t.prunedTo = 0;
+      // A fresh MediaSource has no old range for a hole to open after.
+      t.gap = false;
+      t.healPending = false;
+      t.trimBefore = null;
     }
     this.ms = null;
     // A fresh MediaSource starts empty.
@@ -566,13 +601,33 @@ export class MsePresenter {
       return;
     }
     t.queue.push(seg);
-    while (t.queue.length > MAX_QUEUED_SEGMENTS) {
-      // Dropping anything breaks the dependent stream: resume at a keyframe.
-      // (A dropped init re-primes from cachedInit in pump() when needed.)
-      t.queue.shift();
-      t.needKeyframe = true;
-    }
+    if (t.queue.length > MAX_QUEUED_SEGMENTS) this.discardBacklog(t);
     this.pump();
+  }
+
+  // Queue overflow (see MAX_QUEUED_SEGMENTS): keep only what starts at the newest
+  // queued keyframe — everything older is a backlog the playhead will be moved
+  // past anyway — and mark the track discontinuous so the resume is healed.
+  private discardBacklog(t: TrackState): void {
+    let cut = t.queue.length;
+    for (let i = t.queue.length - 1; i >= 0; i--) {
+      const s = t.queue[i];
+      if (s.kind === 'media' && s.keyframe) {
+        cut = i;
+        break;
+      }
+    }
+    const dropped = t.queue.slice(0, cut);
+    const kept = t.queue.slice(cut);
+    // The init governing the kept head may be among the dropped (a parameter
+    // change inside the backlog): put the newest dropped one back in front.
+    let lastInit: PresenterSegment | null = null;
+    for (const s of dropped) if (s.kind === 'init') lastInit = s;
+    if (lastInit) kept.unshift(lastInit);
+    t.queue = kept;
+    this.droppedOverflow += dropped.filter((s) => s.kind === 'media').length;
+    t.needKeyframe = true;
+    t.gap = true;
   }
 
   dispose(): void {
@@ -615,8 +670,13 @@ export class MsePresenter {
   // media (see canPark).
   private pump(): void {
     if (this.failed || !this.ms || !this.sourceOpen) return;
-    // MMS pacing: `streaming` false parks the queue until startstreaming.
-    if (this.ms.streaming === false && this.canPark()) return;
+    // MMS pacing: `streaming` false parks the queue until startstreaming. A
+    // pending heal trim still runs: it removes, never appends, and it is what
+    // takes the element back to one buffered range.
+    if (this.ms.streaming === false && this.canPark()) {
+      for (const t of this.tracks) this.trim(t);
+      return;
+    }
     // Each track appends independently — a video append in flight must not hold
     // audio back (and vice versa), or the two buffers drift by a whole append
     // round-trip each frame.
@@ -625,6 +685,7 @@ export class MsePresenter {
 
   private pumpTrack(t: TrackState): void {
     if (t.sb?.updating) return;
+    if (this.trim(t)) return;
 
     while (t.queue.length > 0) {
       const seg = t.queue[0];
@@ -647,7 +708,13 @@ export class MsePresenter {
         // Media without a SourceBuffer and no cached init: nothing to do.
         continue;
       }
-      if (seg.kind === 'media' && seg.keyframe) t.needKeyframe = false;
+      if (seg.kind === 'media' && seg.keyframe) {
+        t.needKeyframe = false;
+        if (t.gap) {
+          t.gap = false;
+          t.healPending = true;
+        }
+      }
       try {
         t.sb!.appendBuffer(seg.data as BufferSource);
         if (seg.kind === 'init') t.initAppended = true;
@@ -808,6 +875,63 @@ export class MsePresenter {
     this.audioTimer = null;
   }
 
+  // Issue a heal's pending remove; true if one is now in flight.
+  private trim(t: TrackState): boolean {
+    if (t.trimBefore === null || !t.sb || t.sb.updating) return false;
+    const end = t.trimBefore;
+    t.trimBefore = null;
+    try {
+      t.sb.remove(0, end);
+      return true;
+    } catch (e) {
+      // Best-effort: MMS evicts eventually, and the playhead is already past it.
+      log.warn(`MSE presentation: ${t.track} discontinuity trim failed:`, e);
+      return false;
+    }
+  }
+
+  // Resume-after-overflow is a DISCONTINUITY (BUGS.md, docs/27 finding 3 item 5):
+  // the segments shed while parked were never appended, so the first keyframe
+  // after them opens a new range and the old one ends in a hole the native
+  // player stalls at. Once that keyframe is in `buffered`, move the playhead to
+  // the live edge of the newest playable range and remove each track's older
+  // ranges — per track, at that track's own newest range start, because a video
+  // trim that ended mid-GOP would take the rest of the GOP with it (MSE's remove
+  // extends to the next random access point). One seek per resume; an armed,
+  // paused element is otherwise never seeked (Decision 5).
+  private maybeHeal(): void {
+    let due = false;
+    for (const t of this.tracks) {
+      if (t.healPending && t.sb && !t.sb.updating) {
+        t.healPending = false;
+        due = true;
+      }
+    }
+    const video = this.video;
+    if (!due || !video) return;
+    try {
+      let healed = false;
+      for (const t of this.tracks) {
+        const b = t.sb?.buffered;
+        if (!b || b.length < 2) continue;
+        t.trimBefore = b.start(b.length - 1);
+        if (t.track === 'video') this.retireLedgerBefore(t.trimBefore);
+        healed = true;
+      }
+      const eb = video.buffered;
+      if (eb.length > 0) {
+        const start = eb.start(eb.length - 1);
+        if (eb.length > 1 || video.currentTime < start) {
+          video.currentTime = Math.max(start, eb.end(eb.length - 1) - LIVE_EDGE_REJOIN_S);
+          healed = true;
+        }
+      }
+      if (healed) this.discontinuities++;
+    } catch {
+      // buffered/seek quirks must never break the append loop
+    }
+  }
+
   // While the (fullscreen) video plays, a playhead that fell behind the
   // buffered end past the mode's catch-up trigger jumps back to the mode's
   // target lag (liveEdge.ts, shared with useFullscreen's entry seek). Paused
@@ -866,6 +990,17 @@ export class MsePresenter {
         // best-effort; a refused remove is not retried at this target
       }
       t.prunedTo = this.pruneTo;
+    }
+  }
+
+  // A heal's trim removes the stale video ranges outside the prune target; the
+  // byte ledger counts what is buffered, so it forgets them too.
+  private retireLedgerBefore(timeS: number): void {
+    let n = 0;
+    while (n < this.ledger.length && this.ledger[n].timeS < timeS) n++;
+    for (const e of this.ledger.splice(0, n)) {
+      this.ledgerBytes -= e.bytes;
+      this.prunedBytes += e.bytes;
     }
   }
 

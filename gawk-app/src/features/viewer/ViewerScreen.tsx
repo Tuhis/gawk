@@ -530,6 +530,8 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     segmentsReceived: presenterStats?.received ?? 0,
     segmentsQueued: presenterStats?.queued ?? 0,
     segmentsDroppedNoInit: presenterStats?.droppedNoInit ?? 0,
+    segmentsDroppedOverflow: presenterStats?.droppedOverflow ?? 0,
+    discontinuitiesHealed: presenterStats?.discontinuities ?? 0,
     mmsStreaming: presenterStats?.streaming ?? null,
     lastAppendError: presenterStats?.lastError ?? null,
     liveDuration: presenterStats?.sourceOpen ? presenterStats.liveDuration : null,

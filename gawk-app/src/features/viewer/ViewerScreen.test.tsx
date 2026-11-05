@@ -845,6 +845,8 @@ describe('ViewerScreen presentation surface (R16 gate + R22 MSE)', () => {
       segmentsReceived: 0,
       segmentsQueued: 0,
       segmentsDroppedNoInit: 0,
+      segmentsDroppedOverflow: 0,
+      discontinuitiesHealed: 0,
       mmsStreaming: null,
       // Null until an append actually fails.
       lastAppendError: null,

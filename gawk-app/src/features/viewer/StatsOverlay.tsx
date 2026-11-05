@@ -343,12 +343,17 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
               // reached the main thread (0 against a climbing muxer = a broken
               // sink), queued what the appender is holding (full against 0
               // appends = the system is not taking them), no-init what was
-              // discarded for want of the session's one init segment.
+              // discarded for want of the session's one init segment,
+              // overflow what a queue that outgrew its bound shed (the MMS
+              // parking signature) and how many such resumes were healed.
               [
                 'Segments',
                 `${surface.segmentsReceived} recv · ${surface.segmentsQueued} queued` +
                   (surface.segmentsDroppedNoInit > 0
                     ? ` · ${surface.segmentsDroppedNoInit} dropped (no init)`
+                    : '') +
+                  (surface.segmentsDroppedOverflow > 0
+                    ? ` · ${surface.segmentsDroppedOverflow} dropped (overflow, ${surface.discontinuitiesHealed} healed)`
                     : ''),
               ],
               [
