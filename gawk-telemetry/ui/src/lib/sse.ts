@@ -103,12 +103,15 @@ export class SseParser {
 /**
  * Read an event stream to its end, calling `onEvent` for each event as it
  * completes. Resolves when the server closes the stream; rejects when the
- * connection fails or is aborted. `onRetry` hears each `retry:` hint.
+ * connection fails or is aborted. `onRetry` hears each `retry:` hint, and
+ * `onActivity` hears every chunk that arrives — a keepalive comment included,
+ * which is the stream's only proof of life while nothing changes.
  */
 export async function readSse(
   body: ReadableStream<Uint8Array>,
   onEvent: (ev: SseEvent) => void,
   onRetry?: (ms: number) => void,
+  onActivity?: () => void,
 ): Promise<void> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -125,6 +128,7 @@ export async function readSse(
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
+      onActivity?.();
       deliver(parser.push(decoder.decode(value, { stream: true })));
     }
     deliver(parser.push(decoder.decode()));

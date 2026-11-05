@@ -162,6 +162,50 @@ describe('the live feed (UD22)', () => {
     stop();
   });
 
+  // The stream sends only CHANGES: an idle fleet's identical snapshots are
+  // skipped and the connection carries a keepalive comment every 20 s
+  // (readapi.StreamHeartbeat). Judging it by the poll's 6 s threshold called
+  // every quiet fleet "stale" six seconds after it went quiet — which R36's
+  // header, showing feed health on every page, made impossible to miss.
+  it('does not call a quiet stream stale inside the heartbeat window', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(1_000_000);
+    const stop = useLiveStore.getState().start();
+    const es = FakeStream.instances[0];
+    await es.emit('open');
+    await es.emit('snapshot', JSON.stringify(snapshot));
+
+    vi.setSystemTime(1_000_000 + 15_000);
+    const s = useLiveStore.getState();
+    expect(isStale(s.lastOkAt, Date.now(), s.mode)).toBe(false);
+    stop();
+  });
+
+  it('counts a keepalive as the stream being alive, and only silence past it as stale', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(2_000_000);
+    const stop = useLiveStore.getState().start();
+    const es = FakeStream.instances[0];
+    await es.emit('open');
+    await es.emit('snapshot', JSON.stringify(snapshot));
+
+    vi.setSystemTime(2_000_000 + 20_000);
+    es.write(': keepalive\n\n');
+    await flush();
+    expect(useLiveStore.getState().lastOkAt).toBe(2_000_000 + 20_000);
+
+    vi.setSystemTime(2_000_000 + 40_000);
+    let s = useLiveStore.getState();
+    expect(isStale(s.lastOkAt, Date.now(), s.mode)).toBe(false);
+
+    // A stream that has said nothing at all for well past its heartbeat IS
+    // stale, whatever mode it is in.
+    vi.setSystemTime(2_000_000 + 20_000 + 30_000);
+    s = useLiveStore.getState();
+    expect(isStale(s.lastOkAt, Date.now(), s.mode)).toBe(true);
+    stop();
+  });
+
   it('keeps the last good snapshot when a poll fails, and says the feed is stale', async () => {
     // Blanking the page on one failed poll would be precisely the "absence of
     // evidence rendered as something else" the health model refuses to do.

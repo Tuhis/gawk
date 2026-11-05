@@ -36,6 +36,14 @@ export const POLL_MS = 2000;
  */
 export const STALE_AFTER_MS = POLL_MS * 3;
 
+/**
+ * The stream's own bound. It sends only changes, so an idle fleet's stream is
+ * silent but for a keepalive comment every 20 s (readapi.StreamHeartbeat);
+ * judging it by the poll's 6 s would call every quiet fleet stale. Heartbeat
+ * plus slack for a slow proxy.
+ */
+export const STREAM_STALE_AFTER_MS = 25_000;
+
 export type FeedMode = 'stream' | 'poll' | 'connecting';
 
 interface LiveState {
@@ -199,6 +207,12 @@ export const useLiveStore = create<LiveState>((set, get) => ({
           (ms) => {
             retryMs = ms;
           },
+          // Any bytes — a keepalive comment above all — prove the stream is
+          // alive while nothing changes (R36: see isStale). Frozen pages keep
+          // their frozen instant.
+          () => {
+            if (!get().paused) set({ lastOkAt: Date.now() });
+          },
         );
       } catch {
         // Lost mid-stream (or aborted by the teardown, handled just below).
@@ -243,6 +257,6 @@ function canStream(): boolean {
  * from the error flag: a feed that has been failing for one cycle is not yet
  * worth shouting about, and the last good data stays on screen either way.
  */
-export function isStale(lastOkAt: number | null, now = Date.now()): boolean {
-  return lastOkAt !== null && now - lastOkAt > STALE_AFTER_MS;
+export function isStale(lastOkAt: number | null, now = Date.now(), mode?: string): boolean {
+  return lastOkAt !== null && now - lastOkAt > (mode === 'stream' ? STREAM_STALE_AFTER_MS : STALE_AFTER_MS);
 }
