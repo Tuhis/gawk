@@ -13,6 +13,8 @@ import type { EChartsType } from './echarts.ts';
 // window, and every lane prints its own value at that instant in a fixed
 // column. Comparing lanes becomes a vertical glance.
 
+const FULL = { start: 0, end: 100 };
+
 export interface StackView {
   /** The crosshair's instant, or null when the cursor is off the stack. */
   cursorMs: number | null;
@@ -36,7 +38,12 @@ interface AxisInfo {
   axesInfo?: Array<{ value?: number }>;
 }
 
-export function useStack(fromMs: number, toMs: number): Stack {
+/**
+ * `subject` names what the stack shows (the connect group). A view that is
+ * reused for another broadcast or session passes a new one, and the stack
+ * starts over at the full range rather than at the last subject's zoom.
+ */
+export function useStack(fromMs: number, toMs: number, subject = ''): Stack {
   const [cursorMs, setCursor] = useState<number | null>(null);
   const [view, setView] = useState({ from: fromMs, to: toMs });
   const frame = useRef<number | null>(null);
@@ -44,17 +51,35 @@ export function useStack(fromMs: number, toMs: number): Stack {
   const range = useRef({ fromMs, toMs });
   // The share of the range the zoom shows, kept as fractions: a live
   // broadcast's range grows every refresh, and a zoom held as instants would
-  // drift off the end.
-  const zoom = useRef<{ start: number; end: number }>({ start: 0, end: 100 });
+  // drift off the end. It records which subject it belongs to, so a view
+  // reused for another broadcast or session never inherits it.
+  const zoom = useRef<{ subject: string; start: number; end: number }>({ subject, start: 0, end: 100 });
+  // The subject as of the last commit, for the event handlers (which run
+  // outside render).
+  const current = useRef(subject);
+
+  // A new subject starts over: React's "adjust state while rendering"
+  // pattern, so no frame shows the old subject's view.
+  const [shown, setShown] = useState(subject);
+  if (shown !== subject) {
+    setShown(subject);
+    setCursor(null);
+    setView({ from: fromMs, to: toMs });
+  }
+
+  // The zoom a member is built with: this subject's, or the full range.
+  const zoomOf = useCallback(() => {
+    const z = zoom.current;
+    return z.subject === subject ? { start: z.start, end: z.end } : FULL;
+  }, [subject]);
 
   useEffect(() => {
+    current.current = subject;
     range.current = { fromMs, toMs };
+    const { start, end } = zoomOf();
     const span = toMs - fromMs;
-    setView({
-      from: fromMs + (span * zoom.current.start) / 100,
-      to: fromMs + (span * zoom.current.end) / 100,
-    });
-  }, [fromMs, toMs]);
+    setView({ from: fromMs + (span * start) / 100, to: fromMs + (span * end) / 100 });
+  }, [fromMs, toMs, subject, zoomOf]);
 
   useEffect(
     () => () => {
@@ -96,10 +121,11 @@ export function useStack(fromMs: number, toMs: number): Stack {
         if (!dz) return;
         const start = dz.start ?? 0;
         const end = dz.end ?? 100;
+        const was = zoom.current.subject === current.current ? zoom.current : { ...FULL, subject: current.current };
         // The echo of our own relay (a member reporting the zoom it was just
         // given) changes nothing; stopping on it is what ends the relay.
-        if (Math.abs(start - zoom.current.start) < 1e-6 && Math.abs(end - zoom.current.end) < 1e-6) return;
-        zoom.current = { start, end };
+        if (Math.abs(start - was.start) < 1e-6 && Math.abs(end - was.end) < 1e-6) return;
+        zoom.current = { subject: current.current, start, end };
         for (const other of charts.current) {
           if (other === chart || other.isDisposed()) continue;
           other.dispatchAction({ type: 'dataZoom', dataZoomIndex: 0, start, end });
@@ -109,18 +135,11 @@ export function useStack(fromMs: number, toMs: number): Stack {
       });
 
       // A member mounted after a zoom (a lane that appeared on refresh, a
-      // chart shown by "show more") joins at the stack's current zoom.
-      const { start, end } = zoom.current;
-      if (start !== 0 || end !== 100) {
-        requestAnimationFrame(() => {
-          if (!chart.isDisposed()) chart.dispatchAction({ type: 'dataZoom', dataZoomIndex: 0, start, end });
-        });
-      }
+      // chart shown by "show more") is built at the stack's zoom: its option
+      // reads `zoomOf` (stackOption.ts), so nothing needs re-sending here.
     },
     [schedule],
   );
-
-  const zoomOf = useCallback(() => zoom.current, []);
 
   return { cursorMs, viewFrom: view.from, viewTo: view.to, register, zoomOf };
 }

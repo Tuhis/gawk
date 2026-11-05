@@ -67,6 +67,12 @@ interface LiveState {
    * applies it.
    */
   held: Snapshot | null;
+  /**
+   * When the stream last delivered ANY bytes, paused or not. A pause freezes
+   * what is shown, not the feed's health: resume takes its freshness from
+   * here, so a stream that kept talking is fresh and one that died is not.
+   */
+  aliveAt: number | null;
 
   poll: () => Promise<void>;
   start: () => () => void;
@@ -83,6 +89,7 @@ export const useLiveStore = create<LiveState>((set, get) => ({
   pausedAtMs: null,
   gapMs: null,
   held: null,
+  aliveAt: null,
 
   poll: async () => {
     if (get().paused) return;
@@ -97,18 +104,24 @@ export const useLiveStore = create<LiveState>((set, get) => ({
     }
   },
 
-  setPaused: (paused) =>
+  setPaused: (paused) => {
     set((s) => ({
       paused,
       pausedAtMs: paused ? (s.snapshot?.atMs ?? Date.now()) : null,
       // Resuming clears the gap marker: the next update is live again, and a
       // stale "you missed 4 minutes" banner would be its own small lie.
       gapMs: paused ? s.gapMs : null,
-      // ...and shows what changed while frozen, which a quiet stream would
-      // not send again.
-      ...(!paused && s.held ? { snapshot: s.held, lastOkAt: Date.now() } : {}),
+      // ...shows what changed while frozen, which a quiet stream would not
+      // send again, and takes its freshness from the feed rather than from
+      // the moment of resuming.
+      ...(!paused && s.held ? { snapshot: s.held } : {}),
+      ...(!paused && s.mode === 'stream' && s.aliveAt !== null ? { lastOkAt: Math.max(s.aliveAt, s.lastOkAt ?? 0) } : {}),
       held: null,
-    })),
+    }));
+    // The poll skipped every tick while frozen; ask now rather than show a
+    // stale page for up to a poll interval.
+    if (!paused && get().mode === 'poll') void get().poll();
+  },
 
   noteGap: (ms) => set({ gapMs: ms }),
 
@@ -222,10 +235,12 @@ export const useLiveStore = create<LiveState>((set, get) => ({
             retryMs = ms;
           },
           // Any bytes — a keepalive comment above all — prove the stream is
-          // alive while nothing changes (R36: see isStale). Frozen pages keep
-          // their frozen instant.
+          // alive while nothing changes (R36: see isStale). A frozen page
+          // records it for its resume and shows nothing new.
           () => {
-            if (!get().paused) set({ lastOkAt: Date.now() });
+            const at = Date.now();
+            if (get().paused) set({ aliveAt: at });
+            else set({ aliveAt: at, lastOkAt: at });
           },
         );
       } catch {

@@ -117,7 +117,9 @@ read through `charts/stack.ts`.
   Every member also reads the stack's zoom whenever its option is rebuilt
   (new data, a theme switch, a re-render). `setOption` replaces the option
   outright, and a rebuild that left the zoom out reset that one member while
-  its neighbours stayed zoomed (round-1 review).
+  its neighbours stayed zoomed (round-1 review). The zoom belongs to a
+  subject (one broadcast, one session), so a view reused for the next one
+  opens at the full range (round-2 review).
 - **Single charts.** Explore, the fleet trend and SQL keep a tooltip,
   pinned to the plot's top-right corner and confined.
 
@@ -213,7 +215,9 @@ This answers the design question.
   and stream mode uses a 25 s threshold.
 - **Pause.** For the same reason a change that arrives while the page is
   frozen is held, not dropped, and shown on resume: a quiet stream would
-  never send it again. The indicator re-checks every 2 s,
+  never send it again. A pause freezes what is shown, not the feed's
+  health: the stream's last bytes are recorded through it, and resume takes
+  its freshness from them (round-2 review). The indicator re-checks every 2 s,
   because staleness is time passing with nothing arriving, which changes no
   store.
 

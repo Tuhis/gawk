@@ -21,10 +21,16 @@ export function useSparks(broadcastKey: string, enabled: boolean): Sparks | null
     const load = () =>
       fetchSparks(broadcastKey, ac.signal)
         .then(setSparks)
-        // A miss (the projection no longer holds the broadcast, or a server
-        // predating the endpoint) leaves the column on "—" and the poll
-        // carries on: the card it serves may still be there next time.
-        .catch(() => setSparks(null));
+        .catch((e: unknown) => {
+          // Our own cleanup aborting a poll (a pause, an unmount) is not news:
+          // a frozen page keeps what it shows.
+          if (ac.signal.aborted) return;
+          // A miss — the projection no longer holds the broadcast — clears
+          // the column to "—". Anything else (a 5xx, a blip) keeps the last
+          // good tails, as the live feed keeps its last good snapshot; the
+          // poll carries on either way.
+          if ((e as { status?: number }).status === 404) setSparks(null);
+        });
     void load();
     const id = setInterval(load, POLL_MS);
     return () => {

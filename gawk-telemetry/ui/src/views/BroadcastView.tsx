@@ -114,8 +114,8 @@ function BroadcastPage({
   notes: ReturnType<typeof useAnnotations>['notes'];
   reloadNotes: () => void;
 }) {
-  const stack = useStack(detail.fromMs, detail.toMs);
   const group = `broadcast-${broadcastKey}`;
+  const stack = useStack(detail.fromMs, detail.toMs, group);
   usePinFollow(stack.cursorMs);
 
   const noteMarks = useMemo<StackMark[]>(

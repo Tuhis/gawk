@@ -61,6 +61,22 @@ describe('useStack', () => {
     expect(result.current.viewTo).toBe(6000);
   });
 
+  // The views reuse one stack when the route moves from one broadcast (or
+  // session) to the next; a zoom held across that opened B zoomed to A's
+  // fractions (round-2 review).
+  it('starts a new subject at the full range', () => {
+    const { result, rerender } = renderHook(({ g }) => useStack(0, 10_000, g), { initialProps: { g: 'broadcast-a' } });
+    const a = new FakeChart();
+    act(() => result.current.register(a as unknown as EChartsType));
+    act(() => a.userZoom(20, 60));
+    expect(result.current.zoomOf()).toEqual({ start: 20, end: 60 });
+
+    rerender({ g: 'broadcast-b' });
+    expect(result.current.zoomOf()).toEqual({ start: 0, end: 100 });
+    expect(result.current.viewFrom).toBe(0);
+    expect(result.current.viewTo).toBe(10_000);
+  });
+
   it('ignores an empty pointer report and clears only on leaving', () => {
     const { result } = renderHook(() => useStack(0, 10_000));
     const a = new FakeChart();

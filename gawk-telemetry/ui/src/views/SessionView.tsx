@@ -264,7 +264,7 @@ function TimelinePanel({
   dips: DipReport | null;
 }) {
   const model = useMemo(() => buildCharts(timeline, fields), [timeline, fields]);
-  const stack = useStack(startedAtMs, endedAtMs);
+  const stack = useStack(startedAtMs, endedAtMs, `session-${timeline.sessionId}`);
   const [showAll, setShowAll] = useState(false);
   const group = `session-${timeline.sessionId}`;
   usePinFollow(stack.cursorMs);
