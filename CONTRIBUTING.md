@@ -217,6 +217,10 @@ cd gawk-admin             && go vet ./... && go test ./...   # Postgres-backed
                                                              # tests SKIP unless
                                                              # GAWK_ADMIN_TEST_DSN is set
 cd gawk-admin/ui          && npm ci && npm run lint && npm test && npm run build
+cd gawk-sampler           && go vet ./... && CGO_ENABLED=1 go test ./...   # ffmpeg/ONNX tests SKIP
+                                                             # unless pointed at the binaries
+cd gawk-mumble-bridge     && go vet ./... && CGO_ENABLED=1 go test -race ./...  # murmur tests SKIP
+                                                             # until testdata/murmur.sh up
 cd gawk-broadcast-desktop && cargo test --workspace && \
                              cargo xwin clippy --all-targets --target x86_64-pc-windows-msvc -- -D warnings
 cd gawk-ios/rust          && cargo test --workspace && cargo clippy --all-targets -- -D warnings
