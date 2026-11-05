@@ -617,27 +617,6 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   element needs 10 s of history at all — the fullscreen player only ever seeks
   forward, toward live.
 
-## Lint advisories in `gawk-server/internal/pubsim/mpegts` (not runtime defects)
-
-- **Found**: 2026-07-24, from the editor linter while touching `mpegts.go`'s
-  package comment during the docs-freshness pass. Pre-existing, not introduced
-  by that change.
-- **Impact**: cosmetic / hygiene. Neither affects the shipped demuxer's
-  behavior; recorded here so they aren't rediscovered as "new" each time the
-  package is edited.
-- **The two advisories**:
-  - `mpegts.go:138` (`Demuxer.resync`) — `for i := 0; i < len(p); i++` can be
-    modernized to `for i := range len(p)` (`rangeint`). Purely stylistic.
-  - `mpegts_test.go:17` — const `fixtureGOPFrames = 15` is **unused**. It is
-    defined with a comment describing the fixture's GOP-15 (500 ms @ 30 fps)
-    structure but no test references it, so it reads as either a leftover or a
-    missing assertion.
-- **Fix would start**: modernize the `resync` loop; and decide whether
-  `fixtureGOPFrames` should back a real test — e.g. assert IDR access units
-  recur every 15 frames in the demuxed fixture — or just be removed. The latter
-  is trivial; the former is more valuable (it gives the demuxer a keyframe-
-  spacing assertion it currently lacks).
-
 ## Long-lived publisher connections die on a source-address change (fleet LB)
 
 - **Found**: 2026-07-27, investigating broadcast `DE6G6P` — a native

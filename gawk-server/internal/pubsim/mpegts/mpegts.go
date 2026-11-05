@@ -205,7 +205,7 @@ func (d *Demuxer) Write(p []byte) (int, error) {
 
 // resync returns the offset of the next plausible packet start, or -1.
 func (d *Demuxer) resync(p []byte) int {
-	for i := 0; i < len(p); i++ {
+	for i := range len(p) {
 		if p[i] != SyncByte {
 			continue
 		}
