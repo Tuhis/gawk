@@ -177,7 +177,7 @@ var fieldMeta = map[string]meta{
 		"Keyframe streams abandoned because a newer keyframe replaced them. Routine."),
 	"keyframeBytesSent": counter("bytes", "Bytes sent as keyframe streams."),
 	"keyframeStreamsSlow": counter("streams",
-		"Keyframe streams the native broadcaster saw acknowledged at under three quarters of the stream's recent rate on the wire (R75). Every keyframe in a second slow is a full uplink: the upload-bandwidth warning's input."),
+		"Keyframe streams the native broadcaster saw acknowledged at under 85 % of the stream's recent rate on the wire (R75). Every keyframe in a second slow is a full uplink: the upload-bandwidth warning's input."),
 	"uplinkPacketsSent": counter("packets", "QUIC packets the native broadcaster sent to the relay, summed across resumes."),
 	"uplinkPacketsLost": counter("packets",
 		"QUIC packets the native broadcaster's stack declared lost on the way to the relay. The only local view of leg-A loss: Wi-Fi drops (AWDL on a Mac) move no other counter."),

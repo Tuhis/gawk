@@ -80,8 +80,8 @@ pub struct Stats {
     pub keyframe_streams_failed: u64,
     pub keyframe_streams_superseded: u64,
     pub keyframe_bytes_sent: u64,
-    /// Keyframe streams acknowledged at under three quarters of the
-    /// stream's recent wire rate (R75, docs/85 D1; `drain`): a subset of
+    /// Keyframe streams acknowledged at under 85 % of the stream's recent
+    /// wire rate (R75, docs/85 D1; `drain`): a subset of
     /// `keyframe_streams_sent`. Every keyframe slow is the uplink full.
     pub keyframe_streams_slow: u64,
 

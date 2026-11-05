@@ -26,7 +26,7 @@ use crate::relay::PathCounters;
 
 /// A keyframe is slow when it drained at under this share of the stream's
 /// wire rate (docs/85 D3, tuned on §5's matrix).
-pub const SLOW_DRAIN_SHARE: f64 = 0.75;
+pub const SLOW_DRAIN_SHARE: f64 = 0.85;
 /// The stream's wire rate is averaged over this much of the recent past.
 pub const RATE_WINDOW_US: u64 = 5_000_000;
 /// …and is unknown until the samples span at least this much.
@@ -121,12 +121,12 @@ mod tests {
     }
 
     #[test]
-    fn a_keyframe_draining_under_three_quarters_of_the_stream_is_slow() {
+    fn a_keyframe_draining_under_85_percent_of_the_stream_is_slow() {
         // 75 kB is 0.6 Mbit: at the stream's 12 Mbps it drains in 50 ms, at
-        // 9 Mbps (the threshold) in 66.7 ms. 10 ms of minimum RTT on top.
+        // 10.2 Mbps (the threshold) in 58.8 ms. 10 ms of minimum RTT on top.
         assert_eq!(judge(75_000, 60, 10), Some(false), "12 Mbps");
-        assert_eq!(judge(75_000, 76, 10), Some(false), "9.1 Mbps");
-        assert_eq!(judge(75_000, 78, 10), Some(true), "8.8 Mbps");
+        assert_eq!(judge(75_000, 68, 10), Some(false), "10.3 Mbps");
+        assert_eq!(judge(75_000, 70, 10), Some(true), "10.0 Mbps");
         assert_eq!(judge(75_000, 310, 10), Some(true), "2 Mbps");
     }
 

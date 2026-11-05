@@ -229,7 +229,7 @@ var BroadcasterFields = map[string]Kind{
 	"sentFrames":                KindNumber,
 	"keyframeStreamsSuperseded": KindNumber,
 	// R75 (docs/85 D4): keyframes the native broadcaster saw drain at
-	// under three quarters of the stream's own rate — the upload warning's
+	// under 85 % of the stream's own rate — the upload warning's
 	// full-uplink input.
 	"keyframeStreamsSlow": KindNumber,
 	"uplinkMinRttMs":      KindNumber,

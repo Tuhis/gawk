@@ -10,8 +10,9 @@ engine sender's runs (bin/sender-engine; its T, B, K, F, N and Y lines).
 drain from K and F lines against the wire rate from T lines, OR-ed with the
 RU4 signals from Y lines, carrier expiries gated on the T lines' minimum RTT,
 through the monitor's hysteresis): how §2 judged runs made before the engine
-had the rule. R75_SLOW_SHARE sweeps the drain threshold (default 0.75). Without it the warning columns are
-the run's own N lines — what the engine in the run actually showed.
+had the rule; R75_SLOW_SHARE sweeps its drain threshold (default 0.85).
+Without --replay the warning columns are the run's own Y lines: what the
+engine in the run actually showed.
 Undecodable is analyze.py's, over the run from 25 s (fair) or whole (matrix).
 """
 import glob
@@ -24,7 +25,7 @@ from collections import defaultdict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.environ.get("UPLINK_OUT", os.path.join(HERE, "out"))
-SLOW_SHARE = float(os.environ.get("R75_SLOW_SHARE", "0.75"))  # drain::SLOW_DRAIN_SHARE
+SLOW_SHARE = float(os.environ.get("R75_SLOW_SHARE", "0.85"))  # drain::SLOW_DRAIN_SHARE
 WARN_AFTER, CLEAR_AFTER = 5, 15                                 # uplink.rs
 EXPIRY_MAX_MIN_RTT_S = 0.05                                     # CARRIER_EXPIRY_MAX_MIN_RTT_MS
 FROM_S, TO_S = 25, 80                                           # table O3's window
