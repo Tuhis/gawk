@@ -15,6 +15,20 @@ mirrors.
 > code in-band first as a `SessionClosing` (0x17), whose range already covers
 > 4000–4999, and close after the settle, the way the terminal codes do now.
 
+> **Revision 2026-11-06 (BUGS.md fix: the viewer's "Streamer offline" card
+> for a full broadcast).** The subscribe-capacity part of RR1–RR3 landed
+> early, outside R43, with its own codes rather than 4008:
+> `4018 BroadcastFull` (the broadcast's `-max-subscribers`) and
+> `4019 RelayFull` (`-max-total-subscribers`, or a PoP's downlink to home),
+> noticed in-band. They are **not terminal** for a viewer, unlike D5/D6:
+> a slot frees when someone leaves, so the viewer shows "This stream is
+> full" / "The stream server is full" and redials every 20 s outside its
+> budget, the pattern R74 set for 4012. Rate limit and drain stay
+> pre-upgrade (D2), "no such broadcast" stays a pre-upgrade 404 for now,
+> and a stripe leg keeps its pre-upgrade 429. What remains for R43 is the
+> publish side (4008 `AtCapacity` for a full relay on mint, 4009–4011) and
+> the subscribe 404 → 4010.
+
 ## 1. Purpose
 
 Every refusal the relay hands a client today is an HTTP status on the

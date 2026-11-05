@@ -290,32 +290,6 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   viewer sat on the edge) and take the client's Copy-diagnostics in the same
   minute, before touching the tab.
 
-## Viewer "Streamer offline" card is misleading when the relay rejects the join
-
-- **Found**: 2026-07-16, introduced knowingly with the viewer error-copy
-  rework (raw transport errors like "Opening handshake failed." moved to the
-  console; the card now shows friendly copy keyed on an error kind).
-- **Impact**: a viewer whose *first* connect is rejected for capacity — the
-  broadcast at its subscriber limit or the relay at `-max-subscribers`
-  (R2 limits, HTTP 429) — sees "Streamer offline. No one is streaming at …"
-  while the stream is in fact live. Same wrong story for a down or
-  misconfigured relay (bad cert, wrong URL). With ~15 friends against the
-  default caps this is rare, but when it happens the card points the viewer
-  at the wrong cause (checking the code won't help; the console has the
-  real error).
-- **Cause** (confirmed, structural): `WebTransportError` exposes no HTTP
-  status, so 404 (no such broadcast), 429 (full) and network/cert failures
-  are indistinguishable in JS — the documented `viewer-session.ts` policy.
-  The copy deliberately hedges toward the overwhelmingly common case
-  (nobody live at that code).
-- **Fix would start**: relay-side. Upgrade the session and *then* close with
-  a dedicated close code per rejection reason (the post-upgrade GC race
-  already does exactly this with 4000 "broadcast ended" in
-  `handleSubscribe`), letting the viewer map each reason to honest copy
-  (`errorCardCopy` in `ViewerScreen.tsx` is the single mapping point).
-  Costs: an upgrade for every rejected join, new `wire` close codes on both
-  sides, and rate-limit thought (an upgraded-then-closed session is more
-  expensive than a pre-upgrade 404).
 
 ## iPhone native fullscreen: the MSE playhead has ~100 ms of cushion that cannot grow
 
