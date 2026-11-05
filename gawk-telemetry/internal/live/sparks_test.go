@@ -86,6 +86,44 @@ func TestASparkTailIsPlacedOnTheServiceClock(t *testing.T) {
 	}
 }
 
+// The grid is anchored to multiples of the step, not to "now": two polls a
+// moment apart, with no new data between them, return the same buckets. A
+// window ending at the poll's instant slid every bucket edge on each 2 s
+// poll, so samples near an edge changed buckets and the line wobbled with
+// nothing new to show (R36 round-1 review).
+func TestTheSparkGridDoesNotSlideBetweenPolls(t *testing.T) {
+	p, c := newProj()
+	const sid = "9e9e9e9e9e9e9e9e9e9e9e9e"
+	start := feedSparks(p, c, sid, "viewer", 0, 50, 5, []int64{2000, 2500}, nil, func(i int) map[string]any {
+		// Every sample different, so a sample changing bucket changes a min.
+		return fps("decoderFps", float64(60-i%17))
+	})
+	c.t = start.Add(110*time.Second + 300*time.Millisecond)
+	first, _ := p.Sparks(sparkKey)
+	c.t = c.t.Add(1300 * time.Millisecond)
+	second, _ := p.Sparks(sparkKey)
+
+	if first.AtMs%first.StepMs != 0 || second.AtMs%second.StepMs != 0 {
+		t.Fatalf("window ends at %d and %d, want multiples of the %d ms step", first.AtMs, second.AtMs, first.StepMs)
+	}
+	a, b := first.Sessions[sid].Values, second.Sessions[sid].Values
+	if len(a) != len(b) {
+		t.Fatalf("bucket counts %d and %d", len(a), len(b))
+	}
+	for j := range a {
+		if (a[j] == nil) != (b[j] == nil) || (a[j] != nil && *a[j] != *b[j]) {
+			t.Fatalf("bucket %d moved between polls with no new data: %v then %v", j, deref(a[j]), deref(b[j]))
+		}
+	}
+}
+
+func deref(v *float64) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
 // A batch that never arrived is a break, never a line drawn across it (UD9).
 func TestALostBatchIsABreakInTheTail(t *testing.T) {
 	p, c := newProj()

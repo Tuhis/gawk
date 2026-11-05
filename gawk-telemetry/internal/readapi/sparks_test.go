@@ -71,7 +71,9 @@ func TestLiveSparksRoute(t *testing.T) {
 	if err := json.Unmarshal(body, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.AtMs != now.UnixMilli() || got.WindowMs != 120000 || got.StepMs != 4000 {
+	// The window ends at the step boundary at or after now, so its buckets
+	// stay put between polls.
+	if want := (now.UnixMilli() + 3999) / 4000 * 4000; got.AtMs != want || got.WindowMs != 120000 || got.StepMs != 4000 {
 		t.Errorf("grid = %+v", got)
 	}
 	s := got.Sessions[sid]

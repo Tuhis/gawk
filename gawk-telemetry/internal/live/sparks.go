@@ -272,6 +272,13 @@ func (p *Projection) Sparks(broadcastKey string) (Sparks, bool) {
 		}
 	}
 
+	// Anchor the window to multiples of the step, ending at the boundary at or
+	// after now: bucket edges then stay put from one poll to the next, so a
+	// sample does not hop between buckets (and the line wobble) when nothing
+	// new arrived. The last bucket may still be filling.
+	out.AtMs = (atMs + out.StepMs - 1) / out.StepMs * out.StepMs
+	atMs = out.AtMs
+
 	for id, s := range b.sessions {
 		if series, ok := s.spark.series(s.view.Role, atMs, out.StepMs); ok {
 			out.Sessions[id] = series

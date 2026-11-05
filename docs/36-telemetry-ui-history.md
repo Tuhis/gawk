@@ -1024,7 +1024,9 @@ file is read) with `{atMs, stepMs, windowMs: 120000, sessions: {<sessionId>:
 figure: `decoderFps` (else `receivedFps`) for a viewer, `encoderFps` for a
 broadcaster. `values` run oldest to newest, one per `stepMs` bucket ending at
 `atMs`: the lowest sample in the bucket, rounded to 0.1, or `null` where none
-landed (UD9). Samples are placed on this service's clock by a measured
+landed (UD9). `atMs` is the step boundary at or after the poll, not the
+poll's own instant, so bucket edges hold still from one poll to the next
+and a sample never hops between buckets with nothing new to show. Samples are placed on this service's clock by a measured
 offset (the minimum, over recent batches, of arrival minus the newest
 sample's client time). `stepMs` follows the broadcast's cadence — the
 narrowest of 4, 5, 6, 8, 10, 12, 15, 20, 24 or 30 s that is at least 1.6×
