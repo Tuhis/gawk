@@ -836,7 +836,9 @@ first proved native fullscreen works at all — landing them separately keeps pa
    the queue depth (~2–4 s) therefore leaves a hole between the last appended
    segment and where appends resume. Either keep the armed playhead following the
    buffered edge so MMS never parks, or treat resume-after-park as a
-   discontinuity and seek into the newest range.
+   discontinuity and seek into the newest range. **Fixed 2026-11-06 the second
+   way, on-device confirmation pending** — see "Resume-after-park is a
+   discontinuity" below.
 
 ### Stall watchdog (fixed 2026-11-06, on-device pending)
 
@@ -1049,7 +1051,8 @@ few appends the system did not ask for cost buffer, never the whole surface.
 
 Steady-state parking is unchanged, so [`BUGS.md`](../BUGS.md)'s hole-while-armed
 entry stays open on its own mechanism; this is only about never reaching the
-first append.
+first append. (That mechanism was fixed separately on 2026-11-06 — next
+section but two.)
 
 **Honesty about the diagnosis**: the capture proves the append loop never ran,
 and cannot by itself distinguish *parked with segments in hand* from *never
@@ -1087,6 +1090,72 @@ Four fields, chosen so the next capture answers this without a round trip
 The presenter already counted `queued`; it simply never left `getStats()`. That
 is the recurring lesson of this milestone — every silent drop path needs a
 counter, or an on-device capture cannot tell a broken hop from a paced one.
+
+## Resume-after-park is a discontinuity (fixed 2026-11-06, on-device pending)
+
+Finding 3 item 5, the last of pass 2's diagnosed-but-unfixed items. It was never
+measured: pass 2's holes turned out to be the sample-duration bug, and no
+capture since has shown the signature (`bufferedRanges > 1` with
+`segmentsAppended` lagging `muxInitSegments + muxMediaSegments`). The mechanism
+is reachable by construction, though — MMS parks a fed, paused element, and the
+live stream does not stop for it — so it was fixed on the code path, with the
+on-device confirmation left as the BUGS.md entry's exit criterion.
+
+**The choice: (b), heal the resume, not (a), keep the playhead following the
+edge.** (a) would stop MMS parking at its source, but only by contradicting
+Decision 5 and depending on something nobody has measured:
+
+* Decision 5's armed element is *loaded-but-paused* precisely so the phone does
+  not run a second decode next to the inline WebCodecs one. A paused element
+  that is seeked every few hundred milliseconds decodes from the previous
+  keyframe to the target on every seek — continuous dual decode with extra steps,
+  on the device where the thermal escape hatches were pre-registered.
+  `maybeCatchUp` deliberately never seeks a paused element for this reason.
+* Whether MMS un-parks when a paused playhead moves is Apple's undocumented
+  water-mark policy. (a) would be a fix whose effect cannot be verified off a
+  device and might not exist on one.
+* Parking is the system working as designed (it is how MMS saves power while
+  nothing is watching), so suppressing it fights the platform for a state
+  nobody is looking at.
+
+(b) leaves parking alone and makes its consequence harmless, with one seek per
+resume rather than one per tick:
+
+1. **Discard the stale backlog.** Queue overflow (`MAX_QUEUED_SEGMENTS`) no longer
+   front-drops one segment at a time; it keeps only what starts at the newest
+   queued keyframe, re-queues the newest dropped init if the backlog held one
+   (so a parameter change inside it is not lost), counts the media it shed and
+   marks the track discontinuous.
+2. **Re-anchor at the next keyframe.** That keyframe is the first thing the track
+   appends when MMS asks again; once its `updateend` lands it is in `buffered`.
+3. **Seek into the newest range and trim the rest.** The playhead moves to the
+   live edge of the element's newest range (`end − LIVE_EDGE_REJOIN_S`), and each
+   track removes everything before **its own** newest range start. Per track,
+   not at the element's intersection start: MSE's `remove()` extends to the next
+   random access point, so a video trim ending mid-GOP would delete the rest of
+   the GOP it was meant to keep. The trim is a remove, never an append, so it
+   runs even while MMS is parked again. The element is back to one buffered range.
+
+If MMS never un-parks while paused, the resume happens at the in-gesture
+`play()`: the native player starts on the old range's edge, MMS asks for data,
+and within the first appends the heal jumps it to the newest range — a brief
+stale picture instead of a stall at a hole.
+
+**Observable on-device**: `presentationSurface.segmentsDroppedOverflow` (segments
+the queue shed) and `discontinuitiesHealed` (resumes that found a hole and fixed
+it); the overlay's Segments row shows both once nonzero. A capture with a short
+`segmentsAppended` and `segmentsDroppedOverflow` 0 is some other cause.
+
+**Coverage**: unit tests against a fake MMS whose SourceBuffer models a
+timeline (`msePresentation.test.ts`): park for longer than the queue, resume,
+and assert one buffered range ending at the newest frame, a playhead inside it,
+and both counters; plus a two-track case asserting each trim stops at that
+track's own GOP boundary. Both failed with two ranges before the fix. CI's
+`--muxer-check` still cannot reach this (Decision 10: Chrome has no
+ManagedMediaSource), so **on-device confirmation is pending**: arm (join, don't
+tap fullscreen), wait longer than the queue depth with MMS parked, then tap — the
+capture should show `bufferedRanges: 1` throughout, and if
+`segmentsDroppedOverflow > 0`, a matching `discontinuitiesHealed > 0`.
 
 ## Verification plan (manual, MF5)
 

@@ -906,6 +906,14 @@ Add to it when a new gotcha lands in `docs/`.
   costs one frame of lookahead. Constant-cadence fixtures cannot catch this: the
   forward and backward intervals are equal there, which is why it shipped twice.
   ([docs/27](27-ios-mse-fullscreen.md))
+- **A bounded append queue behind ManagedMediaSource's `streaming` pacing
+  manufactures holes** — MMS stops asking for data while a paused element has
+  buffer ahead, the live stream keeps coming, and whatever the queue sheds is a
+  gap between the last appended frame and the resume keyframe. Treat the resume
+  as a discontinuity (seek into the newest range, trim the older ones), and trim
+  each SourceBuffer at **its own** newest range start: `remove()` extends to the
+  next random access point, so a video trim ending mid-GOP deletes the rest of
+  that GOP. ([docs/27](27-ios-mse-fullscreen.md))
 - **An MSE SourceBuffer that never receives its init segment can block the whole
   MediaSource** — Chromium's demuxer waits for every added buffer's init segment
   before reporting metadata, so video appended alongside an unfed audio buffer

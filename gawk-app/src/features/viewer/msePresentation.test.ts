@@ -27,6 +27,9 @@ import {
 // ---------------------------------------------------------------------------
 // Fakes
 
+// One segment per frame at 60 fps, the cadence MAX_QUEUED_SEGMENTS is sized for.
+const FRAME_S = 1 / 60;
+
 class FakeSourceBuffer implements SourceBufferLike {
   updating = false;
   appended: Uint8Array[] = [];
@@ -59,6 +62,28 @@ class FakeSourceBuffer implements SourceBufferLike {
 
   removeEventListener(type: string, cb: () => void): void {
     this.listeners.get(type)?.delete(cb);
+  }
+
+  // A timeline model, so a test can SEE a hole: media segment `tag` covers
+  // [tag·FRAME_S, (tag+1)·FRAME_S) (see media()); remove() clears what starts in
+  // its window. Init segments carry no time.
+  get buffered(): TimeRanges {
+    const spans = this.appended
+      .filter((d) => d[0] === 2)
+      .map((d) => (d[2] | (d[3] << 8)) * FRAME_S)
+      .filter((t) => !this.removed.some(([a, b]) => t >= a && t < b))
+      .sort((a, b) => a - b);
+    const ranges: Array<[number, number]> = [];
+    for (const t of spans) {
+      const last = ranges[ranges.length - 1];
+      if (last && Math.abs(last[1] - t) < 1e-9) last[1] = t + FRAME_S;
+      else if (!last || t >= last[1]) ranges.push([t, t + FRAME_S]);
+    }
+    return {
+      length: ranges.length,
+      start: (i: number) => ranges[i][0],
+      end: (i: number) => ranges[i][1],
+    } as TimeRanges;
   }
 
   finishUpdate(): void {
@@ -831,7 +856,11 @@ describe('MsePresenter', () => {
     for (let i = 0; i < MAX_QUEUED_SEGMENTS + 20; i++) {
       p.pushSegment(media(i === 60, i)); // one keyframe in the middle
     }
-    expect(p.getStats().queued).toBe(MAX_QUEUED_SEGMENTS);
+    // Overflow discards the backlog up to the newest queued keyframe (60), so
+    // what remains is that GOP onward plus the init it needs — and the drop is
+    // counted (the on-device signature of an overflowed, parked appender).
+    expect(p.getStats().queued).toBeLessThanOrEqual(MAX_QUEUED_SEGMENTS);
+    expect(p.getStats().droppedOverflow).toBe(60);
 
     instances[0].open();
     const sb = instances[0].sb;
@@ -846,6 +875,196 @@ describe('MsePresenter', () => {
     // the first media segment appended is the keyframe-tagged one.
     const firstMedia = appended.find((d) => d[0] === 2);
     expect(firstMedia?.[1]).toBe(1);
+  });
+
+  // docs/27 finding 3 item 5 / BUGS.md: MMS parks a fed, paused (armed) element,
+  // the queue front-drops past its bound, and appends resume a whole park later
+  // — a hole between the last appended frame and the resume keyframe, which
+  // the native player stalls at. Chrome has no ManagedMediaSource, so this is
+  // the only place `streaming === false` with a full queue is exercised.
+  it('turns resume-after-park into a discontinuity instead of a hole in the timeline', () => {
+    const { ctor, instances } = makeFakeMsCtor({ managed: true });
+    const p = new MsePresenter(ctor);
+    const { video } = makeVideo();
+    // The element's buffered view is the (single) video SourceBuffer's.
+    Object.defineProperty(video, 'readyState', { configurable: true, get: () => 4 });
+    Object.defineProperty(video, 'buffered', {
+      configurable: true,
+      get: () => instances[0].sb?.buffered ?? { length: 0, start: () => 0, end: () => 0 },
+    });
+    let currentTime = 0;
+    Object.defineProperty(video, 'currentTime', {
+      configurable: true,
+      get: () => currentTime,
+      set: (v: number) => {
+        currentTime = v;
+      },
+    });
+    Object.defineProperty(video, 'paused', { configurable: true, get: () => true }); // armed
+    p.attach(video);
+    instances[0].open();
+    const drain = () => {
+      let guard = 0;
+      while (instances[0].sb?.updating && guard++ < 1000) instances[0].sb.finishUpdate();
+    };
+    const GOP = 30;
+    let tag = 0;
+    const next = () => {
+      p.pushSegment(media(tag % GOP === 0, tag));
+      tag++;
+    };
+
+    p.pushSegment(init());
+    for (let i = 0; i < GOP; i++) {
+      next();
+      drain();
+    }
+    expect(video.buffered.length).toBe(1);
+
+    // Park for longer than the queue holds.
+    instances[0].streaming = false;
+    for (let i = 0; i < MAX_QUEUED_SEGMENTS + 2 * GOP + 7; i++) next();
+    expect(instances[0].sb!.appended.filter((d) => d[0] === 2)).toHaveLength(GOP);
+
+    instances[0].setStreaming(true);
+    drain();
+
+    const b = video.buffered;
+    expect(b.length).toBe(1); // no hole for the native player to stall at
+    // The playhead was moved into what survives, not left on removed media.
+    expect(currentTime).toBeGreaterThanOrEqual(b.start(0));
+    expect(currentTime).toBeLessThanOrEqual(b.end(0));
+    // …and the timeline runs up to the newest frame pushed.
+    expect(b.end(0)).toBeCloseTo(tag * FRAME_S, 6);
+    // Observable on-device: the queue shed segments, and the presenter healed.
+    const stats = p.getStats();
+    expect(stats.droppedOverflow).toBeGreaterThan(0);
+    expect(stats.discontinuities).toBe(1);
+    // The byte ledger forgets what the heal trimmed (PRUNE_BUDGET_BYTES counts
+    // what is buffered, not what was once appended).
+    const survived = instances[0].sb!.appended.filter(
+      (d) => d[0] === 2 && (d[2] | (d[3] << 8)) * FRAME_S >= b.start(0) - 1e-9,
+    );
+    expect(stats.bufferedBytes).toBe(survived.reduce((n, d) => n + d.byteLength, 0));
+  });
+
+  it('re-anchors each track at its own newest range, so a trim never cuts a GOP', () => {
+    const { ctor, instances } = makeFakeMsCtor({ managed: true });
+    const p = new MsePresenter(ctor);
+    const { video } = makeVideo();
+    setElementMedia(video, 4, [[0, 1]]);
+    p.setExpectedAudioMime(AUDIO_MIME);
+    p.attach(video);
+    instances[0].open();
+    const drainAll = () => {
+      let guard = 0;
+      while (instances[0].buffers.some((b) => b.updating) && guard++ < 2000) {
+        for (const b of instances[0].buffers) if (b.updating) b.finishUpdate();
+      }
+    };
+    p.pushSegment(init());
+    p.pushSegment(init(AUDIO_MIME, 'audio'));
+    for (let i = 0; i < 10; i++) {
+      p.pushSegment(media(i === 0, i));
+      p.pushSegment(media(true, i, 'audio'));
+      drainAll();
+    }
+    instances[0].streaming = false;
+    // Video GOP of 30, audio every packet a sync sample.
+    for (let i = 10; i < 10 + MAX_QUEUED_SEGMENTS + 40; i++) {
+      p.pushSegment(media(i % 30 === 0, i));
+      p.pushSegment(media(true, i, 'audio'));
+    }
+    instances[0].setStreaming(true);
+    drainAll();
+    const [vsb, asb] = instances[0].buffers;
+    expect(vsb.buffered.length).toBe(1);
+    expect(asb.buffered.length).toBe(1);
+    // Video's trim stops exactly at its resume keyframe (a GOP boundary).
+    const vStart = vsb.buffered.start(0) / FRAME_S;
+    expect(Math.round(vStart) % 30).toBe(0);
+    // One resume, one discontinuity — not one per track.
+    expect(p.getStats().discontinuities).toBe(1);
+  });
+
+  it('issues a heal trim even when MMS parks again right after the resume', () => {
+    const { ctor, instances } = makeFakeMsCtor({ managed: true });
+    const p = new MsePresenter(ctor);
+    const { video } = makeVideo();
+    setElementMedia(video, 4, [[0, 1]]);
+    p.setExpectedAudioMime(AUDIO_MIME);
+    p.attach(video);
+    instances[0].open();
+    const drainAll = () => {
+      let guard = 0;
+      while (instances[0].buffers.some((b) => b.updating) && guard++ < 2000) {
+        for (const b of instances[0].buffers) if (b.updating) b.finishUpdate();
+      }
+    };
+    p.pushSegment(init());
+    p.pushSegment(init(AUDIO_MIME, 'audio'));
+    for (let i = 0; i < 10; i++) {
+      p.pushSegment(media(i === 0, i));
+      p.pushSegment(media(true, i, 'audio'));
+      drainAll();
+    }
+    instances[0].streaming = false;
+    for (let i = 10; i < 10 + MAX_QUEUED_SEGMENTS + 40; i++) {
+      p.pushSegment(media(i % 30 === 0, i));
+      p.pushSegment(media(true, i, 'audio'));
+    }
+    instances[0].setStreaming(true); // the resume keyframes go out…
+    instances[0].streaming = false; // …and MMS parks again before they land
+    const [vsb, asb] = instances[0].buffers;
+    const appendedBefore = [vsb.appended.length, asb.appended.length];
+    drainAll();
+    // Parked: the heal's trims run, but nothing more is appended.
+    expect([vsb.appended.length, asb.appended.length]).toEqual(appendedBefore);
+    // The trim ran in pump()'s parked branch: removes, never appends.
+    expect(vsb.buffered.length).toBe(1);
+    expect(asb.buffered.length).toBe(1);
+  });
+
+  it('keeps the queue bounded when a parked GOP is longer than the bound', () => {
+    const { ctor, instances } = makeFakeMsCtor({ managed: true });
+    const p = new MsePresenter(ctor);
+    const { video } = makeVideo();
+    setElementMedia(video, 4, [[0, 1]]);
+    p.attach(video);
+    instances[0].open();
+    p.pushSegment(init());
+    let guard = 0;
+    p.pushSegment(media(true, 0));
+    while (instances[0].sb?.updating && guard++ < 100) instances[0].sb.finishUpdate();
+    instances[0].streaming = false;
+    // A 2.2 s WHIP/OBS GOP at 60 fps (docs/83 D7's ceiling) is 132 frames.
+    const LONG_GOP = MAX_QUEUED_SEGMENTS + 40;
+    for (let i = 1; i < 3 * LONG_GOP; i++) {
+      p.pushSegment(media(i % LONG_GOP === 0, i));
+      expect(p.getStats().queued).toBeLessThanOrEqual(MAX_QUEUED_SEGMENTS);
+    }
+  });
+
+  it('keeps the queue bounded when a long parked GOP follows a parameter change', () => {
+    const { ctor, instances } = makeFakeMsCtor({ managed: true });
+    const p = new MsePresenter(ctor);
+    const { video } = makeVideo();
+    setElementMedia(video, 4, [[0, 1]]);
+    p.attach(video);
+    instances[0].open();
+    p.pushSegment(init());
+    let guard = 0;
+    p.pushSegment(media(true, 0));
+    while (instances[0].sb?.updating && guard++ < 100) instances[0].sb.finishUpdate();
+    instances[0].streaming = false;
+    const LONG_GOP = MAX_QUEUED_SEGMENTS + 40;
+    for (let i = 1; i < 3 * LONG_GOP; i++) {
+      // A resolution change while parked: the overflow re-queues this init in
+      // front of the kept keyframe, so the newest keyframe sits at index 1.
+      if (i % LONG_GOP === 0) p.pushSegment(init());
+      p.pushSegment(media(i % LONG_GOP === 0, i));
+      expect(p.getStats().queued).toBeLessThanOrEqual(MAX_QUEUED_SEGMENTS);
+    }
   });
 
   it('re-primes a fresh MediaSource from the cached init on re-attach and waits for a keyframe', () => {

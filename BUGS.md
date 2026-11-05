@@ -417,49 +417,33 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 
 ## iPhone native fullscreen: MMS parking can leave holes in the buffered timeline
 
-- **Found**: 2026-07-26, same investigation. Diagnosed by code reading; the
-  frequency depends on Apple's undocumented `ManagedMediaSource` water marks, so
-  it is unquantified. **Not CI-catchable**: Chrome has no `ManagedMediaSource`
-  at all, so `pump()`'s `streaming === false` branch never runs there and the
-  `--muxer-check` step cannot exercise this (docs/27 Decision 10's coverage
-  boundary). It needs an on-device capture.
-- **CORRECTION (2026-07-26, on-device pass 2)**: the 4 holes actually measured on
-  the iPhone were **not** this. `segmentsAppended == muxInitSegments +
-  muxMediaSegments` with `appendErrors: 0` proves nothing was shed by the queue,
-  so those holes were in the *timeline*, not in what got appended — the video
-  sample-duration bug, now fixed by one-frame lookahead (docs/27 finding 3
-  revised). This entry stays open because the mechanism below is still reachable
-  and still unmeasured; it is no longer supported by that capture.
-- **Impact**: iPhone native fullscreen only. A hole in the buffered timeline
-  stalls the native player at the hole — and because
-  `HTMLMediaElement.buffered` is the **intersection** of the SourceBuffers'
-  ranges, a hole in either track (video or the muxed audio) does it.
-- **Cause**: `MsePresenter.pump()` parks on `streaming === false`. While armed
-  the element is *paused* (docs/27 Decision 5), so MMS's buffered-ahead only
-  grows and it stops asking for data; meanwhile live segments accumulate in the
-  JS queue and front-drop past `MAX_QUEUED_SEGMENTS` (128 ≈ 2–4 s). Any arming
-  period longer than the queue depth therefore leaves a gap between the last
-  appended segment and the keyframe appends resume at.
-- **Partly fixed 2026-07-26 (docs/27 finding 7)**: parking before the element
-  has media was a *deadlock*, not a hole — MMS asks for data when the element
-  needs more, and an element with no init segment needs nothing, so a source
-  that opened with `streaming` false never took a byte and native fullscreen
-  was unreachable for the whole session. Priming (SourceBuffer, init, first
-  keyframes) now goes through regardless of `streaming`; parking resumes once
-  the element reports playable media. **This entry stays open** for the
-  steady-state case above, which is unchanged: a fed, paused element still
-  parks and the queue still front-drops.
-- **Signature**, and how to tell it from the (fixed) sample-duration cause:
-  `bufferedRanges > 1` with `segmentsAppended` **lagging** `muxInitSegments +
-  muxMediaSegments` — the shortfall is the queue's front-drops. Where those two
-  agree, the holes are not this.
-- **Fix would start**: either keep the armed playhead following the buffered
-  edge so MMS never parks and the buffer stays bounded, or treat
-  resume-after-park as a discontinuity — discard the stale backlog, re-anchor,
-  and seek the element into the newest range. The stall watchdog (docs/27
-  "Stall watchdog") covers the symptom generically — it seeks over a hole into
-  the newest range — so a hole now costs a recovery, not the session; this
-  entry is about not manufacturing the hole.
+- **Status**: **fix landed 2026-11-06, on-device confirmation pending** — kept
+  here until an iPhone capture shows it, because the mechanism was diagnosed by
+  code reading and never measured (the 4 holes of on-device pass 2 were the
+  since-fixed sample-duration bug, docs/27 finding 3 revised).
+- **Mechanism**: `MsePresenter.pump()` parks on `streaming === false`. While armed
+  the element is *paused* (docs/27 Decision 5), so MMS stops asking for data while
+  live segments keep arriving and overflow `MAX_QUEUED_SEGMENTS` (128 ≈ 2–4 s);
+  the shed segments leave a gap between the last appended frame and the resume
+  keyframe, which stalls the native player (`buffered` is the tracks'
+  intersection, so a hole in either track does it). iPhone native fullscreen only.
+- **Fix** (docs/27, "Resume-after-park is a discontinuity"): overflow discards the
+  backlog up to the newest queued keyframe and marks the track discontinuous; once
+  the resume keyframe is buffered, the playhead is seeked into the newest range
+  and each track's older ranges are removed. Covered by unit tests with a fake
+  MMS; **not CI-catchable end to end** — Chrome has no `ManagedMediaSource`, so
+  `--muxer-check` never runs the `streaming === false` branch (docs/27
+  Decision 10).
+- **Backstop**: should a hole still form, the stall watchdog (docs/27 "Stall
+  watchdog") seeks over it into the newest range, so it costs a recovery, not
+  the session.
+- **Remove this entry when** an on-device pass arms the surface (join, don't tap
+  fullscreen) for longer than the queue depth with MMS parked, then taps
+  fullscreen, and the capture shows `bufferedRanges` staying **1** throughout —
+  with `discontinuitiesHealed > 0` wherever `segmentsDroppedOverflow > 0`, which
+  proves the parked-overflow path was actually exercised rather than never hit.
+  If instead `bufferedRanges > 1` with `segmentsDroppedOverflow` 0, the holes have
+  another cause.
 
 ## Resilient/Deep-buffer viewers lose video entirely to the Safari stream wedge
 

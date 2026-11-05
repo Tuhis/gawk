@@ -39,6 +39,12 @@ export interface PresentationSurfaceStats {
   segmentsReceived: number;
   segmentsQueued: number;
   segmentsDroppedNoInit: number;
+  // Segments shed by a queue overflow — what MMS parking a fed, paused element
+  // for longer than the queue depth produces — and how many resumes after one
+  // found a hole and healed it (docs/27 finding 3 item 5). A short
+  // `segmentsAppended` with `segmentsDroppedOverflow` 0 is some other cause.
+  segmentsDroppedOverflow: number;
+  discontinuitiesHealed: number;
   mmsStreaming: boolean | null;
   // The reason for the most recent append failure. Null until one happens.
   lastAppendError: string | null;
