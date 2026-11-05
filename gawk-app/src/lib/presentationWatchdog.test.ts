@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   PresentationWatchdog,
+  CUSHION_GRACE_MS,
   RECOVERY_MIN_INTERVAL_MS,
   RECOVERY_RETRY_MS,
   type WatchdogMedia,
@@ -114,6 +115,21 @@ describe('PresentationWatchdog — recovery', () => {
     expect(dog.getStats()).toMatchObject({ recoveries: 1, seeks: 1, lastCause: 'waiting' });
   });
 
+  it('lands recovery seeks at a rejoin offset changed mid-session (delivery-mode switch)', async () => {
+    dog.setRejoinS(1.0);
+    dog.start();
+    media.ranges = [
+      [0, 10],
+      [10.5, 14],
+    ];
+    media.at(10);
+    media.readyState = HAVE_CURRENT_DATA;
+    media.fire('waiting');
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(media.seeks).toEqual([14 - 1.0]);
+  });
+
   it('lands no earlier than the newest range start when the range is shorter than the rejoin offset', async () => {
     dog.start();
     media.ranges = [
@@ -166,6 +182,76 @@ describe('PresentationWatchdog — recovery', () => {
     await vi.advanceTimersByTimeAsync(RECOVERY_RETRY_MS);
     expect(media.playCalls).toBe(1);
     expect(dog.getStats().playErrors).toBe(1);
+  });
+});
+
+// The per-mode live-edge cushion (liveEdge.ts): after an underrun at the live
+// edge, appends arrive at 1x, so whatever lies ahead when play() resumes is the
+// cushion until the next seek. Rebuild it by waiting, never by seeking back
+// over frames already shown.
+describe('PresentationWatchdog — rebuilds the cushion after an underrun', () => {
+  it('waits for the rejoin offset ahead, then resumes without rewinding (ended)', async () => {
+    dog.setRejoinS(1.0);
+    dog.start();
+    media.ranges = [[0, 10.2]];
+    media.at(10).underrun();
+    await vi.advanceTimersByTimeAsync(RECOVERY_RETRY_MS * 2);
+    // 0.2 s ahead: enough to play, not enough to hold a 1 s cushion.
+    expect(media.playCalls).toBe(0);
+
+    media.ranges = [[0, 11.1]];
+    await vi.advanceTimersByTimeAsync(RECOVERY_RETRY_MS);
+    expect(media.playCalls).toBe(1);
+    // `ended` still needs a seek before play(), but never behind the playhead.
+    expect(media.seeks).toHaveLength(1);
+    expect(media.seeks[0]).toBeGreaterThanOrEqual(10);
+    expect(11.1 - media.seeks[0]).toBeGreaterThanOrEqual(1.0 - 1e-9);
+  });
+
+  it('waits for the rejoin offset after a starvation pause without `ended`', async () => {
+    dog.setRejoinS(1.0);
+    dog.start();
+    media.ranges = [[0, 10.3]];
+    media.at(10);
+    media.readyState = HAVE_CURRENT_DATA;
+    media.paused = true;
+    media.fire('pause');
+    await vi.advanceTimersByTimeAsync(RECOVERY_RETRY_MS * 2);
+    expect(media.playCalls).toBe(0);
+
+    media.ranges = [[0, 11.05]];
+    await vi.advanceTimersByTimeAsync(RECOVERY_RETRY_MS);
+    expect(media.playCalls).toBe(1);
+    expect(media.seeks).toEqual([]);
+  });
+
+  it('starts the grace clock at the pause, not at an earlier `waiting`', async () => {
+    dog.setRejoinS(1.0);
+    dog.start();
+    // WebKit says `waiting` at the live edge while still playing, with nothing
+    // ahead: the watchdog only polls for data. The underrun pause comes later.
+    media.ranges = [[0, 10.3]];
+    media.at(10.3);
+    media.fire('waiting');
+    await vi.advanceTimersByTimeAsync(3000);
+    media.ranges = [[0, 10.5]];
+    media.underrun();
+    await vi.advanceTimersByTimeAsync(1100);
+    // 0.2 s ahead of a 1 s cushion, 1.1 s into the pause: the wait must still
+    // be running (measured from the `waiting`, it would already have given up).
+    expect(media.playCalls).toBe(0);
+  });
+
+  it('gives up waiting for the full cushion after the grace period', async () => {
+    dog.setRejoinS(1.0);
+    dog.start();
+    media.ranges = [[0, 10.3]];
+    media.at(10).underrun();
+    // The buffer never grows (e.g. MMS stopped asking for data while paused).
+    await vi.advanceTimersByTimeAsync(1000 + CUSHION_GRACE_MS - RECOVERY_RETRY_MS);
+    expect(media.playCalls).toBe(0);
+    await vi.advanceTimersByTimeAsync(RECOVERY_RETRY_MS * 2);
+    expect(media.playCalls).toBe(1);
   });
 });
 

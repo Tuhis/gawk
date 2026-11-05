@@ -39,6 +39,13 @@ export const RECOVERY_RETRY_MS = 250;
 export const RECOVERY_MIN_AHEAD_S = 0.1;
 // How far a stuck-but-fed playhead is nudged (hls.js's nudge, same order).
 export const RECOVERY_NUDGE_S = 0.1;
+// After an underrun at the live edge, a paused element waits until the rejoin
+// offset (the delivery mode's cushion, liveEdge.ts) lies ahead before play():
+// appends arrive at 1x, so what is ahead at the resume is the cushion until the
+// next seek. If the buffer stops growing (MMS may stop asking for data while
+// the element is paused), it resumes with what it has once the stall has
+// lasted the rejoin offset plus this grace.
+export const CUSHION_GRACE_MS = 1000;
 
 // HTMLMediaElement.HAVE_FUTURE_DATA: below it, a pause is the element starving.
 const HAVE_FUTURE_DATA = 3;
@@ -81,6 +88,10 @@ export class PresentationWatchdog {
   private active = false;
   private userPaused = false;
   private stalled = false;
+  // When this stall's cushion wait began: the first check that found the
+  // element paused or ended, not the first stall event (WebKit can say
+  // `waiting` long before it pauses). Null until then; reset per stall.
+  private cushionWaitFrom: number | null = null;
   private cause: StallCause | null = null;
   // The playhead when a fed-but-stuck element was first seen; null until then.
   private stuckAt: number | null = null;
@@ -92,12 +103,18 @@ export class PresentationWatchdog {
     playErrors: 0,
     lastCause: null,
   };
-  private readonly rejoinS: number;
+  private rejoinS: number;
   private readonly now: () => number;
 
   constructor(opts: PresentationWatchdogOptions) {
     this.rejoinS = opts.rejoinS;
     this.now = opts.now ?? (() => performance.now());
+  }
+
+  // The viewer can switch delivery mode mid-session, which moves the live-edge
+  // cushion (liveEdge.ts); later recovery seeks land at the new one.
+  setRejoinS(rejoinS: number): void {
+    this.rejoinS = rejoinS;
   }
 
   // Binds an element (listeners only; guarding starts with start()). Counters
@@ -175,6 +192,7 @@ export class PresentationWatchdog {
     if (!this.stalled) {
       this.stalled = true;
       this.stuckAt = null;
+      this.cushionWaitFrom = null;
     }
     this.cause = cause;
   }
@@ -182,6 +200,7 @@ export class PresentationWatchdog {
   private clearStall(): void {
     this.stalled = false;
     this.stuckAt = null;
+    this.cushionWaitFrom = null;
     this.cancelTimer();
   }
 
@@ -225,10 +244,20 @@ export class PresentationWatchdog {
     } else if (newestEnd - t < RECOVERY_MIN_AHEAD_S) {
       // At the live edge with nothing ahead yet: wait for appends.
       return this.schedule(RECOVERY_RETRY_MS);
-    } else if (media.ended) {
-      // play() on an ended element restarts from the beginning; seek first.
-      seekTo = this.landing(newestStart, newestEnd);
-    } else if (!media.paused) {
+    } else if (media.ended || media.paused) {
+      // An underrun at the live edge. Rebuild the cushion by waiting rather
+      // than by seeking back over frames already shown (bounded, see
+      // CUSHION_GRACE_MS).
+      if (this.cushionWaitFrom === null) this.cushionWaitFrom = this.now();
+      const waited = this.now() - this.cushionWaitFrom;
+      if (newestEnd - t < this.rejoinS && waited < this.rejoinS * 1000 + CUSHION_GRACE_MS) {
+        return this.schedule(RECOVERY_RETRY_MS);
+      }
+      // play() on an ended element restarts from the beginning; seek first —
+      // in place, or forward to the cushion if more than that arrived.
+      if (media.ended) seekTo = Math.max(t, this.landing(newestStart, newestEnd));
+      // else: paused with data ahead — play() alone.
+    } else {
       // Playing, fed, and `waiting`: give the decoder one retry to move
       // before calling it stuck.
       if (this.stuckAt === null || t > this.stuckAt + 0.01) {
@@ -237,7 +266,6 @@ export class PresentationWatchdog {
       }
       seekTo = Math.min(t + RECOVERY_NUDGE_S, newestEnd - RECOVERY_MIN_AHEAD_S / 2);
     }
-    // else: paused with data ahead — play() alone.
 
     const wait = this.lastRecoveryAt + RECOVERY_MIN_INTERVAL_MS - this.now();
     if (wait > 0) return this.schedule(wait);

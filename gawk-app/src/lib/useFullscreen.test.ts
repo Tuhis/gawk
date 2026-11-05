@@ -11,6 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
 import { elementFullscreenAvailable, useFullscreen } from './useFullscreen';
+import { ENTRY_SEEK_SLACK_S, liveEdgePolicy } from './liveEdge';
 
 let fsElement: Element | null = null;
 
@@ -187,18 +188,40 @@ describe('useFullscreen tier 2 (gated, native video fullscreen)', () => {
     const video = fakeVideo({ paused: true, buffered: [[0, 30]], currentTime: 2 });
     const { result } = renderHook(() => useFullscreen({ current: document.createElement('div') }, video));
     act(() => result.current.toggle());
-    expect(video.currentTime).toBeCloseTo(29.9, 5);
+    // The landing leaves the shared live target lag as cushion (docs/27
+    // finding 3) — appends arrive at 1×, so this IS the session's budget.
+    expect(30 - video.currentTime).toBeCloseTo(liveEdgePolicy('live').targetLagS, 5);
     expect(video.play).toHaveBeenCalledTimes(1);
     expect(video.webkitEnterFullscreen).toHaveBeenCalledTimes(1);
     expect(result.current.tier).toBe('video');
   });
 
-  it('leaves a near-live playhead alone on entry', () => {
-    const video = fakeVideo({ paused: true, buffered: [[0, 30]], currentTime: 29.8 });
+  it('leaves a playhead already near the target lag alone on entry', () => {
+    const target = liveEdgePolicy('live').targetLagS;
+    const t = 30 - target - ENTRY_SEEK_SLACK_S / 2;
+    const video = fakeVideo({ paused: true, buffered: [[0, 30]], currentTime: t });
     const { result } = renderHook(() => useFullscreen({ current: document.createElement('div') }, video));
     act(() => result.current.toggle());
-    expect(video.currentTime).toBeCloseTo(29.8, 5);
+    expect(video.currentTime).toBeCloseTo(t, 5);
     expect(result.current.tier).toBe('video');
+  });
+
+  // A playhead pinned at the very end has no cushion at all: the first jitter
+  // excursion underruns, and WebKit pauses on underrun. Step back into range.
+  it('backs a playhead at the very end off to the target lag on entry', () => {
+    const video = fakeVideo({ paused: true, buffered: [[0, 30]], currentTime: 29.95 });
+    const { result } = renderHook(() => useFullscreen({ current: document.createElement('div') }, video));
+    act(() => result.current.toggle());
+    expect(30 - video.currentTime).toBeCloseTo(liveEdgePolicy('live').targetLagS, 5);
+  });
+
+  it("takes the delivery mode's target lag", () => {
+    const video = fakeVideo({ paused: true, buffered: [[0, 30]], currentTime: 2 });
+    const { result } = renderHook(() =>
+      useFullscreen({ current: document.createElement('div') }, video, {}, 'deep'),
+    );
+    act(() => result.current.toggle());
+    expect(30 - video.currentTime).toBeCloseTo(liveEdgePolicy('deep').targetLagS, 5);
   });
 
   // Playback exists only for the native player: exiting (system UI or
@@ -300,6 +323,22 @@ describe('useFullscreen tier 2 stall watchdog', () => {
     await act(() => vi.advanceTimersByTimeAsync(500));
     expect(video.play).toHaveBeenCalledTimes(2);
     expect(result.current.stallRecoveries()?.recoveries).toBe(1);
+  });
+
+  it('lands recoveries at the delivery mode\'s cushion, following a mode change', async () => {
+    const { video, underrun } = starvable();
+    const { result, rerender } = renderHook(
+      ({ mode }: { mode: 'live' | 'deep' }) =>
+        useFullscreen({ current: document.createElement('div') }, video, {}, mode),
+      { initialProps: { mode: 'live' as 'live' | 'deep' } },
+    );
+    rerender({ mode: 'deep' });
+    act(() => result.current.toggle());
+    video.currentTime = 9.95; // wherever the entry seek put it: before the hole
+    act(() => underrun()); // newest range [10.4, 13]
+    await act(() => vi.advanceTimersByTimeAsync(500));
+    // Hole skip into the newest range, 1.5 s (deep) inside its end.
+    expect(video.currentTime).toBeCloseTo(13 - 1.5, 6);
   });
 
   it('leaves the armed (not fullscreen) element paused', async () => {

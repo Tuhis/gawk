@@ -381,40 +381,39 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 
 - **Found**: 2026-07-26, investigating the first on-device MF5 pass ("plays
   sometimes for a second, sometimes for 10, but always pauses"). Diagnosed by
-  code reading, not yet reproduced against an instrumented build — the two
-  *other* causes found in the same investigation (docs/27 findings 1 and 2, no
-  `duration = Infinity` and no muxed audio) are fixed, and they may mask this
-  one by turning an underrun into a recoverable stall instead of a dead player.
-- **Impact**: iPhone native fullscreen only (tier 2). The inline canvas path is
-  untouched and has no equivalent failure mode. Expect micro-stalls under normal
-  arrival jitter, worst in **live delivery mode** and during recovery in
+  code reading, not reproduced against an instrumented build.
+- **Impact**: iPhone native fullscreen only (tier 2). Micro-stalls under normal
+  arrival jitter, worst in live delivery mode and during recovery in
   resilient / Deep buffer mode.
-- **Cause**: `LIVE_EDGE_REJOIN_S` is `0.1` — and the cushion it sets is the
-  whole budget for the session, because the muxer is fed from `decodeReleased`,
-  i.e. **after** the reorder buffer's paced release. Appends therefore arrive at
-  playback rate: the SourceBuffer can never build ahead while the element plays,
-  so `bufferedAhead` is a constant of the motion that only a seek (shrink) or a
-  pause (grow) changes. 100 ms is below the arrival jitter measured in this
-  project's own field captures (72–158 ms, docs/20 finding 6), and
-  `MsePresenter.maybeCatchUp` re-creates the condition every time lag passes
-  `LIVE_CATCHUP_LAG_S` (2 s) — which is exactly the state a manual play leaves.
-- **Relation to the delivery modes** (worth not re-deriving): a deeper playout
-  buffer (R19 resilient, R21 Deep buffer) makes the append stream *smoother*, so
-  the cushion drains more slowly — but it adds **zero** cushion, because the
-  delay is spent upstream of the release point and the output is still 1×. And
-  during a DVR catch-up burst, when real cushion does arrive for free,
-  `maybeCatchUp` throws it away by seeking back to `end − 0.1`.
-- **Signature**: overlay/Copy-diagnostics `presentationSurface.bufferedAheadMs`
-  sitting at ~100 ms and `elementPaused` flipping true with no `appendErrors`
-  and `bufferedRanges === 1` (a hole would be the *other* open entry below).
-- **Fix would start**: one shared `TARGET_LAG_S` (~0.4–0.6 s) replacing the
-  constant that is currently **duplicated** in `lib/useFullscreen.ts`
-  (`seekToLiveEdge`) and `features/viewer/msePresentation.ts`
-  (`maybeCatchUp`) — a drift hazard in its own right. Scaling it by delivery
-  mode is the natural refinement (live small, resilient ~1 s, Deep buffer
-  larger): it is pure fullscreen-only latency, and those viewers have already
-  bought latency for smoothness. Since docs/27 finding 2 muxed audio onto the
-  same timeline, raising it no longer costs lip-sync. See docs/27 "Still open".
+- **Cause**: the duplicated `LIVE_EDGE_REJOIN_S = 0.1` set the playhead's
+  cushion for the whole session — the muxer is fed after the reorder buffer's
+  paced release, so appends arrive at 1× and the SourceBuffer cannot build
+  ahead while the element plays. 0.1 s is below the 72–158 ms arrival jitter
+  of docs/20 finding 6, and `maybeCatchUp` re-created it (seeking to
+  `end − 0.1`) on every catch-up, including during a DVR catch-up burst.
+  Full mechanism: docs/27 "Still open", item 3.
+- **Fix landed** (docs/27 item 3): one shared policy, `gawk-app/src/lib/liveEdge.ts`,
+  used by both the entry seek (`useFullscreen`) and `MsePresenter.maybeCatchUp`.
+  The target lag is per delivery mode — live 0.5 s, resilient 1.0 s, Deep
+  buffer 1.5 s — and the catch-up trigger sits 1.5 s above it (live keeps
+  its 2 s). Every seek lands at the target lag, never nearer the end; the
+  entry seek also backs a playhead pinned at the end off to it. Unit-tested
+  only. **On-device confirmation pending** — remove this entry once an iPhone
+  native-fullscreen session shows, in overlay/Copy-diagnostics
+  `presentationSurface`:
+  - `bufferedAheadMs` sitting near the mode's target (≈500 ms on Balanced /
+    Lowest latency, ≈1000 ms on Smoother, ≈1500 ms on Most stable) after
+    entry and after any catch-up, no longer pinned at ~100 ms;
+  - `elementPaused` staying false through a minute or more of normal
+    playback, with `appendErrors: 0` and `bufferedRanges === 1`.
+  - after a stall recovery (`stallRecoveries` > 0), `bufferedAheadMs` also
+    back near the target. The watchdog waits for the cushion before
+    `play()`, but gives up after the target plus 1 s (`CUSHION_GRACE_MS`) in
+    case MMS stops feeding a paused element; a thin cushion right after a
+    recovery means it hit that bound, and `endstreaming` is the signal to
+    look at next.
+  If `bufferedAheadMs` holds the target but the element still pauses, the
+  cause is the MMS-parking entry below, not this one.
 
 ## iPhone native fullscreen: MMS parking can leave holes in the buffered timeline
 
