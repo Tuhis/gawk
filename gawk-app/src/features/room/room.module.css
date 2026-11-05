@@ -246,6 +246,11 @@
   font-size: var(--fs-xs);
 }
 
+/* The state overlay lets clicks through to the tile; its Retry does not. */
+.tileRetry {
+  pointer-events: auto;
+}
+
 .tile[data-variant='small'] .tileHead {
   top: 0.35rem;
   left: 0.35rem;

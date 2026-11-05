@@ -582,19 +582,6 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   auto-resume, or routing publishers differently from viewers. Do not change
   the LB shape speculatively — docs/22 finding 10 chose etp=Local deliberately.
 
-## Room tile stays "offline" after its viewer session gives up
-
-- **Found**: 2026-09-25, gawk-app code review (traced, not probed).
-- **What happens**: a tile whose `/subscribe` session ends in `error` (a
-  refused first dial, or a spent reconnect budget) shows "This stream is
-  offline right now." for good, while the roster says the stream is live.
-  ViewerSession never re-dials by policy, and the tile offers no retry;
-  switching to Hide videos and back is the only way out.
-- **Fix would start**: re-create the tile's session when its attachment flips
-  back to live or on a tap. The canvas can be transferred to the worker only
-  once, so this needs the tile body keyed on an attempt counter (a new
-  canvas per attempt), not a re-run of the connection effect.
-
 ## Smoother and Most stable viewers freeze on uplink loss that Balanced viewers never see
 
 - **Found**: 2026-10-17, docs/75 F14, by replaying lab traces through the
