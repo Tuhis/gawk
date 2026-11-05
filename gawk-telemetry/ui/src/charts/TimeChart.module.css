@@ -1,17 +1,44 @@
 /*
-  Fixed geometry. The container's height comes from a custom property set by
-  the component, so a chart with no data occupies exactly the space a populated
-  one does — TH11's no-layout-shift rule, which gets HARDER at UD14's density,
-  not easier.
+  Fixed geometry. The plot's height is set by the component, so a chart with
+  no data occupies exactly the space a populated one does — TH11's
+  no-layout-shift rule, which gets HARDER at UD14's density, not easier.
 */
 .wrap {
   margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.plot {
   position: relative;
 }
 
 .canvas {
   width: 100%;
-  height: var(--chart-h, 160px);
+  height: 100%;
+}
+
+.legend {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+}
+
+.legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend i {
+  display: block;
+  width: 12px;
+  height: 2px;
+  border-radius: 1px;
 }
 
 .empty {
@@ -20,8 +47,25 @@
   display: grid;
   place-items: center;
   margin: 0;
-  color: var(--text-dimmer);
-  font-size: var(--fs-xs);
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+  pointer-events: none;
+}
+
+/* A plot that explains itself (the all-thin trend): centred, over the plot. */
+.overlay {
+  position: absolute;
+  left: 50%;
+  top: 44%;
+  transform: translate(-50%, -50%);
+  max-width: min(520px, 90%);
+  padding: 10px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--surface-1);
+  color: var(--text-2);
+  font-size: 12.5px;
+  text-align: center;
   pointer-events: none;
 }
 
@@ -32,7 +76,7 @@
 */
 .note {
   margin: 2px 0 0;
-  color: var(--text-dimmer);
-  font-size: var(--fs-xs);
-  line-height: 1.3;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+  line-height: 1.35;
 }

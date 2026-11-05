@@ -1,0 +1,159 @@
+/*
+  Tables (R36 item 1, docs/86 TU2): content-fit, operator-resizable.
+
+  `table-layout: fixed` stays — it is what stops a ticking value from
+  re-flowing the table (TH11) — but the colgroup now carries MEASURED pixel
+  widths rather than guessed percentages, the free-text column takes the
+  remainder, and the table is allowed to be wider than its container (the
+  wrapper scrolls sideways) instead of cutting the last column off.
+*/
+.wrap {
+  position: relative;
+  overflow-x: auto;
+  overflow-y: hidden;
+  min-width: 0;
+}
+
+.tbl {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+
+.tbl th {
+  position: relative;
+  height: 30px;
+  padding: 0 12px;
+  text-align: left;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  color: var(--text-3);
+  white-space: nowrap;
+  border-bottom: 1px solid var(--line-strong);
+  background: var(--surface-1);
+}
+
+.tbl td {
+  height: 32px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tbl tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.tbl tbody tr:hover td {
+  background: var(--surface-2);
+}
+
+.compact td {
+  height: 28px;
+}
+
+.compact th {
+  height: 28px;
+}
+
+.r {
+  text-align: right;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+.dim {
+  color: var(--text-2);
+}
+
+/* Only the free-text column ellipsises; its title carries the whole value. */
+.trunc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- grips --------------------------------------------------------------- */
+
+.grip {
+  position: absolute;
+  top: 7px;
+  bottom: 7px;
+  right: -2px;
+  z-index: 2;
+  width: 5px;
+  cursor: col-resize;
+  border-left: 1px solid var(--line-strong);
+  border-right: 1px solid var(--line-strong);
+  background: var(--surface-1);
+  opacity: 0;
+  touch-action: none;
+}
+
+th:hover > .grip,
+[role='columnheader']:hover > .grip,
+.grip:focus-visible {
+  opacity: 1;
+}
+
+.gripDrag {
+  opacity: 1;
+  border-color: var(--accent);
+}
+
+.dragLine {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 3;
+  width: 0;
+  border-left: 1px solid var(--accent);
+  pointer-events: none;
+}
+
+.dragHint {
+  position: absolute;
+  top: 34px;
+  z-index: 4;
+  transform: translateX(8px);
+  padding: 2px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface-3);
+  color: var(--text);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 14px;
+  border-top: 1px solid var(--line);
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+}
+
+.reset {
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.reset:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}

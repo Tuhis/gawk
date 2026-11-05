@@ -1,166 +1,82 @@
-/*
-  The table is FIXED-LAYOUT with an explicit colgroup. That is the single most
-  important decision in this file: with `auto` layout the browser re-measures
-  every column on every 2 s update, so one viewer's fps going from 9.9 to 10
-  re-flows the entire table. `table-layout: fixed` plus declared widths means
-  the geometry is decided once and content never negotiates for space.
-*/
-
-.table {
-  width: 100%;
-  border-collapse: collapse;
-  table-layout: fixed;
-  font-size: var(--fs-sm);
-}
-
-.table thead th {
-  text-align: left;
-  font-weight: 500;
-  font-size: var(--fs-xs);
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--text-dimmer);
-  padding: var(--sp-2) var(--sp-3);
-  border-bottom: 1px solid var(--line);
-  white-space: nowrap;
-}
-
-.table td {
-  padding: var(--sp-2) var(--sp-3);
-  border-top: 1px solid var(--line);
-  vertical-align: middle;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.table tbody tr:hover {
-  background: var(--panel-hover);
-}
-
-.rowOpen {
-  background: var(--panel-hover);
-}
-
-.timelineRow:hover {
-  background: transparent;
-}
-
-.timelineRow td {
-  padding: 0;
-  border-top: 0;
-}
-
-/*
-  Column widths as PERCENTAGES that sum to ~100%. With `table-layout: fixed`,
-  declared widths are honoured literally — a colgroup in `ch` units summed past
-  the container and pushed the last column off the right edge. Percentages keep
-  the ratios while guaranteeing the table fits whatever width it is given.
-*/
-.cState {
-  width: 7%;
-}
-.cRole {
-  width: 6%;
-}
-.cSession {
-  width: 7%;
-}
-.cClient {
-  width: 11%;
-}
-.cNum {
-  width: 7%;
-}
-.cDelivery {
-  width: 7%;
-}
-.cFresh {
-  width: 12%;
-}
-.cVerdict {
-  width: auto;
-}
-.cChart {
-  width: 7%;
-}
-
-.right {
-  text-align: right;
-}
-
-.mono {
-  font-family: var(--mono);
-  color: var(--text-dim);
-}
-
-.dim {
-  color: var(--text-dim);
-}
-
-.role {
-  color: var(--text-dim);
-}
-
+/* The live session table's own touches; layout lives in tables.module.css. */
 .roleBroadcaster {
-  color: var(--text);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .verdict {
-  color: var(--text-dim);
+  color: var(--text-2);
+}
+
+.tagAccent {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: var(--r-sm);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  vertical-align: middle;
 }
 
 .fresh {
-  font-size: var(--fs-xs);
-  /* Fixed slot: "now", "12s ago" and "never" differ in width and would
-     otherwise shuffle the column on every tick. */
-  display: inline-block;
-  min-width: 6.5ch;
+  white-space: nowrap;
 }
 
-.sep {
-  color: var(--line-strong);
-  margin: 0 0.35rem;
-}
-
+/* Absence is never green: `unknown` gets no hue (UD10). */
 .ok {
-  color: var(--text-dim);
+  color: var(--text-2);
 }
+
 .warn {
   color: var(--warn);
 }
+
 .unknown {
-  color: var(--text-dimmer);
-  font-style: italic;
+  color: var(--text-3);
 }
+
 .bad {
   color: var(--bad);
 }
 
-.chartBtn {
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  color: var(--text-dim);
-  font-size: var(--fs-xs);
-  padding: 0.1rem 0.4rem;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: border-color var(--dur) var(--ease), color var(--dur) var(--ease);
+.sep {
+  margin: 0 4px;
+  color: var(--text-3);
 }
 
-.chartBtn:hover {
-  border-color: var(--line-strong);
-  color: var(--text);
+/* A stripe leg: a sub-row on the page's ground, quieter than its viewer. */
+.legRow td {
+  height: 26px;
+  background: var(--bg);
+  color: var(--text-2);
+  font-size: 11.5px;
 }
 
-/*
-  The detail link replaced the inline-graph toggle. Styled as the button was,
-  because it occupies the same slot and a column that changed width would drag
-  the whole table with it.
-*/
-.chartBtn {
-  text-decoration: none;
+.legLine {
   display: inline-block;
+  width: 10px;
+  height: 14px;
+  margin: 0 6px -2px 2px;
+  border-left: 1px solid var(--line-strong);
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.legDrop {
+  color: var(--warn);
+}
+
+.legNote {
+  color: var(--text-3);
+}
+
+.foot {
+  border-top: 1px solid var(--line);
+}
+
+.grow {
+  flex: 1;
 }

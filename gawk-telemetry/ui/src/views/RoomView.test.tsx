@@ -95,7 +95,7 @@ describe('RoomView', () => {
     expect(within(a).queryByRole('link', { name: /b0000000/ })).toBeNull();
     expect(within(b).getAllByRole('link', { name: /b0000000/ })).toHaveLength(2);
     // The group heading links to the broadcast's own page.
-    expect(within(a).getByRole('link', { name: /broadcast aaaaaaaaaaaa/ }).getAttribute('href')).toBe(
+    expect(within(a).getByRole('link', { name: /broadcast aaaaaaaaaaaa/i }).getAttribute('href')).toBe(
       '#/broadcast/aaaaaaaaaaaa',
     );
     expect(screen.getByText(/2 broadcasts · 4 sessions/)).toBeTruthy();

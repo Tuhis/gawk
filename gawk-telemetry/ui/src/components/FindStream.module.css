@@ -4,18 +4,31 @@
   gap: var(--sp-2);
 }
 
+.label {
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
 .input {
-  width: 6.5rem;
+  width: 8rem;
+  height: 30px;
   font: inherit;
   font-family: var(--mono);
   font-size: var(--fs-sm);
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  background: var(--bg);
+  background: var(--surface-1);
   color: var(--text);
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  padding: 0 8px;
+}
+
+.input::placeholder {
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-3);
 }
 
 .input:focus {
@@ -26,12 +39,14 @@
 
 .button,
 .clear {
+  height: 30px;
   font-size: var(--fs-sm);
-  background: var(--bg);
-  color: var(--text-dim);
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  padding: 0.25rem 0.6rem;
+  font-weight: 500;
+  background: var(--surface-1);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  padding: 0 12px;
   cursor: pointer;
   transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
@@ -44,13 +59,13 @@
 
 .clear {
   border-color: transparent;
-  color: var(--text-dimmer);
+  color: var(--text-3);
 }
 
 /* Reserved width: messages appear and disappear, and the header must not
    resize under them. */
 .message {
   font-size: var(--fs-xs);
-  color: var(--text-dimmer);
+  color: var(--text-3);
   min-width: 12ch;
 }

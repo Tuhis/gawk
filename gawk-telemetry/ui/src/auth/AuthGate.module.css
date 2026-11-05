@@ -23,7 +23,7 @@
 }
 
 .centred button:hover {
-  background: var(--panel-hover);
+  background: var(--surface-2);
 }
 
 .error {
@@ -31,5 +31,5 @@
 }
 
 .dim {
-  color: var(--text-dim);
+  color: var(--text-2);
 }

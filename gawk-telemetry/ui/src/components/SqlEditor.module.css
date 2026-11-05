@@ -1,0 +1,97 @@
+/*
+  The textarea and its highlighted twin share every metric — font, size, line
+  height, padding, wrapping — so the caret sits on the coloured text exactly.
+*/
+.editor {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 20px;
+}
+
+.editor:focus-within {
+  border-color: var(--accent);
+}
+
+.gutter {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 8px 8px 0;
+  overflow: hidden;
+  text-align: right;
+  color: var(--text-3);
+  border-right: 1px solid var(--line);
+  user-select: none;
+}
+
+.code {
+  position: relative;
+  min-width: 0;
+}
+
+.hl,
+.input {
+  margin: 0;
+  padding: 8px 12px;
+  font: inherit;
+  line-height: inherit;
+  white-space: pre;
+  tab-size: 2;
+  letter-spacing: 0;
+}
+
+.hl {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  color: var(--text);
+  pointer-events: none;
+}
+
+.input {
+  position: relative;
+  display: block;
+  width: 100%;
+  border: 0;
+  outline: none;
+  resize: vertical;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--text);
+  overflow: auto;
+}
+
+.input::placeholder {
+  color: var(--text-3);
+}
+
+.input::selection {
+  background: var(--accent-bg);
+  color: transparent;
+}
+
+.kw {
+  color: var(--s2);
+}
+
+.fn {
+  color: var(--s3);
+}
+
+.st {
+  color: var(--s4);
+}
+
+.nu {
+  color: var(--s1);
+}
+
+.cm {
+  color: var(--text-3);
+  font-style: italic;
+}

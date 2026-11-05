@@ -1,170 +1,255 @@
+/*
+  A live broadcast card (R36). Severity is the pill AND, for bad and warn, a
+  3 px edge — never a wash of colour over the whole card, which would make
+  every number on it harder to read.
+*/
 .card {
-  background: var(--panel);
+  background: var(--surface-1);
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
-  margin-bottom: var(--sp-3);
   overflow: hidden;
-  box-shadow: var(--shadow);
-  /* The severity accent is a left border that is ALWAYS present, transparent
-     when healthy. Adding a border on state change would shift the content by
-     3px — a visible twitch on a page that updates every 2 s. */
-  border-left: 3px solid transparent;
-  transition: border-left-color var(--dur) var(--ease);
-}
-
-.warn {
-  border-left-color: var(--warn);
+  min-width: 0;
 }
 
 .bad {
-  border-left-color: var(--bad);
+  box-shadow: inset 3px 0 0 var(--bad);
 }
 
+.warn {
+  box-shadow: inset 3px 0 0 var(--warn);
+}
+
+/* The find box's match: outlined, so it is the card the eye lands on. */
 .found {
   outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  outline-offset: -1px;
 }
 
-.summary {
+.escalated {
+  border-color: var(--warn);
+}
+
+.head {
   display: flex;
   align-items: center;
-  gap: var(--sp-3);
-  padding: var(--sp-3);
-  min-height: 46px; /* reserved: the row must not change height with its content */
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
 }
 
-.disclosure {
-  background: transparent;
+.disc,
+.star {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
   border: 0;
-  color: var(--text-dim);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-2);
   cursor: pointer;
-  font-size: var(--fs-md);
-  line-height: 1;
-  padding: 0.2rem;
-  width: 1.6rem;
-  flex: none;
 }
 
-.disclosure:hover {
+.disc:hover,
+.star:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.star {
+  color: var(--text-3);
+}
+
+.starOn {
   color: var(--text);
 }
 
 .key {
   font-family: var(--mono);
-  font-weight: 600;
   font-size: var(--fs-md);
-  letter-spacing: 0.02em;
+  font-weight: 500;
 }
 
-.lifecycle {
+.live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-size: var(--fs-xs);
-  letter-spacing: 0.08em;
   font-weight: 600;
-  color: var(--text-dim);
-  padding: 0.1rem 0.4rem;
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  white-space: nowrap;
+  letter-spacing: 0.06em;
+  color: var(--text);
 }
 
-.lifecycleEnded {
-  font-weight: 400;
-  letter-spacing: 0.02em;
-  color: var(--text-dimmer);
+.live i {
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text);
+  box-shadow: 0 0 0 3px var(--hatch);
 }
 
-.foundTag {
+.away {
   font-size: var(--fs-xs);
-  color: var(--accent);
-  border: 1px solid currentColor;
+  letter-spacing: 0.02em;
+  color: var(--text-3);
+}
+
+.escalation {
+  padding: 1px 6px;
+  border: 1px solid var(--warn);
   border-radius: var(--r-sm);
-  padding: 0.05rem 0.35rem;
+  font-size: 11.5px;
+  color: var(--warn);
 }
 
-.spacer {
-  flex: 1;
-}
-
+/* The fact strip: fixed slots, right-aligned numbers, so nothing moves as
+   values tick. */
 .facts {
   display: flex;
-  gap: var(--sp-4);
-  flex-wrap: wrap;
-  justify-content: flex-end;
+  margin-left: auto;
 }
 
 .fact {
-  display: inline-flex;
+  display: flex;
   flex-direction: column;
   align-items: flex-end;
-  line-height: 1.25;
+  min-width: 92px;
+  padding: 0 14px;
+  border-left: 1px solid var(--line);
+}
+
+.fact:last-child {
+  padding-right: 0;
+}
+
+.factLeft {
+  align-items: flex-start;
+  max-width: 220px;
 }
 
 .factLabel {
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  color: var(--text-dimmer);
+  font-size: 10.5px;
+  letter-spacing: 0.03em;
+  color: var(--text-3);
 }
 
-/*
-  Fixed-width value slot. This is what stops the summary strip dancing: the
-  values tick constantly and, left to themselves, each one's width change would
-  push every fact to its left.
-*/
-.factValue {
+.fact b {
+  font-size: var(--fs-md);
+  font-weight: 500;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.factMono {
   font-family: var(--mono);
-  font-size: var(--fs-sm);
-  color: var(--text);
-  min-width: 7ch;
-  text-align: right;
+  font-size: var(--fs-sm) !important;
+}
+
+.fact em {
+  font-style: normal;
+  font-size: 10.5px;
+  color: var(--text-3);
 }
 
 .findings {
+  list-style: none;
   margin: 0;
-  padding: 0 var(--sp-4) var(--sp-3) calc(var(--sp-4) + 1.2rem);
-  list-style: '– ';
-  color: var(--text-dim);
-  font-size: var(--fs-sm);
+  padding: 0 14px 10px 50px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.findings li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.table {
+  border-top: 1px solid var(--line);
 }
 
 .empty {
   margin: 0;
-  padding: var(--sp-3) var(--sp-4);
+  padding: 10px 14px 12px 50px;
   border-top: 1px solid var(--line);
-  color: var(--text-dimmer);
+  color: var(--text-3);
   font-size: var(--fs-sm);
 }
 
-/*
-  UD19's watch. A star, and a row that visibly changes when the thing you
-  starred gets worse. That is the entire alerting story — no notification, no
-  sound, no server state.
-*/
-.star {
-  background: none;
-  border: 0;
-  padding: 0 2px;
-  cursor: pointer;
-  color: var(--text-dimmer);
-  font-size: var(--fs-md);
-  line-height: 1;
+/* ---- ended rows ------------------------------------------------------------ */
+
+.endRow {
+  display: grid;
+  grid-template-columns: 96px 140px 150px 100px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  height: 36px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
 }
 
-.star:hover {
-  color: var(--text);
+.endRow:last-child {
+  border-bottom: 0;
 }
 
-.starOn {
-  color: var(--accent);
+.endKey {
+  font-family: var(--mono);
+  color: var(--text-2);
 }
 
-.escalated {
-  outline: 1px solid var(--accent);
-  outline-offset: -1px;
-}
-
-.escalation {
+.ended {
   font-size: var(--fs-xs);
-  color: var(--accent);
+  letter-spacing: 0.02em;
+  color: var(--text-3);
+}
+
+.endVerdict {
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .facts {
+    width: 100%;
+    margin-left: 0;
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .fact {
+    min-width: 0;
+    align-items: flex-start;
+    padding: 0 12px 0 0;
+    border-left: 0;
+  }
+
+  .findings {
+    padding-left: 14px;
+  }
+
+  /* Phone triage (UD17): the pod and the rule ids are desktop detail. */
+  .factLeft,
+  .findings li > a {
+    display: none;
+  }
+
+  .endRow {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    height: auto;
+    padding: 8px 14px;
+  }
+
+  .endRow > :nth-child(4),
+  .endRow > :nth-child(5) {
+    display: none;
+  }
 }

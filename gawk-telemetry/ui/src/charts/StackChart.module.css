@@ -1,0 +1,24 @@
+/* A stack member: fixed height, nothing drawn on top of it but an empty-state
+   sentence (UD10). TH11's no-layout-shift rule holds by construction. */
+.wrap {
+  position: relative;
+  width: 100%;
+}
+
+.canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: 0 var(--sp-3);
+  text-align: center;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+  pointer-events: none;
+}

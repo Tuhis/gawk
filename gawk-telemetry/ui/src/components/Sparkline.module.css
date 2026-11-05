@@ -1,0 +1,21 @@
+.spark {
+  display: block;
+  overflow: visible;
+}
+
+.spark path {
+  fill: none;
+  stroke: var(--s1);
+  stroke-width: 1.2;
+  stroke-linejoin: round;
+}
+
+.quiet path {
+  stroke: var(--text-3);
+  stroke-width: 1;
+}
+
+.none {
+  display: inline-block;
+  color: var(--text-3);
+}

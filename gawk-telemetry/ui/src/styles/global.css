@@ -1,5 +1,5 @@
 /*
-  gawk-telemetry dashboard — design tokens.
+  gawk-telemetry dashboard — design tokens (R36's facelift, docs/86).
 
   Deliberately NOT R6's design system: different origin, different build, no
   shared tokens, and coupling an ops page to the product's component library
@@ -14,81 +14,114 @@
                              `bad` keeps its red but cannot out-shout a live
                              `warn` above it.
   Neither is ever encoded by colour alone: every state carries a glyph and a
-  word too.
+  word too. Data series use a categorical ramp (--s1…--s5) that never borrows
+  a severity hue.
+
+  Dark is the default (UD14). The theme is resolved in JS (`state/theme.ts`)
+  and written to <html data-theme>, so the charts — which paint on a canvas and
+  cannot read CSS — resolve the same values from the same place.
 */
 
+@import './fonts.css';
+
 :root {
-  color-scheme: dark light;
+  color-scheme: dark;
 
-  --bg: #0b0c0e;
-  --bg-raised: #131519;
-  --panel: #16181d;
-  --panel-hover: #1b1e24;
-  --line: #262a32;
-  --line-strong: #333846;
+  --bg: #0c0e11;
+  --surface-1: #13161b;
+  --surface-2: #191d23;
+  --surface-3: #20252d;
+  --line: #242932;
+  --line-strong: #323946;
 
-  --text: #e9eaee;
-  --text-dim: #9aa0ab;
-  --text-dimmer: #6b7280;
+  --text: #e7e9ed;
+  --text-2: #a7adb8;
+  --text-3: #8a919d;
 
-  --ok: #3fb950;
-  --warn: #e3a83c;
-  --bad: #e5534b;
-  --accent: #58a6ff;
+  --ok: #46c25a;
+  --warn: #e9ad45;
+  --bad: #f2645d;
+  --ok-bg: rgba(70, 194, 90, 0.12);
+  --warn-bg: rgba(233, 173, 69, 0.13);
+  --bad-bg: rgba(242, 100, 93, 0.14);
 
-  --ok-bg: rgba(63, 185, 80, 0.12);
-  --warn-bg: rgba(227, 168, 60, 0.12);
-  --bad-bg: rgba(229, 83, 75, 0.12);
+  --accent: #6ea8ff;
+  --accent-bg: rgba(110, 168, 255, 0.13);
 
-  --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-  --sans:
-    system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  /* Series: blue, violet, teal, pink, slate. Never green, amber or red. */
+  --s1: #6ea8ff;
+  --s2: #b69cf5;
+  --s3: #4cc4c4;
+  --s4: #ea8fc5;
+  --s5: #9fb3cc;
+
+  /* "Was not here" (not joined, left) and "could not see" (tab hidden). */
+  --veil: rgba(12, 14, 17, 0.62);
+  --hatch: rgba(167, 173, 184, 0.1);
+  /* The hatch's stroke on a chart, where --hatch is too faint to fill a lane. */
+  --hatch-line: rgba(167, 173, 184, 0.2);
+
+  --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
 
   --fs-xs: 11px;
   --fs-sm: 12px;
   --fs-md: 13px;
   --fs-lg: 15px;
+  --fs-xl: 18px;
 
   --r-sm: 4px;
   --r-md: 6px;
-  --r-lg: 10px;
+  --r-lg: 8px;
 
   --sp-1: 0.25rem;
   --sp-2: 0.5rem;
   --sp-3: 0.75rem;
   --sp-4: 1rem;
+  --sp-5: 1.25rem;
   --sp-6: 1.5rem;
 
   --dur: 120ms;
   --ease: cubic-bezier(0.2, 0, 0.2, 1);
 
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 12px rgba(0, 0, 0, 0.25);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg: #f7f8fa;
-    --bg-raised: #fff;
-    --panel: #fff;
-    --panel-hover: #f2f4f7;
-    --line: #e3e6ec;
-    --line-strong: #cdd2dc;
+:root[data-theme='light'] {
+  color-scheme: light;
 
-    --text: #14161a;
-    --text-dim: #5a616e;
-    --text-dimmer: #878e9b;
+  --bg: #f5f6f8;
+  --surface-1: #ffffff;
+  --surface-2: #f0f2f5;
+  --surface-3: #e8ebf0;
+  --line: #e1e4ea;
+  --line-strong: #c9ced8;
 
-    --ok: #1a7f37;
-    --warn: #9a6600;
-    --bad: #b02a16;
-    --accent: #0b62d6;
+  --text: #15181d;
+  --text-2: #4f5663;
+  --text-3: #646b78;
 
-    --ok-bg: rgba(26, 127, 55, 0.1);
-    --warn-bg: rgba(154, 102, 0, 0.1);
-    --bad-bg: rgba(176, 42, 22, 0.1);
+  --ok: #1a7f37;
+  --warn: #8f5e00;
+  --bad: #b3261e;
+  --ok-bg: rgba(26, 127, 55, 0.09);
+  --warn-bg: rgba(143, 94, 0, 0.09);
+  --bad-bg: rgba(179, 38, 30, 0.08);
 
-    --shadow: 0 1px 2px rgba(16, 20, 30, 0.06), 0 4px 12px rgba(16, 20, 30, 0.06);
-  }
+  --accent: #0b5fd0;
+  --accent-bg: rgba(11, 95, 208, 0.08);
+
+  --s1: #0b5fd0;
+  --s2: #7448c9;
+  --s3: #0f8a8a;
+  --s4: #b8407f;
+  --s5: #5b6b80;
+
+  --veil: rgba(245, 246, 248, 0.7);
+  --hatch: rgba(79, 86, 99, 0.08);
+  --hatch-line: rgba(79, 86, 99, 0.22);
+
+  --shadow: 0 8px 24px rgba(16, 20, 30, 0.12);
 }
 
 * {
@@ -107,33 +140,46 @@ body {
   color: var(--text);
   font-family: var(--sans);
   font-size: var(--fs-md);
-  line-height: 1.5;
+  line-height: 1.45;
   -webkit-font-smoothing: antialiased;
-}
-
-/*
-  EVERY number on this page is tabular. A proportional digit changes width as
-  values tick, which drags the row it sits in — the single biggest source of a
-  dashboard that cannot be read while it updates.
-*/
-.tnum,
-table,
-input {
+  /*
+    EVERY number on this page is tabular. A proportional digit changes width
+    as values tick, which drags the row it sits in — the single biggest source
+    of a dashboard that cannot be read while it updates.
+  */
   font-variant-numeric: tabular-nums;
 }
 
-button {
+button,
+input,
+select,
+textarea {
   font: inherit;
   color: inherit;
 }
 
 a {
   color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.92em;
 }
 
 ::selection {
   background: var(--accent);
   color: var(--bg);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* Respect a user who does not want motion; nothing here needs it. */

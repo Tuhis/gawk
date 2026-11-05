@@ -1,0 +1,206 @@
+/* The session page (R36, docs/86 TU8): a main column and a side column. */
+.span {
+  margin-top: calc(-1 * var(--sp-2));
+}
+
+.cols {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  align-items: flex-start;
+}
+
+.main {
+  flex: 999 1 640px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.side {
+  flex: 1 1 320px;
+  max-width: 400px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+@media (max-width: 1100px) {
+  .side {
+    max-width: none;
+  }
+}
+
+.live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--text);
+}
+
+.live i {
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text);
+  box-shadow: 0 0 0 3px var(--hatch);
+}
+
+/* ---- timeline ------------------------------------------------------------ */
+
+.chart {
+  padding: 10px 14px 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.ch {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.ch h3 {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+/* Each series' value at the crosshair, in the chart's own legend. */
+.vals {
+  display: flex;
+  gap: 4px 14px;
+  flex-wrap: wrap;
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+.vals span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.vals i {
+  display: block;
+  width: 10px;
+  height: 2px;
+}
+
+.vals b {
+  color: var(--text);
+  font-weight: 600;
+  min-width: 3ch;
+  text-align: right;
+}
+
+.xaxis {
+  height: 24px;
+  margin-right: 14px;
+}
+
+.zoom {
+  margin-right: 14px;
+  padding-bottom: 4px;
+}
+
+.timelineFoot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  padding: 4px 14px 12px;
+}
+
+.crossT {
+  font-family: var(--mono);
+  font-weight: 500;
+  color: var(--text);
+}
+
+.event {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+
+/* ---- side ---------------------------------------------------------------- */
+
+.kv {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 16px;
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.kv dt {
+  color: var(--text-3);
+}
+
+.kv dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+.compare {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cmp {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 8px;
+  font-size: var(--fs-sm);
+}
+
+.cmpK {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.cmp b {
+  font-weight: 600;
+}
+
+.track {
+  grid-column: 1 / 3;
+  position: relative;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-3);
+}
+
+.fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: 2px;
+  background: var(--text-2);
+}
+
+/* The fleet median, a tick across the bar. */
+.median {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 0;
+  border-left: 1.5px solid var(--text);
+}

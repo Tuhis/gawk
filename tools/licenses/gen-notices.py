@@ -469,6 +469,36 @@ VENDORED_APP = [
 
 
 def vendored_app() -> list[Package]:
+    return vendored(VENDORED_APP)
+
+
+# Fonts the telemetry dashboard bundles (R36, docs/86 TU1): IBM's own latin
+# subsets of IBM Plex Sans and Plex Mono, copied UNMODIFIED from the
+# @ibm/plex-sans 1.1.0 and @ibm/plex-mono 2.5.0 packages into
+# gawk-telemetry/ui/src/assets/fonts/ (vendored because those packages run an
+# install-time telemetry hook). SIL OFL 1.1 is a font licence: it expressly
+# permits bundling the fonts with software, asks that the licence travel with
+# them (OFL.txt, beside the files and reproduced here), and reserves the name
+# "Plex" only for MODIFIED versions — which is why these are IBM's subsets,
+# not ours. It is not on ALLOWED_LICENSES because that list governs package
+# dependencies, which `--check` reads from lockfiles; these are not one.
+VENDORED_TELEMETRY_UI = [
+    dict(
+        name="IBM Plex Sans (latin subset: Regular, Medium, SemiBold)",
+        version="1.1.0",
+        spdx="OFL-1.1",
+        files=["gawk-telemetry/ui/src/assets/fonts/OFL.txt"],
+    ),
+    dict(
+        name="IBM Plex Mono (latin subset: Regular, Medium)",
+        version="2.5.0",
+        spdx="OFL-1.1",
+        files=["gawk-telemetry/ui/src/assets/fonts/OFL.txt"],
+    ),
+]
+
+
+def vendored(entries: list[dict]) -> list[Package]:
     return [
         Package(
             v["name"],
@@ -477,7 +507,7 @@ def vendored_app() -> list[Package]:
             None,
             [(Path(f).name, (REPO / f).read_text(encoding="utf-8").strip()) for f in v["files"]],
         )
-        for v in VENDORED_APP
+        for v in entries
     ]
 
 
@@ -655,10 +685,13 @@ COMPONENTS = {
         path="gawk-telemetry/ui",
         blurb=(
             "The telemetry dashboard SPA, embedded into the `gawk-telemetry` binary.\n"
-            "Build-time-only packages are excluded, as for `gawk-app`."
+            "Build-time-only packages are excluded, as for `gawk-app`. The IBM Plex\n"
+            "fonts are bundled from `ui/src/assets/fonts/`, unmodified."
         ),
-        sources="`package-lock.json` entries without `dev: true`.",
-        collect=lambda: collect_npm("gawk-telemetry/ui"),
+        sources="`package-lock.json` entries without `dev: true`, plus `ui/src/assets/fonts/`.",
+        collect=lambda: sorted(
+            collect_npm("gawk-telemetry/ui") + vendored(VENDORED_TELEMETRY_UI), key=lambda p: p.name.lower()
+        ),
     ),
     "admin": dict(
         path="gawk-admin",

@@ -1,0 +1,36 @@
+.ticks {
+  position: relative;
+  height: 100%;
+  min-height: 22px;
+}
+
+.tick {
+  position: absolute;
+  top: 50%;
+  margin-top: -8px;
+  font-size: var(--fs-xs);
+  line-height: 16px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+/* The crosshair's instant: where the eye already is, at full contrast. */
+.cursor {
+  position: absolute;
+  top: 50%;
+  margin-top: -10px;
+  z-index: 1;
+  padding: 1px 6px;
+  border-radius: var(--r-sm);
+  background: var(--surface-3);
+  color: var(--text);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.zoom {
+  width: 100%;
+  height: 28px;
+}

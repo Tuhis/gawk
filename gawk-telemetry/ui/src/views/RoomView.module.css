@@ -1,37 +1,19 @@
-/* R42 (RM8): one room, its sessions grouped by broadcast. Reuses the history
-   browser's row layout; only the group frame is new. */
-
-.group {
-  margin: var(--sp-3) 0;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  overflow: hidden;
-}
-
-.groupTitle {
-  display: flex;
-  align-items: baseline;
-  gap: var(--sp-2);
-  margin: 0;
-  padding: var(--sp-1) var(--sp-2);
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  background: var(--panel);
-  border-bottom: 1px solid var(--line);
-}
+/* R42 (RM8): one room, its sessions grouped by broadcast. Each group is a
+   panel holding the history grid; only the group frame is room-specific. */
 
 .groupLink {
   font-family: var(--mono);
-  text-decoration: none;
   color: inherit;
 }
 
 .groupLink:hover {
-  text-decoration: underline;
+  color: var(--accent);
+  text-decoration: none;
 }
 
-.groupMeta {
-  font-weight: 400;
-  color: var(--text-dimmer);
-  font-size: var(--fs-xs);
+/* The widths note, below the last group rather than repeated in each. */
+.widths {
+  margin: 0;
+  border-top: 0;
+  padding: 0 2px;
 }

@@ -2,10 +2,10 @@
 //
 // Chosen over visx, uPlot and Recharts/Nivo for one load-bearing reason that is
 // not about looks: **`echarts.connect()` synchronises crosshair and zoom across
-// separate chart instances**, which IS TH4's multi-lane broadcast timeline and
-// TH7's fleet timeline — built in rather than built by us. Canvas rendering
-// makes 5 lanes × 2 000 points a non-event; `markArea`/`markLine` give
-// hidden-tab shading, dip episodes and event markers natively.
+// separate chart instances**, which IS TH4's multi-lane broadcast timeline —
+// built in rather than built by us. Canvas rendering makes 5 lanes × 2 000
+// points a non-event; `markArea`/`markLine` give hidden-tab shading, dip
+// episodes and event marks natively.
 //
 // Two constraints follow from the decision and are enforced here:
 //
@@ -19,38 +19,44 @@
 //      output. That test is the one to run deliberately after touching this
 //      file — and it SKIPS unless `npm run build` has been run first, so a
 //      green `go test ./internal/dashboard/` on its own proves nothing.
+//
+// R36 (docs/86 TU3) moved every colour out of this file: they come from the
+// theme's tokens through `palette.ts`, so a light page gets light charts.
 
 import * as echarts from 'echarts/core';
 import { LineChart } from 'echarts/charts';
 import {
   DataZoomComponent,
   GridComponent,
-  LegendComponent,
   MarkAreaComponent,
   MarkLineComponent,
   TooltipComponent,
 } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
 
-// EXACTLY what is used, and nothing kept "in case". Every entry below is
-// reachable from TimeChart:
+import type { Palette } from './palette.ts';
+
+// EXACTLY what is used, and nothing kept "in case":
 //
-//   LineChart      every series on every surface
-//   Grid/Tooltip   the plot area and the crosshair readout
-//   Legend         multi-series charts (the explorer, trends)
-//   DataZoom       inside-drag zoom, and the slider on the last chart of a page
-//   MarkArea       hidden-tab shading, dip episodes, join/leave spans
-//   MarkLine       stored events, annotations, relay re-homes
+//   LineChart      every series on every surface (thin buckets are a line
+//                  series with hollow symbols and no stroke)
+//   Grid/Tooltip   the plot area and the crosshair (the tooltip's content is
+//                  hidden on stacks, where the readout rail carries values)
+//   DataZoom       inside-drag zoom, and the slider under a stack
+//   MarkArea       hidden-tab and not-joined veils, dip episodes
+//   MarkLine       re-homes, notes, and the floor ticks of stored events
 //   CanvasRenderer 5 lanes x 2 000 points is a non-event on canvas
 //
-// TH7's fleet stripes are deliberately NOT a chart: they are one span div per
+// Legends are HTML now (they carry the value at the crosshair), so the
+// LegendComponent is no longer registered.
+//
+// TH7's fleet stripes are deliberately NOT a chart: they are one span per
 // broadcast positioned by percentage, which makes the vertical alignment exact
 // and costs two elements per row instead of an instance.
 echarts.use([
   LineChart,
   GridComponent,
   TooltipComponent,
-  LegendComponent,
   DataZoomComponent,
   MarkAreaComponent,
   MarkLineComponent,
@@ -62,44 +68,48 @@ export type EChartsType = echarts.ECharts;
 export type EChartsOption = echarts.EChartsCoreOption;
 
 /**
- * The chart palette.
- *
- * Hue stays reserved for SEVERITY (UD14) — so series colours are deliberately
- * neutral-leaning and are never green/amber/red. A line that happens to be red
- * because it is the third series would collide with the one channel this page
- * uses to mean "broken".
+ * The id every chart's zoom component carries. `echarts.connect()` relays a
+ * zoom as an action naming its component, so a stack only zooms as one when
+ * every member's zoom has the SAME id — the slider under a stack included.
  */
-export const SERIES_COLORS = [
-  '#58a6ff',
-  '#a371f7',
-  '#39c5cf',
-  '#d2a8ff',
-  '#79c0ff',
-  '#6e7681',
-];
+export const ZOOM_ID = 'zoom';
 
-export const SEVERITY_COLORS: Record<string, string> = {
-  ok: '#3fb950',
-  warn: '#e3a83c',
-  bad: '#e5534b',
-  // `unknown` gets NO hue, so "checked, healthy" and "nothing ever reported"
-  // can never be confused — the page's cardinal rule, in the chart layer.
-  unknown: '#6b7280',
-};
-
-/** Shared axis/grid styling, so every chart on the page reads as one system. */
-export const AXIS_STYLE = {
-  axisLine: { lineStyle: { color: '#333846' } },
-  axisTick: { show: false },
-  axisLabel: { color: '#9aa0ab', fontSize: 10 },
-  splitLine: { lineStyle: { color: 'rgba(38,42,50,0.6)' } },
-};
-
-export const GRID = { left: 52, right: 16, top: 18, bottom: 24, containLabel: false };
-
-/** Severity -> the translucent band colour used for a degraded span. */
-export function severityBand(sev: string): string {
-  const base = SEVERITY_COLORS[sev] ?? SEVERITY_COLORS.unknown;
-  const n = parseInt(base.slice(1), 16);
-  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, 0.22)`;
+/** Shared axis styling, so every chart on the page reads as one system. */
+export function axisStyle(p: Palette) {
+  return {
+    axisLine: { lineStyle: { color: p.lineStrong } },
+    axisTick: { show: false },
+    axisLabel: { color: p.text3, fontSize: 10, fontFamily: p.sans },
+    splitLine: { lineStyle: { color: p.line } },
+  };
 }
+
+/**
+ * A diagonal hatch, as a canvas pattern ECharts can fill an area with: the
+ * "was not here / could not see" veil (not joined, left, tab hidden). Hatched
+ * rather than tinted, so it can never read as a severity.
+ */
+const hatchCache = new Map<string, HTMLCanvasElement>();
+export function hatchPattern(color: string): { image: HTMLCanvasElement; repeat: 'repeat' } | string {
+  let c = hatchCache.get(color);
+  if (!c) {
+    try {
+      c = document.createElement('canvas');
+      c.width = 7;
+      c.height = 7;
+      const g = c.getContext('2d');
+      if (!g) return color;
+      g.strokeStyle = color;
+      g.lineWidth = 2;
+      g.beginPath();
+      g.moveTo(-1, 8);
+      g.lineTo(8, -1);
+      g.stroke();
+      hatchCache.set(color, c);
+    } catch {
+      return color;
+    }
+  }
+  return { image: c, repeat: 'repeat' };
+}
+

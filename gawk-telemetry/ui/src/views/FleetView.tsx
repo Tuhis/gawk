@@ -2,10 +2,10 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { fetchCohorts, fetchFleetTimeline, fetchTrends } from '../api/client.ts';
 import type { Cohort, FleetTimeline, FleetTimelineRow, Trend } from '../api/types.ts';
-import { TimeChart, type Series } from '../charts/TimeChart.tsx';
-import { severityBand } from '../charts/echarts.ts';
+import { timeTicks } from '../charts/stack.ts';
+import { TimeChart, type Band, type Series } from '../charts/TimeChart.tsx';
 import { CoverageNote, DesktopOnly } from '../components/Chrome.tsx';
-import { absoluteTime, num, shortId, timeZoneLabel } from '../lib/format.ts';
+import { compactTime, dur, num, shortDate, shortId } from '../lib/format.ts';
 import { href, useDocumentTitle, useUrlState } from '../router/router.ts';
 import styles from './FleetView.module.css';
 import view from './view.module.css';
@@ -21,10 +21,12 @@ import view from './view.module.css';
 // **Trends** (Q9): bucketed aggregates over the PERMANENT rollups, so a range
 // can far outrun the raw window — which is the point, since that is what makes
 // "did R29's parity actually cut frame loss on the fleet?" answerable at all.
-// The view says when it is answering from rollups alone.
 //
-// Grafana was deferred again (owner, 2026-07-29), so this is the only home for
-// a trend question.
+// R36 (docs/86 TU9): the stripes get gridlines and labels across the range,
+// not only at its two ends; the range before the service existed is hatched
+// "not installed yet" instead of raising a banner (TU4); and a trend bucket
+// under five sessions is drawn as a HOLLOW point — present, claiming nothing —
+// so a small fleet's trend is not a blank plot with a full legend.
 
 const RANGES = [
   { label: '24h', ms: 24 * 3600_000 },
@@ -50,6 +52,8 @@ const GROUPS = [
   { value: 'os', label: 'os' },
   { value: 'resolution', label: 'resolution' },
 ];
+
+const STATS = ['median', 'p95', 'mean'];
 
 export function FleetView() {
   useDocumentTitle('fleet — gawk telemetry');
@@ -94,158 +98,243 @@ export function FleetView() {
     return () => ac.abort();
   }, [cohortA, cohortB, groupBy, metric, stat, rangeMs]);
 
-  const trendSeries = useMemo<Series[]>(
-    () =>
-      (trend?.series ?? []).map((s) => ({
+  const { trendSeries, allThin, anyPoint } = useMemo(() => {
+    const list = trend?.series ?? [];
+    const points = list.reduce((n, s) => n + s.points.length, 0);
+    const thin = list.reduce((n, s) => n + s.points.filter((p) => p.thin).length, 0);
+    const series: Series[] = list.map((s) => {
+      return {
         key: s.group,
-        label: `${s.group} (${s.sessions})`,
-        // A thin bucket contributes a `null`, so the line BREAKS rather than
-        // dipping through a number computed from two sessions. `FleetSummary`
-        // already refuses to over-claim below five; that honesty carries here
-        // instead of being re-decided per view.
+        label: `${s.group || 'all'} (${s.sessions})`,
+        // A thin bucket contributes a `null` to the line, so it BREAKS rather
+        // than dipping through a number computed from two sessions —
+        // `FleetSummary` already refuses to over-claim below five — and the
+        // same bucket is drawn hollow beside it, so the range is not mistaken
+        // for empty.
         data: s.points.map((p) => [p.atMs, p.thin ? null : p.value] as [number, number | null]),
-      })),
-    [trend],
-  );
+        hollow: s.points.map((p) => [p.atMs, p.thin ? p.value : null] as [number, number | null]),
+        points: true,
+      };
+    });
+    return { trendSeries: series, allThin: points > 0 && thin === points, anyPoint: points > 0 };
+  }, [trend]);
 
   const groups = useMemo(() => (trend?.series ?? []).map((s) => s.group), [trend]);
+  const viewers = timeline?.rows.reduce((n, r) => n + r.viewers, 0) ?? 0;
+  const metricLabel = METRICS.find((m) => m.value === metric)?.label ?? metric;
+  const bucket = trend?.bucketMs ? (trend.bucketMs >= 86_400_000 ? 'one point per day' : `one point per ${dur(trend.bucketMs)}`) : '';
+
+  // "Not installed yet": the stretch of the range before the first rollup.
+  const since = timeline?.coverage.rollupsFromMs;
+  const trendBands = useMemo<Band[]>(
+    () =>
+      since && timeline && since > timeline.fromMs
+        ? [{ fromMs: timeline.fromMs, toMs: since, kind: 'veil', label: 'service not installed yet' }]
+        : [],
+    [since, timeline],
+  );
 
   return (
     <div className={view.page}>
       <header className={view.head}>
         <h1 className={view.title}>Fleet</h1>
-        <span className={view.subtitle}>times in {timeZoneLabel()}</span>
+        <span className={view.subtitle}>
+          {timeline
+            ? `${timeline.rows.length} broadcast${timeline.rows.length === 1 ? '' : 's'} · ${viewers} viewer${viewers === 1 ? '' : 's'} · ${compactTime(timeline.fromMs)} → ${compactTime(timeline.toMs)}`
+            : '…'}
+        </span>
         <span className={view.spacer} />
-        <label className={view.control}>
-          range
-          <select className={view.select} value={range} onChange={(e) => setRange(e.target.value)}>
-            {RANGES.map((r) => (
-              <option key={r.label} value={r.label}>
-                {r.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className={view.seg} role="group" aria-label="Range">
+          {RANGES.map((r) => (
+            <button key={r.label} type="button" aria-pressed={range === r.label} onClick={() => setRange(r.label)}>
+              {r.label}
+            </button>
+          ))}
+        </div>
       </header>
 
       {error && <p className={view.error}>{error}</p>}
       <CoverageNote coverage={timeline?.coverage} />
       <DesktopOnly what="The fleet timeline" />
 
-      <section className={view.panel}>
-        <h2 className={view.panelTitle}>
-          Broadcasts on one axis — a pod-wide event is a vertical stripe
-        </h2>
-        {timeline && timeline.rows.length > 0 ? (
-          <FleetStripes timeline={timeline} />
-        ) : (
-          <p className={view.rollupOnly}>
-            No broadcasts in this range.
-            {timeline?.coverage.note ? ' See the note above.' : ''}
-          </p>
-        )}
-        {timeline?.rowsOmitted ? (
-          <p className={view.note}>
-            {timeline.rowsOmitted} further broadcast(s) are not drawn — beyond ~300 rows the stripe
-            read stops working.
-          </p>
-        ) : null}
+      <section className={view.panel} aria-label="Broadcasts on one axis">
+        <div className={view.panelH}>
+          <h2 className={view.panelT}>Broadcasts on one axis</h2>
+          <span className={view.note}>a pod-wide event is a vertical stripe · each bar links to its broadcast</span>
+          <span className={view.spacer} />
+          <div className={view.legend}>
+            <span>
+              <i className={styles.legSpan} />
+              live span
+            </span>
+            <span>
+              <i className={styles.legBad} />
+              bad
+            </span>
+            <span>
+              <i className={styles.legWarn} />
+              warn
+            </span>
+          </div>
+        </div>
+        <div className={view.panelB}>
+          {timeline && timeline.rows.length > 0 ? (
+            <FleetStripes timeline={timeline} />
+          ) : (
+            <p className={view.note}>
+              {timeline
+                ? timeline.coverage.reason === 'none'
+                  ? 'This service has nothing stored yet — the range is unanswerable, not empty.'
+                  : 'No broadcasts in this range.'
+                : 'Loading…'}
+            </p>
+          )}
+          {timeline?.rowsOmitted ? (
+            <p className={view.note}>
+              {timeline.rowsOmitted} further broadcast(s) are not drawn — beyond ~300 rows the stripe read stops working.
+            </p>
+          ) : null}
+        </div>
       </section>
 
-      <section className={view.panel}>
-        <h2 className={view.panelTitle}>Trends over the permanent rollups</h2>
-        <div className={view.controls}>
-          <label className={view.control}>
-            metric
-            <select className={view.select} value={metric} onChange={(e) => setMetric(e.target.value)}>
-              {METRICS.map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className={view.control}>
-            grouped by
-            <select className={view.select} value={groupBy} onChange={(e) => setGroupBy(e.target.value)}>
-              {GROUPS.map((g) => (
-                <option key={g.value} value={g.value}>
-                  {g.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className={view.control}>
-            stat
-            <select className={view.select} value={stat} onChange={(e) => setStat(e.target.value)}>
-              <option value="median">median</option>
-              <option value="p95">p95</option>
-              <option value="mean">mean</option>
-            </select>
-          </label>
+      <section className={view.panel} aria-label="Trends over the permanent rollups">
+        <div className={view.panelH}>
+          <h2 className={view.panelT}>Trends over the permanent rollups</h2>
+          {bucket && <span className={view.note}>{bucket}</span>}
         </div>
-
-        {trend?.note && <p className={view.note}>{trend.note}</p>}
-        <TimeChart
-          series={trendSeries}
-          height={220}
-          showZoom
-          note="A bucket computed from fewer than 5 sessions is drawn as a break, not as a point — the baseline is too thin to claim anything."
-          empty="No rollups in this range."
-          ariaLabel="fleet trend"
-        />
-
-        {groups.length >= 2 && (
-          <div className={view.controls}>
+        <div className={`${view.panelB} ${styles.trendBody}`}>
+          <div className={view.toolbar}>
             <label className={view.control}>
-              compare
-              <select className={view.select} value={cohortA} onChange={(e) => setCohortA(e.target.value)}>
-                <option value="">—</option>
-                {groups.map((g) => (
-                  <option key={g} value={g}>
-                    {g}
+              metric
+              <select className={view.select} value={metric} onChange={(e) => setMetric(e.target.value)}>
+                {METRICS.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}
                   </option>
                 ))}
               </select>
             </label>
             <label className={view.control}>
-              against
-              <select className={view.select} value={cohortB} onChange={(e) => setCohortB(e.target.value)}>
-                <option value="">—</option>
-                {groups.map((g) => (
-                  <option key={g} value={g}>
-                    {g}
+              grouped by
+              <select className={view.select} value={groupBy} onChange={(e) => setGroupBy(e.target.value)}>
+                {GROUPS.map((g) => (
+                  <option key={g.value} value={g.value}>
+                    {g.label}
                   </option>
                 ))}
               </select>
             </label>
+            <div className={view.seg} role="group" aria-label="Statistic">
+              {STATS.map((s) => (
+                <button key={s} type="button" aria-pressed={stat === s} onClick={() => setStat(s)}>
+                  {s}
+                </button>
+              ))}
+            </div>
+            <span className={view.spacer} />
+            <span className={styles.thinKey}>
+              <i aria-hidden />
+              thin bucket, under 5 sessions
+            </span>
           </div>
-        )}
 
-        {cohort && (
-          <div className={styles.cohort}>
-            <div className={styles.arm}>
-              <span className={styles.armLabel}>{cohort.a.label}</span>
-              <span className={`${styles.armValue} tnum`}>{num(cohort.a.value, 1)}</span>
-              <span className={styles.armN}>{cohort.a.sessions} sessions</span>
+          {trend?.note && <p className={view.note}>{trend.note}</p>}
+          <CoverageNote coverage={trend?.coverage} />
+          <TimeChart
+            series={trendSeries}
+            bands={trendBands}
+            fromMs={timeline?.fromMs}
+            toMs={timeline?.toMs}
+            height={240}
+            showZoom={anyPoint && !allThin}
+            empty={trend ? 'No rollups in this range.' : 'Loading…'}
+            overlay={
+              allThin ? (
+                <>
+                  Every bucket in this range holds fewer than 5 sessions, so no line is drawn — a baseline that thin
+                  claims nothing. Thin buckets are shown hollow so the range is not mistaken for empty.
+                  {groupBy ? (
+                    <>
+                      {' '}
+                      Try <b>all together</b>
+                      {range !== '90d' ? (
+                        <>
+                          {' '}
+                          or a longer range
+                        </>
+                      ) : null}
+                      .
+                    </>
+                  ) : range !== '90d' ? (
+                    ' Try a longer range.'
+                  ) : null}
+                </>
+              ) : undefined
+            }
+            ariaLabel={`fleet trend of ${metricLabel}`}
+          />
+
+          {groups.length >= 2 && (
+            <div className={styles.compare}>
+              <div className={view.toolbar}>
+                <span className={view.eyebrow}>compare</span>
+                <select className={view.select} value={cohortA} onChange={(e) => setCohortA(e.target.value)} aria-label="Cohort A">
+                  <option value="">—</option>
+                  {groups.map((g) => (
+                    <option key={g} value={g}>
+                      {g}
+                    </option>
+                  ))}
+                </select>
+                <span className={view.dimmer}>against</span>
+                <select className={view.select} value={cohortB} onChange={(e) => setCohortB(e.target.value)} aria-label="Cohort B">
+                  <option value="">—</option>
+                  {groups.map((g) => (
+                    <option key={g} value={g}>
+                      {g}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {cohort && (
+                <div className={styles.cohort}>
+                  <div className={styles.arm}>
+                    <span className={view.dim}>
+                      {cohort.a.label} · {stat} {metricLabel}
+                    </span>
+                    <b>{num(cohort.a.value, 1)}</b>
+                    <span className={view.dimmer}>
+                      {cohort.a.sessions} session{cohort.a.sessions === 1 ? '' : 's'}
+                      {cohort.a.thin ? ' · thin' : ''}
+                    </span>
+                  </div>
+                  <div className={`${styles.arm} ${styles.delta}`}>
+                    <b>
+                      {cohort.delta > 0 ? '+' : ''}
+                      {num(cohort.delta, 1)}
+                    </b>
+                    {cohort.ratio ? <span className={view.dimmer}>{num((cohort.ratio - 1) * 100, 0)}%</span> : null}
+                  </div>
+                  <div className={styles.arm}>
+                    <span className={view.dim}>
+                      {cohort.b.label} · {stat} {metricLabel}
+                    </span>
+                    <b>{num(cohort.b.value, 1)}</b>
+                    <span className={view.dimmer}>
+                      {cohort.b.sessions} session{cohort.b.sessions === 1 ? '' : 's'}
+                      {cohort.b.thin ? ' · thin' : ''}
+                    </span>
+                  </div>
+                  {/* The sample size is stated whether or not it is flattering. A
+                      cohort that hid a thin baseline would look like a conclusion. */}
+                  {cohort.note && <p className={`${view.note} ${styles.cohortNote}`}>{cohort.note}</p>}
+                  <CoverageNote coverage={cohort.coverage} />
+                </div>
+              )}
             </div>
-            <div className={styles.armDelta}>
-              <span className="tnum">
-                {cohort.delta > 0 ? '+' : ''}
-                {num(cohort.delta, 1)}
-              </span>
-              {cohort.ratio ? <span className={view.dim}> ({num(cohort.ratio * 100, 0)}%)</span> : null}
-            </div>
-            <div className={styles.arm}>
-              <span className={styles.armLabel}>{cohort.b.label}</span>
-              <span className={`${styles.armValue} tnum`}>{num(cohort.b.value, 1)}</span>
-              <span className={styles.armN}>{cohort.b.sessions} sessions</span>
-            </div>
-            {/* The sample size is stated whether or not it is flattering. A
-                cohort that hid a thin baseline would look like a conclusion. */}
-            {cohort.note && <p className={styles.cohortNote}>{cohort.note}</p>}
-          </div>
-        )}
+          )}
+        </div>
       </section>
     </div>
   );
@@ -262,48 +351,87 @@ export function FleetView() {
 function FleetStripes({ timeline }: { timeline: FleetTimeline }) {
   const span = Math.max(1, timeline.toMs - timeline.fromMs);
   const pct = (ms: number) => ((ms - timeline.fromMs) / span) * 100;
+  const ticks = useMemo(() => timeTicks(timeline.fromMs, timeline.toMs, 8), [timeline.fromMs, timeline.toMs]);
+  const since = timeline.coverage.rollupsFromMs;
+  const before = since && since > timeline.fromMs ? Math.min(100, pct(since)) : 0;
 
   return (
     <div className={styles.stripes}>
-      <div className={styles.axis}>
-        <span>{absoluteTime(timeline.fromMs)}</span>
-        <span className={view.spacer} />
-        <span>{absoluteTime(timeline.toMs)}</span>
+      <span />
+      <div className={styles.axis} aria-hidden>
+        {before > 0 && (
+          <span
+            className={styles.sinceLab}
+            style={{ left: `${before}%` }}
+            title="This service was installed after the start of this range: nothing before this is missing."
+          >
+            data since {shortDate(since)}
+          </span>
+        )}
+        {ticks.map((t) => (
+          <span key={t.atMs} className={styles.tickLab} style={{ left: `${t.pct}%` }}>
+            {t.label}
+          </span>
+        ))}
       </div>
+      <span />
       {timeline.rows.map((r) => (
-        <a key={r.broadcastKey} className={styles.stripeRow} href={href('broadcast', r.broadcastKey)}>
-          <span className={styles.stripeKey}>
-            {shortId(r.broadcastKey)}
-            {r.live && <span className={styles.liveDot}>●</span>}
-            {r.rollupOnly && <span className={styles.tag}>R</span>}
-          </span>
-          <span className={styles.track}>
-            <span
-              className={styles.span}
-              style={{
-                left: `${Math.max(0, pct(r.fromMs))}%`,
-                width: `${Math.max(0.4, pct(endOf(r, timeline.toMs)) - pct(r.fromMs))}%`,
-              }}
-            />
-            {(r.bands ?? []).map((b, i) => (
-              <span
-                key={i}
-                className={styles.band}
-                title={`${b.severity} ${absoluteTime(b.fromMs)}`}
-                style={{
-                  left: `${Math.max(0, pct(b.fromMs))}%`,
-                  width: `${Math.max(0.3, pct(b.toMs) - pct(b.fromMs))}%`,
-                  background: severityBand(b.severity),
-                }}
-              />
-            ))}
-          </span>
-          <span className={styles.stripeMeta}>
-            {r.viewers} viewer{r.viewers === 1 ? '' : 's'}
-          </span>
-        </a>
+        <StripeRow key={r.broadcastKey} row={r} pct={pct} ticks={ticks.map((t) => t.pct)} before={before} axisEnd={timeline.toMs} />
       ))}
     </div>
+  );
+}
+
+function StripeRow({
+  row: r,
+  pct,
+  ticks,
+  before,
+  axisEnd,
+}: {
+  row: FleetTimelineRow;
+  pct: (ms: number) => number;
+  ticks: number[];
+  before: number;
+  axisEnd: number;
+}) {
+  const left = Math.max(0, pct(r.fromMs));
+  return (
+    <>
+      <a className={styles.key} href={href('broadcast', r.broadcastKey)} title={r.broadcastKey}>
+        {shortId(r.broadcastKey, 12)}
+        {r.live && (
+          <span className={styles.live} title="still live">
+            <i aria-hidden />
+          </span>
+        )}
+        {r.rollupOnly && (
+          <span className={view.tag} title="Raw samples pruned — rollup only">
+            rollup
+          </span>
+        )}
+      </a>
+      <a className={styles.track} href={href('broadcast', r.broadcastKey)} aria-label={`broadcast ${r.broadcastKey}`}>
+        {before > 0 && <span className={styles.notYet} style={{ width: `${before}%` }} />}
+        {ticks.map((t) => (
+          <span key={t} className={styles.gridline} style={{ left: `${t}%` }} />
+        ))}
+        <span className={styles.bar} style={{ left: `${left}%`, width: `${Math.max(0.4, pct(endOf(r, axisEnd)) - left)}%` }} />
+        {(r.bands ?? []).map((b, i) =>
+          b.severity === 'ok' ? null : (
+            <span
+              key={i}
+              className={`${styles.band} ${styles[`band_${b.severity}`] ?? ''}`}
+              title={`${b.severity} ${compactTime(b.fromMs)} → ${compactTime(b.toMs)}`}
+              style={{ left: `${Math.max(0, pct(b.fromMs))}%`, width: `${Math.max(0.3, pct(b.toMs) - pct(b.fromMs))}%` }}
+            />
+          ),
+        )}
+      </a>
+      <span className={styles.meta}>
+        {r.viewers} viewer{r.viewers === 1 ? '' : 's'}
+      </span>
+    </>
   );
 }
 

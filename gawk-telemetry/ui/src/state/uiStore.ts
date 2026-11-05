@@ -33,6 +33,9 @@ interface UiState {
   watched: Record<string, true>;
   /** Severity a watched broadcast was last seen at, so an escalation is visible. */
   watchSeverity: Record<string, Severity>;
+  /** The command palette (TH11), opened by ⌘K or the header's search button. */
+  paletteOpen: boolean;
+  setPaletteOpen: (open: boolean) => void;
 
   setCardOpen: (key: string, open: boolean, byDefault: boolean) => void;
   isCardOpen: (key: string, byDefault: boolean) => boolean;
@@ -50,6 +53,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   foundKey: null,
   watched: {},
   watchSeverity: {},
+  paletteOpen: false,
+  setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
 
   setCardOpen: (key, open, byDefault) =>
     set((s) => {

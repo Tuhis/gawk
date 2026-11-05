@@ -36,7 +36,11 @@ export default defineConfig({
         // directory that is never emptied.
         entryFileNames: 'assets/app.js',
         chunkFileNames: 'assets/[name].js',
-        assetFileNames: 'assets/app.[ext]',
+        // The bundled fonts (R36, docs/86 TU1) keep their own names: five
+        // files cannot share `app.woff2`, and numbered fallbacks would change
+        // with import order.
+        assetFileNames: (info) =>
+          (info.names?.[0] ?? '').endsWith('.woff2') ? 'assets/[name].[ext]' : 'assets/app.[ext]',
         manualChunks: undefined,
       },
     },

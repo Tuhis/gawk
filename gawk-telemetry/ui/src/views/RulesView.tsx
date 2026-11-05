@@ -62,17 +62,16 @@ export function RulesView() {
         </span>
         <span className={view.spacer} />
         <form
-          className={view.controls}
+          className={`${view.controls} ${styles.traceForm}`}
           onSubmit={(e) => {
             e.preventDefault();
             setSessionId(pending);
           }}
         >
-          <label className={view.control}>
+          <label className={`${view.control} ${styles.traceLabel}`}>
             trace against session
             <input
-              className={view.text}
-              style={{ width: '26rem', maxWidth: '26rem' }}
+              className={`${view.text} ${view.idInput}`}
               value={pending}
               placeholder="session id"
               onChange={(e) => setPending(e.target.value)}

@@ -11,7 +11,7 @@
 
 .panel {
   width: min(560px, calc(100vw - 2rem));
-  background: var(--bg-raised);
+  background: var(--surface-1);
   border: 1px solid var(--line-strong);
   border-radius: var(--r-lg);
   box-shadow: var(--shadow);
@@ -53,7 +53,7 @@
 
 .item:hover,
 .item:focus-visible {
-  background: var(--panel-hover);
+  background: var(--surface-2);
 }
 
 .itemLabel {
@@ -62,14 +62,14 @@
 }
 
 .itemHint {
-  color: var(--text-dimmer);
+  color: var(--text-3);
   font-size: var(--fs-xs);
 }
 
 .none,
 .error {
   padding: var(--sp-2) var(--sp-3);
-  color: var(--text-dimmer);
+  color: var(--text-3);
   font-size: var(--fs-sm);
   margin: 0;
   list-style: none;

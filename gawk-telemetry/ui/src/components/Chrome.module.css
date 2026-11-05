@@ -1,63 +1,199 @@
-.nav {
+/*
+  The header (R36, docs/86 TU1). Fixed height, sticky, and every slot that
+  changes text (feed, clock, pause) is in the right-hand status group, so the
+  page below never moves when one of them speaks.
+*/
+.top {
+  position: sticky;
+  top: 0;
+  z-index: 20;
   display: flex;
-  gap: 2px;
   align-items: center;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  min-height: 48px;
+  padding: 0 var(--sp-5);
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--line);
 }
 
-.navItem {
-  display: block;
-  padding: 3px 10px;
-  border-radius: var(--r-sm);
-  color: var(--text-dim);
-  text-decoration: none;
-  font-size: var(--fs-sm);
-  border: 1px solid transparent;
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-weight: 600;
+  letter-spacing: 0.01em;
   white-space: nowrap;
 }
 
-.navItem:hover {
-  background: var(--panel-hover);
-  color: var(--text);
+.brand:hover {
+  text-decoration: none;
 }
 
-.navActive {
-  background: var(--panel);
-  border-color: var(--line-strong);
-  color: var(--text);
+.brandSub {
+  font-weight: 400;
+  color: var(--text-3);
 }
 
-/*
-  UD10's banner. Amber-toned because it is always a limit on the answer above
-  it, never a fault — and never dismissible, because a coverage limit does not
-  stop applying when it is inconvenient.
-*/
-.coverage {
-  margin: 0 0 var(--sp-2);
-  padding: var(--sp-1) var(--sp-2);
-  border-left: 2px solid var(--warn);
-  background: var(--warn-bg);
-  border-radius: 0 var(--r-sm) var(--r-sm) 0;
-  font-size: var(--fs-xs);
-  color: var(--text);
+.mark {
+  width: 18px;
+  height: 18px;
+  border-radius: var(--r-sm);
+  border: 1.5px solid var(--text-2);
+  display: grid;
+  place-items: center;
 }
 
-.pauseWrap {
+.mark i {
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text);
+}
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  align-self: stretch;
+}
+
+.tab {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
-  min-width: 0;
+  padding: 0 12px;
+  color: var(--text-2);
+  font-weight: 500;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+}
+
+.tab:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.tabOn {
+  color: var(--text);
+  border-bottom-color: var(--text);
+}
+
+.grow {
+  flex: 1 1 auto;
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  min-width: 240px;
+  padding: 0 8px 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.search:hover {
+  border-color: var(--text-3);
+}
+
+.searchText {
+  flex: 1;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.kbd {
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--r-sm);
+  padding: 0 4px;
+  line-height: 1.3;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.feed {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.feed i {
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+
+.feedWarn {
+  color: var(--warn);
+}
+
+.feedWarn i {
+  background: var(--warn);
+}
+
+.feedBad {
+  color: var(--bad);
+}
+
+.feedBad i {
+  background: var(--bad);
+}
+
+.gapChip {
+  font-size: var(--fs-xs);
+  color: var(--warn);
+  border: 1px solid var(--warn);
+  border-radius: var(--r-sm);
+  padding: 0 6px;
+  cursor: help;
+}
+
+.tz {
+  white-space: nowrap;
+}
+
+.tzBad {
+  color: var(--warn);
+  cursor: help;
 }
 
 .pause {
-  background: none;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-sm);
-  color: var(--text-dim);
-  font-size: var(--fs-xs);
-  padding: 2px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
   cursor: pointer;
-  font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+.pause:hover {
+  background: var(--surface-2);
+  color: var(--text);
 }
 
 /* A frozen page must LOOK frozen. An operator who thinks a paused page is live
@@ -65,48 +201,24 @@
 .paused {
   border-color: var(--accent);
   color: var(--accent);
-  background: rgba(88, 166, 255, 0.1);
+  background: var(--accent-bg);
 }
 
-.mode {
-  font-size: var(--fs-xs);
-  color: var(--text-dimmer);
-  min-width: 5ch;
-}
-
-.gap {
-  font-size: var(--fs-xs);
-  color: var(--text-dimmer);
-  /* Reserved slot: the strip does not resize when the message appears. */
-  min-height: 1em;
-  max-width: 46ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.gapOn {
-  color: var(--warn);
-}
-
-.tz {
-  font-size: var(--fs-xs);
-  color: var(--text-dimmer);
-  white-space: nowrap;
-}
-
-.tzBad {
-  color: var(--warn);
-  white-space: normal;
-}
-
-.desktopOnly {
-  margin: 0 0 var(--sp-2);
-  padding: var(--sp-2);
-  border: 1px dashed var(--line-strong);
+.iconBtn {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
   border-radius: var(--r-md);
-  font-size: var(--fs-sm);
-  color: var(--text-dim);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.iconBtn:hover {
+  background: var(--surface-2);
+  color: var(--text);
 }
 
 .who {
@@ -117,21 +229,113 @@
 }
 
 .whoName {
-  font-size: var(--fs-xs);
-  color: var(--text-dim);
+  color: var(--text-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 28ch;
 }
 
-/* A fault, not a limit: red-toned where the coverage note is amber. */
+/*
+  The quiet retention line (R36 item 3): one line, no banner. A coverage limit
+  is still never dismissible — but it is a fact about the store, not an alarm.
+*/
+.coverage {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+}
+
+.coverage::before {
+  content: 'ⓘ';
+  color: var(--text-3);
+}
+
+/* The service's age, beside a range control: "data since 31 Oct". */
+.since {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-left: 1px solid var(--line-strong);
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+  white-space: nowrap;
+  cursor: help;
+}
+
+.desktopOnly {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-md);
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+
+/* A fault, not a limit: red-toned where the coverage note is quiet. */
 .idp {
-  margin: 0 0 var(--sp-2);
-  padding: var(--sp-1) var(--sp-2);
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
   border-left: 2px solid var(--bad);
   background: var(--bad-bg);
   border-radius: 0 var(--r-sm) var(--r-sm) 0;
   font-size: var(--fs-sm);
   color: var(--text);
+}
+
+/*
+  UD17: on a phone the header keeps the brand, the section tabs (scrolling
+  sideways, as pills) and the feed state; the rest is desktop furniture.
+*/
+@media (max-width: 720px) {
+  .top {
+    gap: var(--sp-2);
+    padding: 0 var(--sp-3);
+  }
+
+  .search {
+    min-width: 0;
+    width: 44px;
+    height: 44px;
+    justify-content: center;
+    border-color: transparent;
+    background: transparent;
+  }
+
+  .searchText,
+  .search .kbd,
+  .tz,
+  .pause,
+  .who {
+    display: none;
+  }
+
+  .tabs {
+    order: 10;
+    flex-basis: 100%;
+    overflow-x: auto;
+    gap: 4px;
+    padding: 6px 0 8px;
+    border-top: 1px solid var(--line);
+  }
+
+  .tab {
+    height: 32px;
+    padding: 0 12px;
+    border-radius: 16px;
+    border-bottom: 0;
+  }
+
+  .tabOn {
+    background: var(--surface-3);
+  }
+
+  .iconBtn {
+    width: 44px;
+    height: 44px;
+  }
 }

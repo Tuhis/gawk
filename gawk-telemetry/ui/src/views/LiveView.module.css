@@ -1,64 +1,37 @@
-/*
-  TM8's surface, unchanged in substance (UD13). It moved out of App.tsx when
-  TH1's router arrived and the shell became a shell.
-*/
-.bar {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-4);
-  padding: 0 0 var(--sp-3);
-}
-
+/* TM8's surface, restyled by R36 (UD13: unchanged in substance). */
 .updated {
+  min-width: 140px;
+  text-align: right;
   font-size: var(--fs-sm);
-  color: var(--text-dim);
-  font-family: var(--mono);
-  /* "connecting…" and "updated 19:12:55" differ in width; fix the slot. */
-  min-width: 17ch;
+  color: var(--text-3);
 }
 
-.feed {
+.count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: var(--fs-sm);
-  color: var(--text-dimmer);
-  min-width: 18ch;
 }
 
-.feedBad {
-  color: var(--bad);
+.group {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 6px;
+  margin-bottom: calc(-1 * var(--sp-2));
 }
 
-.spacer {
-  flex: 1;
-}
-
-.main {
-  width: 100%;
-}
-
-.groupTitle {
-  font-size: var(--fs-xs);
+.group h2 {
+  margin: 0;
+  font-size: var(--fs-md);
   font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-  margin: var(--sp-6) 0 var(--sp-2);
-}
-
-.groupTitle:first-child {
-  margin-top: 0;
-}
-
-.groupNote {
-  color: var(--text-dimmer);
-  font-size: var(--fs-xs);
-  margin: calc(-1 * var(--sp-1)) 0 var(--sp-3);
 }
 
 .empty {
-  color: var(--text-dimmer);
-  font-size: var(--fs-sm);
-  padding: var(--sp-4) 0;
   margin: 0;
+  padding: 14px;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
 }
 
 /*
@@ -67,9 +40,16 @@
   `warn` sitting above it. That is exactly what makes it safe to show at all.
 */
 .endedGroup {
-  opacity: 0.62;
+  opacity: 0.86;
 }
 
 .endedGroup:hover {
-  opacity: 0.85;
+  opacity: 1;
+}
+
+@media (max-width: 720px) {
+  .updated,
+  .group > span {
+    display: none;
+  }
 }
