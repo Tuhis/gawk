@@ -225,6 +225,23 @@ describe('PresentationWatchdog — rebuilds the cushion after an underrun', () =
     expect(media.seeks).toEqual([]);
   });
 
+  it('starts the grace clock at the pause, not at an earlier `waiting`', async () => {
+    dog.setRejoinS(1.0);
+    dog.start();
+    // WebKit says `waiting` at the live edge while still playing, with nothing
+    // ahead: the watchdog only polls for data. The underrun pause comes later.
+    media.ranges = [[0, 10.3]];
+    media.at(10.3);
+    media.fire('waiting');
+    await vi.advanceTimersByTimeAsync(3000);
+    media.ranges = [[0, 10.5]];
+    media.underrun();
+    await vi.advanceTimersByTimeAsync(1100);
+    // 0.2 s ahead of a 1 s cushion, 1.1 s into the pause: the wait must still
+    // be running (measured from the `waiting`, it would already have given up).
+    expect(media.playCalls).toBe(0);
+  });
+
   it('gives up waiting for the full cushion after the grace period', async () => {
     dog.setRejoinS(1.0);
     dog.start();

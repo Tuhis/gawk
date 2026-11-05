@@ -394,8 +394,14 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
     entry and after any catch-up, no longer pinned at ~100 ms;
   - `elementPaused` staying false through a minute or more of normal
     playback, with `appendErrors: 0` and `bufferedRanges === 1`.
+  - after a stall recovery (`stallRecoveries` > 0), `bufferedAheadMs` also
+    back near the target. The watchdog waits for the cushion before
+    `play()`, but gives up after the target plus 1 s (`CUSHION_GRACE_MS`) in
+    case MMS stops feeding a paused element; a thin cushion right after a
+    recovery means it hit that bound, and `endstreaming` is the signal to
+    look at next.
   If `bufferedAheadMs` holds the target but the element still pauses, the
-  cause is one of the two entries below, not this one.
+  cause is the MMS-parking entry below, not this one.
 
 ## iPhone native fullscreen: MMS parking can leave holes in the buffered timeline
 

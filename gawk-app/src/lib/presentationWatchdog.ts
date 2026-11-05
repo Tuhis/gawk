@@ -88,7 +88,10 @@ export class PresentationWatchdog {
   private active = false;
   private userPaused = false;
   private stalled = false;
-  private stalledAt = 0;
+  // When this stall's cushion wait began: the first check that found the
+  // element paused or ended, not the first stall event (WebKit can say
+  // `waiting` long before it pauses). Null until then; reset per stall.
+  private cushionWaitFrom: number | null = null;
   private cause: StallCause | null = null;
   // The playhead when a fed-but-stuck element was first seen; null until then.
   private stuckAt: number | null = null;
@@ -189,7 +192,7 @@ export class PresentationWatchdog {
     if (!this.stalled) {
       this.stalled = true;
       this.stuckAt = null;
-      this.stalledAt = this.now();
+      this.cushionWaitFrom = null;
     }
     this.cause = cause;
   }
@@ -197,6 +200,7 @@ export class PresentationWatchdog {
   private clearStall(): void {
     this.stalled = false;
     this.stuckAt = null;
+    this.cushionWaitFrom = null;
     this.cancelTimer();
   }
 
@@ -244,7 +248,8 @@ export class PresentationWatchdog {
       // An underrun at the live edge. Rebuild the cushion by waiting rather
       // than by seeking back over frames already shown (bounded, see
       // CUSHION_GRACE_MS).
-      const waited = this.now() - this.stalledAt;
+      if (this.cushionWaitFrom === null) this.cushionWaitFrom = this.now();
+      const waited = this.now() - this.cushionWaitFrom;
       if (newestEnd - t < this.rejoinS && waited < this.rejoinS * 1000 + CUSHION_GRACE_MS) {
         return this.schedule(RECOVERY_RETRY_MS);
       }
