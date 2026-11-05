@@ -148,6 +148,12 @@ type Server struct {
 	// trackPublisher (see postUpgradePublishHook). Atomic, as above.
 	testHookPostUpgradePublish atomic.Pointer[func(id string)]
 
+	// testHookTelemetryHelloSent runs right after a session's telemetry
+	// hello has been written to the client, on the home and PoP paths alike,
+	// so a test can observe what /statusz shows the moment a client could
+	// act on the hello. Atomic, as above.
+	testHookTelemetryHelloSent atomic.Pointer[func(id string, role wire.TelemetryRole)]
+
 	// testHookPublishDatagramLoop runs at the top of every iteration of the
 	// publisher's datagram loop, so a test can hold the loop still while a
 	// burst arrives (docs/75 D7: quic-go's per-session queue must absorb it).

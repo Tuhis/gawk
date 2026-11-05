@@ -43,25 +43,28 @@ func (s *Server) telemetryReportIntervalMs() uint16 {
 	return uint16(ms)
 }
 
-// sendTelemetryHello mints this session's telemetry token, sends it on a
-// fresh uni stream, and returns the sessionId the relay records so the two
-// views join; "" when telemetry is off or anything failed. broadcastID is the
-// raw ID and never reaches the client: the hello carries the obfuscated key,
-// and the token's tag covers that key, so a client reporting the raw ID fails
-// verification at the ingest.
-func (s *Server) sendTelemetryHello(sess *webtransport.Session, broadcastID string, role wire.TelemetryRole, log *slog.Logger) string {
+// sendTelemetryHello mints this session's telemetry token and sends it on a
+// fresh uni stream. record receives the sessionId the relay keeps so the two
+// views join, BEFORE the hello is written: a client acts on its hello the
+// moment it has it, so /statusz must already carry the ID (an ID recorded
+// after the write was briefly missing). A failed write therefore leaves an ID
+// recorded for a session that will never report, which is what it is.
+// broadcastID is the raw ID and never reaches the client: the hello carries
+// the obfuscated key, and the token's tag covers that key, so a client
+// reporting the raw ID fails verification at the ingest.
+func (s *Server) sendTelemetryHello(sess *webtransport.Session, broadcastID string, role wire.TelemetryRole, record func(string), log *slog.Logger) {
 	if !s.telemetryEnabled() {
-		return ""
+		return
 	}
 	broadcastKey, err := hex.DecodeString(s.registry.ObfuscateID(broadcastID))
 	if err != nil || len(broadcastKey) != wire.TelemetryBroadcastKeySize {
 		log.Warn("telemetry hello skipped: bad obfuscated broadcast key", "err", err)
-		return ""
+		return
 	}
 	token, err := wire.MintTelemetrySessionToken(s.cfg.TelemetryKey, broadcastKey, role, time.Now())
 	if err != nil {
 		log.Warn("telemetry hello skipped: token mint failed", "err", err)
-		return ""
+		return
 	}
 	msg, err := wire.AppendTelemetryHello(nil, wire.TelemetryHello{
 		Enabled:          true,
@@ -71,21 +74,20 @@ func (s *Server) sendTelemetryHello(sess *webtransport.Session, broadcastID stri
 	})
 	if err != nil {
 		log.Warn("telemetry hello skipped: encode failed", "err", err)
-		return ""
-	}
-	if err := sendUniMessage(sess, msg); err != nil {
-		// Never fatal: the missing session shows up as a client that never
-		// reported, never as healthy.
-		log.Warn("telemetry hello not sent; this session will not report", "err", err)
-		return ""
+		return
 	}
 	// The token itself is never logged and never stored. Only the sessionId
 	// derived from its nonce leaves this function.
-	sessionID, err := wire.TelemetrySessionID(token)
-	if err != nil {
-		return ""
+	if sessionID, err := wire.TelemetrySessionID(token); err == nil {
+		record(sessionID)
 	}
-	return sessionID
+	if err := sendUniMessage(sess, msg); err != nil {
+		// Never fatal: the session shows up as a client that never
+		// reported, never as healthy.
+		log.Warn("telemetry hello not sent; this session will not report", "err", err)
+		return
+	}
+	s.telemetryHelloSent(broadcastID, role)
 }
 
 // sendTelemetryEndpoint advertises the fleet's ingest URL (docs/40 §4.10) on
@@ -191,13 +193,14 @@ func (s *Server) popTelemetry() PopTelemetry {
 // sendSessionTelemetry gives a session its telemetry identity and the
 // ingest URL. A relay holding the fleet key mints inline and returns
 // at once; a PoP asks home (sendPopTelemetry) without delaying the session.
-// record receives the sessionId, now or later, when there is one.
+// record receives the sessionId, now or later, when there is one, and
+// always before the hello carrying it is written.
 func (s *Server) sendSessionTelemetry(ctx context.Context, sess *webtransport.Session, id string, role wire.TelemetryRole, record func(string), log *slog.Logger) {
 	if pt := s.popTelemetry(); pt != nil {
 		go s.sendPopTelemetry(ctx, pt, sess, id, role, record, log)
 		return
 	}
-	record(s.sendTelemetryHello(sess, id, role, log))
+	s.sendTelemetryHello(sess, id, role, record, log)
 	s.sendTelemetryEndpoint(sess, log)
 }
 
@@ -215,16 +218,25 @@ func (s *Server) sendPopTelemetry(ctx context.Context, pt PopTelemetry, sess *we
 		log.Warn("pop telemetry hello skipped: encode failed", "err", err)
 		return
 	}
+	// Recorded before the write, as on a home pod (sendTelemetryHello).
+	if sid, err := wire.TelemetrySessionID(hello.Token); err == nil {
+		record(sid)
+	}
 	if err := sendUniMessage(sess, msg); err != nil {
 		log.Warn("pop telemetry hello not sent; this session will not report", "err", err)
 		return
 	}
-	if sid, err := wire.TelemetrySessionID(hello.Token); err == nil {
-		record(sid)
-	}
+	s.telemetryHelloSent(id, role)
 	if url != "" {
 		if m, err := wire.AppendTelemetryEndpoint(nil, url); err == nil {
 			_ = sendUniMessage(sess, m)
 		}
+	}
+}
+
+// telemetryHelloSent fires the test hook after a hello's write.
+func (s *Server) telemetryHelloSent(id string, role wire.TelemetryRole) {
+	if hook := s.testHookTelemetryHelloSent.Load(); hook != nil {
+		(*hook)(id, role)
 	}
 }
