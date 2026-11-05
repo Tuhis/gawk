@@ -1744,6 +1744,21 @@ entries still describe code `gawk-pubsim` runs (now
   loss; an outage takes whole frames, and only the carrier uplink (RU3)
   repairs that. Don't reintroduce a delivery-mode clamp in
   `hub.NegotiateParity`.
+- **quinn's BBR estimate does not measure the uplink for a video stream.**
+  Its bottleneck-bandwidth max filter takes only samples that were not
+  application-limited, and a video stream nearly always is, so on a clean
+  30 Mbps uplink it read 7.5 Mbps under an 11.4 Mbps stream, and 0 for a
+  whole run. The window over RTT is no better: Cubic's grows without bound
+  while application-limited, and quinn paces at the window, not at BBR's
+  pacing rate. Measure the path with the stream's own reliable writes
+  instead: a keyframe's time to acknowledgement is what the upload warning
+  reads ([docs/85](85-upload-warning-full-uplink.md) F1, D1).
+- **On a long path every carrier that meets a loss expires.** A lost packet
+  costs a stream about three round trips before it is acknowledged, so at
+  100 ms that is twice the carrier's 150 ms deadline, whatever the uplink's
+  capacity. Expiries say nothing about capacity there; the upload warning
+  reads them only under 50 ms of minimum RTT
+  ([docs/85](85-upload-warning-full-uplink.md) F4, D5).
 - **quinn's default Cubic cannot carry the default rung over a lossy long
   path.** It treats every random loss as congestion: at 40 ms RTT, 0.1 %
   loss already leaves 16–23 % of frames undecodable in either delivery

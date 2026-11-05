@@ -284,7 +284,7 @@ def sweep(results, fairs):
     for base in fairs:
         for d in sorted(glob.glob(f"{base}/r*-*-s*")):
             m = re.match(r"r(\d+)-(datagram|carrier)-engine-(bbr|cubic)-(tcp|alone)-s\d+$", os.path.basename(d))
-            if m and os.path.exists(f"{d}/done") and m[1] in ("15", "30"):
+            if m and os.path.exists(f"{d}/done"):
                 runs.append((m.groups(), d, load(d), undecodable(d, FROM_S)))
     cells = []
     for cell in sorted(glob.glob(f"{results}/*/")):
@@ -298,17 +298,17 @@ def sweep(results, fairs):
             if bbr or lossless or name.startswith("rtt10-out"):
                 cells.append((f"{name} {mode}", d, load(d)))
     print("| Slow below | 15 Mbps beside the upload: raised within 5 s | 15 Mbps alone, damaged runs: raised "
-          "| 30 Mbps alone: raised | Matrix runs that must not raise and do |")
+          "| Alone, undamaged (< 1 %; 15, 30, 80 Mbps): raised | Matrix runs that must not raise and do |")
     print("|---|---|---|---|---|")
     for k in [float(x) for x in os.environ.get("R75_SWEEP", "0.75 0.85 1.0 1.1 1.2 1.5 2.0 2.5").split()]:
         SLOW_SHARE = k
         beside = [verdict(replayed(d, lg))[0] for (r, _, _, t), d, lg, _ in runs if r == "15" and t == "tcp"]
         dmg = [verdict(replayed(d, lg))[0] for (r, _, _, t), d, lg, u in runs if r == "15" and t == "alone" and u >= 1]
-        alone30 = [verdict(replayed(d, lg))[0] for (r, _, _, t), d, lg, _ in runs if r == "30" and t == "alone"]
+        clean = [verdict(replayed(d, lg))[0] for (r, _, _, t), d, lg, u in runs if t == "alone" and u < 1]
         bad = [n for n, d, lg in cells if verdict(replayed(d, lg))[0] is not None]
         ok = sum(1 for f in beside if f is not None and f <= 20 + WARN_AFTER + 1)
         print(f"| {k:.2f} × wire rate | {ok} of {len(beside)} | {sum(f is not None for f in dmg)} of {len(dmg)} "
-              f"| {sum(f is not None for f in alone30)} of {len(alone30)} | {len(bad)} of {len(cells)}"
+              f"| {sum(f is not None for f in clean)} of {len(clean)} | {len(bad)} of {len(cells)}"
               + (f" ({', '.join(bad)})" if bad else "") + " |")
 
 
