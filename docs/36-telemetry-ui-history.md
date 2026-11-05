@@ -295,7 +295,7 @@ row, several lanes visible without scrolling — the idiom that fits the job of
 scanning for the anomaly. Deliberately *not* gawk-app's R6 monochrome tokens:
 those were designed for a cinematic viewer, and a data console is a different
 problem. Hue stays reserved for severity; density carries everything else. The
-README's existing no-layout-shift rules (`table-layout: fixed`, percentage
+no-layout-shift rules in `gawk-telemetry/docs/development.md` (`table-layout: fixed`, percentage
 colgroup, `tabular-nums`, reserved slots) become harder, not softer, at this
 density and bind every new surface.
 

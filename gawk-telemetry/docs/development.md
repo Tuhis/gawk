@@ -111,14 +111,27 @@ hashing would buy, and stable names mean a rebuild overwrites in place.
   mysterious. The page marks the gap it did not observe on return, and
   never backfills or draws through it; it is also why the watch feature is
   in-tab only, since a notification could arrive a minute late.
-- **The layout must not move while values tick.** The table is
-  `table-layout: fixed` with a percentage colgroup, every number is
-  `tabular-nums` at a fixed decimal count, and every optional element has
-  a reserved slot. A `ch`-based colgroup summed past the container once
-  and pushed the last column off-screen; percentages are what guarantee it
-  fits. The virtualized lists follow the same rule with a fixed row height
-  and a shared grid template, since a `<tr>` cannot be absolutely
-  positioned.
+- **The layout must not move while values tick.** Every number is
+  `tabular-nums`, every optional element has a reserved slot, and tables
+  stay `table-layout: fixed` — but since R36 (docs/86 TU2) their widths are
+  MEASURED, not guessed: `lib/columns.ts` measures each column's content
+  with a canvas against the bundled fonts once per data load (a new
+  range, a new filter, a joiner — never a tick), freezes it, lets the
+  free-text column take the remainder, and squeezes the free-text columns
+  marked `squeeze` when the sum would overflow the container. Operators
+  can drag any header's grip, double-click it to fit, and reset; their
+  widths live in localStorage per table. A ticking cell is sized by a
+  `samples` string (its widest form, `'144 → 144 / 144'`), not by today's
+  value. The virtualized history grid shares one track list between its
+  header and its rows, inside one horizontal scroller, since a `<tr>`
+  cannot be absolutely positioned. Measuring with a canvas rather than the
+  DOM is what lets a virtualized list be measured over every loaded row,
+  not only the rendered ones.
+- **Colours come from tokens, including the charts'.** The canvas cannot
+  read CSS, so `charts/palette.ts` reads the computed custom properties
+  for the resolved theme (`state/theme.ts`) and the chart options use
+  those strings. A hex literal in a `.tsx` file paints wrong in the other
+  theme — R31's lane veils drew black on a white chart.
 - **`npm run build` is the only real typecheck.** The root tsconfig is
   solution-style, so a bare `tsc --noEmit` passes *vacuously*, and vitest
   strips types rather than checking them.

@@ -129,6 +129,7 @@ Reading all of them is not the point. Three give you the shape of the system:
 | [`83`](83-whip-gateway.md) | R33 — WHIP ingest for OBS through `gawk-whip-gateway`: a separate deployable republishes OBS's WHIP as an ordinary publisher; the stream key is the broadcast ID + resume token, minted in the web app; the GOP is set in OBS and bounded by the gateway because OBS ignores PLI |
 | [`84`](84-telemetry-ask-in-english.md) | R82 — Ask in English: a model drafts SQL for the telemetry console from a question, checked with `EXPLAIN` in a shadow catalogue of empty tables, never seeing a row (data mode B); NQ1–NQ4 built; Anthropic or any OpenAI-compatible server; the NQ0 spike's twenty graded questions |
 | [`85`](85-upload-warning-full-uplink.md) | R75 — the native broadcaster's upload warning on a full uplink: quinn's BBR estimate measured and set aside, each keyframe's drain rate against the stream's wire rate instead, and carrier expiries read only on a short path |
+| [`86`](86-telemetry-facelift.md) | R36 — the telemetry dashboard's usability pass and facelift: IBM Plex bundled, dark and light from one token set, content-fit and operator-resizable tables, chart stacks read through one axis and a readout rail, the service's age drawn as an axis extent, a striped viewer as one participant with its legs (relay `stripeOwner`), PoP labels, live sparklines, a two-column session page; TU1–TU12 |
 
 ## Testing, telemetry, operations
 
