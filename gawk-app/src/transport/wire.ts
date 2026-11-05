@@ -628,6 +628,49 @@ export function parseDeliveryAck(dgram: Uint8Array): DeliveryAckMessage {
   return { mode, bufferMs: view.getUint16(3) };
 }
 
+// VideoUndeliverable: relay→viewer on datagrams, "I hold video for you and
+// cannot get it onto your session" (docs/24 finding 19). Sent at most once a second
+// while the relay's keyframe hand-offs to this viewer keep moving zero bytes —
+// a static screen produces no keyframes, so it never produces this. Exactly 10
+// bytes: version, type 0x1e, uint32 keyframeId (the newest keyframe the relay
+// could not deliver), uint32 stalledMs (diagnostics). Strict fixed-length
+// parse; clients parse it and never send it. The encoder exists for tests and
+// golden vectors.
+
+export const TYPE_VIDEO_UNDELIVERABLE = 0x1e;
+export const VIDEO_UNDELIVERABLE_SIZE = 10;
+
+export interface VideoUndeliverableMessage {
+  keyframeId: number;
+  stalledMs: number;
+}
+
+export function encodeVideoUndeliverable(msg: VideoUndeliverableMessage): Uint8Array<ArrayBuffer> {
+  const dgram = new Uint8Array(VIDEO_UNDELIVERABLE_SIZE);
+  const view = new DataView(dgram.buffer);
+  dgram[0] = WIRE_VERSION;
+  dgram[1] = TYPE_VIDEO_UNDELIVERABLE;
+  view.setUint32(2, msg.keyframeId);
+  view.setUint32(6, msg.stalledMs);
+  return dgram;
+}
+
+export function parseVideoUndeliverable(dgram: Uint8Array): VideoUndeliverableMessage {
+  if (dgram.length !== VIDEO_UNDELIVERABLE_SIZE) {
+    throw new WireError(
+      `video undeliverable must be exactly ${VIDEO_UNDELIVERABLE_SIZE} bytes, got ${dgram.length}`,
+    );
+  }
+  if (dgram[0] !== WIRE_VERSION) {
+    throw new WireError(`unsupported version 0x${dgram[0].toString(16)}`);
+  }
+  if (dgram[1] !== TYPE_VIDEO_UNDELIVERABLE) {
+    throw new WireError(`unexpected message type 0x${dgram[1].toString(16)}, want video undeliverable`);
+  }
+  const view = new DataView(dgram.buffer, dgram.byteOffset, dgram.byteLength);
+  return { keyframeId: view.getUint32(2), stalledMs: view.getUint32(6) };
+}
+
 // ViewerCount: exactly 6 bytes — version, type 0x0b, then a
 // uint32 count. Strict fixed-length parse like TimeSync/ClockMapping. The
 // encoder exists for tests and golden vectors; browsers only ever parse it.

@@ -64,6 +64,7 @@ import {
   encodeVideoChunk,
   encodeViewerCount,
   encodeDeliveryAck,
+  encodeVideoUndeliverable,
 } from './wire';
 import { MAX_DVR_BUFFER_MS } from '../config';
 
@@ -537,6 +538,141 @@ describe('ViewerPipeline', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  describe('relay undeliverable-video notice (docs/24 finding 19)', () => {
+    // The relay says "I hold video for you and cannot deliver it" on a
+    // datagram once its keyframe hand-offs to this viewer have moved no bytes
+    // for 3 s, and repeats it at most once a second while that holds. A static
+    // screen produces no keyframes, so it never produces the notice — which is
+    // what lets the viewer act on it where its own heuristics cannot: a
+    // broadcast with no audio has nothing continuous to compare against.
+    async function startPipeline(): Promise<{
+      deliver: (d: Uint8Array) => void;
+      errors: Recorded['errors'];
+      pipeline: ViewerPipeline;
+    }> {
+      let deliver!: (d: Uint8Array) => void;
+      const fakeTransport: ViewerTransport = {
+        kind: 'in-process',
+        connect: async (cb) => {
+          deliver = cb.onDatagram;
+        },
+        sampleConnectionStats: () => null,
+        sampleTimeSync: () => null,
+        close: () => {},
+      };
+      const { cbs, errors } = makeCallbacks();
+      const pipeline = new ViewerPipeline(
+        'https://relay.test:4433',
+        'K7XQ2M',
+        { deliveryMode: 'reliable' },
+        cbs,
+        null,
+        () => fakeTransport,
+      );
+      await pipeline.start();
+      return { deliver, errors, pipeline };
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+      });
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('reconnects on a confirmed notice, with no audio at all', async () => {
+      const { deliver, errors, pipeline } = await startPipeline();
+      deliver(configDgram());
+      deliver(frameDgram(1, true));
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Video stops; the relay's notices keep landing on datagrams. No audio
+      // ever arrived, so the media watchdog is disarmed by design.
+      deliver(encodeVideoUndeliverable({ keyframeId: 11, stalledMs: 3000 }));
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(errors).toEqual([]); // one notice is not yet a verdict
+      deliver(encodeVideoUndeliverable({ keyframeId: 21, stalledMs: 4000 }));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(errors.length).toBe(1);
+      // Reconnectable, not fatal: no close code means ViewerSession retries.
+      expect(errors[0].closeCode).toBeUndefined();
+      expect(errors[0].message).toContain('cannot deliver');
+      await pipeline.stop();
+    });
+
+    it('ignores notices naming a keyframe it already holds (stale, queued behind an outage)', async () => {
+      const { deliver, errors, pipeline } = await startPipeline();
+      deliver(configDgram());
+      deliver(frameDgram(30, true));
+      await vi.advanceTimersByTimeAsync(0);
+
+      for (let i = 0; i < 4; i++) {
+        deliver(encodeVideoUndeliverable({ keyframeId: 21, stalledMs: 3000 }));
+        deliver(encodeVideoUndeliverable({ keyframeId: 30, stalledMs: 3000 }));
+        await vi.advanceTimersByTimeAsync(1_000);
+      }
+      expect(errors).toEqual([]);
+      await pipeline.stop();
+    });
+
+    it('stands down when the named keyframe arrives after the first notice', async () => {
+      const { deliver, errors, pipeline } = await startPipeline();
+      deliver(configDgram());
+      deliver(frameDgram(1, true));
+      await vi.advanceTimersByTimeAsync(0);
+
+      // A burst of notices that queued behind a cleared outage, then the
+      // keyframe they named. The relay has recovered and sends no more.
+      deliver(encodeVideoUndeliverable({ keyframeId: 11, stalledMs: 3000 }));
+      deliver(encodeVideoUndeliverable({ keyframeId: 11, stalledMs: 3200 }));
+      await vi.advanceTimersByTimeAsync(100);
+      deliver(frameDgram(11, true));
+      await vi.advanceTimersByTimeAsync(2_000);
+      // A later, unrelated episode starts its own confirmation from scratch.
+      deliver(encodeVideoUndeliverable({ keyframeId: 41, stalledMs: 3000 }));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(errors).toEqual([]);
+      await pipeline.stop();
+    });
+
+    it('still acts after a broadcaster restart reset the frameIds', async () => {
+      // A new publisher session numbers frames from 0 again, and the relay's
+      // notices follow it. Holding keyframe 100000 from the old timeline must
+      // not make every new-timeline notice look stale.
+      const { deliver, errors, pipeline } = await startPipeline();
+      deliver(configDgram());
+      deliver(frameDgram(100_000, true));
+      deliver(frameDgram(3, true)); // the restarted broadcaster's first keyframe
+      await vi.advanceTimersByTimeAsync(0);
+
+      deliver(encodeVideoUndeliverable({ keyframeId: 13, stalledMs: 3000 }));
+      await vi.advanceTimersByTimeAsync(1_000);
+      deliver(encodeVideoUndeliverable({ keyframeId: 23, stalledMs: 4000 }));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(errors.length).toBe(1);
+      expect(errors[0].message).toContain('cannot deliver');
+      await pipeline.stop();
+    });
+
+    it('never hands the notice to the reassembler as a bad datagram', async () => {
+      const { deliver, pipeline } = await startPipeline();
+      deliver(configDgram());
+      deliver(frameDgram(1, true));
+      deliver(encodeVideoUndeliverable({ keyframeId: 1, stalledMs: 3000 }));
+      deliver(new Uint8Array([0x01, 0x1e, 0x00])); // malformed: dropped, not fatal
+      await vi.advanceTimersByTimeAsync(600);
+      const stats = (pipeline as unknown as { reassembler: { getStats(): { badDatagrams: number } } })
+        .reassembler.getStats();
+      expect(stats.badDatagrams).toBe(0);
+      await pipeline.stop();
+    });
   });
 
   it('reconnects when the session goes completely silent (dead session, no signal)', async () => {

@@ -215,6 +215,10 @@ import {
   truncateVoiceName,
   type VoiceFrameHeader,
   type VoiceRosterEntry,
+  TYPE_VIDEO_UNDELIVERABLE,
+  VIDEO_UNDELIVERABLE_SIZE,
+  encodeVideoUndeliverable,
+  parseVideoUndeliverable,
 } from './wire';
 
 // Golden vectors copied verbatim from gawk-server/wire/wire_test.go
@@ -2190,5 +2194,42 @@ describe('R79 voice wire', () => {
     expect(truncateVoiceName(long)).toBe('ä'.repeat(32));
     expect(truncateVoiceName('a\ud800b')).toBe('a�b');
     expect(truncateVoiceName('bob')).toBe('bob');
+  });
+});
+
+// The relay's "video I cannot deliver" notice (docs/24 finding 19). Golden vectors are
+// byte-identical to gawk-server/wire's — this is one of the mirrors that keeps
+// them so.
+describe('VideoUndeliverable (0x1E)', () => {
+  const GOLDEN_HEX = '011e0102030400000bb8';
+
+  it('matches the Go golden vector', () => {
+    expect(TYPE_VIDEO_UNDELIVERABLE).toBe(0x1e);
+    expect(VIDEO_UNDELIVERABLE_SIZE).toBe(10);
+    expect(toHex(encodeVideoUndeliverable({ keyframeId: 0x01020304, stalledMs: 3000 }))).toBe(
+      GOLDEN_HEX,
+    );
+    expect(parseVideoUndeliverable(fromHex(GOLDEN_HEX))).toEqual({
+      keyframeId: 0x01020304,
+      stalledMs: 3000,
+    });
+  });
+
+  it('round-trips the uint32 extremes', () => {
+    for (const keyframeId of [0, 1, 0xffffffff]) {
+      for (const stalledMs of [0, 3000, 0xffffffff]) {
+        expect(parseVideoUndeliverable(encodeVideoUndeliverable({ keyframeId, stalledMs }))).toEqual({
+          keyframeId,
+          stalledMs,
+        });
+      }
+    }
+  });
+
+  it('rejects malformed notices strictly', () => {
+    expect(() => parseVideoUndeliverable(fromHex('011e0102030400000b'))).toThrow(); // short
+    expect(() => parseVideoUndeliverable(fromHex('011e0102030400000bb800'))).toThrow(); // trailing
+    expect(() => parseVideoUndeliverable(fromHex('021e0102030400000bb8'))).toThrow(); // version
+    expect(() => parseVideoUndeliverable(fromHex('010b0102030400000bb8'))).toThrow(); // type
   });
 });
