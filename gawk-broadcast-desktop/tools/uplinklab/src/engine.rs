@@ -18,10 +18,16 @@
 //!   per carrier (`acked`, `failed`, `expired` past the deadline, `abandoned`
 //!   reset unfinished), `O` on a carrier's prologue, `W` per carrier write
 //!   that blocked over 1 ms, `E`/`M` on a datagram the transport refused,
-//! - `T` and `S` path stats from quinn (`WtSession::quic_stats`) —
+//! - `T` and `S` path stats from quinn (`WtSession::quic_stats`); R75 added
+//!   three columns at the end of `T`: the controller's pacing rate (bits/s,
+//!   -1 for one without, `WtSession::quic_congestion`), `udp_tx` bytes and
+//!   the minimum RTT (µs) —
 //!
-//! and three of its own: `N,t,raised|cleared` when the warning changes, `Y`
-//! once a second with the engine's counters, and `U` at the end with them.
+//! and four of its own: `N,t,raised|cleared` when the warning changes, `Y`
+//! once a second with the engine's counters (R75 appended keyframe streams
+//! sent and slow), `U` at the end with them, and `B` once a second with the
+//! controller's estimate sampled every 20 ms over it — the pacing rate and
+//! the window over smoothed RTT, min / median / max of each (docs/85 §2).
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -359,7 +365,7 @@ impl CarrierStream for LabCarrier {
 
 fn engine_line(kind: char, st: &Stats, warned: bool) -> String {
     format!(
-        "{kind},{},{},{:.1},{:.1},{},{},{},{},{},{},{},{},{}",
+        "{kind},{},{},{:.1},{:.1},{},{},{},{},{},{},{},{},{},{},{}",
         now_ns(),
         warned as u8,
         st.encoder_fps,
@@ -373,6 +379,8 @@ fn engine_line(kind: char, st: &Stats, warned: bool) -> String {
         st.uplink_carriers_expired,
         st.uplink_records_shed,
         st.uplink_datagrams_dropped,
+        st.keyframe_streams_sent,
+        st.keyframe_streams_slow,
     )
 }
 
@@ -447,9 +455,36 @@ async fn main() {
         })
     };
 
+    // R75 (docs/85): the controller's estimate every 20 ms — BBR's pacing
+    // rate and cwnd over smoothed RTT, both bits/s — which the 1 Hz tick
+    // reduces to a `B` line (min / median / max of each over the second).
+    let samples: Arc<Mutex<Vec<(u64, u64)>>> = Arc::default();
+    let sampler = {
+        let session = session.clone();
+        let samples = samples.clone();
+        tokio::spawn(async move {
+            let mut iv = tokio::time::interval_at(start, Duration::from_millis(20));
+            loop {
+                iv.tick().await;
+                let m = session.quic_congestion();
+                let rtt = session.quic_stats().path.rtt.as_secs_f64();
+                let cwnd_rate = if rtt > 0.0 {
+                    (m.congestion_window as f64 * 8.0 / rtt) as u64
+                } else {
+                    0
+                };
+                samples
+                    .lock()
+                    .unwrap()
+                    .push((m.pacing_rate.unwrap_or(0), cwnd_rate));
+            }
+        })
+    };
+
     // The shell's 1 Hz tick: the stats snapshot, the upload-bandwidth
     // monitor on it, and quinn's path state.
     let ticker = {
+        let samples = samples.clone();
         let s = sender.clone();
         let log = log.clone();
         let session = session.clone();
@@ -470,11 +505,34 @@ async fn main() {
                     eprintln!("uplink warning {word}");
                 }
                 log_line(&log, engine_line('Y', &st, warned));
+                {
+                    let mut v = std::mem::take(&mut *samples.lock().unwrap());
+                    if !v.is_empty() {
+                        let n = v.len();
+                        let mut pace: Vec<u64> = v.iter().map(|x| x.0).collect();
+                        pace.sort_unstable();
+                        v.sort_unstable_by_key(|x| x.1);
+                        log_line(
+                            &log,
+                            format!(
+                                "B,{},{n},{},{},{},{},{},{}",
+                                now_ns(),
+                                pace[0],
+                                pace[n / 2],
+                                pace[n - 1],
+                                v[0].1,
+                                v[n / 2].1,
+                                v[n - 1].1
+                            ),
+                        );
+                    }
+                }
                 let q = session.quic_stats();
+                let m = session.quic_congestion();
                 log_line(
                     &log,
                     format!(
-                        "T,{},{},{},{},{},{},{},{}",
+                        "T,{},{},{},{},{},{},{},{},{},{},{}",
                         now_ns(),
                         q.path.rtt.as_micros(),
                         q.path.cwnd,
@@ -482,7 +540,10 @@ async fn main() {
                         q.path.lost_packets,
                         q.path.lost_bytes,
                         q.path.congestion_events,
-                        q.frame_tx.datagram
+                        q.frame_tx.datagram,
+                        m.pacing_rate.map_or(-1, |r| r as i64),
+                        q.udp_tx.bytes,
+                        q.path.min_rtt.as_micros()
                     ),
                 );
             }
@@ -509,6 +570,7 @@ async fn main() {
     // Let the tail drain, then record the final path state.
     tokio::time::sleep(Duration::from_millis(1500)).await;
     ticker.abort();
+    sampler.abort();
     audio.abort();
     let q = session.quic_stats();
     let offered = session.path_counters().map_or(0, |c| c.datagrams_offered);
