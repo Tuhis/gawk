@@ -70,6 +70,10 @@ export interface PresentationSurfaceStats {
   // inline-vs-fullscreen live-edge delta. Null until media is buffered.
   bufferedMs: number | null;
   bufferedAheadMs: number | null;
+  // The presenter's byte ledger: video bytes held by the current MediaSource
+  // and video bytes pruned this session (the bound is PRUNE_BUDGET_BYTES).
+  bufferedBytes: number;
+  prunedBytes: number;
   // HTMLMediaElement.readyState (0–4); null until the element exists.
   elementReadyState: number | null;
   elementPaused: boolean | null;

@@ -120,6 +120,7 @@ export type MuxSegmentEvent =
       kind: 'media';
       track: Fmp4Track;
       keyframe: boolean;
+      timeS: number;
       data: ArrayBuffer;
     };
 

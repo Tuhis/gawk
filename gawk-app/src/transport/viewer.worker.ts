@@ -81,7 +81,14 @@ const postSegments = (segments: Fmp4Segment[]): void => {
       );
     } else {
       ctx.postMessage(
-        { type: 'muxSegment', kind: 'media', track: seg.track, keyframe: seg.keyframe, data },
+        {
+          type: 'muxSegment',
+          kind: 'media',
+          track: seg.track,
+          keyframe: seg.keyframe,
+          timeS: seg.timeS,
+          data,
+        },
         [data],
       );
     }

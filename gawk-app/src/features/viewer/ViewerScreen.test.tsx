@@ -861,6 +861,8 @@ describe('ViewerScreen presentation surface (R16 gate + R22 MSE)', () => {
       muxAudioSegments: 0,
       muxAudioHoles: 0,
       bufferedRanges: null,
+      bufferedBytes: 0,
+      prunedBytes: 0,
       // Element-side fields are null while no presentation <video> exists
       // (main-thread fallback ⇒ never armed ⇒ no element).
       elementReadyState: null,

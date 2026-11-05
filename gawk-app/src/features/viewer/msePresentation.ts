@@ -7,9 +7,9 @@
 //
 // ManagedMediaSource (MMS) is the MSE variant iPhone actually ships (iOS
 // 17.1+; plain MediaSource may be undefined there). The system paces appends
-// via `streaming` + startstreaming/endstreaming and evicts old buffered
-// ranges itself; where only classic MediaSource exists (desktop Chrome, where
-// CI exercises this) the presenter prunes manually.
+// via `streaming` + startstreaming/endstreaming and is meant to evict old
+// buffered ranges itself — but on iPhone it was observed holding 21 s of 7 MP
+// media, so the presenter prunes to a byte budget on every MediaSource.
 
 import { log } from '../../lib/logger';
 import { aacMime, opusMime, type AudioMuxCodec, type Fmp4Track } from '../../transport/fmp4-muxer';
@@ -157,7 +157,9 @@ function errText(e: unknown): string {
 
 export type PresenterSegment =
   | { kind: 'init'; track: Fmp4Track; mime: string; data: Uint8Array }
-  | { kind: 'media'; track: Fmp4Track; keyframe: boolean; data: Uint8Array };
+  // `timeS`: the segment's start on the SourceBuffer timeline (its tfdt in
+  // seconds), which is what lets pruning cut exactly at a keyframe.
+  | { kind: 'media'; track: Fmp4Track; keyframe: boolean; timeS: number; data: Uint8Array };
 
 export interface MsePresenterStats {
   attached: boolean;
@@ -190,6 +192,10 @@ export interface MsePresenterStats {
   lastError: string | null;
   queued: number;
   failed: boolean;
+  // Video bytes this MediaSource currently holds by the presenter's own
+  // accounting (appended minus pruned), and video bytes pruned this session.
+  bufferedBytes: number;
+  prunedBytes: number;
 }
 
 // Bound on segments waiting for the SourceBuffer (one segment per frame ⇒
@@ -198,12 +204,36 @@ export interface MsePresenterStats {
 // resuming anywhere else would append deltas whose references were dropped.
 export const MAX_QUEUED_SEGMENTS = 128;
 
-// Manual pruning for classic MediaSource (MMS evicts on its own): once the
-// buffered span exceeds the trigger, everything but the newest KEEP window is
-// removed. Generous — the point is boundedness over a long session, not
-// tightness.
-export const PRUNE_TRIGGER_S = 30;
-export const PRUNE_KEEP_S = 10;
+// Pruning, on every MediaSource: MMS is supposed to evict on its own, but an
+// iPhone was observed holding 21 s of 3360×2100 media (docs/27 "Pruning"),
+// so it gets the same bound as classic MediaSource.
+//
+// The bound is BYTES, because memory is what it protects and a time window
+// costs 10× more at 7 MP than at 720p. The presenter counts the video bytes it
+// appends against each segment's timestamp; once they exceed the budget — or
+// the buffered span exceeds the time ceiling, which keeps a near-static,
+// low-bitrate stream bounded too — it removes everything before the newest
+// keyframe at or before `playhead − PRUNE_BEHIND_S`. Audio is cut at the same
+// time so the tracks' intersection stays intact; its bytes are negligible
+// (~16 KB/s) and not counted.
+//
+// Why so little history: nothing ever seeks backwards. Native fullscreen only
+// seeks forward toward live (useFullscreen's entry seek, maybeCatchUp), and the
+// paused armed element's stale playhead is replaced by that entry seek, so a
+// paused element is pruned relative to the live edge. What IS needed behind the
+// playhead is its own GOP: MSE's remove() also drops every frame depending on a
+// removed one up to the next keyframe, so a cut inside the playhead's GOP would
+// take the frames ahead of it too. Hence keyframe-aligned cuts, plus one second
+// of margin — more than the entry seek's live-edge offset (≤ ~0.6 s), so the
+// GOP it lands in is always kept, and enough to absorb a stale currentTime.
+//
+// 8 MiB is ~2.5 s at 7 MP / 25 Mbps and ~10 s at 1080p / 6 Mbps: past any
+// reasonable GOP plus the 2 s catch-up lag, so it only ever removes history,
+// never the live edge's working set (which a keyframe-aligned cut can't
+// touch anyway — the budget is a soft bound over a single long GOP).
+export const PRUNE_BUDGET_BYTES = 8 * 1024 * 1024;
+export const PRUNE_CEILING_S = 30;
+export const PRUNE_BEHIND_S = 1;
 
 // How long the audio SourceBuffer may exist without receiving a single sample
 // before audio is given up on. Creating it up front is what makes the pair
@@ -250,6 +280,9 @@ interface TrackState {
   // bytes) so both tracks can be added before the first append, and a media
   // segment appended to a buffer that never saw its init is a decode error.
   initAppended: boolean;
+  // The presenter's prune target already removed from THIS SourceBuffer; a
+  // track busy when the target moved catches up at its next idle moment.
+  prunedTo: number;
 }
 
 function newTrackState(track: Fmp4Track): TrackState {
@@ -263,6 +296,7 @@ function newTrackState(track: Fmp4Track): TrackState {
     appended: 0,
     initAppended: false,
     onError: null,
+    prunedTo: 0,
   };
 }
 
@@ -302,6 +336,13 @@ export class MsePresenter {
   private lastError: string | null = null;
   // Per-MediaSource: whether duration = Infinity stuck (see declareLive).
   private liveDuration = false;
+  // Per-MediaSource byte ledger of appended video media segments, oldest
+  // first, and the time everything before which has been (or is being)
+  // removed. See PRUNE_BUDGET_BYTES.
+  private ledger: Array<{ timeS: number; bytes: number; keyframe: boolean }> = [];
+  private ledgerBytes = 0;
+  private pruneTo = 0;
+  private prunedBytes = 0;
 
   private readonly onSourceOpen = () => {
     this.sourceOpen = true;
@@ -364,6 +405,8 @@ export class MsePresenter {
       lastError: this.lastError,
       queued: this.videoBuf.queue.length + this.audioBuf.queue.length,
       failed: this.failed,
+      bufferedBytes: this.ledgerBytes,
+      prunedBytes: this.prunedBytes,
     };
   }
 
@@ -464,8 +507,13 @@ export class MsePresenter {
       t.sb = null;
       t.sbMime = null;
       t.initAppended = false;
+      t.prunedTo = 0;
     }
     this.ms = null;
+    // A fresh MediaSource starts empty.
+    this.ledger = [];
+    this.ledgerBytes = 0;
+    this.pruneTo = 0;
     this.sourceOpen = false;
     // Per-MediaSource state: the next attach() builds a fresh one that has
     // never heard of an infinite duration.
@@ -593,6 +641,10 @@ export class MsePresenter {
       try {
         t.sb!.appendBuffer(seg.data as BufferSource);
         if (seg.kind === 'init') t.initAppended = true;
+        else if (t.track === 'video') {
+          this.ledger.push({ timeS: seg.timeS, bytes: seg.data.byteLength, keyframe: seg.keyframe });
+          this.ledgerBytes += seg.data.byteLength;
+        }
         t.appended++;
         this.segmentsAppended++;
       } catch (e) {
@@ -765,27 +817,56 @@ export class MsePresenter {
     }
   }
 
-  // Manual eviction for classic MediaSource; MMS manages its own buffer (its
-  // remove() semantics are the same, so running this there is harmless but
-  // usually a no-op given the trigger).
+  // Byte-budgeted eviction (see PRUNE_BUDGET_BYTES). Runs on every updateend:
+  // it moves the shared cut target when the budget or the ceiling is crossed,
+  // then applies the target to each idle SourceBuffer that has not taken it.
   private prune(): void {
     const video = this.video;
     if (!video) return;
     try {
-      // buffered is the intersection of the tracks, which is the right trigger:
-      // it is the playable span, and both tracks are pruned to the same window
-      // so the intersection can't be shortened by an asymmetric eviction.
       const b = video.buffered;
-      if (b.length === 0) return;
-      const start = b.start(0);
-      const end = b.end(b.length - 1);
-      if (end - start <= PRUNE_TRIGGER_S) return;
-      for (const t of this.tracks) {
-        if (!t.sb || t.sb.updating) continue;
-        t.sb.remove(start, end - PRUNE_KEEP_S);
+      if (b.length > 0) {
+        const end = b.end(b.length - 1);
+        const span = end - b.start(0);
+        if (this.ledgerBytes > PRUNE_BUDGET_BYTES || span > PRUNE_CEILING_S) {
+          // A paused element is the armed one, and the entry seek replaces its
+          // playhead with the live edge — so that is what history is kept for.
+          const playhead = video.paused ? end : Math.min(video.currentTime, end);
+          this.advancePruneTarget(playhead - PRUNE_BEHIND_S);
+        }
       }
     } catch {
-      // pruning is best-effort
+      // buffered quirks: pruning is best-effort
     }
+    for (const t of this.tracks) {
+      if (!t.sb || t.sb.updating || t.prunedTo >= this.pruneTo) continue;
+      try {
+        t.sb.remove(0, this.pruneTo);
+      } catch {
+        // best-effort; a refused remove is not retried at this target
+      }
+      t.prunedTo = this.pruneTo;
+    }
+  }
+
+  // Move the cut to the newest keyframe at or before `limit`, retiring the
+  // ledger entries before it. Never moves backwards, and never inside a GOP.
+  private advancePruneTarget(limit: number): void {
+    let cut = -1;
+    for (let i = this.ledger.length - 1; i >= 0; i--) {
+      const e = this.ledger[i];
+      if (e.keyframe && e.timeS <= limit) {
+        cut = i;
+        break;
+      }
+    }
+    if (cut <= 0) return; // nothing whole behind the playhead's GOP
+    const target = this.ledger[cut].timeS;
+    if (target <= this.pruneTo) return;
+    for (const e of this.ledger.splice(0, cut)) {
+      this.ledgerBytes -= e.bytes;
+      this.prunedBytes += e.bytes;
+    }
+    this.pruneTo = target;
   }
 }

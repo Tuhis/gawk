@@ -407,6 +407,10 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
                       : ''),
               ],
               [
+                'Buffered bytes',
+                `${(surface.bufferedBytes / 1048576).toFixed(1)} MiB held · ${(surface.prunedBytes / 1048576).toFixed(1)} MiB pruned`,
+              ],
+              [
                 'Video element',
                 surface.elementReadyState == null
                   ? '—'
