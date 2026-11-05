@@ -118,5 +118,11 @@
       matchFileNames: ["gawk-broadcast-desktop/vendor/**"],
       enabled: false,
     },
+    {
+      description: "The dev compose voice lane stays on murmur 1.5 on purpose (comment in dev/compose.voice.yml): the 1.6.870 image ignores MUMBLE_SUPERUSER_PASSWORD after its first start, which gawk-mumble-bridge/testdata/murmur.sh works around with docker exec and a compose lane should not need to. 1.6.870 is also a release candidate. PR #625 bumped it anyway, and CI skipped the voice jobs, so it went green. 1.5.x patch releases still come through. murmur 1.6 is covered by murmur.sh's 1.5/1.6 pins (the bridge (1.5)/(1.6) CI matrix), which Renovate does not manage. Those are bumped by hand. Drop this rule once a 1.6 image honours the env var.",
+      matchFileNames: ["dev/compose.voice.yml"],
+      matchPackageNames: ["mumblevoip/mumble-server"],
+      allowedVersions: "/^v1\\.5\\./",
+    },
   ],
 }
