@@ -1023,7 +1023,11 @@ export function RoomView({
       </div>
       )}
 
-      <div className={[styles.footer, showChrome ? '' : styles.footerHidden].join(' ')} data-panel={sideOpen ? 'true' : 'false'}>
+      <div
+        className={[styles.footer, showChrome ? '' : styles.footerHidden].join(' ')}
+        data-panel={sideOpen ? 'true' : 'false'}
+        data-testid="room-footer"
+      >
         <div className={styles.footerLeft}>
           <div className={styles.segment} role="radiogroup" aria-label="Layout">
             <button
@@ -1034,7 +1038,7 @@ export function RoomView({
               onClick={() => setMode('grid')}
               title={narrow ? 'Grid shows as focus on a narrow screen' : undefined}
             >
-              <GridIcon /> Grid
+              <GridIcon /> <span className={styles.segmentLabel}>Grid</span>
             </button>
             <button
               type="button"
@@ -1043,7 +1047,7 @@ export function RoomView({
               className={styles.segmentBtn}
               onClick={() => setMode('focus')}
             >
-              <FocusIcon /> Focus
+              <FocusIcon /> <span className={styles.segmentLabel}>Focus</span>
             </button>
             <button
               type="button"
@@ -1054,11 +1058,11 @@ export function RoomView({
             >
               {own?.preview ? (
                 <>
-                  <ScreenIcon /> Preview only
+                  <ScreenIcon /> <span className={styles.segmentLabel}>Preview only</span>
                 </>
               ) : (
                 <>
-                  <VideoOffIcon /> Hide videos
+                  <VideoOffIcon /> <span className={styles.segmentLabel}>Hide videos</span>
                 </>
               )}
             </button>
@@ -1080,7 +1084,7 @@ export function RoomView({
               setPresetMenu({ x: r.right, y: r.top - 6 });
             }}
           >
-            {presetLabel(preset)}
+            <span className={styles.presetLabel}>{presetLabel(preset)}</span>
             <span className={styles.presetCaret} aria-hidden="true">
               ▾
             </span>
