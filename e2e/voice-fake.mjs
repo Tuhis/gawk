@@ -214,8 +214,11 @@ export async function waitForHttp(url, ms) {
 }
 
 // Horizontal overflow of the page, the people panel or anything in the voice
-// panel at this width, as a message, or null.
+// panel at this width, or controls in the room footer drawn over one another
+// or squeezed below their content, as a message, or null.
 export async function overflowAt(page, width) {
+  const footer = await footerOverlapAt(page, width);
+  if (footer) return footer;
   const r = await page.evaluate(() => {
     const doc = document.documentElement;
     const panel = document.querySelector('[aria-label="People and chat"]');
@@ -235,5 +238,44 @@ export async function overflowAt(page, width) {
   if (r.doc > 0 || r.panel > 0 || r.offenders.length > 0) {
     return `horizontal overflow at ${width}px: page +${r.doc}px, panel +${r.panel}px, ${r.offenders.join(', ')}`;
   }
+  return null;
+}
+
+// The room footer's controls at this width: two that overlap (a narrow footer
+// once drew the master volume over the quality pill), or one squeezed narrower
+// than its own content (an icon spilling out of its button), as a message, or
+// null. An ellipsised label and a visually hidden one (clip-path) are
+// deliberate, not faults.
+async function footerOverlapAt(page, width) {
+  const r = await page.evaluate(() => {
+    const footer = document.querySelector('[data-testid="room-footer"]');
+    if (!footer) return null;
+    const name = (el) => (el.getAttribute('aria-label') ?? el.textContent ?? '').trim().slice(0, 40);
+    const buttons = [...footer.querySelectorAll('button')]
+      .map((el) => ({ el, b: el.getBoundingClientRect() }))
+      .filter(({ b }) => b.width > 0 && b.height > 0);
+    const out = [];
+    for (let i = 0; i < buttons.length; i++) {
+      for (let j = i + 1; j < buttons.length; j++) {
+        const a = buttons[i].b;
+        const c = buttons[j].b;
+        const x = Math.min(a.right, c.right) - Math.max(a.left, c.left);
+        const y = Math.min(a.bottom, c.bottom) - Math.max(a.top, c.top);
+        if (x > 0.5 && y > 0.5) out.push(`"${name(buttons[i].el)}" over "${name(buttons[j].el)}" by ${Math.round(x)}px`);
+      }
+    }
+    for (const { el } of buttons) {
+      const clipped = [el, ...el.querySelectorAll('*')].some(
+        (n) => {
+          if (n.scrollWidth <= n.clientWidth + 1) return false;
+          const cs = getComputedStyle(n);
+          return cs.textOverflow !== 'ellipsis' && cs.clipPath === 'none';
+        },
+      );
+      if (clipped) out.push(`"${name(el)}" squeezed to ${Math.round(el.getBoundingClientRect().width)}px`);
+    }
+    return out;
+  });
+  if (r && r.length > 0) return `room footer controls collide at ${width}px: ${r.slice(0, 5).join(', ')}`;
   return null;
 }

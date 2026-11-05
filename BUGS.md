@@ -4,20 +4,32 @@ Confirmed, not-yet-fixed defects. Each entry says how it was found, what the
 impact is, and where a fix would start. Remove entries when fixed (and move
 anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 
-## Room footer: a round control sits on top of the quality pill at 390 px
+## Room header squeezed into the top-left corner while the phone sheet is open
 
-- **Found**: 2026-10-28, reading `e2e/voice-panel.mjs`'s `hold-to-talk-390.png`
-  during R81 (docs/82). The same overlap is in the screenshot from the base
-  commit (772d99e4), so it predates R81.
-- **What**: in the room view at 390 px wide, a round control (the footer's
-  stream-volume control, by its position — not confirmed in the DOM) draws
-  over the left of the **Balanced** quality pill. Both stay usable, but the
-  pill's label is partly covered.
-- **Impact**: cosmetic on phones; a tap at that spot hits whichever is on top.
-- **Fix would start**: in `room.module.css`'s narrow footer rules: let the
-  footer's left group shrink or wrap before it reaches the right-hand
-  controls, then add the footer to `e2e/voice-fake.mjs` `overflowAt`'s checks
-  (it looks for horizontal overflow, not for overlap).
+- **Found**: 2026-11-06, in `e2e/voice-panel.mjs`'s `in-voice-360.png` while
+  fixing the room footer's narrow layout.
+- **What**: below 720 px the side panel is a full-width bottom sheet, but
+  `.header[data-panel='true']` still sets `right: var(--panel-w)` (the
+  desktop column's width), so with the sheet open the header is ~40 px wide
+  and its room code, counts and icons pile up over one another at the top
+  left. `.center` and `.footer` reset this on phones; the header does not.
+- **Impact**: cosmetic while the sheet is open; the header's controls are
+  hard to hit until it closes.
+- **Fix would start**: the `@media (max-width: 719px)` rules in
+  `room.module.css` (`right: 0` for `.header[data-panel='true']`), with a
+  header check beside the footer one in `e2e/voice-fake.mjs` `overflowAt`.
+
+## Voice panel head overflows at 1280 px in `e2e/voice-panel.mjs`
+
+- **Found**: 2026-11-06: `node e2e/voice-panel.mjs` fails 4 of 4 runs on main
+  at 32437418 with `horizontal overflow at 1280px` in the panel head
+  (`panelHead`, `panelHeadActions`, the pin button, sometimes the
+  Leave voice row). The harness is not in CI (only `voice-rnnoise.mjs` is).
+- **What**: unconfirmed whether it is real or the harness: the check runs
+  400 ms after resizing from 430 to 1280 px, when the phone sheet turns back
+  into the pinned column (which slides in), so it may be catching the slide.
+- **Fix would start**: take a screenshot at the moment of the failure; if the
+  column is mid-slide, wait for its animation to end before the check.
 
 ## Broadcaster falls back to the main-thread pipeline with no reason given (seen on Chrome/macOS)
 

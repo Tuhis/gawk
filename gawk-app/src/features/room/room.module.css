@@ -1146,3 +1146,45 @@
     display: none;
   }
 }
+
+/* Phones: the footer is one row (the voice dock sits on the band above it),
+   and the layout segment's labels, the quality pill and the right-hand
+   controls together are wider than a phone. The segment goes icon-only (each
+   label stays its radio's accessible name), the right-hand controls never
+   shrink, and the quality pill is what gives way, ellipsised. Without this the
+   left group spilled out of its shrunk box and the master volume sat on the
+   pill. The panel is a full-width bottom sheet here, not a column, so the
+   footer keeps the whole width instead of giving the column's to it. */
+@media (max-width: 719px) {
+  .footer,
+  .footer[data-panel='true'] {
+    right: 0;
+    gap: 0.5rem;
+    padding: 0.75rem;
+  }
+
+  .footerRight,
+  .segment {
+    flex-shrink: 0;
+  }
+
+  .segmentLabel {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .presetPill {
+    min-width: 0;
+    margin-left: 0;
+  }
+
+  .presetLabel {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
