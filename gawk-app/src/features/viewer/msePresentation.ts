@@ -934,7 +934,10 @@ export class MsePresenter {
       if (eb.length > 0) {
         const start = eb.start(eb.length - 1);
         if (eb.length > 1 || video.currentTime < start) {
-          video.currentTime = Math.max(start, eb.end(eb.length - 1) - LIVE_EDGE_REJOIN_S);
+          // The same landing as the entry seek: the mode's target lag behind
+          // the end (liveEdge.ts), which the paused prune keep range covers.
+          const lag = liveEdgePolicy(this.deliveryMode).targetLagS;
+          video.currentTime = Math.max(start, eb.end(eb.length - 1) - lag);
           healed = true;
         }
       }
