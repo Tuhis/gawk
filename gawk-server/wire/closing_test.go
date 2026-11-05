@@ -122,6 +122,48 @@ func TestGoldenSessionClosingPublishMinted(t *testing.T) {
 	}
 }
 
+// 4018 BroadcastFull and 4019 RelayFull are noticed in-band before the
+// relay closes a viewer it refused for capacity (BUGS.md fix 2026-11-06:
+// a refused CONNECT's 429 never reached the browser).
+//
+//	01           version
+//	17           type = SessionClosing
+//	00 00 0f b2  code = 4018 (CloseCodeBroadcastFull), big-endian
+//	00 00 0f b3  code = 4019 (CloseCodeRelayFull), big-endian
+const (
+	goldenSessionClosingBroadcastFullHex = "011700000fb2"
+	goldenSessionClosingRelayFullHex     = "011700000fb3"
+)
+
+func TestGoldenSessionClosingCapacityRefusals(t *testing.T) {
+	if CloseCodeBroadcastFull != 4018 || CloseCodeRelayFull != 4019 {
+		t.Fatalf("CloseCodeBroadcastFull, CloseCodeRelayFull = %d, %d; want 4018, 4019", CloseCodeBroadcastFull, CloseCodeRelayFull)
+	}
+	if CloseCodeBroadcastFull != CloseCodePublishMinted+1 {
+		t.Fatal("4018 must follow R33's 4017")
+	}
+	for _, tc := range []struct {
+		code uint32
+		hex  string
+	}{
+		{CloseCodeBroadcastFull, goldenSessionClosingBroadcastFullHex},
+		{CloseCodeRelayFull, goldenSessionClosingRelayFullHex},
+	} {
+		want := mustHex(t, tc.hex)
+		msg, err := AppendSessionClosing(nil, tc.code)
+		if err != nil {
+			t.Fatalf("AppendSessionClosing(%d): %v", tc.code, err)
+		}
+		if !bytes.Equal(msg, want) {
+			t.Errorf("AppendSessionClosing(%d) produced %x, want %x", tc.code, msg, want)
+		}
+		code, err := ParseSessionClosing(want)
+		if err != nil || code != tc.code {
+			t.Fatalf("ParseSessionClosing(%s) = (%d, %v), want %d", tc.hex, code, err, tc.code)
+		}
+	}
+}
+
 func TestSessionClosingRejects(t *testing.T) {
 	if _, err := AppendSessionClosing(nil, 0); !errors.Is(err, ErrBadSessionClosing) {
 		t.Errorf("AppendSessionClosing(0) err = %v, want ErrBadSessionClosing", err)

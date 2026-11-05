@@ -1306,7 +1306,8 @@ func (s *Server) acceptKeyframeStreams(ctx context.Context, sess *webtransport.S
 
 // handleSubscribe upgrades the session and registers it with the hub.
 // ID-less requests or non-existent broadcast IDs return 404 pre-upgrade.
-// Full broadcasts return 429.
+// A viewer refused for capacity is upgraded and closed with 4018/4019
+// (subscribeFullCode); a stripe leg's capacity refusal stays a 429.
 func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	if s.rejectedDraining(w, "subscribe") {
 		return
@@ -1373,9 +1374,15 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		if errors.Is(err, hub.ErrFull) || errors.Is(err, hub.ErrTotalSubscribers) || errors.Is(err, ErrPopDownlinkFull) {
+		if code, reason, full := subscribeFullCode(err); full {
 			s.metrics.Connection("subscribe", metrics.OutcomeLimitRejected)
-			w.WriteHeader(http.StatusTooManyRequests)
+			if isStripeLeg {
+				// A leg reads no streams, and a refused leg only leaves the
+				// viewer unstriped: the cheap refusal is the right one.
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			s.refuseSubscribeUpgraded(w, r, code, reason)
 			return
 		}
 		s.metrics.Connection("subscribe", metrics.OutcomeError)
@@ -1442,11 +1449,17 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.metrics.Connection("subscribe", metrics.OutcomeLimitRejected)
-		if errors.Is(err, hub.ErrTotalSubscribers) {
-			sess.CloseWithError(webtransport.SessionErrorCode(http.StatusTooManyRequests), "total subscriber limit reached")
+		code, reason, full := subscribeFullCode(err)
+		if !full {
+			// A leg's ErrStripeRejected: no browser reads a leg's code.
+			_ = sess.CloseWithError(webtransport.SessionErrorCode(http.StatusTooManyRequests), err.Error())
 			return
 		}
-		sess.CloseWithError(webtransport.SessionErrorCode(http.StatusTooManyRequests), "subscriber limit reached")
+		if isStripeLeg {
+			_ = sess.CloseWithError(webtransport.SessionErrorCode(code), reason)
+			return
+		}
+		closeWithNotice(sess, code, reason)
 		return
 	}
 	defer sub.Close()
@@ -1547,6 +1560,44 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		}
 		maybeAnswerTimeSync(sess, dgram, tsLimiter)
 	}
+}
+
+// subscribeFullCode maps a capacity refusal to the close code a viewer is
+// told (BUGS.md fix 2026-11-06): 4018 when the broadcast is at its own
+// limit, 4019 when the relay is (its total, or an R74 PoP's downlink to
+// home). full is false for anything that is not a capacity refusal.
+func subscribeFullCode(err error) (code uint32, reason string, full bool) {
+	switch {
+	case errors.Is(err, hub.ErrFull):
+		return wire.CloseCodeBroadcastFull, "broadcast full", true
+	case errors.Is(err, hub.ErrTotalSubscribers):
+		return wire.CloseCodeRelayFull, "relay full", true
+	case errors.Is(err, ErrPopDownlinkFull):
+		return wire.CloseCodeRelayFull, "relay full: the downlink to home is full", true
+	}
+	return 0, "", false
+}
+
+// refuseSubscribeUpgraded answers a capacity refusal the only way a browser
+// can read: upgrade, notice the code in-band, close. A refused CONNECT's
+// status never reaches the WebTransport JS API, so a 429 read as "no such
+// broadcast" and the viewer said "Streamer offline" about a live stream.
+//
+// Cost: the per-IP connection rate limit and the drain gate both run before
+// this, so what an upgraded refusal adds over a 429 (an HTTP/3 200, one uni
+// stream, and this handler parked for the 250 ms settle) is bounded by the
+// same limiter that bounded the 429. The QUIC handshake was paid either
+// way. The viewer redials a refusal every 20 s, not on its 1 s ladder.
+// The caller has counted the outcome; a failed upgrade is not a second one.
+func (s *Server) refuseSubscribeUpgraded(w http.ResponseWriter, r *http.Request, code uint32, reason string) {
+	sess, err := s.wt.Upgrade(w, r)
+	if err != nil {
+		s.log.Warn("subscribe refusal upgrade failed", "code", code, "err", err)
+		w.WriteHeader(http.StatusTooManyRequests) // the old answer, never an implicit 200
+		return
+	}
+	defer s.trackSession(sess)()
+	closeWithNotice(sess, code, reason)
 }
 
 // deliveryLabel names a negotiated delivery mode for the usage labels.

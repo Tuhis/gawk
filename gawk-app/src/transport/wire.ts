@@ -215,6 +215,16 @@ export const CLOSE_CODE_VOICE_UNAVAILABLE = 4016;
 // them creates the broadcast. Terminal: never redial or resume on it. Sent
 // in-band first. Mirrored from Go wire.CloseCodePublishMinted.
 export const CLOSE_CODE_PUBLISH_MINTED = 4017;
+// The relay refused this viewer for capacity, on an upgraded /subscribe
+// session it closes at once, because a refused CONNECT's 429 is invisible
+// here and read as "Streamer offline" (BUGS.md fix 2026-11-06). 4018: the
+// broadcast is at its viewer limit. 4019: the relay is (its total, or a PoP's
+// downlink to home). NOT terminal: the viewer says the stream (or server) is
+// full and retries every 20 s outside its budget, the 4012 pattern. Sent
+// in-band first. Mirrored from Go wire.CloseCodeBroadcastFull /
+// wire.CloseCodeRelayFull.
+export const CLOSE_CODE_BROADCAST_FULL = 4018;
+export const CLOSE_CODE_RELAY_FULL = 4019;
 
 // SessionClosing: relay→client on its own server-opened uni
 // stream, a settle interval BEFORE the relay closes the session with this
@@ -223,8 +233,8 @@ export const CLOSE_CODE_PUBLISH_MINTED = 4017;
 // of the close capsule, and Chrome fails the session on it ("Connection
 // lost.", no closeCode; quic-go/webtransport-go#242). A client uses it when
 // `closed` settles without a code, and keeps a code it did read. Sent for
-// the terminal codes (4000, 4004, 4006), R74's non-terminal 4012 and R78's
-// non-terminal 4014 on
+// the terminal codes (4000, 4004, 4006, 4017), R74's non-terminal 4012,
+// R78's non-terminal 4014 and the capacity refusals 4018/4019 on
 // publish/subscribe sessions, and by the R79 bridge for 4002, 4015 and 4016
 // on voice sessions;
 // room control sessions have RoomEnding instead. Layout: version, type 0x17,

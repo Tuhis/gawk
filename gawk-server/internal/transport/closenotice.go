@@ -37,13 +37,16 @@ const closeNoticeWriteTimeout = 100 * time.Millisecond
 // would retry the mint, docs/83 D3), plus two that are not terminal but
 // change what the viewer shows while it retries: R74's 4012 PopUplinkFull
 // (docs/76 item 28) and R78's 4014 BroadcasterStopped, the ended card that
-// waits for the code to come back (docs/79 D5). 4001/4002/4005 all mean
+// waits for the code to come back (docs/79 D5), and the capacity refusals
+// 4018 BroadcastFull / 4019 RelayFull, the "this stream is full" card and a
+// 20 s retry (BUGS.md fix 2026-11-06). 4001/4002/4005 all mean
 // "reconnect", which is what a client does with no code anyway; 4013 reaches
 // only the Go PoP, which reads the code itself.
 func noticedCloseCode(code uint32) bool {
 	switch code {
 	case wire.CloseCodeBroadcastEnded, wire.CloseCodePublisherSuperseded, wire.CloseCodeTerminatedByOperator,
-		wire.CloseCodePopUplinkFull, wire.CloseCodeBroadcasterStopped, wire.CloseCodePublishMinted:
+		wire.CloseCodePopUplinkFull, wire.CloseCodeBroadcasterStopped, wire.CloseCodePublishMinted,
+		wire.CloseCodeBroadcastFull, wire.CloseCodeRelayFull:
 		return true
 	}
 	return false

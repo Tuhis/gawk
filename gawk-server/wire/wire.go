@@ -360,6 +360,30 @@ const CloseCodeBroadcasterStopped = 4014
 // Allocated 2026-11-02 (R33).
 const CloseCodePublishMinted = 4017
 
+// CloseCodeBroadcastFull (4018) refuses a viewer because the broadcast is at
+// its subscriber limit (-max-subscribers). CloseCodeRelayFull (4019) refuses
+// a viewer because the relay is at its own limit: -max-total-subscribers, or
+// on an R74 PoP relay the downlink to home that the broadcast would ride.
+//
+// Both are sent on an upgraded /subscribe session that the relay then closes
+// at once, because a refused CONNECT's HTTP status never reaches a browser:
+// a pre-upgrade 429 read exactly like "no such broadcast", and the viewer
+// said "Streamer offline" about a live stream (BUGS.md, fixed 2026-11-06).
+// Noticed in-band first (SessionClosing). Never sent to a stripe leg, which
+// keeps its pre-upgrade 429, nor on any other route. "No such broadcast"
+// stays a pre-upgrade 404, and the connection rate limit stays a
+// pre-upgrade 429, so it still bounds what a refused upgrade costs.
+//
+// NOT terminal: a slot frees when a viewer leaves, so the viewer says the
+// stream (or the server) is full and tries again every 20 s, the R74 4012
+// pattern, outside its reconnect budget. They are not R43's planned 4008
+// AtCapacity (docs/45), which is left to the publish path.
+// Allocated 2026-11-06.
+const (
+	CloseCodeBroadcastFull = 4018
+	CloseCodeRelayFull     = 4019
+)
+
 // Size constants for the wire format.
 const (
 	// MaxDatagramSize is the largest datagram we ever produce. It is chosen
