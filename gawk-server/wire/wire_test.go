@@ -1906,3 +1906,51 @@ func TestTelemetryEndpointRejects(t *testing.T) {
 		t.Fatalf("oversize URL: want ErrBadTelemetryEndpoint")
 	}
 }
+
+// --- VideoUndeliverable (0x1E) (docs/24 finding 19) --------------------------------
+
+// goldenVideoUndeliverableHex: KeyframeID=0x01020304 (every byte distinct —
+// the endianness pin), StalledMs=3000.
+//
+//	01            version
+//	1e            type = VideoUndeliverable
+//	01 02 03 04   keyframeID (uint32, big-endian)
+//	00 00 0b b8   stalledMs = 3000
+const goldenVideoUndeliverableHex = "011e0102030400000bb8"
+
+func TestVideoUndeliverableGolden(t *testing.T) {
+	want := mustHex(t, goldenVideoUndeliverableHex)
+	got := AppendVideoUndeliverable(nil, VideoUndeliverable{KeyframeID: 0x01020304, StalledMs: 3000})
+	if !bytes.Equal(got, want) {
+		t.Errorf("AppendVideoUndeliverable = %x, want %x", got, want)
+	}
+	if TypeVideoUndeliverable != 0x1E || VideoUndeliverableSize != 10 {
+		t.Fatalf("TypeVideoUndeliverable = 0x%02x, size %d; the mirrors pin 0x1E and 10",
+			TypeVideoUndeliverable, VideoUndeliverableSize)
+	}
+	msg, err := ParseVideoUndeliverable(want)
+	if err != nil {
+		t.Fatalf("ParseVideoUndeliverable: %v", err)
+	}
+	if msg.KeyframeID != 0x01020304 || msg.StalledMs != 3000 {
+		t.Errorf("parsed %+v, want KeyframeID 0x01020304, StalledMs 3000", msg)
+	}
+}
+
+func TestVideoUndeliverableRejectsMalformed(t *testing.T) {
+	good := mustHex(t, goldenVideoUndeliverableHex)
+	cases := map[string]struct {
+		dgram []byte
+		want  error
+	}{
+		"short":    {good[:9], ErrBadLength},
+		"trailing": {append(append([]byte(nil), good...), 0), ErrBadLength},
+		"version":  {append([]byte{0x02}, good[1:]...), ErrBadVersion},
+		"type":     {append([]byte{0x01, TypeViewerCount}, good[2:]...), ErrBadType},
+	}
+	for name, c := range cases {
+		if _, err := ParseVideoUndeliverable(c.dgram); !errors.Is(err, c.want) {
+			t.Errorf("%s: err = %v, want %v", name, err, c.want)
+		}
+	}
+}

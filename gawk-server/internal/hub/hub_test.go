@@ -28,6 +28,7 @@ type fakeSender struct {
 	err        error
 	kfOpenErr  error // if non-nil, OpenKeyframeStream fails
 	kfWriteErr error // if non-nil, every keyframe Write fails (uncancelled: the "slow peer" shape)
+	kfWriteN   int   // bytes a failing keyframe Write reports it moved (0: none — the wedge shape)
 	closeCode  uint32
 	closed     bool
 	kfOpens    int
@@ -120,9 +121,22 @@ func (f *fakeSender) setKfWriteErr(err error) {
 }
 
 func (f *fakeSender) getKfWriteErr() error {
+	_, err := f.getKfWriteFailure()
+	return err
+}
+
+// getKfWriteFailure is the failing Write's (n, err): kfWriteN bytes moved
+// before kfWriteErr, so a test can tell a wedge (n == 0) from a slow peer.
+func (f *fakeSender) getKfWriteFailure() (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.kfWriteErr
+	return f.kfWriteN, f.kfWriteErr
+}
+
+func (f *fakeSender) setKfWriteFailure(n int, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.kfWriteN, f.kfWriteErr = n, err
 }
 
 func (f *fakeSender) keyframeCount() uint64 {
@@ -145,8 +159,8 @@ type fakeKeyframeStream struct {
 func (k *fakeKeyframeStream) SetWriteDeadline(time.Time) error { return nil }
 
 func (k *fakeKeyframeStream) Write(p []byte) (int, error) {
-	if err := k.parent.getKfWriteErr(); err != nil {
-		return 0, err
+	if n, err := k.parent.getKfWriteFailure(); err != nil {
+		return min(n, len(p)), err
 	}
 	if k.parent.kfBlock != nil {
 		select {

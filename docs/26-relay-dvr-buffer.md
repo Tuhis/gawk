@@ -610,6 +610,15 @@ carrier is deliberately left out of it: `writeAudioRecord` retries every
 `dvrRetryFloor` (20 ms), so a 10-strike streak there would evict on a 200 ms
 transient.
 
+Since 2026-11-06 a Deep-buffer viewer is also *told* (docs/24 finding 19):
+`dvrSendKeyframe` feeds the relay's undeliverable-video tracker, so a wedge
+reaches the viewer as a `0x1E` datagram on the control sideband about 3 s in,
+before this timer evicts. That closes the case `checkMediaStall` leaves open, a
+broadcast with no audio. Note that this timer is weaker than it reads: quic-go
+lets a fresh carrier's prologue and first record "succeed" on a connection
+with no credit (`docs/gotchas.md`), so a wedged cursor can keep its progress
+stamp fresh.
+
 Deviations worth knowing before touching this:
 
 - **The drain waits on a failed write; it does not skip.** The first version
