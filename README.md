@@ -33,8 +33,9 @@ images, and a **[self-hosting guide](docs/self-hosting.md)**.
 - **Native broadcasters** for Linux, Windows and macOS with true hardware
   encode (the browser cannot hardware-encode on Linux — [why](docs/19-linux-native-broadcaster.md))
 - **System and per-application audio**, Opus, synchronized off a shared clock
-- **Resilience opt-ins** — reliable carrier streams, a relay-side DVR
-  buffer, and forward parity for lossy viewer links
+- **Resilience** — reliable carrier streams (the native broadcasters'
+  default uplink, and a viewer's choice), a relay-side DVR buffer, and
+  forward parity for lossy viewer links
 - **Optional telemetry** — per-session diagnostics with a dashboard and an
   MCP surface, off by default
 - **Self-hosting first** — Helm charts + GHCR images, single node to

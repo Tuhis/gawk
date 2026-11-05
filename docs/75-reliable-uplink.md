@@ -6,8 +6,9 @@ broadcaster on Chrome's own stack (F16–F18).
 Owner decisions OD1–OD4 and OD6 taken 2026-10-18, OD5 2026-10-19 (§3);
 chunks **RU0–RU6, RU8 and RU9 implemented** in §8's order and merged
 2026-10-21/22 (`RU` = Reliable Uplink); BBR is the engine default since
-2026-10-21 (owner decision, §5 D5), Reliable delivery is not yet. Open:
-RU7, the hardware pass, and the default flip that follows it. **Split out of R55** ([docs/57](57-wifi-uplink.md)) on
+2026-10-21 (owner decision, §5 D5) and Reliable delivery since 2026-11-05
+(owner decision, §5 D4), both ahead of RU7. Open: RU7, the hardware pass,
+now a check on defaults already shipped. **Split out of R55** ([docs/57](57-wifi-uplink.md)) on
 2026-10-17 by owner direction: how deltas cross the broadcaster → relay leg
 is not a Wi-Fi feature. docs/57 keeps the Mac's Wi-Fi status line (WU3,
 built), Improve (WU4, deferred), QoS marking (WU5) and the Wi-Fi hardware pass
@@ -509,7 +510,7 @@ finding behind it, and D4–D7 and D11 record the decisions.
 
 | # | Question | Options | Decision / recommendation |
 |---|---|---|---|
-| OD1 | What does a broadcaster get by default? | **Reliable** (the carrier, whenever the relay supports it) with *Lowest latency* (datagrams + parity) as a choice; or *Lowest latency* by default with Reliable as the choice. | **Decided 2026-10-18: Reliable by default** (D4), switched on once RU7's hardware pass holds, and BBR with it if RU4's gates pass. It costs nothing on a clean path (F1), fixes the bursts and outages that motivated R55 (F2), serves the default viewer at least as well on every lossy path measured — within half a point on random loss, far better on bursts and outages (F2, F3) — and is the only thing measured that protects *Smoother* and *Most stable* viewers from every kind of leg-A loss (F14). Beside a household's upload it is what keeps the picture (F17: 92–98 % of frames shown with BBR at 117–283 ms on screen, against today's 19–89 % at 117–395 ms). *Lowest latency* stays a first-class choice, not a warned-against legacy mode: on a long path with random loss it is what keeps live-edge viewers from waiting (F3). |
+| OD1 | What does a broadcaster get by default? | **Reliable** (the carrier, whenever the relay supports it) with *Lowest latency* (datagrams + parity) as a choice; or *Lowest latency* by default with Reliable as the choice. | **Decided 2026-10-18: Reliable by default** (D4), switched on once RU7's hardware pass holds, and BBR with it if RU4's gates pass. **Switched on 2026-11-05 by owner decision, ahead of RU7** (D4), as BBR was on 2026-10-21 (D5). It costs nothing on a clean path (F1), fixes the bursts and outages that motivated R55 (F2), serves the default viewer at least as well on every lossy path measured — within half a point on random loss, far better on bursts and outages (F2, F3) — and is the only thing measured that protects *Smoother* and *Most stable* viewers from every kind of leg-A loss (F14). Beside a household's upload it is what keeps the picture (F17: 92–98 % of frames shown with BBR at 117–283 ms on screen, against today's 19–89 % at 117–395 ms). *Lowest latency* stays a first-class choice, not a warned-against legacy mode: on a long path with random loss it is what keeps live-edge viewers from waiting (F3). |
 | OD2 | Which congestion controller does the engine run? | quinn's Cubic (today); quinn's BBR; a controller of our own. | **Decided 2026-10-18: BBR for both delivery modes, behind RU4's gates, shipped with the carrier and not ahead of it** (D5, §8). F4/F5 make it the larger reliability lever. It helps *Lowest latency* on every random-loss path too, and costs it a few points of frames under outages (F5). Beside a household's upload, the carrier with BBR is the only combination that stays watchable on every uplink measured (F17). Its measured costs are on an uplink the stream nearly fills: there it loses 7–10 % of its own packets, which costs the Balanced viewer 3 points and 33 ms on the carrier and 13 points on datagrams, and it leaves a household upload about half its share (F17). That cost is why it ships with the carrier: 3 points there against 13 on datagrams. **That cell is recorded, not gated** (G5): no controller that holds the stream's rate passes RU4's share gate there, and today's broadcast (datagrams, Cubic) is already broken on it (82 % shown alone, 19 % beside an upload). Instead RU4 requires the upload-bandwidth warning to fire on it, because a lower rung is the fix there, not a controller. It is the one decision here with a production risk (§10): RU4 ships it with the old controller one setting away, and it stays on Cubic if the gates fail. Our own controller is out of scope (§9). |
 | OD3 | Who can choose? | The broadcaster's app; the relay operator; viewers. | **Decided 2026-10-18: the broadcaster (Quality page) and the operator (`-uplink-carriers`)** (D4, §6). Viewers choose their own buffering (R32 presets) and cannot choose how leg A is carried — it is one stream for all of them. The iOS app follows the engine default with no setting until someone asks for one. |
 | OD4 | How does the relay stop dropping delivered datagrams (F7)? | Leave it; drain quic-go's queue into the relay's own; make quic-go's per-session queue longer. | **Decided 2026-10-18: make the queue longer, to 512** (D7), first (§8): measured, it is the only one of the three that works (≈ 2 100 → 0–21 chunks a minute on a relay with CPU to spare, 0 in every 128 run; the drain: 1 810), and 512 rather than longer because past capacity a longer queue only adds delay (F16). The carrier needs nothing here; *Lowest latency*, the browser broadcaster and every older app do. |
@@ -724,9 +725,9 @@ one GOP):
 ### D4 — Reliable by default; Lowest latency is a choice, not a fallback (OD1, OD3; revises docs/57 D4)
 
 - **Engaged** when the relay advertised `CapUplinkCarriers` and the
-  broadcaster's **Delivery** setting is *Reliable* — the default once RU7
-  holds, *Lowest latency* until then (below). Otherwise deltas go as
-  datagrams with parity, exactly as today.
+  broadcaster's **Delivery** setting is *Reliable* — the default since
+  2026-11-05 (below). Otherwise deltas go as datagrams with parity, exactly
+  as before.
 - **The setting** is `uplinkDelivery: "reliable" | "lowest-latency"` in
   `broadcast.json` (docs/57's `auto`/`legacy` were never built, so there is
   nothing to migrate). It is reported as `uplinkModeRequested`, shown in
@@ -750,6 +751,17 @@ one GOP):
   10 ms; beside an upload 98 / 82.5 / 91 % of frames against 89 / 19 /
   30 %, table O). If the carrier fails RU7, neither
   default flips.
+- **Owner decision, 2026-11-05: Reliable is the default now**, ahead of
+  RU7, on BBR (D5's own early flip). `DEFAULT_DELIVERY` in
+  `crates/engine/src/carrier.rs` is the one place it lives, so every
+  native broadcaster — Windows, macOS, Linux and iOS (OD3: no setting
+  there) — gets it. A `broadcast.json` with a blank `uplinkDelivery`
+  follows the new default, including one whose owner opened the Quality
+  page and left *Lowest latency* selected, because the page stores only a
+  change (`store_delivery`); a stored `"lowest-latency"` is kept. A relay
+  without `CapUplinkCarriers`, or with `-uplink-carriers=false`, still gets
+  datagrams. RU7 still runs, against the new defaults: if the carrier fails
+  it, the default goes back to *Lowest latency* and §2 records why.
 - **The operator's switch** stays: `-uplink-carriers=false` never sends the
   capability, so every broadcaster on that fleet uses datagrams.
 - **Not a warning dialog.** docs/57 put *Legacy* behind "makes viewers see
@@ -1017,7 +1029,9 @@ preset (§11 tables I, J, K):
 3. **RU7, then the defaults flip** — Reliable, and BBR in the same release
    if its own gates pass (D4, D5). If only BBR's gates (RU4) fail,
    Reliable flips on Cubic; if the carrier fails RU7, neither flips.
-   Either way §2 gets the reason.
+   Either way §2 gets the reason. *Both flipped ahead of RU7 by owner
+   decision — BBR 2026-10-21 (D5), Reliable 2026-11-05 (D4) — so RU7
+   checks the shipped defaults instead of gating them.*
 4. **Later, outside this milestone: a browser Reliable mode** (OD5) on
    RU1's relay ingest — its own design, measured on Chrome on the gaming
    PC first, with the keyframe gate's round trip on long clean paths
@@ -1378,7 +1392,7 @@ so.
 |---|---|
 | G4 on the reference Mac; G1 on the gaming PC wired; one session over a long real path (≥ 40 ms to the fleet) in both delivery modes | manual |
 | §11 records each against the RU0 baseline | review |
-| Only then do the defaults flip, in one release (D4): Reliable if the carrier passes, BBR too if RU4's gates also pass; a carrier that fails leaves both at today's defaults. The reason for anything that does not flip is recorded in §2 | review |
+| Only then do the defaults flip, in one release (D4): Reliable if the carrier passes, BBR too if RU4's gates also pass; a carrier that fails leaves both at today's defaults. The reason for anything that does not flip is recorded in §2. **Overridden by owner decisions: BBR flipped 2026-10-21 (D5), Reliable 2026-11-05 (D4).** RU7 now checks those defaults; a carrier that fails it puts *Lowest latency* back as the default | review |
 
 ## 9. Non-goals
 
