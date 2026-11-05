@@ -28,6 +28,7 @@ use crate::timesync::TimeSync;
 use gawk_wire::{
     MAX_KEYFRAME_BYTES, STREAM_FRAME_HEADER_SIZE, TYPE_DELIVERY_ACK, TYPE_RELAY_CAPABILITIES,
     TYPE_SESSION_CLOSING, TYPE_STREAM_FRAME, TYPE_TELEMETRY_ENDPOINT, TYPE_TELEMETRY_HELLO,
+    TYPE_VIDEO_UNDELIVERABLE,
 };
 
 /// The SPA's `KEYFRAME_STALL_MS`: keyframes stopped while deltas flow.
@@ -42,6 +43,9 @@ pub const MEDIA_STALL_MS: f64 = 6000.0;
 /// The SPA's `MAPPINGS_PROVING_LIVE`: ClockMappings since the last media
 /// that prove the broadcaster is still capturing.
 pub const MAPPINGS_PROVING_LIVE: u32 = 2;
+/// The SPA's `UNDELIVERABLE_CONFIRM_MS`: a second VideoUndeliverable notice
+/// at least this long after the first is a verdict; a burst is not.
+pub const UNDELIVERABLE_CONFIRM_MS: f64 = 500.0;
 /// D15's drop-to-live: the newest frame received may run at most this many
 /// offsets ahead of what's on screen before the renderers are flushed and
 /// playback jumps to the next keyframe.
@@ -99,6 +103,9 @@ pub enum Stall {
     /// No video or audio for [`MEDIA_STALL_MS`] while ClockMappings prove
     /// the broadcaster is capturing (armed only once audio was seen).
     Media,
+    /// The relay said, twice, that it holds video it cannot deliver
+    /// (VideoUndeliverable, 0x1E, docs/24 finding 19).
+    Undeliverable,
 }
 
 /// Diagnostics for the stats sheet (G3, G8).
@@ -139,6 +146,13 @@ pub struct Pipeline {
     last_media_ms: Option<f64>,
     mappings_since_media: u32,
     audio_seen: bool,
+    /// The most recently received keyframe (not the serial maximum: a
+    /// broadcaster restart renumbers from 0, and the relay's notices follow).
+    last_keyframe_id: Option<u32>,
+    /// The first unconfirmed VideoUndeliverable notice: when, and which
+    /// keyframe it named.
+    undeliverable_armed: Option<(f64, u32)>,
+    undeliverable_confirmed: bool,
     viewer_count: Option<u32>,
     drops_to_live: u64,
     restarts: u64,
@@ -168,6 +182,9 @@ impl Pipeline {
             last_media_ms: None,
             mappings_since_media: 0,
             audio_seen: false,
+            last_keyframe_id: None,
+            undeliverable_armed: None,
+            undeliverable_confirmed: false,
             viewer_count: None,
             drops_to_live: 0,
             restarts: 0,
@@ -223,12 +240,52 @@ impl Pipeline {
         if dgram.len() >= 2 && dgram[1] == TYPE_DELIVERY_ACK {
             return;
         }
+        if dgram.len() >= 2 && dgram[1] == TYPE_VIDEO_UNDELIVERABLE {
+            self.on_undeliverable(dgram, now_ms);
+            return;
+        }
         let mut demuxed = std::mem::take(&mut self.demuxed);
         self.reassembler.push(dgram, &mut demuxed);
         for d in demuxed.drain(..) {
             self.on_demuxed(d, now_ms, out);
         }
         self.demuxed = demuxed;
+    }
+
+    /// The relay's "video I cannot deliver" (0x1E, docs/24 finding 19), on
+    /// the SPA's rule: a notice naming a keyframe at or before the last one
+    /// received is stale; the first live one arms; a second at least
+    /// [`UNDELIVERABLE_CONFIRM_MS`] later is the verdict [`Self::stall`]
+    /// reports; the named keyframe arriving in between stands it down.
+    fn on_undeliverable(&mut self, dgram: &[u8], now_ms: f64) {
+        let Ok(notice) = gawk_wire::parse_video_undeliverable(dgram) else {
+            return;
+        };
+        if self.holds_keyframe(notice.keyframe_id) {
+            return;
+        }
+        match self.undeliverable_armed {
+            None => self.undeliverable_armed = Some((now_ms, notice.keyframe_id)),
+            Some((at, _)) if now_ms - at >= UNDELIVERABLE_CONFIRM_MS => {
+                self.undeliverable_confirmed = true;
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// Whether the last keyframe received is at or after `id` (serially).
+    fn holds_keyframe(&self, id: u32) -> bool {
+        self.last_keyframe_id
+            .is_some_and(|last| !gawk_wire::frame_id_ahead(id, last))
+    }
+
+    fn note_keyframe_id(&mut self, id: u32) {
+        self.last_keyframe_id = Some(id);
+        if let Some((_, armed)) = self.undeliverable_armed
+            && self.holds_keyframe(armed)
+        {
+            self.undeliverable_armed = None;
+        }
     }
 
     fn on_demuxed(&mut self, d: Demuxed, now_ms: f64, out: &mut Vec<ViewerEvent>) {
@@ -240,6 +297,7 @@ impl Pipeline {
                 let pacing = self.pacing(now_ms);
                 let mut reordered = std::mem::take(&mut self.reordered);
                 if f.keyframe {
+                    self.note_keyframe_id(f.frame_id);
                     let kf = StreamKeyframe {
                         frame_id: f.frame_id,
                         timestamp_us: f.timestamp_us,
@@ -354,6 +412,7 @@ impl Pipeline {
         // Keyframes bypass the reassembler, so move its watermark here: what
         // makes a broadcaster restart (IDs back to 0) recover.
         self.reassembler.note_stream_keyframe(h.frame_id);
+        self.note_keyframe_id(h.frame_id);
         self.note_frame(h.timestamp_us, true, now_ms);
         let pacing = self.pacing(now_ms);
         let mut reordered = std::mem::take(&mut self.reordered);
@@ -527,6 +586,9 @@ impl Pipeline {
                 .is_some_and(|t| now_ms - t >= MEDIA_STALL_MS)
         {
             return Some(Stall::Media);
+        }
+        if self.undeliverable_confirmed {
+            return Some(Stall::Undeliverable);
         }
         None
     }
