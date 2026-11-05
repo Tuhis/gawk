@@ -65,6 +65,25 @@ more than one statement per query. External file access has to stay on for
 it to read the partitions at all, so that allowlist — not a read-only
 connection — is what stops a `COPY … TO` over the data directory.
 
+### Ask in English
+
+With `-ask-provider` set (off by default), an **Ask** box sits above the
+editor. Write a question; a model drafts DuckDB SQL, checks that it binds,
+and puts it in the editor with a *Read as:* line saying how it understood
+the question. **Nothing runs until you press run**, under the same
+allowlist and budget as SQL you wrote yourself. Read the reading before
+trusting the numbers: a draft can run and still answer a different
+question.
+
+The model never sees the data. It is given the schema, the field
+catalogue and a curated glossary (`internal/schema/glossary.md`), and its
+one tool checks a draft against **empty** copies of the views, so the
+only thing that can come back to it is "OK" or DuckDB's error text. When
+the provider is outside the cluster (Anthropic), the line under the box
+names the host the question goes to. Each question is logged with the
+operator, the SQL and the token count. Design and measurements:
+[docs/84](../../docs/84-telemetry-ask-in-english.md).
+
 ## Notes
 
 An operator note pinned to a session, a broadcast, or a moment on a

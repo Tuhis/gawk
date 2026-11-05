@@ -179,6 +179,17 @@ carries a commit touching `gawk-whip-gateway/` in the same PR, with a
 releasing PR title; the gateway's CI already runs on any `gawk-server/`
 change.
 
+**A stored telemetry field is explained in the glossary.** The telemetry
+console's Ask box (R82, docs/84 D6) teaches its model what the columns mean
+from `gawk-telemetry/internal/schema/glossary.md`, beside the field
+catalogue. A PR that adds or changes a column a question would need —
+a new counter, a new `browser` or `os` value, a renamed field — says what it
+means there. `glossary_test.go` fails when a backticked name in the glossary
+no longer resolves, or when a value it names is not one the code defines
+(the web app's `describeClient`, the native distributions' identities); the
+telemetry CI job runs on changes to those files too. The glossary never
+states a value read from the store.
+
 **`common-ts/` holds shared TypeScript, and its consumers are locked to it.**
 `common-ts/<pkg>` is a repo-internal npm package (no build step, never
 published) that an operator SPA depends on as `file:../../common-ts/<pkg>`;

@@ -4,7 +4,8 @@
 harness, question set and graded results in
 [`assets/84/`](assets/84/results/grades.md)). Owner decision 2026-11-01:
 **data mode B** (OD1, §2); OD2–OD5 decided 2026-11-02. NQ0b (a bug fix the
-spike found) done 2026-11-02; not started: NQ1–NQ5.
+spike found) done 2026-11-02. NQ1–NQ4 implemented 2026-11-05 (§13); open:
+NQ5, the owner pass.
 
 **Relationship to earlier work**: R31 ([docs/36](36-telemetry-ui-history.md)
 UD18) built the `#/sql` console over the DuckDB engine, with a read-only
@@ -65,7 +66,8 @@ the same allowlist and budget.
 | D1 | **Server-side only.** A new `POST /v1/query/ask` on the read listener, behind the read listener's auth (basic or OIDC, docs/55). The SPA posts the question there and never talks to a provider. | The UI's no-external-fetch test (docs/36 UD7) stays true. The key stays in the pod. A provider is reachable only from where the read API already is. |
 | D2 | **Mode B, enforced in one place, by construction.** The provider sees the system prompt (D5) and the conversation: the question, the model's drafts and `check_sql`'s answers. No other function feeds the conversation. `check_sql` runs `EXPLAIN <draft>` in a **shadow catalogue**, never against the store: an in-memory DuckDB holding an **empty** table per view, created from the learned column list and types (`learn.go`), with `enable_external_access = false` and `lock_configuration = true`. It returns `OK` or DuckDB's error text, truncated to 1,500 bytes. The draft must also pass `Check`. *(Revised 2026-11-02 after review on #677: the first version ran `EXPLAIN` against the real views.)* | OD1. Binding is not always data-free on the real views. A dynamic `PIVOT … ON col` with no `IN` list runs `SELECT DISTINCT col` to find its output columns, so a binder error's "candidate bindings" listed `"Linux"` on the deployment, and `OK` versus `ERROR` on `SELECT "Windows" FROM (PIVOT …)` answered whether a value exists. Table functions such as `read_json_auto` sniff files at bind time and can quote them in errors. The shadow catalogue has no row and no file, so there is nothing to leak whatever the syntax; refusing `PIVOT` by keyword would leave the next construct open. §12.6: on DuckDB 1.4.1, the deployment's version, it listed only column names for the same `PIVOT`, refused every file function, kept its configuration locked, and bound all 169 SQL statements the spike's models wrote. |
 | D3 | **It drafts, it does not run.** The answer is `{interpretation, sql, checks, model}`. The UI puts the SQL in the editor and the interpretation above it. Running is the operator's Run button, under UD18's allowlist and budget, unchanged. | A wrong reading becomes visible before anything runs, and the allowlist stays the only thing between a statement and the engine. In the spike, the dangerous failure was SQL that ran and returned a confident, impossible number (§12.3). Only a human reading the result catches that. |
-| D4 | **Two provider kinds behind one interface.** `anthropic`: the Messages API through `anthropic-sdk-go`, with tool use for `check_sql`, prompt caching on the system prompt, and `fallbacks: "default"` for refusals. `openai`: hand-written HTTP to `POST {base}/v1/chat/completions` with function tools, which Ollama, llama.cpp's server, vLLM and LM Studio all serve. | One OpenAI-compatible client covers every local server worth naming, so no provider-specific code is needed for each. The Anthropic SDK is MIT-licensed; the licence gate (`ci.yml`) confirms it in NQ1. The hand-written client keeps the module free of a second SDK. |
+| D4 | **Two provider kinds behind one interface.** `anthropic`: the Messages API through `anthropic-sdk-go`, with tool use for `check_sql`, prompt caching on the system prompt, and `fallbacks: "default"` for refusals (not sent for Haiku, which has no
+server-side fallback). `openai`: hand-written HTTP to `POST {base}/v1/chat/completions` with function tools, which Ollama, llama.cpp's server, vLLM and LM Studio all serve. | One OpenAI-compatible client covers every local server worth naming, so no provider-specific code is needed for each. The Anthropic SDK (`anthropic-sdk-go/v2`) is Apache-2.0; the licence gate (`ci.yml`) passed with it in NQ1 (§13). The hand-written client keeps the module free of a second SDK. |
 | D5 | **The prompt is generated from what the server already serves, plus a glossary.** The system prompt holds the rules (one read-only statement, check before answering, state the interpretation, time or category column first), today's date, each view's `ViewDoc`, the **learned** column list and types (`learn.go`), the field catalogue (`internal/schema`, skipping legacy fields), and the glossary (D6). It is byte-stable between questions, so it caches. | No second copy of the schema (docs/36 D15's lesson). The learned list is what the views actually bind to today. Cached, the 17k-token prefix costs a tenth of its price after the first question in five minutes (§12.2). |
 | D5a | **Two prompt sizes.** `full` is D5 as written (about 17.5k tokens). `slim` describes only `rollups`' columns, names the other views without their columns, and keeps the glossary (about 3.2k). `-ask-context` picks one; the default is `full` for `anthropic` and `slim` for `openai`. | §12.5: slim turned one correct answer in twenty into a partial one for both Sonnet and Haiku, and is a fifth as long to read. On a CPU, reading the prompt is the whole wait (§12.4). |
 | D6 | **A curated glossary, checked against the schema.** `internal/schema/glossary.md`, embedded. It explains how fields fit together: role values, what `browser` holds (including the native distributions), `os` values, epoch-ms times, partition pruning, which counter means loss and which denominator to use, where viewer counts live, the list-typed `verdict.findings`. **It states only enumerations the code defines, never values sampled from the store.** A test fails when a backticked identifier in it no longer resolves. | §12.2: without it, Sonnet got 14 of 20 right, with or without the catalogue. All six misses came from not knowing domain facts, not from writing bad SQL. With it, 19 of 20. Sampling `SELECT DISTINCT os` into the prompt would teach the same facts, but it is data leaving the homelab, which OD1 rules out. |
@@ -137,6 +139,31 @@ first.
 - **The question leaves the homelab** in Anthropic mode. It is the
   operator's own text; the console says so under the box when the provider
   is not in-cluster.
+- **Column names are not all the code's.** Public ingest keeps an unknown
+  stats key verbatim (docs/36 D15), and the learner records it as a field of
+  `sessions.stats`. Fed to the model, a client-written "column name" could
+  be an instruction, in every question's prompt and in binder errors. The
+  shadow catalogue, and so the prompt, keeps only identifier-shaped names;
+  under `sessions.stats` only the fields the schema tables define, with
+  the object ones (`audioBuffer`, `featureGates`, … whose members a client
+  chooses), and any catalogued field that arrived nested (ingest types a
+  batch by its own role, so a viewer can send a broadcaster-only number as
+  an object), typed JSON, so no member name is carried and the prompt says to
+  read one with `->>` (which binds in the check and answers on the real
+  STRUCT); at most 128 fields in any other struct, four levels, and 16 KiB
+  of type per column (PR #706 review, rounds 1 and 2). A draft that reads
+  an uncatalogued stats key fails its check, and the console still runs it;
+  a member of an object field binds in the check whatever its name, so the
+  check cannot say whether that member exists.
+- **A draft is SQL the operator runs with the console's own reach.** The
+  console's engine keeps external file access on (it reads the NDJSON), so
+  any statement run from it — written by hand or drafted — can read files
+  the pod can: the mounted Ask key, `/proc/1/environ` with the telemetry
+  key. That is not new with R82 (a read-listener operator could always
+  type it), but a drafted statement is one the operator did not write.
+  The guards are the operator reading the draft before Run, and the
+  read listener's auth. Narrowing the console's file access to the data
+  directory (DuckDB's `allowed_directories`) is the fix and its own change.
 - **Interpretations differ.** "Last 5 days" was read as the trailing 120
   hours by the glossary runs and as from midnight five days ago by others
   (67 versus 74 sessions). Both were stated; the line above the editor is
@@ -166,10 +193,10 @@ Every letter is claimed; this milestone's prefix is **NQ**.
 |---|---|---|
 | **NQ0** ✅ | **Measurement spike**: `docs/assets/84/harness/` (20 questions with reference SQL and grading notes, prompt builder, mode B check loop, both provider kinds), run against the reference deployment. | §12 filled; `results/grades.md` from the runs; the harness re-runs with `q.sh` pointed at any read listener. |
 | **NQ0b** ✅ | **Prerequisite fix**: `BUGS.md`'s NaN/±Inf worker failure, test first. Not part of this feature; the console has the bug today. | `SELECT 1/0`, `'nan'::DOUBLE` and `'inf'::DOUBLE` return a result through the isolated engine and through `/v1/query`; the `BUGS.md` entry is removed. Done 2026-11-02: non-finite floats (also inside LISTs and STRUCTs) answer `"NaN"`, `"Infinity"` or `"-Infinity"`, distinct from NULL; a `MAP` result, which failed the same way, answers an object keyed by each key's text; a result the worker still cannot encode says why. |
-| **NQ1** | Providers: D4. | Tests against recorded request/response fixtures of both APIs: tool call round trip, the 4-check cap, a refusal, a 429 retry, a timeout, a malformed tool argument. The licence gate passes with `anthropic-sdk-go`. |
-| **NQ2** | The ask loop, the prompt and the glossary: D2, D3, D5–D7, D9. `sqlengine.Explain`. | Tests first: §4.2's mode B test; the glossary identifier test; the prompt is byte-stable between two questions; a binder error reaches the model and a fixed draft is returned; the per-operator rate limit; `Explain` refuses what `Check` refuses, never returns rows, and runs with file access off and its configuration locked; the shadow catalogue's columns and types equal the learned schema's, and it is rebuilt when that changes. |
-| **NQ3** | UI: §4.3. | Component tests: the box hidden without `ask.enabled`, the "no engine" and "no model" messages distinct, the draft lands in the editor with its interpretation, nothing runs on its own, an error from the model renders as prose. |
-| **NQ4** | Flags, env and chart: D8. | `main_test` covers every flag and env var; the chart renders byte-identically with `ask` off and renders the Secret ref when on; `GET /v1/query` reports the provider. |
+| **NQ1** ✅ | Providers: D4. | Tests against recorded request/response fixtures of both APIs: tool call round trip, the 4-check cap, a refusal, a 429 retry, a timeout, a malformed tool argument. The licence gate passes with `anthropic-sdk-go`. |
+| **NQ2** ✅ | The ask loop, the prompt and the glossary: D2, D3, D5–D7, D9. `sqlengine.Explain`. | Tests first: §4.2's mode B test; the glossary identifier test; the prompt is byte-stable between two questions; a binder error reaches the model and a fixed draft is returned; the per-operator rate limit; `Explain` refuses what `Check` refuses, never returns rows, and runs with file access off and its configuration locked; the shadow catalogue's columns and types equal the learned schema's, and it is rebuilt when that changes. |
+| **NQ3** ✅ | UI: §4.3. | Component tests: the box hidden without `ask.enabled`, the "no engine" and "no model" messages distinct, the draft lands in the editor with its interpretation, nothing runs on its own, an error from the model renders as prose. |
+| **NQ4** ✅ | Flags, env and chart: D8. | `main_test` covers every flag and env var; the chart renders byte-identically with `ask` off and renders the Secret ref when on; `GET /v1/query` reports the provider. |
 | **NQ5** | **Owner pass** on the reference deployment: the 20 questions through the console with the chosen Anthropic model, then a handful against an Ollama on hardware with a GPU. | The chosen model gets at least 18 of 20 right (graded as in §12.1); the owner's own new questions recorded in §12 with their outcomes. |
 
 ---
@@ -336,3 +363,74 @@ spike's schema snapshot and re-checks everything:
 | `read_csv`, `read_json_auto`, `glob` on a path | allowed by `Check`; would read at bind (not probed on the deployment) | `Permission Error`, file access disabled |
 | `SET enable_external_access = true` | (refused by `Check`) | refused: configuration locked |
 | the spike's 169 final statements | 168 ran; one (the local model's q03, §12.4) bound but failed at run time on the NaN result (fixed in NQ0b) | all bind |
+
+---
+
+## 13. Implementation (NQ1–NQ4, 2026-11-05)
+
+Where the build differs from, or adds to, §3 and §4, and which test holds
+each acceptance row of §9.
+
+| Chunk | Where | Verified by |
+|---|---|---|
+| NQ1 | `internal/ask/anthropic.go`, `openai.go` | `anthropic_test.go`, `openai_test.go`: a tool call round trip against recorded shapes of both APIs (the thinking block replayed with its signature, every tool result in one user turn, the system prompt cached, `fallbacks: "default"` with its beta header, the tool `strict`), the 4-check cap, a refusal with its category, a 429 retried, a 400 not retried, a timeout, a malformed tool argument, arguments sent as an object (Ollama). `gen-notices.py --check` passes with the SDK. |
+| NQ2 | `internal/ask/ask.go`, `prompt.go`; `internal/sqlengine/shadow*.go`; `internal/schema/glossary.*` | `modeb_duckdb_test.go` is §4.2's test, against the real engine: three questions, six drafts that would leak if checked against the store, no marker in any recorded request beyond what the model wrote itself, and the `PIVOT` verdict the same for a stored value as for an absent one (checked to fail with a checker that runs the drafts). `shadow_duckdb_test.go`: the shadow tables' columns and types equal each real view's `DESCRIBE`; a column the store gains binds at the next check; the configuration is locked; file functions are refused; a check does not queue behind a console query; `Explain` refuses what `Check` refuses without starting a worker. `ask_test.go`: a binder error reaches the model and its fix is returned; the prompt is byte-stable between questions and follows the learned schema; the per-operator hourly limit and one question in flight; the D9 log line. `glossary_test.go`: every backticked name resolves against the stored shape (`storedshape`'s golden) or the catalogue, every value it names is one the code defines, and a doctored glossary fails. |
+| NQ3 | `ui/src/views/SqlView.tsx`, `api/client.ts` | `SqlView.ask.test.tsx`: hidden with no provider and on an older server; "no model" and "no engine" say different things; the draft lands in the editor with its *Read as:* line and the model's name; nothing runs; a draft that does not bind says so; a model error renders as prose. |
+| NQ4 | `cmd/gawk-telemetry/main.go`, the chart's `ask:` values | `ask_test.go` (main): every flag and env var, flag over env, the defaults, each unusable configuration refused at start, no box without an engine. CI's *telemetry chart Ask box* step: nothing renders with the box off (also checked byte-identical against the previous chart locally), the key mounts from its Secret, a bad provider fails the render. `readapi/ask_test.go`: `GET /v1/query` reports `ask: {enabled, provider, model, …}`. |
+
+Decisions taken while building, none of which changes an owner decision:
+
+- **The check runs in a worker of its own.** D2 left open where the shadow
+  catalogue lives. The service never opens DuckDB itself (`docs/gotchas.md`,
+  the allocator), so each check re-executes the binary like a console
+  query, but through its own one-at-a-time slot (D7: it never waits behind
+  a console query), with no data directory, and with an **empty
+  environment**: nothing in the service's environment is within reach of a
+  function that reads one. The parent reads the learned schema and hands
+  the worker only the `CREATE TABLE`s and the statement. Building the
+  catalogue per check also makes "rebuilt when the learned schema
+  changes" automatic.
+- **Partition keys come after the file columns, in name order.** The real
+  `sessions` view ends `broadcast VARCHAR, date DATE`; the first shadow
+  build had them the other way round, and the `DESCRIBE` comparison caught
+  it.
+- **The final SQL's verdict goes to the operator, not the model.** The
+  answer carries `check`: `OK`, or the error Run would meet. When the model's
+  last check was of the final statement it is reused; otherwise the final
+  statement is checked once more and the verdict is never sent back. The
+  console shows a draft that does not bind under its *Read as:* line.
+- **A draft the console would refuse is not offered.** The final SQL must
+  pass `Check`; a `COPY` or two statements come back as "no usable draft".
+- **`GET /v1/query`'s `ask` is an object, not a boolean.** NQ4's table says
+  `ask: false`; D8 says `{enabled, provider, model}`. The object won, with
+  `provider: "none"` when off, `reason` when a configured box cannot work,
+  and `external`/`endpoint` for the line under the box. A host is in-cluster
+  when it is loopback, private, single-label or ends in `.svc` or
+  `.cluster.local`; a bare `name.namespace` reads as outside, the safe
+  default, so spell an in-cluster Ollama with `.svc`.
+- **Operators are keyed `oidc:<sub>` or `basic:<user>`,** each as its gate
+  verified it, or `anonymous` on an open listener, where every operator
+  shares one budget. A Basic header no gate checked is not an identity:
+  trusting it let any caller name a fresh budget (PR #706 review).
+- **The key is a file from a Secret** (`ask.apiKeyRef`, mounted read-only),
+  never an env var, because the SQL workers start with the service's
+  environment. §5 has the limit of that.
+- **The SDK is v2** (`github.com/anthropics/anthropic-sdk-go/v2`, Apache-2.0,
+  not MIT as D4 said) with its environment lookup off
+  (`WithoutEnvironmentDefaults`), so `ANTHROPIC_*` variables on a pod change
+  nothing. It sends the key as a bearer token and API version `2026-10-21`.
+  It brings 18 transitive modules into the image (`THIRD-PARTY-NOTICES.md`);
+  the cgo-free build links them too, since `internal/ask` has no build tag.
+- **The glossary gained the line §12.3 called the obvious next fix**: the
+  fleet's viewers at a moment are one `viewersGlobal` per broadcast, summed.
+  It has not been re-measured; NQ5's run of the question set covers it.
+- **The glossary test reads the code that defines its values** —
+  `gawk-app/src/lib/telemetry.ts` (`describeClient`), the desktop engine's
+  distributions and the iOS identity — and the telemetry CI job now runs on
+  changes to those three files. The removed Go broadcaster's
+  `gawk-broadcast` is allowed by name: no code writes it, and old rollups
+  keep it.
+- **Retry tests count attempts at the client.** Go's transport resent a
+  POST on a reused connection one run in a few under `-race`, so a fake
+  server's request count is not the client's (`docs/gotchas.md`).
+

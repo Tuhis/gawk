@@ -231,7 +231,10 @@ jobs:
           # UI stage copies common-ts/ — is rebuilt, because the docker matrix
           # below is keyed on this decision and on `admin`.
           # gawk-server: the packages it imports (srvdeps, above; docs/33 D12).
-          telemetry=$(decide    telemetry    "^(gawk-telemetry|common-ts)/|$(srvdeps gawk-telemetry)")
+          # The glossary test (R82, docs/84 D6) reads the client values it
+          # names from the web app's describeClient and the native
+          # distributions' identities, so a change to either runs it.
+          telemetry=$(decide    telemetry    "^(gawk-telemetry|common-ts)/|^gawk-app/src/lib/telemetry\.ts$|^gawk-broadcast-desktop/crates/engine/src/lib\.rs$|^gawk-ios/rust/crates/core/src/identity\.rs$|$(srvdeps gawk-telemetry)")
           # gawk-app/src/transport/wire.test.ts is the TS wire mirror. Its golden
           # vectors are restated, never imported, so a relay wire change must run
           # it — the same blind spot broadcast-desktop.yml closed for the Rust
@@ -1877,6 +1880,30 @@ jobs:
           grep -A1 'GAWK_TELEMETRY_OIDC_ROLE$' <<<"$out" | grep -q '"telemetry-reader"'
           if helm template "$chart" "${base[@]}" | grep -q 'GAWK_TELEMETRY_OIDC_'; then
             echo "::error::the default render carries OIDC envs"; exit 1; fi
+      # R82 (docs/84 D8): the Ask box renders nothing while it is off, its
+      # key comes from a Secret mounted as a file, and a provider it cannot
+      # use is refused at render time.
+      - name: telemetry chart Ask box
+        run: |
+          set -euo pipefail
+          chart=gawk-telemetry/deploy/charts/gawk-telemetry
+          base=(--set telemetryKey=00)
+          if helm template "$chart" "${base[@]}" | grep -qiE 'ASK_|ask-key'; then
+            echo "::error::the default render carries the Ask box"; exit 1; fi
+          [ "$(helm template "$chart" "${base[@]}")" = "$(helm template "$chart" "${base[@]}" --set ask.provider=none --set ask.model=x --set ask.apiKeyRef.name=s --set ask.apiKeyRef.key=k)" ] || {
+            echo "::error::ask.* values changed the render with ask.provider=none"; exit 1; }
+          out=$(helm template "$chart" "${base[@]}" --set ask.provider=anthropic \
+            --set ask.apiKeyRef.name=gawk-telemetry-ask --set ask.apiKeyRef.key=key --show-only templates/deployment.yaml)
+          for env in PROVIDER API_KEY_FILE TIMEOUT MAX_CHECKS RATE; do
+            grep -q "GAWK_TELEMETRY_ASK_$env\$" <<<"$out" || { echo "::error::GAWK_TELEMETRY_ASK_$env did not render"; exit 1; }
+          done
+          grep -q 'secretName: "gawk-telemetry-ask"' <<<"$out" && grep -q 'value: /var/run/secrets/gawk-telemetry-ask/key' <<<"$out" || {
+            echo "::error::the Ask key is not mounted from its Secret"; echo "$out"; exit 1; }
+          for bad in "--set ask.provider=anthropic" "--set ask.provider=openai --set ask.model=m" "--set ask.provider=gpt"; do
+            # shellcheck disable=SC2086
+            if helm template "$chart" "${base[@]}" $bad >/dev/null 2>&1; then
+              echo "::error::rendered with $bad"; exit 1; fi
+          done
       # R28 (docs/33 TM3): with telemetry off, the relay chart must render
       # nothing telemetry-related at all — an install that never enables it
       # carries no trace of R28.

@@ -73,6 +73,12 @@ type API struct {
 	sql SQLEngine
 	// sqlOpenErr is why a configured engine is absent, when it failed to open.
 	sqlOpenErr error
+	// ask is R82's question box (ask.go). Nil when no provider is configured,
+	// which is the default.
+	ask Asker
+	// askProvider is the configured provider kind, so a box that was asked
+	// for and cannot work says why instead of vanishing.
+	askProvider string
 }
 
 // Options configure the API.
@@ -104,6 +110,10 @@ type Options struct {
 	// SQLOpenErr is why SQL is nil when the engine was configured and failed
 	// to open. A failure, not a build property, and the console says which.
 	SQLOpenErr error
+	// Ask is R82's question box. Optional and off by default.
+	Ask Asker
+	// AskProvider is the configured -ask-provider ("none" or empty when off).
+	AskProvider string
 }
 
 // New builds the read API.
@@ -126,6 +136,8 @@ func New(opts Options) (*API, error) {
 		annotations:    opts.Annotations,
 		sql:            opts.SQL,
 		sqlOpenErr:     opts.SQLOpenErr,
+		ask:            opts.Ask,
+		askProvider:    opts.AskProvider,
 	}, nil
 }
 
@@ -1498,6 +1510,8 @@ func (a *API) mountR31(mux *http.ServeMux) {
 		writeJSON(w, a.QueryStatus(), nil)
 	})
 	mux.HandleFunc("POST /v1/query", a.handleQuery)
+	// R82: a draft from a question, never a result (docs/84 D3).
+	mux.HandleFunc("POST /v1/query/ask", a.handleAsk)
 	// What this deployment can do, so the UI stops guessing.
 	mux.HandleFunc("GET /v1/meta", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, a.Meta(), nil)

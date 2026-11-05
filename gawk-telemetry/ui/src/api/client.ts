@@ -12,6 +12,7 @@ import type {
   HistoryPage,
   Me,
   Meta,
+  AskAnswer,
   QueryResult,
   QueryStatus,
   Report,
@@ -343,6 +344,21 @@ export async function runQuery(sql: string, signal?: AbortSignal): Promise<Query
   });
   if (!res.ok) throw new ApiError(await errorText(res), res.status);
   return (await res.json()) as QueryResult;
+}
+
+/**
+ * R82: a question in, a DRAFT out (docs/84 D3). It never runs anything; the
+ * operator runs the draft with runQuery, as if they had written it.
+ */
+export async function askQuery(question: string, signal?: AbortSignal): Promise<AskAnswer> {
+  const res = await apiFetch('v1/query/ask', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question }),
+    signal,
+  });
+  if (!res.ok) throw new ApiError(await errorText(res), res.status);
+  return (await res.json()) as AskAnswer;
 }
 
 /**

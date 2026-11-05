@@ -148,6 +148,41 @@ config:
   logLevel: info
   logFormat: json
 
+# R82 (docs/84): the "Ask" box above the SQL console. An operator writes a
+# question in English; a model drafts DuckDB SQL from the schema, checks it
+# against an EMPTY copy of the views, and puts it in the editor with one line
+# on how it read the question. The operator presses Run. The model never sees
+# a row, a count or a value: only the question, the schema, a curated
+# glossary and the checker's OK or error text (docs/84 OD1, D2).
+#
+# Off by default. It needs config.querySql and the image's query engine.
+ask:
+  # none (off), anthropic, or openai — any OpenAI-compatible server: Ollama,
+  # llama.cpp, vLLM, LM Studio. The chart ships no model server (OD5).
+  provider: none
+  # Default claude-sonnet-5-5 for anthropic (docs/84 OD2). Required for
+  # openai (e.g. qwen2.5-coder:32b).
+  model: ""
+  # Required for openai (e.g. http://ollama.ollama.svc:11434). Optional for
+  # anthropic, whose default is https://api.anthropic.com. A host outside the
+  # cluster is named under the box: the question leaves it.
+  baseUrl: ""
+  # The provider's API key, from an existing Secret, mounted as a file:
+  #   kubectl -n gawk create secret generic gawk-telemetry-ask \
+  #     --from-literal=key=sk-ant-...
+  # apiKeyRef: {name: gawk-telemetry-ask, key: key}
+  # Required for anthropic; optional for openai.
+  apiKeyRef: {}
+  # full (every view's columns and the field catalogue, ~17.5k tokens) or
+  # slim (rollups only, ~3.2k). Empty picks full for anthropic and slim for
+  # openai: on a CPU, reading the prompt is the whole wait (docs/84 §12.4).
+  context: ""
+  # Bounds (docs/84 D7): one question's whole budget, the checks it may
+  # make, and questions per operator per hour.
+  timeout: 120s
+  maxChecks: 4
+  rate: 30
+
 # The PUBLIC listener. Only the ingest path is routed here, from a same-origin
 # path on the frontend's Ingress (set the app chart's telemetry.enabled) —
 # never a LoadBalancer or an Ingress of its own.
