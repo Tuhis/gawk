@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/fixture"
+	"github.com/Tuhis/gawk/gawk-server/publisher"
 )
 
 // The fixture is a real H.264 MPEG-TS stream, not hand-rolled bytes:
@@ -57,6 +58,29 @@ func TestOneAUPerFrame(t *testing.T) {
 		if !au.HasPTS {
 			t.Errorf("AU %d carries no PTS", i)
 		}
+	}
+}
+
+// The demuxer must keep each IDR in its own access unit, so keyframes come
+// out exactly on the fixture's GOP-15 grid. A framing slip — an AU boundary
+// off by a PES, or two frames merged — shows up as a keyframe off the grid.
+func TestKeyframesOnGOPGrid(t *testing.T) {
+	aus := collect(t, loadFixture(t), 64*1024)
+	if len(aus) != fixtureFrames {
+		t.Fatalf("demuxed %d access units, want %d", len(aus), fixtureFrames)
+	}
+	keyframes := 0
+	for i, au := range aus {
+		want := i%fixtureGOPFrames == 0
+		if got := publisher.HasIDR(au.Data); got != want {
+			t.Errorf("AU %d IDR = %v, want %v (GOP %d)", i, got, want, fixtureGOPFrames)
+		}
+		if want {
+			keyframes++
+		}
+	}
+	if keyframes != fixtureFrames/fixtureGOPFrames {
+		t.Errorf("%d keyframes on the grid, want %d", keyframes, fixtureFrames/fixtureGOPFrames)
 	}
 }
 
