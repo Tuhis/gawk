@@ -992,6 +992,19 @@ peer baseline or session join can read one.
   running with striping disabled, a PoP's, or a primary never scraped) is
   counted in `stripeLegs` and attached nowhere.
 
+**Coverage says why (TU4).** Every `coverage` object (history pages, the
+broadcast timeline, the fleet timeline, trends, cohorts) gains `reason`,
+empty exactly when `note` is, and `note`'s text is unchanged:
+
+| `reason` | When | What it is |
+|---|---|---|
+| `none` | no rollup is stored at all | nothing is answerable |
+| `before-data` | the range starts before the first stored rollup | the service's age — rollups are never pruned (`store.Prune` deletes raw partitions only), so this is not a retention limit |
+| `raw-pruned` | the range starts before the raw-retention boundary | a retention caveat: the older rows are rollup-only |
+
+A range past both edges reports `before-data`, as its note does;
+`rawFromMs > rollupsFromMs` then says the rows between them are rollup-only.
+
 **PoP-served sessions (TU6).** `SessionView.pop` is the display name of the
 PoP that served the session, beside `issuer`, from the PoP's own
 observations (docs/78 D7). A broadcast-timeline `Lane` gains `issuer` and
