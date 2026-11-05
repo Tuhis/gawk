@@ -79,10 +79,11 @@ pub enum Delivery {
     LowestLatency,
 }
 
-/// The engine's default delivery: *Lowest latency* until RU7's hardware
-/// pass holds, then *Reliable* (docs/75 D4, §8 step 3). This constant is the
-/// one place that flip happens; a blank `uplinkDelivery` follows it.
-pub const DEFAULT_DELIVERY: Delivery = Delivery::LowestLatency;
+/// The engine's default delivery: *Reliable* (docs/75 D4; owner decision
+/// 2026-11-05, ahead of RU7's hardware pass). This constant is the one place
+/// the default lives; a blank `uplinkDelivery` follows it, and a relay that
+/// offers no carriers still gets datagrams.
+pub const DEFAULT_DELIVERY: Delivery = Delivery::Reliable;
 
 impl Default for Delivery {
     fn default() -> Self {
@@ -926,6 +927,7 @@ mod tests {
         let relay = FakeRelay::new();
         let s = sender(&relay);
         offer(&s, true, 0);
+        s.set_uplink_delivery(Delivery::LowestLatency);
         send_all(&s, vec![kf(1), delta(100, 2)]).await;
         assert_eq!(relay.media_datagrams().len(), 1);
 
@@ -1166,9 +1168,9 @@ mod tests {
         assert_eq!(Delivery::parse(""), None);
         assert_eq!(Delivery::parse("auto"), None);
         assert_eq!(Delivery::default(), DEFAULT_DELIVERY);
-        // docs/75 D4, §8 step 2: today's behaviour stays the default until
-        // RU7's hardware pass flips it.
-        assert_eq!(DEFAULT_DELIVERY, Delivery::LowestLatency);
+        // docs/75 D4: Reliable is the default (owner decision 2026-11-05,
+        // ahead of RU7); Lowest latency is the choice.
+        assert_eq!(DEFAULT_DELIVERY, Delivery::Reliable);
     }
 
     // §6's copy, exactly.

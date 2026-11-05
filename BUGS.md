@@ -709,11 +709,13 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   or outage takes more of a frame than parity covers.
 - **Impact**: under bursts and outages on a datagram uplink, these presets
   freeze where the carrier uplink would show them 94–100 % (F14).
-- **Fix would start**: docs/75 RU3 (the carrier uplink) has shipped in the
-  native broadcasters behind the *Reliable* delivery setting (2026-10-21);
-  this entry closes when RU7's hardware pass makes it the default. The
-  browser broadcaster has no carrier until its own Reliable milestone
-  (docs/75 OD5).
+- **Fix would start**: docs/75 RU3 (the carrier uplink) shipped in the
+  native broadcasters on 2026-10-21 and has been their default delivery
+  since 2026-11-05 (docs/75 D4), so their viewers are covered unless the
+  broadcaster picks *Lowest latency*. Still open for the browser
+  broadcaster, which has no carrier until its own Reliable milestone
+  (docs/75 OD5), and for native broadcasters on *Lowest latency* or on a
+  relay without carriers.
 
 ## Desktop broadcaster: every stream reset mid-`finish()` leaks a quinn waiter
 

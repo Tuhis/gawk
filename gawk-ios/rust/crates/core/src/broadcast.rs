@@ -1959,8 +1959,9 @@ mod live_tests {
     // --- R73: the uplink follows the engine's defaults (docs/75 OD3) -------
 
     // The iOS app has no Delivery setting and no congestion lever: its
-    // publish session runs whatever the shared engine defaults to — the
-    // datagram path, on BBR since docs/75 D5's owner decision (2026-10-21).
+    // publish session runs whatever the shared engine defaults to — Reliable
+    // delivery (docs/75 D4, owner decision 2026-11-05) on BBR (D5, 2026-10-21).
+    // This leg offers no carriers, so its deltas still go as datagrams.
     #[tokio::test(start_paused = true)]
     async fn the_uplink_runs_the_engine_defaults() {
         use gawk_engine::carrier::Delivery;
