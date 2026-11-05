@@ -473,6 +473,27 @@ scale check is ST7's.
   suppressed primary — the operator-visible join of one viewer's sessions
   (they share nothing else; `statsKey` stays per-session random by design).
 
+> **Owner key (2026-11-05, R36)**: those fields say *what* a session is, not
+> *whose*, so nothing in `/statusz` tied a leg to its primary — the gap that
+> keeps the telemetry broadcast view from drawing a striped viewer as one
+> participant (ROADMAP R36). Every session dialed with a valid `?owner=`
+> token (§14.3 D1), primary and legs alike, now carries
+> **`stripeOwner`**: HMAC-SHA256 under the fleet-shared stats key
+> (docs/22 Decision 14, the key `ObfuscateID` uses) over
+> `"stripe-owner\x00" ‖ token`, first 6 bytes as 12 lowercase hex. The NUL
+> prefix domain-separates it from broadcast keys under the same key; the
+> token itself still never appears in `/statusz` or logs. Because the key is
+> fleet-shared, a viewer whose legs land on other pods (§5.7) carries one
+> value on every pod, which is the cross-pod join. The token is minted per
+> transport attempt, so the value links one attempt's sessions and nothing
+> longer-lived. It is omitted on unowned sessions, with
+> `-striped-delivery=false` (the ST3 byte-identical rule: a primary still
+> records its token there, but no leg can exist to join it to), and from a
+> PoP's link-home snapshot (`BroadcastStatsByRawID`, docs/78 D7), because a
+> PoP's stats key is its own persisted one, not home's, so its value would
+> join nothing home keys. Computed once at subscribe, never under the
+> registry lock.
+
 ---
 
 ## 6. Relay cost — the R17 axis, priced

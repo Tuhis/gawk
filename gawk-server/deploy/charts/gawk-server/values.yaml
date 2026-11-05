@@ -383,7 +383,9 @@ config:
   internalServerName: ""
   # R17 W6: statusz/metrics obfuscation key — 64 hex chars (32 bytes),
   # shared fleet-wide so one broadcast keeps ONE obfuscated identity across
-  # pods (Prometheus can aggregate). Same generation recipe as below.
+  # pods (Prometheus can aggregate), and since R36 so a striped viewer's
+  # legs on other pods carry its /statusz stripeOwner. Same generation
+  # recipe as below.
   statsKey: ""
   statsKeyRef: {}
   # R17 W2: resume-token HMAC key — 64 hex chars (32 bytes), shared by all

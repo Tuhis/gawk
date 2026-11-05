@@ -12,6 +12,9 @@ package hub
 // correct by construction.
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strconv"
@@ -56,6 +59,25 @@ func ValidOwnerToken(s string) bool {
 		}
 	}
 	return true
+}
+
+// stripeOwnerDomain prefixes the MAC input of a /statusz stripeOwner. It
+// shares statsKey with ObfuscateID, and a broadcast ID never contains a NUL,
+// so the two inputs never coincide: an owner key cannot equal any broadcast
+// key.
+const stripeOwnerDomain = "stripe-owner\x00"
+
+// stripeOwnerKey is the /statusz handle of a viewer's ?owner= token (R36):
+// the session-group join, published in place of the token, which stays out
+// of /statusz and logs (docs/35 §14.3 D1). Keyed by statsKey, so it cannot
+// be recomputed from a guessed token without that key; the key is shared
+// across the fleet (docs/22), so a viewer whose legs land on other pods than
+// its primary gets the same value on each. ObfuscateID's length.
+func (r *Registry) stripeOwnerKey(owner string) string {
+	mac := hmac.New(sha256.New, r.statsKey)
+	mac.Write([]byte(stripeOwnerDomain))
+	mac.Write([]byte(owner))
+	return hex.EncodeToString(mac.Sum(nil)[:6])
 }
 
 // ErrStripeRejected reports malformed or unusable stripe-leg dial parameters.
