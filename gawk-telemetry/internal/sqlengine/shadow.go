@@ -201,9 +201,17 @@ func safeType(t *colType, allow map[string]bool, depth int) *colType {
 			if !identifierRE.MatchString(f.name) || (allow != nil && !allow[f.name]) {
 				continue
 			}
-			ft := safeType(f.t, nil, depth+1)
-			if allow != nil && statsObjects[f.name] {
+			var ft *colType
+			switch {
+			case allow != nil && (statsObjects[f.name] || f.t.kind == structKind || f.t.kind == listKind || f.t.kind == mapKind):
+				// An object field's members are a client's; and a field the
+				// tables call a number, bool or text has no legitimate nested
+				// shape — ingest types a batch by its OWN role, so the other
+				// role's field arrives unchecked. Either way: JSON, which `->>`
+				// still reads, and which no budget can blow.
 				ft = scalar(jsonType)
+			default:
+				ft = safeType(f.t, nil, depth+1)
 			}
 			out.fields = append(out.fields, colField{f.name, ft})
 			// An allowlisted struct is bounded by its allowlist; capping it

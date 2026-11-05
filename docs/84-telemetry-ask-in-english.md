@@ -146,7 +146,9 @@ first.
   shadow catalogue, and so the prompt, keeps only identifier-shaped names;
   under `sessions.stats` only the fields the schema tables define, with
   the object ones (`audioBuffer`, `featureGates`, … whose members a client
-  chooses) typed JSON, so no member name is carried and the prompt says to
+  chooses), and any catalogued field that arrived nested (ingest types a
+  batch by its own role, so a viewer can send a broadcaster-only number as
+  an object), typed JSON, so no member name is carried and the prompt says to
   read one with `->>` (which binds in the check and answers on the real
   STRUCT); at most 128 fields in any other struct, four levels, and 16 KiB
   of type per column (PR #706 review, rounds 1 and 2). A draft that reads
