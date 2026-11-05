@@ -1617,7 +1617,7 @@ mod tests {
         std::fs::write(&path, br#"{"nickname": "Juho"}"#).unwrap();
         let (old, warn) = load(&path, &Plaintext);
         assert!(warn.is_none());
-        assert_eq!(old.resolve_uplink_delivery(), Delivery::LowestLatency);
+        assert_eq!(old.resolve_uplink_delivery(), Delivery::Reliable);
         assert_eq!(old.resolve_congestion(), Congestion::Bbr);
 
         let cfg = Config {

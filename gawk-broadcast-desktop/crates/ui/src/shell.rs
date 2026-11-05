@@ -7649,17 +7649,20 @@ mod tests {
         read_settings(&ui, &mut cfg, DEFAULT_SERVER_NAME);
         assert_eq!(cfg.uplink_delivery, "", "untouched stays blank");
 
-        ui.set_set_delivery(delivery_index(Delivery::Reliable));
-        read_settings(&ui, &mut cfg, DEFAULT_SERVER_NAME);
-        assert_eq!(cfg.uplink_delivery, "reliable");
         ui.set_set_delivery(delivery_index(Delivery::LowestLatency));
         read_settings(&ui, &mut cfg, DEFAULT_SERVER_NAME);
-        assert_eq!(cfg.uplink_delivery, "lowest-latency", "a choice is kept");
+        assert_eq!(cfg.uplink_delivery, "lowest-latency");
+        ui.set_set_delivery(delivery_index(Delivery::Reliable));
+        read_settings(&ui, &mut cfg, DEFAULT_SERVER_NAME);
+        assert_eq!(cfg.uplink_delivery, "reliable", "a choice is kept");
 
         let next = MainWindow::new().unwrap();
-        cfg.uplink_delivery = "reliable".into();
+        cfg.uplink_delivery = "lowest-latency".into();
         seed_settings(&next, &cfg);
-        assert_eq!(next.get_set_delivery(), delivery_index(Delivery::Reliable));
+        assert_eq!(
+            next.get_set_delivery(),
+            delivery_index(Delivery::LowestLatency)
+        );
     }
 
     /// A relay where nothing happens: enough for a live session's stats.
@@ -7817,12 +7820,12 @@ mod tests {
             sh.session = Some(session.clone());
             sh.state = UiState::Live;
         }
-        assert_eq!(session.stats().uplink_mode_requested, "lowest-latency");
-
-        ui.set_set_delivery(delivery_index(Delivery::Reliable));
-        ui.invoke_settings_edited();
         assert_eq!(session.stats().uplink_mode_requested, "reliable");
-        assert_eq!(shell.borrow().cfg.uplink_delivery, "reliable");
+
+        ui.set_set_delivery(delivery_index(Delivery::LowestLatency));
+        ui.invoke_settings_edited();
+        assert_eq!(session.stats().uplink_mode_requested, "lowest-latency");
+        assert_eq!(shell.borrow().cfg.uplink_delivery, "lowest-latency");
         assert!(
             !shell.borrow().quality_timer.running(),
             "Delivery is not a quality change: no restart"
