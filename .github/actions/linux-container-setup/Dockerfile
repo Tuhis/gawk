@@ -18,7 +18,7 @@
 # it into each pod's fresh, RAM-backed dind store — 29-62 s of "Initialize
 # containers" per job. Still the path for forks and hosted runners, and the
 # rollback.
-FROM ubuntu:24.04 AS ci
+FROM ubuntu:26.04 AS ci
 
 LABEL org.opencontainers.image.source="https://github.com/Tuhis/gawk"
 LABEL org.opencontainers.image.description="gawk-broadcast-desktop Linux CI: ubuntu:24.04 + GStreamer/PipeWire build and test deps + the pinned Rust toolchain"

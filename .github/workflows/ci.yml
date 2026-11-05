@@ -4753,7 +4753,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.relay_portable == 'true'
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
-    container: ubuntu:24.04
+    container: ubuntu:26.04
     timeout-minutes: 30
     defaults:
       run:
