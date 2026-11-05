@@ -991,3 +991,11 @@ peer baseline or session join can read one.
 - A leg whose owner key matches no primary (a relay predating the key or
   running with striping disabled, a PoP's, or a primary never scraped) is
   counted in `stripeLegs` and attached nowhere.
+
+**PoP-served sessions (TU6).** `SessionView.pop` is the display name of the
+PoP that served the session, beside `issuer`, from the PoP's own
+observations (docs/78 D7). A broadcast-timeline `Lane` gains `issuer` and
+`pop` for such a session: the timeline reads the home fleet's relay records
+only (docs/78 D8), so that lane has no relay-side figures, and the label
+says why. The name comes from the row's join (`config.pop`), else from the
+same PoP's records on the span's dates; nothing else is read from them.

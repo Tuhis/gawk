@@ -66,14 +66,20 @@ type BroadcastDetail struct {
 // Lane is one participant's row on the shared axis.
 type Lane struct {
 	// Kind is broadcaster | viewer | relay. The relay lane has no session.
-	Kind         string         `json:"kind"`
-	SessionID    string         `json:"sessionId,omitempty"`
-	Browser      string         `json:"browser,omitempty"`
-	OS           string         `json:"os,omitempty"`
-	AppVersion   string         `json:"appVersion,omitempty"`
-	DeliveryMode string         `json:"deliveryMode,omitempty"`
-	Severity     rules.Severity `json:"severity"`
-	Verdict      string         `json:"verdict,omitempty"`
+	Kind         string `json:"kind"`
+	SessionID    string `json:"sessionId,omitempty"`
+	Browser      string `json:"browser,omitempty"`
+	OS           string `json:"os,omitempty"`
+	AppVersion   string `json:"appVersion,omitempty"`
+	DeliveryMode string `json:"deliveryMode,omitempty"`
+	// Issuer and Pop say a PoP served this session (R36 TU6): the PoP's
+	// issuer key and the display name home's operator gave it (docs/78). The
+	// timeline reads the home fleet's relay records only (D8), so such a
+	// session has no relay-side figures here — these say why.
+	Issuer   string         `json:"issuer,omitempty"`
+	Pop      string         `json:"pop,omitempty"`
+	Severity rules.Severity `json:"severity"`
+	Verdict  string         `json:"verdict,omitempty"`
 	// StartedAtMs/EndedAtMs are the SPAN — join to leave. A lane draws its span
 	// as a bounded band, so a viewer who joined late reads as "was not here",
 	// never as a gap in a line (TH4's criterion).
@@ -266,7 +272,14 @@ func (a *API) GetBroadcast(key string, q BroadcastQuery) (*BroadcastDetail, erro
 		}
 	}
 
-	obs := a.broadcastRelay(key, out.FromMs, out.ToMs)
+	obs, popNames := a.broadcastRelay(key, out.FromMs, out.ToMs)
+	// A PoP session's row names its PoP when the PoP's records were joined to
+	// it; one that never was still gets the name the same PoP's records carry.
+	for i := range out.Lanes {
+		if l := &out.Lanes[i]; l.Issuer != "" && l.Pop == "" {
+			l.Pop = popNames[l.Issuer]
+		}
+	}
 	attachLegs(out.Lanes, obs, q.FromMs, q.ToMs)
 	relay, rehomes := a.relayLane(obs, out.FromMs, out.ToMs)
 	if relay != nil {
@@ -278,14 +291,16 @@ func (a *API) GetBroadcast(key string, q BroadcastQuery) (*BroadcastDetail, erro
 
 // broadcastRelay reads one broadcast's stored broadcast records across the
 // span, oldest first: the home fleet's only (docs/78 D8), every pod and role.
+// From a PoP's records it takes nothing but the PoP's display name, by issuer.
 //
 // `ReadRelay` is whole-date only, so a broadcast spanning midnight needs both
 // partitions. Walking the dates the SPAN touches — rather than the whole
 // retention window — is what keeps this a click-priced read. One pass feeds
 // both the relay lane and the stripe legs.
-func (a *API) broadcastRelay(key string, fromMs, toMs int64) []relayObservation {
+func (a *API) broadcastRelay(key string, fromMs, toMs int64) ([]relayObservation, map[string]string) {
+	popNames := map[string]string{}
 	if fromMs == 0 && toMs == 0 {
-		return nil
+		return nil, popNames
 	}
 	var obs []relayObservation
 	for _, date := range datesBetween(fromMs, toMs) {
@@ -293,7 +308,20 @@ func (a *API) broadcastRelay(key string, fromMs, toMs int64) []relayObservation 
 		if err != nil {
 			continue
 		}
-		for _, ln := range relayscrape.FilterIssuer(lines, "") {
+		for _, ln := range lines {
+			var head struct {
+				Pod     string `json:"pod"`
+				PopName string `json:"popName"`
+			}
+			if json.Unmarshal(ln, &head) != nil {
+				continue
+			}
+			if issuer := (relayscrape.Observation{Pod: head.Pod}).Issuer(); issuer != "" {
+				if head.PopName != "" {
+					popNames[issuer] = head.PopName
+				}
+				continue
+			}
 			var o relayObservation
 			if err := json.Unmarshal(ln, &o); err != nil || o.BroadcastKey != key || o.Broadcast == nil {
 				continue
@@ -302,7 +330,7 @@ func (a *API) broadcastRelay(key string, fromMs, toMs int64) []relayObservation 
 		}
 	}
 	sort.SliceStable(obs, func(i, j int) bool { return obs[i].AtMs < obs[j].AtMs })
-	return obs
+	return obs, popNames
 }
 
 // attachLegs puts each stored stripe leg under the viewer lane it belongs to
@@ -448,8 +476,9 @@ func (a *API) sessionLane(r rollup.Row, q BroadcastQuery, rawFromMs int64) Lane 
 		Kind: r.Role, SessionID: r.SessionID,
 		Browser: r.Browser, OS: r.OS, AppVersion: r.AppVersion,
 		DeliveryMode: r.Config["deliveryMode"],
-		Severity:     severityOfRow(r),
-		StartedAtMs:  r.StartedAt, EndedAtMs: r.EndedAt,
+		Issuer:       r.Issuer, Pop: r.Config["pop"],
+		Severity:    severityOfRow(r),
+		StartedAtMs: r.StartedAt, EndedAtMs: r.EndedAt,
 		Primary: primary, Unit: "fps",
 		// A client emits a sample every ~2 s and flushes a batch every ~10 s.
 		// The SAMPLE cadence is what the line may be read at; the batch cadence
@@ -628,10 +657,19 @@ func (a *API) liveRowsFor(key string) []rollup.Row {
 			continue
 		}
 		for _, s := range b.Sessions {
+			cfg := s.Config
+			if s.Pop != "" {
+				// The stored row's convention (JoinRelay), on a copy.
+				cfg = make(map[string]string, len(s.Config)+1)
+				for k, v := range s.Config {
+					cfg[k] = v
+				}
+				cfg["pop"] = s.Pop
+			}
 			out = append(out, rollup.Row{
 				SessionID: s.SessionID, BroadcastKey: key, Role: s.Role,
 				Browser: s.Browser, OS: s.OS, AppVersion: s.AppVersion,
-				StartedAt: s.StartedAtMs, Config: s.Config,
+				StartedAt: s.StartedAtMs, Config: cfg, Issuer: s.Issuer,
 			})
 		}
 	}

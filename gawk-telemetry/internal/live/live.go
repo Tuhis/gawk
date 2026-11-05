@@ -96,7 +96,11 @@ type SessionView struct {
 	RoomKey string `json:"roomKey,omitempty"`
 	// Issuer is the issuer key of the PoP that served the session (docs/78
 	// D3, from its token or from the PoP's observations), empty for home's.
-	Issuer      string          `json:"issuer,omitempty"`
+	Issuer string `json:"issuer,omitempty"`
+	// Pop is that PoP's display name, as home's operator named it (docs/78
+	// D7), from the PoP's own observations; empty until one arrives, and for
+	// home's sessions (R36 TU6).
+	Pop         string          `json:"pop,omitempty"`
 	Role        string          `json:"role"`
 	Browser     string          `json:"browser,omitempty"`
 	OS          string          `json:"os,omitempty"`
@@ -483,6 +487,9 @@ func (p *Projection) relaySessionLocked(b *broadcastState, o relayscrape.Observa
 	}
 	if iss := o.Issuer(); iss != "" {
 		s.view.Issuer = iss
+		if o.PopName != "" {
+			s.view.Pop = o.PopName
+		}
 	}
 	return s
 }
@@ -571,6 +578,9 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 			}
 			if issuer != "" {
 				s.view.Issuer = issuer
+				if o.PopName != "" {
+					s.view.Pop = o.PopName
+				}
 			}
 			sub := o.Subscriber
 			s.lastRelay = now
