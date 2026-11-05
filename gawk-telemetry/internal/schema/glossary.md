@@ -46,5 +46,13 @@
   broadcast reports it. For the fleet's viewers at a moment, take one value
   per `broadcastKey` in that moment (`max`, not `sum`, across pods), then
   sum across broadcasts: one broadcast's peak is not the fleet's.
+- In `relay`, a striped viewer is one primary subscriber plus up to four
+  stripe leg sessions, possibly on other pods. A leg is never a `subscriber`
+  row (`kind = 'subscriber'` lines are viewers only); legs appear inside
+  `broadcast.subscriberDetails[]` with `broadcast.subscriberDetails[].stripeLeg`
+  true and no `sessionId`. A viewer's primary entry and its legs carry the
+  same `broadcast.subscriberDetails[].stripeOwner`, on any pod. Count viewers
+  from entries whose `broadcast.subscriberDetails[].stripeLeg` and
+  `broadcast.subscriberDetails[].internal` are both not true.
 - `verdict.findings` is a LIST of structs; use `unnest` to count findings.
 - Avoid reserved words as aliases (`day`, `share`, `value`, `from`, `scope`).

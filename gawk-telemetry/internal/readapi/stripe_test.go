@@ -24,9 +24,12 @@ import (
 // session plus four R30 stripe legs (docs/35 §5.8, MaxStripeLegs = 4). The
 // relay marks legs `stripeLeg: true`, never `internal: true` (that is R17's
 // edge marker), and its own viewersGlobal already excludes them (docs/35
-// ST3). Legs are dialled from the primary's URL, so they carry the viewer's
-// sessionId too. `gen` scales the cumulative drop counters: the legs drop in
-// every window, the primary only ever dropped 7 and then stopped.
+// ST3). A real leg carries no sessionId — it is never sent the telemetry
+// hello — but these legs are given the viewer's anyway, the worst case: the
+// stripeLeg marker alone must keep them out of every count and every one of
+// the viewer's own figures (the realistic shape is legs_test.go's). `gen`
+// scales the cumulative drop counters: the legs drop in every window, the
+// primary only ever dropped 7 and then stopped.
 func stripedStatusz(sid string, gen uint64) string {
 	legs := make([]string, 0, 4)
 	for j := 1; j <= 4; j++ {

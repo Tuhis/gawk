@@ -8,13 +8,16 @@ import (
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/rollup"
 )
 
-// JoinRelay built the permanent row's subscriber facts (Relay dropped, …,
+// JoinRelay builds the permanent row's subscriber facts (Relay dropped, …,
 // RelayPod, RelayRole) from the LAST subscriber observation carrying the
-// session's id, and a striped viewer's legs carry it too (docs/35 §5.8). A
-// leg that sorted after the primary — a later pod file, or simply the later
-// line — overwrote the viewer's own figures with a leg's, on the one
-// artifact that is never pruned. Edge sessions (internal) are judged by the
-// same predicate, relayscrape.IsAudience, as every other audience loop.
+// session's id. A leg that carried the id and sorted after the primary — a
+// later pod file, or simply the later line — would overwrite the viewer's own
+// figures with a leg's, on the one artifact that is never pruned. A real leg
+// carries no sessionId (it is never sent the telemetry hello), but #669's
+// repair marked same-session duplicates as legs, so the fixture gives the leg
+// the id: the stripeLeg marker alone must exclude it. Edge sessions
+// (internal) are judged by the same predicate, relayscrape.IsAudience, as
+// every other audience loop.
 func TestJoinRelayIgnoresStripeLegsAndEdges(t *testing.T) {
 	const sid = "6a6a6a6a6a6a6a6a6a6a6a6a"
 	sub := func(pod, role, extra string, dropped int) []byte {

@@ -104,6 +104,53 @@ type Lane struct {
 	RollupOnly  bool   `json:"rollupOnly,omitempty"`
 	Note        string `json:"note,omitempty"`
 	Downsampled bool   `json:"downsampled,omitempty"`
+	// Legs are a viewer's R30 stripe leg sessions (R36 TU5), joined to it by
+	// the relay's stripeOwner key, each with the pod it landed on. They
+	// belong to this lane and never take one of their own, so a striped
+	// viewer costs one lane against MaxLanes, not 1 + N.
+	Legs []LegLane `json:"legs,omitempty"`
+	// LegsOmitted is how many leg sessions did not fit under MaxLegsPerLane
+	// (the oldest go first). Stated, never silent, like LanesOmitted.
+	LegsOmitted int `json:"legsOmitted,omitempty"`
+}
+
+// MaxLegsPerLane bounds the leg sessions one viewer lane carries. A viewer
+// holds at most four legs at once (wire.MaxStripeLegs), but every re-dial
+// (a re-home, a stripe width change) is a new leg session, so a long session
+// can accumulate many.
+const MaxLegsPerLane = 16
+
+// LegPoints bounds one leg's series. Legs ride under a lane, so their budget
+// is a fraction of the lane's own: 300 points is 25 minutes at a 5 s scrape
+// before the series is reduced, worst-of, like a lane's.
+const LegPoints = 300
+
+// LegUnit names a leg series' value: the datagrams the relay dropped for that
+// leg per second over each scrape interval, from its cumulative per-
+// subscriber `dropped` (queue overflows plus bandwidth-cap drops). The relay
+// reports no per-subscriber sent counter, so a drop rate is the most a stored
+// leg can honestly say about its delivery; a flat zero line is a leg that was
+// observed delivering without loss.
+const LegUnit = "dropped datagrams/s"
+
+// LegLane is one stripe leg session placed under its viewer's lane.
+type LegLane struct {
+	Member int    `json:"member"`
+	N      int    `json:"n"`
+	Pod    string `json:"pod"`
+	Role   string `json:"role,omitempty"`
+	// Points are LegUnit at each scrape after the leg's first, at absolute
+	// time. A counter that went backwards is a break, not negative traffic.
+	Points []LanePoint `json:"points,omitempty"`
+	Unit   string      `json:"unit,omitempty"`
+	// DatagramsDropped is the leg's cumulative `dropped` at its last stored
+	// observation: what the relay dropped for that leg session over its life
+	// as last scraped (a close-time remainder is missed, as for every
+	// relay-side total, docs/33 D5).
+	DatagramsDropped float64 `json:"datagramsDropped"`
+	// Downsampled marks a series reduced to LegPoints, keeping the worst
+	// (highest) rate of each run of points so a burst cannot be reduced away.
+	Downsampled bool `json:"downsampled,omitempty"`
 }
 
 // LanePoint is one sample on the shared axis.
@@ -219,12 +266,179 @@ func (a *API) GetBroadcast(key string, q BroadcastQuery) (*BroadcastDetail, erro
 		}
 	}
 
-	relay, rehomes := a.relayLane(key, out.FromMs, out.ToMs)
+	obs := a.broadcastRelay(key, out.FromMs, out.ToMs)
+	attachLegs(out.Lanes, obs, q.FromMs, q.ToMs)
+	relay, rehomes := a.relayLane(obs, out.FromMs, out.ToMs)
 	if relay != nil {
 		out.Lanes = append(out.Lanes, *relay)
 	}
 	out.Rehomes = rehomes
 	return out, nil
+}
+
+// broadcastRelay reads one broadcast's stored broadcast records across the
+// span, oldest first: the home fleet's only (docs/78 D8), every pod and role.
+//
+// `ReadRelay` is whole-date only, so a broadcast spanning midnight needs both
+// partitions. Walking the dates the SPAN touches — rather than the whole
+// retention window — is what keeps this a click-priced read. One pass feeds
+// both the relay lane and the stripe legs.
+func (a *API) broadcastRelay(key string, fromMs, toMs int64) []relayObservation {
+	if fromMs == 0 && toMs == 0 {
+		return nil
+	}
+	var obs []relayObservation
+	for _, date := range datesBetween(fromMs, toMs) {
+		lines, err := a.store.ReadRelay(date)
+		if err != nil {
+			continue
+		}
+		for _, ln := range relayscrape.FilterIssuer(lines, "") {
+			var o relayObservation
+			if err := json.Unmarshal(ln, &o); err != nil || o.BroadcastKey != key || o.Broadcast == nil {
+				continue
+			}
+			obs = append(obs, o)
+		}
+	}
+	sort.SliceStable(obs, func(i, j int) bool { return obs[i].AtMs < obs[j].AtMs })
+	return obs
+}
+
+// attachLegs puts each stored stripe leg under the viewer lane it belongs to
+// (R36 TU5). The join is the relay's stripeOwner key, read from the same
+// broadcast records: a primary's subscriberDetails entry carries its
+// sessionId and owner, a leg's carries the owner alone. The owner token is
+// minted per connection attempt, so a key names one primary for its whole
+// life — a session that reconnected owns each attempt's key, and each
+// attempt's legs attach to it — and a primary entry scraped before its
+// telemetry hello landed (no sessionId yet) names nobody. A leg whose owner no
+// primary carried — a relay predating the key or striping disabled, a PoP's
+// (whose records carry no key), or a primary never scraped — is attached to
+// nobody: an invented attribution would be worse than none. Lanes and the
+// relay lane are untouched, and no count reads a leg.
+func attachLegs(lanes []Lane, obs []relayObservation, fromMs, toMs int64) {
+	type ownerSeen struct {
+		sessionID string
+		atMs      int64
+	}
+	type legPoint struct {
+		atMs    int64
+		dropped uint64
+	}
+	type legSeries struct {
+		key, pod, role, owner string
+		member, n             int
+		pts                   []legPoint
+	}
+	owners := map[string]ownerSeen{}
+	legs := map[string]*legSeries{}
+	for _, o := range obs {
+		inWindow := (fromMs <= 0 || o.AtMs >= fromMs) && (toMs <= 0 || o.AtMs <= toMs)
+		for _, d := range o.Broadcast.SubscriberDetails {
+			if d.StripeOwner == "" {
+				continue
+			}
+			if d.StripeLeg {
+				if !inWindow {
+					continue
+				}
+				id := o.Pod + "\x00" + d.Key
+				l, ok := legs[id]
+				if !ok {
+					l = &legSeries{key: d.Key, pod: o.Pod, owner: d.StripeOwner}
+					legs[id] = l
+				}
+				l.role, l.member, l.n = o.Role, d.StripeMember, d.StripeN
+				l.pts = append(l.pts, legPoint{atMs: o.AtMs, dropped: d.Dropped})
+				continue
+			}
+			if relayscrape.IsAudience(d.Internal, d.StripeLeg) && d.SessionID != "" {
+				// One primary per key; should two sessions ever carry one,
+				// the later-observed takes its legs.
+				if cur, ok := owners[d.StripeOwner]; !ok || o.AtMs >= cur.atMs {
+					owners[d.StripeOwner] = ownerSeen{sessionID: d.SessionID, atMs: o.AtMs}
+				}
+			}
+		}
+	}
+	if len(legs) == 0 {
+		return
+	}
+
+	bySession := map[string][]*legSeries{}
+	for _, l := range legs {
+		if s, ok := owners[l.owner]; ok {
+			bySession[s.sessionID] = append(bySession[s.sessionID], l)
+		}
+	}
+	for i := range lanes {
+		lane := &lanes[i]
+		mine := bySession[lane.SessionID]
+		if lane.Kind != "viewer" || lane.SessionID == "" || len(mine) == 0 {
+			continue
+		}
+		// The newest leg sessions are the ones worth keeping under the cap.
+		sort.Slice(mine, func(i, j int) bool {
+			a, b := mine[i].pts[len(mine[i].pts)-1].atMs, mine[j].pts[len(mine[j].pts)-1].atMs
+			if a != b {
+				return a > b
+			}
+			return mine[i].pod+mine[i].key < mine[j].pod+mine[j].key
+		})
+		if len(mine) > MaxLegsPerLane {
+			lane.LegsOmitted = len(mine) - MaxLegsPerLane
+			mine = mine[:MaxLegsPerLane]
+		}
+		// Shown in the order they were dialled, then by member.
+		sort.Slice(mine, func(i, j int) bool {
+			a, b := mine[i], mine[j]
+			if a.pts[0].atMs != b.pts[0].atMs {
+				return a.pts[0].atMs < b.pts[0].atMs
+			}
+			if a.member != b.member {
+				return a.member < b.member
+			}
+			return a.pod+a.key < b.pod+b.key
+		})
+		for _, l := range mine {
+			ll := LegLane{
+				Member: l.member, N: l.n, Pod: l.pod, Role: l.role, Unit: LegUnit,
+				DatagramsDropped: float64(l.pts[len(l.pts)-1].dropped),
+			}
+			for k := 1; k < len(l.pts); k++ {
+				prev, cur := l.pts[k-1], l.pts[k]
+				secs := float64(cur.atMs-prev.atMs) / 1000
+				if secs <= 0 || cur.dropped < prev.dropped {
+					continue
+				}
+				ll.Points = append(ll.Points, LanePoint{AtMs: cur.atMs, Value: float64(cur.dropped-prev.dropped) / secs})
+			}
+			ll.Points, ll.Downsampled = worstOfEach(ll.Points, LegPoints)
+			lane.Legs = append(lane.Legs, ll)
+		}
+	}
+}
+
+// worstOfEach reduces a series to at most limit points, keeping the highest
+// value of each run — for a drop rate, the worst moment of it.
+func worstOfEach(pts []LanePoint, limit int) ([]LanePoint, bool) {
+	if len(pts) <= limit {
+		return pts, false
+	}
+	step := (len(pts) + limit - 1) / limit
+	out := make([]LanePoint, 0, limit)
+	for i := 0; i < len(pts); i += step {
+		end := min(i+step, len(pts))
+		worst := pts[i]
+		for _, p := range pts[i+1 : end] {
+			if p.Value > worst.Value {
+				worst = p
+			}
+		}
+		out = append(out, worst)
+	}
+	return out, true
 }
 
 // sessionLane projects one session onto the shared axis.
@@ -338,12 +552,9 @@ func hiddenIntervals(samples []rollup.Sample, at func(float64) int64) []Interval
 	return out
 }
 
-// relayLane builds the relay's own row plus every re-home inside the window.
-//
-// `ReadRelay` is whole-date only, so a broadcast spanning midnight needs both
-// partitions. Walking the dates the SPAN touches — rather than the whole
-// retention window — is what keeps this a click-priced read.
-func (a *API) relayLane(key string, fromMs, toMs int64) (*Lane, []Rehome) {
+// relayLane builds the relay's own row plus every re-home inside the window,
+// from the broadcast records broadcastRelay read.
+func (a *API) relayLane(all []relayObservation, fromMs, toMs int64) (*Lane, []Rehome) {
 	if fromMs == 0 && toMs == 0 {
 		return nil, nil
 	}
@@ -353,26 +564,15 @@ func (a *API) relayLane(key string, fromMs, toMs int64) (*Lane, []Rehome) {
 		CadenceMs: a.scrapeInterval.Milliseconds(),
 		Severity:  rules.SeverityUnknown,
 	}
-	var obs []relayObservation
-	for _, date := range datesBetween(fromMs, toMs) {
-		lines, err := a.store.ReadRelay(date)
-		if err != nil {
+	obs := make([]relayObservation, 0, len(all))
+	for _, o := range all {
+		// The ORIGIN only. An edge pod counts a different leg, and mixing
+		// the two into one rate would compare unrelated counters — the same
+		// trap factsFor already avoids for framesRelayedPerSec.
+		if o.Role == "edge" {
 			continue
 		}
-		// Broadcast scope is the home fleet's view (docs/78 D8).
-		for _, ln := range relayscrape.FilterIssuer(lines, "") {
-			var o relayObservation
-			if err := json.Unmarshal(ln, &o); err != nil || o.BroadcastKey != key || o.Broadcast == nil {
-				continue
-			}
-			// The ORIGIN only. An edge pod counts a different leg, and mixing
-			// the two into one rate would compare unrelated counters — the same
-			// trap factsFor already avoids for framesRelayedPerSec.
-			if o.Role == "edge" {
-				continue
-			}
-			obs = append(obs, o)
-		}
+		obs = append(obs, o)
 	}
 	if len(obs) == 0 {
 		lane.Note = "no relay observation of this broadcast — every verdict on the lanes above rests on client testimony alone (D5/D7)"

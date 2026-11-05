@@ -952,3 +952,42 @@ this whole decision was about actually loaded".
 - **A phone pass** for UD17's read-only triage. The dense views declare
   themselves desktop-only at ≤ 720 px; that the triage set is legible on a real
   390 px viewport is unverified.
+
+### 9.5 Later additions to the read surface (R36)
+
+R36 (`ROADMAP.md`) added these fields to the surfaces above. All are
+additive and `omitempty`; no existing default moved (UD1), and none is a new
+measurement (UD3).
+
+**Stripe legs (TU5).** A striped viewer is one participant with up to four
+R30 leg sessions. A leg has no sessionId — it is never sent the telemetry
+hello — so the join is the relay's `stripeOwner` (an HMAC of the viewer's
+`?owner=` token under the fleet-shared stats key, equal on the primary and
+every leg on any pod). The token is minted per connection attempt, so the
+key changes on a reconnect: the live view joins on the primary's key as last
+scraped, and the timeline gives a reconnected viewer each attempt's legs. A
+primary scraped before its telemetry hello landed has no sessionId and names
+nobody. The scraper stores the key, with `stripeLeg`, `stripeN`,
+`stripeMember` and `striped`, on every `subscriberDetails` entry of the
+broadcast record; a leg still gets no per-subscriber record, so no count,
+peer baseline or session join can read one.
+
+- `/live` and its stream: `BroadcastView.stripeLegs` is the number of legs
+  the relay holds for the broadcast now, attributed or not.
+  `SessionView.legs` is `[{member, n, pod, role, datagramsDropped?,
+  queueDepth, relayAgeMs}]`: `datagramsDropped` is the relay's per-subscriber
+  `dropped` (queue overflows plus bandwidth-cap drops) as a scrape-window
+  delta, absent until two scrapes exist. The relay has no per-subscriber
+  sent counter, so there is no sent figure. A PoP's records carry no owner
+  key, so a PoP's legs are counted and attached to nobody, and a leg is
+  never joined across relays.
+- `GET /v1/broadcasts/{key}`: a viewer `Lane` gains `legs: [{member, n,
+  pod, role, points, unit, datagramsDropped, downsampled?}]` and
+  `legsOmitted`. `points` are dropped datagrams per second over each scrape
+  interval (`unit: "dropped datagrams/s"`), at most 300 per leg, reduced
+  worst-of; `datagramsDropped` is the leg's last cumulative count. Legs never
+  take a lane (`MaxLanes`); a lane carries at most 16 leg sessions, the
+  newest.
+- A leg whose owner key matches no primary (a relay predating the key or
+  running with striping disabled, a PoP's, or a primary never scraped) is
+  counted in `stripeLegs` and attached nowhere.

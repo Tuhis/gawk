@@ -381,6 +381,35 @@ func TestRelayRepairFinishesAPartlyMarkedGroup(t *testing.T) {
 	}
 }
 
+// Striped data as the relay publishes it since R36 TU5: legs carry no
+// sessionId (they are never sent the telemetry hello) and share the primary's
+// stripeOwner key, on any pod. Nothing there is a same-session duplicate, so
+// the repair, should it run over such data, must change no byte of it.
+func TestRelayRepairLeavesOwnerKeyedLegsAlone(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "relay", "date=2026-11-05")
+	const at = 1793000000000
+	const owner = `,"stripeOwner":"0a1b2c3d4e5f"`
+	prim := sub{pod: "pod-a", key: "p", sid: sidX, atMs: at, keyframes: 40, extra: `,"striped":true,"stripeN":3` + owner}
+	leg0 := sub{pod: "pod-a", key: "l0", atMs: at, extra: `,"stripeLeg":true,"stripeN":3` + owner}
+	leg1 := sub{pod: "pod-b", key: "l1", atMs: at, extra: `,"stripeLeg":true,"stripeN":3,"stripeMember":1` + owner}
+	y := sub{pod: "pod-a", key: "y", sid: sidY, atMs: at, keyframes: 12}
+	podA := filepath.Join(dir, "pod-a.ndjson")
+	podB := filepath.Join(dir, "pod-b.ndjson")
+	write(t, podA, []byte(strings.Join(podFile("pod-a", at, prim, leg0, y), "\n")+"\n"))
+	write(t, podB, []byte(strings.Join(podFile("pod-b", at, leg1), "\n")+"\n"))
+	beforeA, beforeB := read(t, podA), read(t, podB)
+
+	s := run(t, root)
+
+	if !bytes.Equal(read(t, podA), beforeA) || !bytes.Equal(read(t, podB), beforeB) {
+		t.Error("the repair rewrote owner-keyed striped data")
+	}
+	if want := (RelaySummary{DatesScanned: 1}); s.Relay != want {
+		t.Errorf("summary = %+v, want %+v", s.Relay, want)
+	}
+}
+
 // The relay pass edits bytes instead of re-encoding: a marked line is the
 // stored line with `"stripeLeg":true` added to the right object (or an
 // explicit false overwritten), key order and every other byte unchanged, and
