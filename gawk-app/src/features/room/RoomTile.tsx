@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import styles from './room.module.css';
+import { Button } from '../../ui/Button';
 import { IconButton } from '../../ui/IconButton';
 import { OpenIcon, SpeakerIcon, SpeakerMutedIcon } from '../../ui/Icons';
 import { useViewerConnection } from '../viewer/useViewerConnection';
@@ -8,6 +9,7 @@ import type { PlaybackConfig } from '../viewer/playbackPresets';
 import type { RoomAttachment } from '../../transport/wire';
 import { buildViewLink } from '../../lib/shareLink';
 import { loadTileVolume, saveTileVolume } from './roomPrefs';
+import { TILE_AUTO_RETRIES, TILE_RETRY_DELAYS_MS } from './tileRetry';
 
 export type TileVariant = 'grid' | 'focus' | 'small';
 
@@ -155,13 +157,70 @@ interface Props {
   onFocus: (broadcastId: string) => void;
 }
 
-// One attached POV: one ordinary /subscribe session (useViewerConnection,
-// keyed by the parent on the broadcast ID so a mode switch never remounts
-// it), its own volume pill in grid mode, the number-key badge, and the
-// broadcaster's own glass bar when it is theirs. presentationMux stays off —
-// the room offers no native (iPhone) fullscreen per tile; the "open
-// full-screen" link is a plain #/view/ link for that.
-export function RoomTile({
+// What the current attempt's session is doing, as far as retrying goes.
+// 'fatal' is an unplayable stream: a re-dial in the same browser fails the
+// same way, so it is never retried.
+type SessionPhase = 'pending' | 'watching' | 'dead' | 'fatal';
+
+// One attached POV. The session lives in RoomTileSession; this keeps the
+// attempt counter that keys it. The canvas transfers to the worker only
+// once, so a retry is a remount with a new canvas, never a re-run of the
+// connection effect.
+export function RoomTile(props: Props) {
+  const live = props.attachment.live;
+  const [attempt, setAttempt] = useState(0);
+  const [phase, setPhase] = useState<SessionPhase>('pending');
+  // Attempts in a row that never reached 'watching' (sets the delay), and
+  // the automatic retries left before only a tap re-dials.
+  const streakRef = useRef(0);
+  const budgetRef = useRef(TILE_AUTO_RETRIES);
+  const wasLiveRef = useRef(live);
+
+  const retry = useCallback(() => {
+    streakRef.current += 1;
+    setPhase('pending');
+    setAttempt((a) => a + 1);
+  }, []);
+
+  const onPhase = useCallback((p: SessionPhase) => {
+    if (p === 'watching') {
+      streakRef.current = 0;
+      budgetRef.current = TILE_AUTO_RETRIES;
+    }
+    setPhase(p);
+  }, []);
+
+  // Declared before the scheduler so a flip refills the budget first.
+  useEffect(() => {
+    if (live && !wasLiveRef.current) budgetRef.current = TILE_AUTO_RETRIES;
+    wasLiveRef.current = live;
+  }, [live]);
+
+  useEffect(() => {
+    if (phase !== 'dead' || !live || budgetRef.current <= 0) return;
+    const delay = TILE_RETRY_DELAYS_MS[Math.min(streakRef.current, TILE_RETRY_DELAYS_MS.length - 1)];
+    const t = setTimeout(() => {
+      budgetRef.current -= 1;
+      retry();
+    }, delay);
+    return () => clearTimeout(t);
+  }, [phase, live, retry]);
+
+  return <RoomTileSession key={attempt} {...props} onPhase={onPhase} onRetry={retry} />;
+}
+
+interface SessionProps extends Props {
+  onPhase: (p: SessionPhase) => void;
+  onRetry: () => void;
+}
+
+// One attempt's /subscribe session (useViewerConnection; the parent keys
+// the tile on the broadcast ID so a mode switch never remounts it), its own
+// volume pill in grid mode, the number-key badge, and the broadcaster's own
+// glass bar when it is theirs. presentationMux stays off — the room offers
+// no native (iPhone) fullscreen per tile; the "open full-screen" link is a
+// plain #/view/ link for that.
+function RoomTileSession({
   attachment,
   index,
   stripIndex,
@@ -175,12 +234,14 @@ export function RoomTile({
   showChrome,
   roomKey,
   onFocus,
-}: Props) {
+  onPhase,
+  onRetry,
+}: SessionProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const { broadcastId } = attachment;
   // Read once per mount: the tile's level is its own persisted preference.
   const [initialVolume] = useState(() => loadTileVolume(broadcastId));
-  const { status, stats, audio, popFull } = useViewerConnection(
+  const { status, stats, audio, popFull, endReason, errorFatal } = useViewerConnection(
     broadcastId,
     canvasRef,
     config.playout,
@@ -215,7 +276,15 @@ export function RoomTile({
 
   const away = !attachment.live;
   const offline = status === 'error' || status === 'ended';
+  // A 'stopped' end keeps redialling the code underneath (docs/79 D7), so
+  // only an error or any other end leaves the session dead.
+  const dead = status === 'error' || (status === 'ended' && endReason !== 'stopped');
+  const fatal = status === 'error' && errorFatal;
   const small = variant === 'small';
+
+  useEffect(() => {
+    onPhase(fatal ? 'fatal' : dead ? 'dead' : status === 'watching' ? 'watching' : 'pending');
+  }, [onPhase, fatal, dead, status]);
 
   let state: ReactNode = null;
   if (away) {
@@ -228,7 +297,18 @@ export function RoomTile({
       </>
     );
   } else if (offline) {
-    state = <span>{small ? 'Offline' : 'This stream is offline right now.'}</span>;
+    state = (
+      <>
+        <span>{small ? 'Offline' : 'This stream is offline right now.'}</span>
+        {/* A small tile is itself the focus button; Retry is on the
+            focused one. */}
+        {dead && !fatal && !small && (
+          <Button variant="secondary" className={styles.tileRetry} onClick={onRetry}>
+            Retry
+          </Button>
+        )}
+      </>
+    );
   } else if (popFull) {
     // docs/76 item 35: past the party's internet budget. The session keeps
     // retrying every 20 s and the tile joins when a slot frees; the label is

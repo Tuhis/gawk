@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { StrictMode } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
-const { roomSessions, roomState, FakeRoomSession, viewerSessions, FakeViewerSession } = vi.hoisted(() => {
+const { roomSessions, roomState, FakeRoomSession, viewerSessions, FakeViewerSession, viewerState } = vi.hoisted(() => {
   interface RoomCbs {
     onConnected: () => void;
     onState: (s: unknown) => void;
@@ -63,7 +63,10 @@ const { roomSessions, roomState, FakeRoomSession, viewerSessions, FakeViewerSess
     onReconnecting: (i: { attempt: number; delayMs: number; reason: string; closeCode?: number | null }) => void;
     onStats: (s: unknown) => void;
     onEnded: (reason: 'normal' | 'moderated') => void;
+    onError: (e: Error & { fatal?: boolean }) => void;
   }
+  // Broadcast IDs whose next dials the relay refuses (start() rejects).
+  const viewerState = { refuse: new Set<string>() };
   class FakeViewerSession {
     id: string;
     cbs: ViewerCbs;
@@ -73,14 +76,16 @@ const { roomSessions, roomState, FakeRoomSession, viewerSessions, FakeViewerSess
       this.cbs = cbs;
       viewerSessions.push(this);
     }
-    async start() {}
+    async start() {
+      if (viewerState.refuse.has(this.id)) throw new Error('refused');
+    }
     async stop() {
       this.stopped = true;
       this.cbs.onEnded('normal');
     }
   }
   const viewerSessions: FakeViewerSession[] = [];
-  return { roomSessions, roomState, FakeRoomSession, viewerSessions, FakeViewerSession };
+  return { roomSessions, roomState, FakeRoomSession, viewerSessions, FakeViewerSession, viewerState };
 });
 
 vi.mock('../../transport/room-session', async (importActual) => ({
@@ -99,6 +104,7 @@ vi.mock('../../lib/desktopLink', async (importActual) => ({
 }));
 
 import { LEAVE_DETACH_TIMEOUT_MS, RoomScreen, RoomView } from './RoomScreen';
+import { TILE_AUTO_RETRIES, TILE_RETRY_DELAYS_MS } from './tileRetry';
 import { NARROW_QUERY } from '../../lib/useMediaMatch';
 import { useRoomStore } from '../../state/roomStore';
 import { useTransportStore } from '../../state/transportStore';
@@ -155,6 +161,7 @@ async function joinAs(nickname = 'tuhis', over: Partial<RoomState> = {}) {
 beforeEach(() => {
   roomSessions.length = 0;
   viewerSessions.length = 0;
+  viewerState.refuse.clear();
   roomState.failStartWith = null;
   localStorage.clear();
   sessionStorage.clear();
@@ -325,6 +332,95 @@ describe('RoomScreen modes', () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(viewerSessions).toHaveLength(0);
   });
+});
+
+// BUGS.md "Room tile stays offline after its viewer session gives up": a
+// ViewerSession never re-dials once it has given up, so the tile re-creates
+// it — with a new canvas, since a canvas transfers to the worker only once —
+// when its attachment comes back live, or on a tap of Retry. A relay that
+// keeps refusing, or an attachment that flaps, is retried on a bounded,
+// growing schedule, never in a tight loop.
+describe('RoomScreen tile retry after the session gives up', () => {
+  afterEach(() => vi.useRealTimers());
+
+  const tileOf = (label: string) => screen.getAllByTestId('room-tile').find((t) => t.textContent?.includes(label))!;
+  const sessionsFor = (id: string) => viewerSessions.filter((v) => v.id === id);
+  const live = (id: string, isLive: boolean) =>
+    state({
+      seq: 4,
+      attachments: state().attachments.map((a) => (a.broadcastId === id ? { ...a, live: isLive } : a)),
+    });
+
+  it('an attachment that comes back live after the session gave up gets a new session on a new canvas', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const room = await joinAs();
+    await waitFor(() => expect(activeViewerIds()).toEqual(['AAAAAA', 'BBBBBB', 'CCCCCC']));
+    act(() => room.cbs.onState(live('AAAAAA', false)));
+    const first = sessionsFor('AAAAAA')[0];
+    const canvas = tileOf('alpha').querySelector('canvas');
+    expect(canvas).toBeTruthy();
+    // The reconnect budget runs out while the broadcaster is away.
+    act(() => first.cbs.onError(new Error('reconnect budget spent')));
+    // Away: nothing re-dials, however long.
+    await act(async () => void vi.advanceTimersByTime(10 * 60_000));
+    expect(sessionsFor('AAAAAA')).toHaveLength(1);
+
+    act(() => room.cbs.onState(live('AAAAAA', true)));
+    expect(within(tileOf('alpha')).getByText('This stream is offline right now.')).toBeTruthy();
+    await act(async () => void vi.advanceTimersByTime(TILE_RETRY_DELAYS_MS[0]));
+    await waitFor(() => expect(sessionsFor('AAAAAA')).toHaveLength(2));
+    expect(first.stopped).toBe(true);
+    expect(activeViewerIds()).toEqual(['AAAAAA', 'BBBBBB', 'CCCCCC']);
+    const fresh = tileOf('alpha').querySelector('canvas');
+    expect(fresh).toBeTruthy();
+    expect(fresh).not.toBe(canvas);
+    expect(within(tileOf('alpha')).queryByText('This stream is offline right now.')).toBeNull();
+  });
+
+  it('Retry on an offline tile re-dials at once', async () => {
+    viewerState.refuse.add('AAAAAA');
+    await joinAs();
+    const tile = () => tileOf('alpha');
+    await waitFor(() => expect(within(tile()).getByText('This stream is offline right now.')).toBeTruthy());
+    const canvas = tile().querySelector('canvas');
+    viewerState.refuse.clear();
+    fireEvent.click(within(tile()).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(sessionsFor('AAAAAA')).toHaveLength(2));
+    expect(tile().querySelector('canvas')).not.toBe(canvas);
+    await waitFor(() => expect(within(tile()).queryByText('This stream is offline right now.')).toBeNull());
+    expect(within(tile()).queryByRole('button', { name: 'Retry' })).toBeNull();
+  });
+
+  it('a relay that keeps refusing a live attachment is retried a bounded number of times, then waits for a tap', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    viewerState.refuse.add('AAAAAA');
+    await joinAs();
+    await waitFor(() => expect(within(tileOf('alpha')).getByText('This stream is offline right now.')).toBeTruthy());
+    // The first retry waits its delay — never an immediate re-dial.
+    expect(sessionsFor('AAAAAA')).toHaveLength(1);
+    for (let i = 0; i < 60; i++) await act(async () => void vi.advanceTimersByTime(10_000));
+    expect(sessionsFor('AAAAAA')).toHaveLength(1 + TILE_AUTO_RETRIES);
+    // The tap is still there.
+    fireEvent.click(within(tileOf('alpha')).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(sessionsFor('AAAAAA')).toHaveLength(2 + TILE_AUTO_RETRIES));
+  });
+
+  it('a flapping attachment against a refusing relay re-dials on a growing schedule, not on every flip', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    viewerState.refuse.add('AAAAAA');
+    const room = await joinAs();
+    await waitFor(() => expect(within(tileOf('alpha')).getByText('This stream is offline right now.')).toBeTruthy());
+    // A minute of away/live flips, live long enough each time for the
+    // shortest delay to elapse.
+    for (let i = 0; i < 20; i++) {
+      act(() => room.cbs.onState(live('AAAAAA', false)));
+      await act(async () => void vi.advanceTimersByTime(500));
+      act(() => room.cbs.onState(live('AAAAAA', true)));
+      await act(async () => void vi.advanceTimersByTime(2_500));
+    }
+    // 20 flips; far fewer dials.
+    expect(sessionsFor('AAAAAA').length).toBeLessThanOrEqual(3);
+  }, 20_000);
 });
 
 // Below the narrow breakpoint the footer used to hide the master slider
