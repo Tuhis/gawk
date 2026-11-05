@@ -417,6 +417,14 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
                 surface.elementWidth ? `${surface.elementWidth}×${surface.elementHeight}` : '—',
               ],
               ['Element frames', surface.elementFrames == null ? '—' : String(surface.elementFrames)],
+              [
+                'Stall recoveries',
+                surface.stallRecoveries === 0
+                  ? '0'
+                  : `${surface.stallRecoveries} (${surface.stallRecoverySeeks} seek` +
+                    (surface.stallRecoveryPlayErrors > 0 ? `, ${surface.stallRecoveryPlayErrors} play err` : '') +
+                    `) · last: ${surface.lastStallCause ?? '—'}`,
+              ],
             ] as StatsRow[],
           },
         ]

@@ -868,6 +868,12 @@ describe('ViewerScreen presentation surface (R16 gate + R22 MSE)', () => {
       elementWidth: null,
       elementHeight: null,
       elementFrames: null,
+      // The tier-2 stall watchdog never ran (no native fullscreen): a healthy
+      // zero, not null — the field is a session counter.
+      stallRecoveries: 0,
+      stallRecoverySeeks: 0,
+      stallRecoveryPlayErrors: 0,
+      lastStallCause: null,
     });
   });
 

@@ -79,4 +79,14 @@ export interface PresentationSurfaceStats {
   // Frames the element actually presented, counted via
   // requestVideoFrameCallback; null where rVFC (or the element) is absent.
   elementFrames: number | null;
+  // The tier-2 stall watchdog (presentationWatchdog.ts): recovery actions taken
+  // while native fullscreen was up, how many of them seeked (hole skip,
+  // live-edge landing, nudge), play() rejections among them, and the event that
+  // triggered the latest. A healthy session reads 0; a climbing count is a
+  // player that keeps stalling and being rescued — docs/27's on-device pass
+  // reads this to tell the two apart.
+  stallRecoveries: number;
+  stallRecoverySeeks: number;
+  stallRecoveryPlayErrors: number;
+  lastStallCause: string | null;
 }
