@@ -434,6 +434,9 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   MMS; **not CI-catchable end to end** — Chrome has no `ManagedMediaSource`, so
   `--muxer-check` never runs the `streaming === false` branch (docs/27
   Decision 10).
+- **Backstop**: should a hole still form, the stall watchdog (docs/27 "Stall
+  watchdog") seeks over it into the newest range, so it costs a recovery, not
+  the session.
 - **Remove this entry when** an on-device pass arms the surface (join, don't tap
   fullscreen) for longer than the queue depth with MMS parked, then taps
   fullscreen, and the capture shows `bufferedRanges` staying **1** throughout —
