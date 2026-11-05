@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/Tuhis/gawk/compare/gawk-ios/v1.7.1...gawk-ios/v1.8.0) (2026-11-05)
+
+
+### Features
+
+* **broadcast-desktop:** make Reliable the default uplink delivery (R73) ([#712](https://github.com/Tuhis/gawk/issues/712)) ([7fc677a](https://github.com/Tuhis/gawk/commit/7fc677aa37dc7d3f264309f66a745fc2f20bf675))
+
 ## [1.7.1](https://github.com/Tuhis/gawk/compare/gawk-ios/v1.7.0...gawk-ios/v1.7.1) (2026-11-05)
 
 

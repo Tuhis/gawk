@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.18.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.17.0...gawk-telemetry/v1.18.0) (2026-11-05)
+
+
+### Features
+
+* **telemetry:** facelift the dashboard and attribute stripe legs (R36) ([#715](https://github.com/Tuhis/gawk/issues/715)) ([3243741](https://github.com/Tuhis/gawk/commit/32437418165e9a93c91c0dba668db76d0304fabf))
+
 ## [1.17.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.16.0...gawk-telemetry/v1.17.0) (2026-11-05)
 
 

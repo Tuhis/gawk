@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.15.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.14.1...gawk-broadcast-desktop/v2.15.0) (2026-11-05)
+
+
+### Features
+
+* **broadcast-desktop:** make Reliable the default uplink delivery (R73) ([#712](https://github.com/Tuhis/gawk/issues/712)) ([7fc677a](https://github.com/Tuhis/gawk/commit/7fc677aa37dc7d3f264309f66a745fc2f20bf675))
+
 ## [2.14.1](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.14.0...gawk-broadcast-desktop/v2.14.1) (2026-11-05)
 
 

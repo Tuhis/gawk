@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.40.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.39.0...gawk-server/v0.40.0) (2026-11-05)
+
+
+### Features
+
+* **relay:** key a striped viewer's sessions to their owner in /statusz (R36) ([#714](https://github.com/Tuhis/gawk/issues/714)) ([cd44d05](https://github.com/Tuhis/gawk/commit/cd44d0534bdd219e9290c1708a62e275c7165c7e))
+
 ## [0.39.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.38.0...gawk-server/v0.39.0) (2026-11-02)
 
 
