@@ -430,8 +430,10 @@ fn the_undeliverable_notice_ignores_keyframes_it_already_holds() {
     p.on_stream(&keyframe_stream(30, 30_000, "vp8", &[1]), 1500.0, &mut out);
     for i in 0..4 {
         let t = 2000.0 + 1000.0 * f64::from(i);
-        p.on_datagram(&undeliverable(21, 3000), t, &mut out);
-        p.on_datagram(&undeliverable(30, 3000), t, &mut out);
+        // stalledMs grows like a real relay's, keeping every pass stale.
+        let stalled_ms = 3000 + 1000 * i;
+        p.on_datagram(&undeliverable(21, stalled_ms), t, &mut out);
+        p.on_datagram(&undeliverable(30, stalled_ms), t, &mut out);
         assert_eq!(p.stall(t), None, "a notice for a held keyframe is stale");
     }
 }
