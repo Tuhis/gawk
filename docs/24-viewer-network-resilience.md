@@ -967,6 +967,14 @@ build). Notes and deviations:
     `gawk:resilient-mode` key migrates to it, and `getResilientMode()` still
     reads "not live-edge" for every call site in this document.
 
+19. **Field fix (2026-11-06): the relay says when it cannot deliver video.**
+    The WebKit stream-path wedge (BUGS.md, the two Safari entries) stops every
+    stream-borne byte while datagrams keep flowing, and in this mode that is
+    *everything*, control sideband included. The relay now tells the viewer
+    so on a datagram (wire `0x1E` VideoUndeliverable). Design, decisions and
+    acceptance criteria: [Undeliverable-video notice](#undeliverable-video-notice-finding-19-2026-11-06)
+    below.
+
 Ordering: X1 → X2 → X3 form the minimal reliable path (verifiable with the
 harness before any UI exists, via a URL-level override); X4 makes it a
 product feature; X5 rides alongside; X6 last. Nothing here blocks or is
@@ -980,6 +988,149 @@ datagram-based (in-cluster links are effectively lossless; the lossy leg is
 the last mile) and the `delivery` param is never propagated upstream. An
 edge can only reliably deliver what it received — origin→edge ingress loss
 is out of scope by the same argument as broadcaster→relay loss.
+
+## Undeliverable-video notice (finding 19, 2026-11-06)
+
+**Problem.** A stream-path wedge — WebKit stops taking stream bytes while
+datagrams keep arriving (BUGS.md, "Safari viewer: keyframe delivery stops…"
+and "…holds a dead session forever") — leaves the viewer with no video and,
+depending on the mode, no way to tell. The client watchdogs covered:
+
+| Mode | What still arrives during the wedge | Covered before by |
+|---|---|---|
+| Live edge | deltas, audio, control (datagrams) | `checkKeyframeStall` (8 s) |
+| Resilient | **nothing** — R19 writes deltas *and* the control sideband (ViewerCount, ClockMapping) onto the video carrier, and since 2026-07-28 audio rides its own carrier | `checkSessionStall` only (15 s) |
+| Deep buffer, with audio | control sideband (`drainControlSideband`) | `checkMediaStall` (6 s) |
+| Deep buffer, **no audio** | control sideband | nothing client-side: a static screen looks the same |
+
+The relay's evictions do not close the gap: they end the session, which is
+the one event WebKit is known to sometimes not report, and two of them are
+weaker than they look. At the default 500 ms GOP a parked keyframe write is
+*superseded* by the next keyframe before `KeyframeWriteTimeout` (1 s), and a
+superseded write never feeds `KeyframeSlowEvictThreshold`. And quic-go's
+`Write` returns once all but one packet's worth is queued, so a fresh
+carrier's prologue and first record "succeed" on a stream that cannot send —
+which is what keeps a wedged DVR cursor's progress stamp fresh. Both are
+recorded, not changed, here: the notice does not depend on either.
+
+**What the relay knows.** It knows it holds video for this subscriber — it
+handed it a keyframe — and how many bytes that hand-off put on the wire. A
+static screen produces no frames, therefore no keyframes, therefore no
+hand-offs: "I have video I cannot deliver" is unambiguous in a way no
+client-side signal is.
+
+Decisions:
+
+- **D1 — The signal is zero-byte keyframe hand-offs over a span.** A
+  subscriber is undeliverable when at least `UndeliverableMinKeyframes` (2)
+  consecutive keyframe hand-offs moved **zero bytes** and the oldest was
+  handed off at least `UndeliverableVideoAfter` (3 s) ago. A hand-off is a
+  `sendKeyframe` or `dvrSendKeyframe` that reached the open: a failed open
+  counts as zero bytes; a write counts by the `n` it returns, whether it
+  completed, timed out or was superseded. Any hand-off that moved a byte ends
+  the episode. Pre-hand-off drops (egress cap, stale prime, DVR catch-up
+  ceiling) are not hand-offs. Every mode feeds it, because every mode sends
+  its keyframes on their own stream.
+- **D2 — Bytes, not completion, and keyframes, not carriers.** "No keyframe
+  completed" would also flag a thin link that moves bytes but cannot finish
+  a keyframe inside one GOP: congested, not wedged, and a reconnect would not
+  help it. Carrier writes are not an input because quic-go's one-packet
+  buffering makes small writes succeed on a stream that cannot send. The
+  same buffering means a keyframe under ~1.4 KB counts as moved; that errs
+  towards missing a wedge, never towards a false notice.
+- **D3 — 3 s, below every eviction.** The notice has to arrive while the
+  session still exists. `UndeliverableVideoAfter` is below the keyframe
+  streaks (≈5 s) and `DefaultDVRProgressTimeout` (6 s). Constants, not
+  knobs, like the eviction thresholds; `Options.UndeliverableAfter` exists
+  for tests only (the `StripeLegLease` precedent), so `registryOptions`
+  gains nothing.
+- **D4 — Wire: `0x1E` VideoUndeliverable, a datagram.** Exactly 10 bytes:
+  `version ‖ 0x1E ‖ uint32 keyframeId ‖ uint32 stalledMs`, big-endian,
+  strict parse, no flags byte (a richer notice is a new type). `keyframeId`
+  is the newest keyframe handed off (for a DVR cursor, the cursor's);
+  `stalledMs` is the time since the episode's oldest zero-byte hand-off, and
+  the viewer dates the stall with it (D7). Always sent with `SendDatagram` directly —
+  never through the queue, which a resilient subscriber's drain would put on
+  the wedged carrier. 0x13–0x1D were already taken by room, closing,
+  local-relay and voice types.
+- **D5 — Cadence.** Evaluated only at hand-off outcomes, so a static screen
+  can never produce one. At most one per `UndeliverableNoticeInterval` (1 s)
+  and at most `UndeliverableMaxNotices` (3) per episode.
+- **D6 — Who gets it.** A viewer's own session in any delivery mode. Never an
+  `/internal/subscribe` edge or PoP leg (its own pod judges its viewers, and
+  the origin's notice would arrive at the edge as a publisher datagram), and
+  never a stripe leg (it carries no keyframes).
+- **D7 — The viewer confirms before it acts.** A notice can be stale: queued
+  behind an outage that has since cleared and arriving in a burst just ahead
+  of the video. So the viewer (SPA `viewer.ts` and the iOS pipeline, one for
+  one):
+  - ignores a notice naming a keyframe at or before the last keyframe it
+    received (serial order; *last received*, not maximum, because a
+    broadcaster restart renumbers from 0), **if that keyframe arrived less
+    than `stalledMs` ago**. One that arrived earlier is from before the stall
+    and cannot be what ended it. That is the broadcaster-restart case: the
+    relay keeps the subscriber across a new publisher session (and the
+    episode, see below), so its notices name new-run IDs, and a viewer
+    wedged across the restart holds only an old-run keyframe whose ID
+    compares as "later". Its comparison is meaningless, and its age says so.
+    A genuinely stale notice arrives in the same burst as the video it
+    trails, so its keyframe is milliseconds old.
+  - arms on the first notice it does not ignore, recording the stall's start
+    (`now − stalledMs`);
+  - stands down if a keyframe at or after the armed one arrives;
+  - reconnects on a second notice of **the same stall**, at least
+    `UNDELIVERABLE_CONFIRM_MS` (500 ms) after the first. "The same stall"
+    means a start within `UNDELIVERABLE_EPISODE_SLACK_MS` (1 s) of the armed
+    one: two notices of one episode differ only by transit jitter, and two
+    episodes start at least `UndeliverableVideoAfter` (3 s) apart. A notice
+    from a different stall re-arms instead, so an arm left over from an
+    earlier stall (for example one from an old run, whose ID the new run's
+    keyframes never reach to stand it down) cannot confirm a single later
+    notice.
+
+  A recovered relay sends no second notice; a stale burst is milliseconds
+  wide. The reconnect is the watchdogs' `fail()` → `ViewerSession` path: a
+  plain error, no close code, non-terminal.
+
+  *Why no run identifier on the wire.* A publisher-run field (the hub's
+  `generation` or `publisherEpoch`) was the obvious alternative and was
+  rejected for two reasons. Keyframes do not carry the run, so the viewer
+  could not tell which run *its* keyframe came from, only which run a notice
+  came from. And an edge or PoP hub's run marks its own upstream claim: an
+  origin's publisher restart leaves the edge's pull session, and with it the
+  edge hub's `generation`, as they were. `stalledMs` needs neither, because
+  the relay's episode (D1) is per subscriber and survives the publisher claim
+  (`TestUndeliverableEpisodeSurvivesABroadcasterRestart`). The residual: if
+  a keyframe was written in full and the wedge then kept it from the viewer,
+  the viewer's last keyframe can still be younger than the stall the relay
+  dates from the *next* hand-off. That errs towards missing a wedge, never
+  towards a false reconnect, the same way as D2's buffered small keyframe.
+- **D8 — Version skew.**
+  - *New viewer, old relay*: no notices; the watchdogs behave exactly as
+    before. They stay for that reason.
+  - *Old viewer, new relay*: the notice is an unknown datagram type, counted
+    in `badDatagrams` and dropped by the reassembler (SPA and iOS). But every
+    inbound datagram renews the old viewer's dead-session watchdog, and in
+    resilient mode the notice is the only datagram a wedged session receives;
+    D5's episode cap is what keeps that watchdog able to fire, about 5 s later
+    than before (≈20 s instead of 15 s).
+- **D9 — Ops surface.** `/statusz` `subscriberDetails[].undeliverableNotices`
+  per session, and one `Warn` per episode ("subscriber's keyframes are
+  moving no bytes…"). No broadcast-level counter or Prometheus series: the
+  question it answers ("is *this* frozen viewer wedged?") is per session, and
+  it is the live half of BUGS.md's Safari confirmation procedure.
+
+What this does **not** do: explain why WebKit wedges. It turns an
+undetectable freeze into a reconnect at ≈4 s (3 s plus one notice interval) in
+every mode, with or without audio.
+
+| Chunk | Scope | Acceptance criteria | Status |
+|-------|-------|---------------------|--------|
+| UV1 | **Wire** — `TypeVideoUndeliverable` (0x1E), `VideoUndeliverableSize` (10), encode/parse in `wire.go`, `wire.ts`, `crates/wire` | Golden vector `011e0102030400000bb8` byte-identical in `wire_test.go`, `wire.test.ts`, `crates/wire/tests/golden.rs`; strict parse rejects short, trailing, wrong version, wrong type in all three | ✅ 2026-11-06 |
+| UV2 | **Relay** — the D1 tracker in `hub.go` (`noteKeyframeOutcome`) fed by `sendKeyframe`/`writeKeyframe` and `dvrSendKeyframe`; D5 cadence + cap; D6 eligibility; D9 stat + log | `undeliverable_test.go`: a wedged live viewer (writes parked, superseded) gets a notice naming an ingested keyframe with `stalledMs` ≥ threshold, a healthy viewer beside it none, at most one per interval; open failures produce a notice **before** the 4001 eviction; a static screen after a failed keyframe produces none; a slow peer that moves bytes produces none (and is still attached); a delivered keyframe resets the streak; a broadcaster restart does not, and the run's notices keep dating its start (`StalledMs` grows by ≥ the notice interval across the claim); resilient viewers get it as a datagram and never as a carrier record; Deep-buffer viewers get it; an internal session never; exactly `UndeliverableMaxNotices` over a long wedge; `/statusz` counts it; the full hub suite stays green under `-race` | ✅ 2026-11-06 |
+| UV3 | **SPA viewer** — `handleVideoUndeliverable` + D7 guards in `viewer.ts` | `viewer.test.ts`: reconnects (no close code) on a second notice ≥ 500 ms after the first with no audio ever received; ignores notices for a held keyframe; stands down when the named keyframe arrives; still acts after a broadcaster restart renumbered frames, both after a new-run keyframe arrived and when wedged across the restart with only an old-run keyframe held; a notice from a later stall re-arms rather than confirming an earlier stall's arm; the notice never reaches the reassembler (`badDatagrams` 0), a malformed one is dropped | ✅ 2026-11-06 |
+| UV4 | **iOS viewer** — `Stall::Undeliverable` in the `gawk-viewer` pipeline, same D7 rule | `pipeline/tests.rs`: the same cases as UV3, on the pipeline's clock-free API | ✅ 2026-11-06 |
+| UV5 | **Field confirmation** — a frozen Safari viewer's paired capture | `/statusz` shows `undeliverableNotices` > 0 on the frozen session and the client reconnected within ~5 s; recorded in BUGS.md's Safari entries | ⏳ needs a real wedge |
 
 ## Verification plan (manual, after X6)
 

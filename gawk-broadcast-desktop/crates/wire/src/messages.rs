@@ -14,7 +14,8 @@ use crate::{
     TYPE_BROADCAST_ANNOUNCE, TYPE_CLOCK_MAPPING, TYPE_DECODER_CONFIG, TYPE_DELIVERY_ACK,
     TYPE_RELAY_IDENTITY, TYPE_RELIABLE_CARRIER, TYPE_RESUME_TOKEN, TYPE_SESSION_CLOSING,
     TYPE_STREAM_FRAME, TYPE_TELEMETRY_ENDPOINT, TYPE_TELEMETRY_HELLO, TYPE_TIME_SYNC,
-    TYPE_VIDEO_CHUNK, TYPE_VIEWER_COUNT, VERSION, VIDEO_CHUNK_HEADER_SIZE, VIEWER_COUNT_SIZE,
+    TYPE_VIDEO_CHUNK, TYPE_VIDEO_UNDELIVERABLE, TYPE_VIEWER_COUNT, VERSION,
+    VIDEO_CHUNK_HEADER_SIZE, VIDEO_UNDELIVERABLE_SIZE, VIEWER_COUNT_SIZE,
 };
 
 fn check_prefix(buf: &[u8], want_type: u8) -> Result<(), WireError> {
@@ -300,6 +301,46 @@ pub fn parse_delivery_ack(dgram: &[u8]) -> Result<(DeliveryMode, u16), WireError
         other => return Err(WireError::UnknownDeliveryMode(other)),
     };
     Ok((mode, u16::from_be_bytes(dgram[3..5].try_into().unwrap())))
+}
+
+// --- VideoUndeliverable (0x1E) ---------------------------------------------
+
+/// The parsed contents of a VideoUndeliverable datagram (docs/24 finding 19).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VideoUndeliverable {
+    /// The newest keyframe the relay handed to this subscriber and could not
+    /// deliver. A viewer holding a keyframe at or after it (serial order),
+    /// received within `stalled_ms`, is reading a stale notice and ignores it.
+    pub keyframe_id: u32,
+    /// How long the relay has been unable to deliver, from the episode's
+    /// oldest undelivered hand-off (a new publisher session does not reset
+    /// it). The viewer dates the stall with it (docs/24 D7): a held keyframe
+    /// older than the stall cannot make the notice stale, and two notices
+    /// dating the same start are one episode.
+    pub stalled_ms: u32,
+}
+
+/// Appends a VideoUndeliverable datagram.
+pub fn append_video_undeliverable(dst: &mut Vec<u8>, m: VideoUndeliverable) {
+    dst.extend_from_slice(&[VERSION, TYPE_VIDEO_UNDELIVERABLE]);
+    dst.extend_from_slice(&m.keyframe_id.to_be_bytes());
+    dst.extend_from_slice(&m.stalled_ms.to_be_bytes());
+}
+
+/// Parses a VideoUndeliverable datagram. Strict: exact length, right version
+/// and type.
+pub fn parse_video_undeliverable(dgram: &[u8]) -> Result<VideoUndeliverable, WireError> {
+    if dgram.len() != VIDEO_UNDELIVERABLE_SIZE {
+        return Err(WireError::BadLength {
+            len: dgram.len(),
+            want: VIDEO_UNDELIVERABLE_SIZE,
+        });
+    }
+    check_prefix(dgram, TYPE_VIDEO_UNDELIVERABLE)?;
+    Ok(VideoUndeliverable {
+        keyframe_id: u32::from_be_bytes(dgram[2..6].try_into().unwrap()),
+        stalled_ms: u32::from_be_bytes(dgram[6..10].try_into().unwrap()),
+    })
 }
 
 // --- TelemetryHello (0x0D) ---------------------------------------------------

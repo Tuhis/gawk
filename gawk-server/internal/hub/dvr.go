@@ -506,12 +506,21 @@ func (s *Subscriber) dvrSendKeyframe() bool {
 		s.dvrNoteCursor()
 		return true
 	}
+	// The undeliverable-video tracker names the newest keyframe handed off;
+	// for this subscriber that is the cursor's, however far behind live.
+	if kid, ok := keyframeID(msg); ok {
+		s.kfMu.Lock()
+		s.kfNewestID = kid
+		s.kfMu.Unlock()
+	}
+	handedAt := time.Now()
 	st, err := s.sender.OpenKeyframeStream()
 	if err != nil {
 		// Same streak as the live path (sendKeyframe): a peer that refuses
 		// KeyframeOpenFailEvictThreshold consecutive keyframe streams has
 		// exhausted its stream credit and is a zombie, whatever its mode.
 		// drainDVR opens its own streams, so it must feed the streak itself.
+		s.noteKeyframeOutcome(handedAt, false)
 		s.noteKeyframeOpenFailed()
 		s.kfDroppedOpenFailed.Add(1)
 		s.dvrCursor = s.dvrCursor.AtFirstRecord()
@@ -520,7 +529,9 @@ func (s *Subscriber) dvrSendKeyframe() bool {
 	}
 	s.noteKeyframeOpenSucceeded()
 	_ = st.SetWriteDeadline(time.Now().Add(s.hub.registry.opts.KeyframeWriteTimeout))
-	if _, err := st.Write(msg); err != nil {
+	n, err := st.Write(msg)
+	s.noteKeyframeOutcome(handedAt, n > 0)
+	if err != nil {
 		st.CancelWrite()
 		s.kfDroppedSlow.Add(1)
 	} else if err := st.Close(); err != nil {

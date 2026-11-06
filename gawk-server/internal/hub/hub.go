@@ -82,6 +82,32 @@ const CarrierOpenFailEvictThreshold = 10
 // bound — the next keyframe rotates the carrier anyway.
 const CarrierWriteTimeout = 500 * time.Millisecond
 
+// UndeliverableVideoAfter is how long a subscriber's keyframe hand-offs may
+// keep moving zero bytes before the relay tells the viewer, on a datagram,
+// that it holds video the session will not take (wire.TypeVideoUndeliverable,
+// docs/24 finding 19). Below the eviction streaks (≈5 s) and DefaultDVRProgressTimeout
+// (6 s) on purpose: the notice must reach the viewer while the session still
+// exists, because WebKit may never report the close that follows an eviction.
+// A constant, not a knob — the same reasoning as the eviction thresholds.
+const UndeliverableVideoAfter = 3 * time.Second
+
+// UndeliverableMinKeyframes is how many consecutive zero-byte hand-offs the
+// span must contain: one failed write is a moment, not a verdict.
+const UndeliverableMinKeyframes = 2
+
+// UndeliverableNoticeInterval rate-limits the notice per subscriber. The
+// condition is re-evaluated at every failed hand-off (GOP cadence), so this is
+// what bounds a short-GOP broadcast to one notice a second.
+const UndeliverableNoticeInterval = time.Second
+
+// UndeliverableMaxNotices caps one episode (until a hand-off moves a byte).
+// A current viewer acts on the second notice; the third covers one lost
+// datagram. The cap exists for viewers that predate the notice: they drop it
+// as a bad datagram but count it as inbound, and in resilient mode — where the
+// count keepalive rides the wedged carrier — an endless notice would hold off
+// the dead-session watchdog that is their only way out.
+const UndeliverableMaxNotices = 3
+
 // AudioSidebandQueueDepth bounds the reliable subscriber's audio lane: ~1.3 s
 // of 50/s Opus packets, enough to absorb a scheduling hiccup and one
 // CarrierWriteTimeout. Deliberately not QueueDepth, which is sized for video
@@ -214,6 +240,10 @@ type Options struct {
 	// datagram before it is reaped as orphaned. Defaults to
 	// DefaultStripeLegLease; for tests only, deliberately no flag.
 	StripeLegLease time.Duration
+
+	// UndeliverableAfter overrides UndeliverableVideoAfter. For tests only,
+	// deliberately no flag (the StripeLegLease precedent).
+	UndeliverableAfter time.Duration
 
 	// DVRMaxCatchup caps how much faster than live a recovering DVR subscriber
 	// may send, as a multiple of the broadcast's own bitrate. Negative
@@ -386,6 +416,12 @@ type SubscriberStats struct {
 	DVRLagMs    int64  `json:"dvrLagMs,omitempty"`
 	DVRGopSeq   int64  `json:"dvrGopSeq,omitempty"`
 	DVRResyncs  uint64 `json:"dvrResyncs,omitempty"`
+
+	// UndeliverableNotices counts the VideoUndeliverable datagrams sent
+	// to this viewer (docs/24 finding 19): non-zero means the relay has watched its
+	// keyframe hand-offs move no bytes for UndeliverableVideoAfter and said
+	// so. The live half of the BUGS.md Safari wedge confirmation procedure.
+	UndeliverableNotices uint64 `json:"undeliverableNotices,omitempty"`
 }
 
 // Stats is a point-in-time snapshot of hub state, for logging and the
@@ -839,6 +875,9 @@ func NewRegistry(log *slog.Logger, opts Options) *Registry {
 	}
 	if opts.DVRProgressTimeout <= 0 {
 		opts.DVRProgressTimeout = DefaultDVRProgressTimeout
+	}
+	if opts.UndeliverableAfter <= 0 {
+		opts.UndeliverableAfter = UndeliverableVideoAfter
 	}
 	if opts.StripeLegLease <= 0 {
 		opts.StripeLegLease = DefaultStripeLegLease
@@ -1934,6 +1973,7 @@ func (r *Registry) statsWith(key func(id string) string, ownerKeys bool) Registr
 				DVRLagMs:              s.dvrLagMs.Load(),
 				DVRGopSeq:             s.dvrGopSeq.Load(),
 				DVRResyncs:            s.dvrResyncs.Load(),
+				UndeliverableNotices:  s.undeliverableNotices.Load(),
 				ParityK:               s.parityK,
 				ParityRequested:       s.parityRequested,
 				StripeLeg:             s.stripeLeg,
@@ -3040,6 +3080,19 @@ type Subscriber struct {
 	// CarrierOpenFailEvictThreshold). Grows at GOP cadence, not record cadence.
 	carConsecOpenFailed int
 	evicting            bool
+	// Undeliverable-video tracking (docs/24 finding 19), guarded by kfMu.
+	// undelivered counts consecutive keyframe hand-offs that put zero bytes
+	// on the wire and undeliveredSince is the oldest one's hand-off time; a
+	// hand-off that moved any byte zeroes both. kfNewestID is the newest
+	// handed-off keyframe, the one a notice names; undeliverableNoticeAt is
+	// the last notice, for UndeliverableNoticeInterval, and episodeNotices
+	// counts this episode's against UndeliverableMaxNotices.
+	undelivered           int
+	undeliveredSince      time.Time
+	kfNewestID            uint32
+	undeliverableNoticeAt time.Time
+	episodeNotices        int
+	undeliverableNotices  atomic.Uint64
 	// Keyframe drops by cause; keyframeDrops() snapshots them.
 	kfDroppedSuperseded atomic.Uint64
 	kfDroppedSlow       atomic.Uint64
@@ -3449,11 +3502,12 @@ func isAudioDatagram(dgram []byte) bool {
 	return err == nil && (typ == wire.TypeAudioFrame || typ == wire.TypeAudioConfig)
 }
 
-// sendSidebandDatagram delivers a datagram to a reliable subscriber over the
-// unreliable datagram path — byte-for-byte the normal drain's per-datagram
-// handling (bandwidth charge, send, egress + error counters). It is the
-// unreachable-safety-net sink for audio that somehow reaches the video drain;
-// the audio lane's real sink is its own carrier stream.
+// sendSidebandDatagram delivers a datagram over the unreliable datagram path
+// directly, bypassing the queue — byte-for-byte the normal drain's
+// per-datagram handling (bandwidth charge, send, egress + error counters).
+// Its callers: a DVR subscriber's control sideband, the VideoUndeliverable
+// notice (any mode), and the unreachable-safety-net for audio that somehow
+// reaches the reliable video drain.
 func (s *Subscriber) sendSidebandDatagram(dgram []byte) {
 	if !s.hub.registry.consumeBandwidth(len(dgram)) {
 		s.dropped.Add(1)
@@ -3630,6 +3684,10 @@ func (s *Subscriber) sendKeyframe(msg []byte, seq uint64) {
 		return
 	}
 	s.kfLastSeq = seq
+	if id, ok := keyframeID(msg); ok {
+		s.kfNewestID = id
+	}
+	handedAt := time.Now()
 	if s.legCarrier {
 		// The leg writer's rotation also abandons a write blocked on the
 		// old carrier and records the keyframe for its stale check (F10).
@@ -3658,6 +3716,9 @@ func (s *Subscriber) sendKeyframe(msg []byte, seq uint64) {
 		evict := s.noteKeyframeOpenFailedLocked()
 		s.kfMu.Unlock()
 		s.kfDroppedOpenFailed.Add(1)
+		// Before the evict: the notice is a datagram, and it must leave
+		// while the session still exists.
+		s.noteKeyframeOutcome(handedAt, false)
 		if evict {
 			go s.evict()
 		}
@@ -3668,14 +3729,17 @@ func (s *Subscriber) sendKeyframe(msg []byte, seq uint64) {
 	s.kfWriters.Add(1)
 	s.kfMu.Unlock()
 
-	go s.writeKeyframe(stream, msg)
+	go s.writeKeyframe(stream, msg, handedAt)
 }
 
-func (s *Subscriber) writeKeyframe(stream KeyframeStream, msg []byte) {
+func (s *Subscriber) writeKeyframe(stream KeyframeStream, msg []byte, handedAt time.Time) {
 	defer s.kfWriters.Done()
 
 	_ = stream.SetWriteDeadline(time.Now().Add(s.hub.registry.opts.KeyframeWriteTimeout))
-	_, err := stream.Write(msg)
+	n, err := stream.Write(msg)
+	// Whatever else this write was (delivered, slow, superseded), whether it
+	// moved a byte is what tells a wedged session from a congested one.
+	s.noteKeyframeOutcome(handedAt, n > 0)
 	if err == nil {
 		err = stream.Close()
 	}
@@ -3733,6 +3797,80 @@ func (s *Subscriber) writeKeyframe(stream KeyframeStream, msg []byte) {
 	}
 	s.keyframesSent.Add(1)
 	s.egressKeyframeBytes.Add(uint64(len(msg)))
+}
+
+// keyframeID returns a StreamFrame message's frameID.
+func keyframeID(msg []byte) (uint32, bool) {
+	hdr, err := wire.ParseStreamFrameHeader(msg)
+	if err != nil {
+		return 0, false
+	}
+	return hdr.FrameID, true
+}
+
+// noteKeyframeOutcome feeds one keyframe hand-off into the undeliverable-video
+// tracker (docs/24 finding 19) and sends the VideoUndeliverable notice it triggers,
+// if any. moved is whether the hand-off put any byte on the wire: a failed
+// open or a write that returned having moved nothing is the zero-byte case.
+//
+// Bytes, not completion, because completion is the wrong question twice
+// over. A thin link that cannot finish a keyframe inside one GOP is
+// congested, not wedged, and a reconnect would not help it. And quic-go's
+// Write returns once all but one packet's worth is queued, so a small write
+// "succeeds" on a stream that cannot send at all — which is also why carrier
+// records are not an input here (docs/24 finding 19, D2).
+//
+// Called without kfMu held. Evaluated only at hand-off outcomes, so a static
+// screen (no keyframes, no outcomes) can never produce a notice.
+func (s *Subscriber) noteKeyframeOutcome(handedAt time.Time, moved bool) {
+	// A viewer's own session only: an edge or PoP leg is judged by the pod
+	// serving its viewers, and a stripe leg carries no keyframes.
+	if s.internal || s.stripeLeg {
+		return
+	}
+	s.kfMu.Lock()
+	if moved {
+		s.undelivered = 0
+		s.undeliveredSince = time.Time{}
+		s.episodeNotices = 0
+		s.kfMu.Unlock()
+		return
+	}
+	if s.closed.Load() {
+		// Close cancels the in-flight write; that is not the viewer's link.
+		s.kfMu.Unlock()
+		return
+	}
+	s.undelivered++
+	if s.undelivered == 1 {
+		s.undeliveredSince = handedAt
+	}
+	now := time.Now()
+	stalled := now.Sub(s.undeliveredSince)
+	if s.undelivered < UndeliverableMinKeyframes || stalled < s.hub.registry.opts.UndeliverableAfter ||
+		s.episodeNotices >= UndeliverableMaxNotices ||
+		(!s.undeliverableNoticeAt.IsZero() && now.Sub(s.undeliverableNoticeAt) < UndeliverableNoticeInterval) {
+		s.kfMu.Unlock()
+		return
+	}
+	firstOfEpisode := s.episodeNotices == 0
+	s.episodeNotices++
+	s.undeliverableNoticeAt = now
+	streak := s.undelivered
+	msg := wire.AppendVideoUndeliverable(nil, wire.VideoUndeliverable{
+		KeyframeID: s.kfNewestID,
+		StalledMs:  uint32(min(stalled.Milliseconds(), math.MaxUint32)),
+	})
+	s.kfMu.Unlock()
+
+	if firstOfEpisode {
+		s.hub.log.Warn("subscriber's keyframes are moving no bytes; telling the viewer its video is undeliverable",
+			"subscriber", s.statsKey, "stalled_ms", stalled.Milliseconds(), "consecutive_keyframes", streak)
+	}
+	s.undeliverableNotices.Add(1)
+	// A datagram, always — the one path a stream-path wedge leaves open. Never
+	// the queue: a reliable subscriber's drain would put it on a carrier.
+	s.sendSidebandDatagram(msg)
 }
 
 // evict closes an unreachable subscriber's session and removes it from the

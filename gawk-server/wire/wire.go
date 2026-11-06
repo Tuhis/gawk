@@ -236,6 +236,23 @@ const (
 	// tolerance and strict flags byte as RelayIdentity, same
 	// never-sent-by-clients rule.
 	TypeTelemetryEndpoint = 0x12
+
+	// 0x13–0x1D are allocated beside their messages: room.go (0x13–0x16),
+	// closing.go (0x17), localrelay.go (0x18–0x19) and voice.go (0x1A–0x1D).
+
+	// TypeVideoUndeliverable identifies a VideoUndeliverable datagram
+	// (docs/24 finding 19): relay→viewer, "I hold video for you and cannot get it
+	// onto your session". Sent while the relay's keyframe hand-offs to this
+	// subscriber keep moving zero bytes (hub: UndeliverableVideoAfter), at most
+	// once per UndeliverableNoticeInterval, and only on datagrams — the one
+	// path a stream-path wedge leaves working (QUIC datagrams are not flow
+	// controlled). A static screen produces no keyframes, so it never produces
+	// this message, which is what lets a viewer act on it where its own
+	// heuristics cannot (a broadcast with no audio). Never sent on
+	// /internal/subscribe or to a stripe/PoP leg. A viewer that predates it
+	// counts it as a bad datagram and drops it; clients parse it and never
+	// send it.
+	TypeVideoUndeliverable = 0x1E
 )
 
 // DeliveryMode names what a subscriber is actually being served, as carried
@@ -796,6 +813,64 @@ func ParseDeliveryAck(dgram []byte) (mode DeliveryMode, bufferMs uint16, err err
 		return 0, 0, fmt.Errorf("%w: unknown delivery mode %d", ErrBadType, dgram[2])
 	}
 	return mode, binary.BigEndian.Uint16(dgram[3:5]), nil
+}
+
+// VideoUndeliverableSize is the exact size of a VideoUndeliverable datagram:
+// version, type, then the uint32 keyframe ID and the uint32 stall age.
+const VideoUndeliverableSize = 10
+
+// VideoUndeliverable is the parsed contents of a VideoUndeliverable datagram
+// (docs/24 finding 19). Layout, big-endian, exactly VideoUndeliverableSize bytes:
+//
+//	byte 0      Version
+//	byte 1      TypeVideoUndeliverable
+//	bytes 2-5   uint32 KeyframeID
+//	bytes 6-9   uint32 StalledMs
+type VideoUndeliverable struct {
+	// KeyframeID is the frameID of the newest keyframe the relay handed to
+	// this subscriber and could not deliver. A viewer that already holds a
+	// keyframe at or after it (serial order), received within StalledMs, is
+	// reading a stale notice — one queued behind an outage that has since
+	// cleared — and ignores it.
+	KeyframeID uint32
+	// StalledMs is how long the relay has been unable to deliver, measured
+	// from the oldest undelivered hand-off of the episode, which a new
+	// publisher session does not reset. Not just diagnostics: it is how a
+	// viewer dates the stall (docs/24 D7). A held keyframe older than it is
+	// from before the stall — after a broadcaster restart, from a run whose
+	// frameIDs do not compare with KeyframeID — and two notices dating the
+	// same start belong to one episode. Saturates.
+	StalledMs uint32
+}
+
+// AppendVideoUndeliverable appends a VideoUndeliverable datagram to dst and
+// returns the extended slice.
+func AppendVideoUndeliverable(dst []byte, m VideoUndeliverable) []byte {
+	dst = append(dst, Version, TypeVideoUndeliverable)
+	dst = binary.BigEndian.AppendUint32(dst, m.KeyframeID)
+	dst = binary.BigEndian.AppendUint32(dst, m.StalledMs)
+	return dst
+}
+
+// ParseVideoUndeliverable parses a VideoUndeliverable datagram. Strict, like
+// every fixed-size message here: exact length, right version and type. There
+// is no flags byte to extend; a richer notice is a new type.
+func ParseVideoUndeliverable(dgram []byte) (VideoUndeliverable, error) {
+	if len(dgram) != VideoUndeliverableSize {
+		return VideoUndeliverable{}, fmt.Errorf("%w: %d bytes, want exactly %d for video undeliverable",
+			ErrBadLength, len(dgram), VideoUndeliverableSize)
+	}
+	if dgram[0] != Version {
+		return VideoUndeliverable{}, fmt.Errorf("%w: 0x%02x", ErrBadVersion, dgram[0])
+	}
+	if dgram[1] != TypeVideoUndeliverable {
+		return VideoUndeliverable{}, fmt.Errorf("%w: got 0x%02x, want video undeliverable 0x%02x",
+			ErrBadType, dgram[1], TypeVideoUndeliverable)
+	}
+	return VideoUndeliverable{
+		KeyframeID: binary.BigEndian.Uint32(dgram[2:6]),
+		StalledMs:  binary.BigEndian.Uint32(dgram[6:10]),
+	}, nil
 }
 
 // TelemetryHello is the parsed contents of a TelemetryHello message (R28,

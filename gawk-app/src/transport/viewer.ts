@@ -60,7 +60,10 @@ import {
   TYPE_AUDIO_CONFIG,
   TYPE_AUDIO_FRAME,
   TYPE_DELIVERY_ACK,
+  TYPE_VIDEO_UNDELIVERABLE,
+  frameIdAhead,
   parseDeliveryAck,
+  parseVideoUndeliverable,
   type AudioConfigMessage,
   type DecoderConfigMessage,
   type DeliveryServedMode,
@@ -148,17 +151,41 @@ function plausibleLatencyMs(ms: number | null): number | null {
 //    at ~50 packets/s for as long as it is shared — so silence on both media at
 //    once cannot be produced by a static screen. It takes a transport failure.
 //
-// Consequences, deliberately accepted:
-//   - A broadcast with no audio at all is not covered (audioEverActive gates
-//     the whole check). Nothing client-side can distinguish its wedge from its
-//     static screen; firing anyway would reconnect-loop on a paused game.
-//   - A *resilient*-mode wedge is not covered either, for the same reason: audio
-//     rides datagrams there and keeps arriving, which is also what a static
-//     screen looks like. Deep buffer is covered because audio rides its own
-//     carrier there, so the wedge takes both.
-// Closing those two needs the relay to say "I have video for you and cannot
-// deliver it", which is a wire addition.
+// Consequence, deliberately accepted: a broadcast with no audio at all is not
+// covered here (audioEverActive gates the whole check) — nothing client-side
+// can distinguish its wedge from its static screen, and firing anyway would
+// reconnect-loop on a paused game. The relay's VideoUndeliverable notice
+// covers it (UNDELIVERABLE_CONFIRM_MS); this watchdog stays for relays that
+// predate the notice.
 const MEDIA_STALL_MS = 6000;
+
+// The relay's undeliverable-video notice (docs/24 finding 19). A relay whose keyframe
+// hand-offs to this viewer have moved zero bytes for 3 s says so on a datagram,
+// at most once a second, naming the newest keyframe it could not deliver. It is
+// precise where the watchdogs above are heuristic: the relay knows it holds
+// video, so a static screen (no keyframes) can never produce it, with or
+// without audio.
+//
+// Two guards make acting on it safe against stale notices — ones that queued
+// behind an outage that has since cleared and arrive in a burst just before
+// the video does:
+//   1. A notice naming a keyframe this viewer already holds (serial order) is
+//      ignored — if that keyframe arrived within the stall the notice reports.
+//      One that arrived earlier cannot have ended this stall: it is from before
+//      it, typically from a broadcaster run the relay has since replaced, whose
+//      frame IDs compare as "later" than the new run's (a viewer wedged across
+//      a restart never receives a new-run keyframe to compare against).
+//   2. One notice is not a verdict: the viewer acts on a second one of the
+//      same stall at least UNDELIVERABLE_CONFIRM_MS after the first, and any
+//      keyframe at or after the first one's arriving in between stands it
+//      down. A recovered relay sends no second notice; a stale burst is
+//      milliseconds wide. "The same stall" is its start, now − stalledMs,
+//      within UNDELIVERABLE_EPISODE_SLACK_MS: a notice from a later stall
+//      re-arms instead of confirming an arm left over from an earlier one.
+const UNDELIVERABLE_CONFIRM_MS = 500;
+// Two notices of one stall estimate its start within transit jitter of each
+// other; two stalls' starts are at least the relay's 3 s threshold apart.
+const UNDELIVERABLE_EPISODE_SLACK_MS = 1000;
 const MAPPINGS_PROVING_LIVE = 2;
 
 // Whether a datagram belongs to the audio lane. Used only to keep audio bytes
@@ -526,6 +553,16 @@ export class ViewerPipeline {
   private lastMediaAt: number | null = null;
   private mappingsSinceMedia = 0;
   private audioEverActive = false;
+  // Undeliverable-notice state (UNDELIVERABLE_CONFIRM_MS). lastKeyframeId is
+  // the most recently RECEIVED keyframe, not the serial maximum (a broadcaster
+  // restart numbers frames from 0 again), and lastKeyframeIdAt when it came.
+  // The armed triple is the first unconfirmed notice: when it came, the
+  // keyframe it named and the start of the stall it reported.
+  private lastKeyframeId: number | null = null;
+  private lastKeyframeIdAt = 0;
+  private undeliverableArmedAt: number | null = null;
+  private undeliverableArmedId = 0;
+  private undeliverableArmedStallStart = 0;
   // What the relay says it is serving, from the join-time DeliveryAck.
   // Null until it arrives (or forever, against a relay that predates it).
   private servedDelivery: DeliveryServedMode | null = null;
@@ -679,6 +716,7 @@ export class ViewerPipeline {
         this.noteMediaArrived();
         if (frame.keyframe) {
           this.lastKeyframeReceivedAt = this.lastFrameReceivedAt;
+          this.noteKeyframeId(frame.frameId);
           this.reorder.pushKeyframe({
             frameId: frame.frameId,
             timestampUs: frame.timestampUs,
@@ -740,6 +778,8 @@ export class ViewerPipeline {
           // served. Consumed here, before the reassembler ever sees it — it is
           // a pipeline fact, not media.
           if (this.handleDeliveryAck(dgram)) return;
+          // The relay's "video I cannot deliver" — a pipeline fact, not media.
+          if (this.handleVideoUndeliverable(dgram)) return;
           // Audio rides the same datagram path but is not video; keep it out
           // of "Video bitrate (recv)".
           if (!isAudioDatagram(dgram)) this.videoBytesReceived += dgram.byteLength;
@@ -840,6 +880,56 @@ export class ViewerPipeline {
     return true;
   }
 
+  // Consumes a VideoUndeliverable notice and returns whether the datagram was
+  // one. See UNDELIVERABLE_CONFIRM_MS for the two guards. Reconnectable, not
+  // terminal: a plain Error with no close code, like the watchdogs.
+  private handleVideoUndeliverable(dgram: Uint8Array): boolean {
+    if (dgram.length < 2 || dgram[1] !== TYPE_VIDEO_UNDELIVERABLE) return false;
+    let notice;
+    try {
+      notice = parseVideoUndeliverable(dgram);
+    } catch (e) {
+      log.warn('malformed video-undeliverable notice; ignored:', e);
+      return true;
+    }
+    const now = performance.now();
+    // Guard 1: stale only if the held keyframe came within the stall.
+    if (this.holdsKeyframe(notice.keyframeId) && now - this.lastKeyframeIdAt < notice.stalledMs) {
+      return true;
+    }
+    const stallStart = now - notice.stalledMs;
+    if (
+      this.undeliverableArmedAt === null ||
+      Math.abs(stallStart - this.undeliverableArmedStallStart) > UNDELIVERABLE_EPISODE_SLACK_MS
+    ) {
+      this.undeliverableArmedAt = now;
+      this.undeliverableArmedId = notice.keyframeId;
+      this.undeliverableArmedStallStart = stallStart;
+      return true;
+    }
+    if (now - this.undeliverableArmedAt < UNDELIVERABLE_CONFIRM_MS) return true;
+    this.fail(
+      new Error(
+        `relay reports video it cannot deliver (keyframe ${notice.keyframeId}, ` +
+          `stalled ${notice.stalledMs}ms); reconnecting`,
+      ),
+    );
+    return true;
+  }
+
+  // Whether the last keyframe received is at or after id (serially).
+  private holdsKeyframe(id: number): boolean {
+    return this.lastKeyframeId !== null && !frameIdAhead(id, this.lastKeyframeId);
+  }
+
+  private noteKeyframeId(id: number): void {
+    this.lastKeyframeId = id;
+    this.lastKeyframeIdAt = performance.now();
+    if (this.undeliverableArmedAt !== null && this.holdsKeyframe(this.undeliverableArmedId)) {
+      this.undeliverableArmedAt = null;
+    }
+  }
+
   private handleKeyframeStream(kf: KeyframeStreamFrame): void {
     if (this.stopping || !this.reorder) return;
     // Keyframes bypass the datagram reassembler, so sync its late-delta
@@ -853,6 +943,7 @@ export class ViewerPipeline {
     this.lastKeyframeReceivedAt = this.lastFrameReceivedAt;
     this.lastInboundAt = this.lastFrameReceivedAt;
     this.noteMediaArrived();
+    this.noteKeyframeId(kf.frameId);
     this.reorder.pushKeyframe({
       frameId: kf.frameId,
       timestampUs: kf.timestampUs,

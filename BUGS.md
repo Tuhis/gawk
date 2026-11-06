@@ -111,6 +111,11 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   with broadcast-level `keyframeDrops.slow` climbing in step. If instead
   `keyframeDrops.superseded` climbs, the cause is upstream (publisher-side
   keyframe cadence) and this entry is misfiled.
+  Since 2026-11-06 the same entry carries `undeliverableNotices`: a
+  non-zero value means the relay watched that session's keyframe hand-offs
+  move **zero bytes** for 3 s (docs/24 finding 19), which is the server-side
+  half of the signature in one field — capture it before the viewer
+  reconnects, which it now does about a second after the second notice.
 - **Mitigation shipped** (2026-07-21, test-first, both layers): the relay
   evicts a subscriber after `hub.KeyframeSlowEvictThreshold` (10 ≈ 5 s)
   consecutive keyframes whose stream *opened* but whose write stalled — the
@@ -128,6 +133,18 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   mode (docs/24 "drops-over-stalls"), so counting those write stalls would
   disconnect healthy mobile viewers. Carrier *opens* are a different signal and
   got their own streak on 2026-07-23 — see the entry below.
+- **Lead from the Deep-buffer captures (2026-07-26, iPhone, `FUHNMG` and
+  `XN73GU`)**: in Resilient and Deep buffer the wedge is a total video
+  blackout, not this entry's awaiting-keyframe slideshow, because every video
+  path rides streams there. Deep buffer opens ~4 uni streams/s/viewer
+  (keyframe + carrier per 500 ms GOP), the highest stream-open rate any mode
+  asks of the browser, and `carrierStreamsAborted` stayed at 1 through the
+  blackout: the client surfaced neither new streams nor resets. That fits an
+  accept-path or stream-credit wedge, not a relay that stopped writing. The
+  blackout itself is now bounded in every mode, audio or not, by the relay's
+  undeliverable-video notice (docs/24 finding 19; it replaced the separate
+  "Resilient/Deep-buffer viewers lose video entirely" entry, whose remaining
+  gaps it closed).
 - **Related, and now confirmed**: the second variant below (the whole session
   dies and the viewer never notices) was captured client+server simultaneously
   on 2026-07-22. It is a different failure from this one — there the session is
@@ -378,97 +395,6 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   proves the parked-overflow path was actually exercised rather than never hit.
   If instead `bufferedRanges > 1` with `segmentsDroppedOverflow` 0, the holes have
   another cause.
-
-## Resilient/Deep-buffer viewers lose video entirely to the Safari stream wedge
-
-- **Found**: 2026-07-26, from an iPhone (iOS 18.7 / Safari 26.5.2) Copy-
-  diagnostics capture on broadcast `FUHNMG`, reported as "video shows, until it
-  freezes" while audio kept playing. A severity note on the two Safari entries at
-  the top of this file rather than a new root cause.
-- **Impact**: in **resilient** or **Deep buffer** delivery mode, a wedged stream
-  path stops video completely (not the awaiting-keyframe slideshow the default
-  mode degrades to). In resilient mode audio continues, so the viewer looks
-  frozen with sound; **in Deep buffer nothing survives** — see the correction
-  below.
-- **Why the mode matters**: R19 moved video *deltas* onto reliable carrier
-  streams, and keyframes were already on reliable uni streams (R8). QUIC
-  datagrams are not flow-controlled but streams are — so when WebKit's stream
-  path wedges, every video path is gone at once.
-- **CORRECTION (2026-07-26, second iPhone capture, broadcast `XN73GU`, Deep
-  buffer)**: "audio deliberately stayed on datagrams (docs/20 field finding 5)"
-  is true of **resilient** mode only. R21 DV5 gives a DVR subscriber its own
-  audio *carrier stream* (`hub/dvr_audio.go` `drainDVRAudio` → `writeAudioRecord`),
-  precisely so audio is not head-of-line blocked behind video deltas — so in Deep
-  buffer **100 % of media rides streams** and a wedge is a total blackout, not a
-  freeze with sound. Only the control sideband (ClockMapping, the R18 keepalive,
-  DecoderConfig) stays on datagrams (`hub/dvr.go` `drainControlSideband`,
-  `hub.go` `drain`). The capture shows the split exactly: `carrierStreams: 89` for
-  88 keyframes — 88 per-GOP video carriers plus the one long-lived audio carrier —
-  and the last two inbound datagrams of the session were 6 B and 10 B, a
-  `ViewerCount` and a `ClockMapping`.
-- **Signature**: every media counter frozen across a whole capture window — in
-  `XN73GU` `datagramsReceived` moved **+2 in 9.5 s** — while the *sideband* keeps
-  landing, so `timeSinceLastInboundMs` resets every ≤5 s for as long as the relay
-  still has the session. Both worker-side counters (`carrierRecords`, from the
-  nested transport worker) and viewer-worker ones (`framesCompleted`,
-  `decodedFrames`) freeze together, which places the wedge at or below WebKit's
-  QUIC layer rather than in decode, render or the R22 muxer (whose
-  `segmentsAppended` reconciled exactly: `1 + 2748 + 3484`, zero errors — it was
-  starved, not broken).
-- **Why the freeze ran 31 s, and what now ends it** (fixed 2026-07-26,
-  test-first, both layers):
-  - *Viewer — media-stall watchdog* (`viewer.ts` `checkMediaStall`,
-    `MEDIA_STALL_MS` 6 s). This is the gap the two older watchdogs left between
-    them: `checkKeyframeStall` requires frames to still be arriving (this failure
-    removes them) and `checkSessionStall` requires total silence (the DVR control
-    sideband holds it off *by design* — `drainControlSideband`'s comment says so).
-    Two signals gate it, and the second is the one that took a design correction
-    mid-implementation:
-    1. The broadcaster's own **ClockMapping** — published every 5 s only while
-       capturing, and datagram-borne, so it survives the wedge. Two of them
-       *since the last media* rather than one is what makes it safe against the
-       away transition, where the publisher's final periodic mapping can land
-       just after its last frame (and the relay replays a cached mapping to
-       every joiner).
-    2. **Audio must have stopped too.** "No video while mappings arrive" is
-       *not* sound on its own: screen capture is damage-driven and stops
-       entirely on a static screen (docs/19, docs/28), so a paused game would
-       have made this watchdog reconnect-loop — and docs/30 already says that
-       even *telling* the user a static screen looks frozen is worse than
-       silence. Audio is not damage-driven, so silence on both media at once
-       cannot be produced by a static screen; it takes a transport failure.
-    **Uncovered, deliberately**: a broadcast with no audio at all (nothing
-    client-side distinguishes its wedge from its static screen), and a
-    *resilient*-mode wedge, where audio rides datagrams and keeps arriving —
-    which is also exactly what a static screen looks like. Closing either needs
-    the relay to say "I have video for you and cannot deliver it", i.e. a new
-    sideband wire type (0x0D+ is free); that is the natural next step here and
-    would make the client-side heuristics redundant.
-  - *Relay — the DVR progress timeout is 6 s, not 30* (`DefaultDVRProgressTimeout`),
-    and it no longer counts idleness as failure. `drainDVR` parks on the ring's
-    wake channel when the cursor is caught up, and the stall check is only
-    re-evaluated when an append wakes it — so with an away broadcaster the stamp
-    aged through the whole absence and the *returning* broadcaster's first frame
-    evicted every Deep-buffer viewer on the pod. `dvrNoteIdle` (both park sites,
-    noted after the wait) confines the timer to "the ring holds data this cursor
-    cannot take", which is what made 6 s safe.
-  - *Relay — DVR keyframe-stream opens feed the shared eviction streak.*
-    `dvrSendKeyframe` opens its own streams and never touched
-    `kfConsecOpenFailed`, so the exhausted-stream-credit zombie the live path has
-    evicted since R10 was counted (`kfDroppedOpenFailed`) and ignored in this mode.
-    One open per GOP is the cadence `KeyframeOpenFailEvictThreshold` was sized
-    against. **Deliberately not extended to the audio carrier**: `writeAudioRecord`
-    retries every `dvrRetryFloor` (20 ms), so feeding that into a 10-strike streak
-    would evict on a 200 ms transient; the video path sees the same credit
-    exhaustion at a defensible cadence.
-- **Still not fixed here**: why WebKit wedges. Both remedies bound the damage to
-  ~6 s and a reconnect; neither explains the trigger, and a `/statusz` capture
-  taken **while frozen** is still the missing evidence. What this capture adds to
-  that hunt: Deep buffer opens ~4 uni streams/s/viewer (keyframe + carrier per
-  500 ms GOP), the highest stream-open rate any mode asks of the browser, and
-  `carrierStreamsAborted` stayed at 1 throughout the blackout — the client
-  surfaced neither new streams nor resets, consistent with an accept-path or
-  stream-credit wedge rather than with the relay having stopped writing.
 
 ## Long-lived publisher connections die on a source-address change (fleet LB)
 
