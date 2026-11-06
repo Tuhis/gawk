@@ -623,6 +623,15 @@ Add to it when a new gotcha lands in `docs/`.
   `0x1E` VideoUndeliverable datagram and the viewer reconnects. Don't build a
   client heuristic for the no-audio case.
   ([docs/24](24-viewer-network-resilience.md#undeliverable-video-notice-finding-19-2026-11-06))
+- **A frameID comparison means nothing across a broadcaster restart, and a
+  wedged viewer can't see the restart.** A new publisher session renumbers
+  from 0 while the relay keeps its subscribers, so a viewer wedged across it
+  holds only an old-run keyframe whose ID compares as "later" than every
+  notice of the new run. A hub-side run marker doesn't help: keyframes don't
+  carry it, and an edge hub's `generation` doesn't move when the origin's
+  publisher restarts. The notice's `stalledMs` does: a held keyframe older
+  than the stall can't make a notice stale (docs/24 D7).
+  ([docs/24](24-viewer-network-resilience.md#undeliverable-video-notice-finding-19-2026-11-06))
 - **A quic-go `Write` that returned is not proof that the bytes can be sent.**
   `SendStream.Write` returns once all but one packet's worth (~1.4 KB) is
   queued, so a fresh stream's prologue and first carrier record "succeed" on a

@@ -661,6 +661,55 @@ describe('ViewerPipeline', () => {
       await pipeline.stop();
     });
 
+    it('still acts when it is wedged across a broadcaster restart (no new-run keyframe ever arrives)', async () => {
+      // The relay keeps this session across a new publisher session, so its
+      // notices name the new run's keyframes (60, 120, …) while all this
+      // viewer holds is the old run's 100000, which compares as "later".
+      // Its last keyframe is older than the stall the relay reports, so it
+      // cannot be the reason the notice is stale.
+      const { deliver, errors, pipeline } = await startPipeline();
+      deliver(configDgram());
+      deliver(frameDgram(100_000, true));
+      await vi.advanceTimersByTimeAsync(500); // the wedge starts; the broadcaster restarts
+
+      await vi.advanceTimersByTimeAsync(3_000);
+      deliver(encodeVideoUndeliverable({ keyframeId: 60, stalledMs: 3000 }));
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(errors).toEqual([]);
+      deliver(encodeVideoUndeliverable({ keyframeId: 120, stalledMs: 4000 }));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(errors.length).toBe(1);
+      expect(errors[0].closeCode).toBeUndefined();
+      expect(errors[0].message).toContain('cannot deliver');
+      await pipeline.stop();
+    });
+
+    it('does not let an arm from an earlier stall confirm a later notice on its own', async () => {
+      // An episode arms, then the broadcaster restarts and the viewer recovers
+      // on the new run's keyframes, which never "reach" the armed old-run ID.
+      // A much later stall's first notice is a new episode, not the second
+      // notice of the old one.
+      const { deliver, errors, pipeline } = await startPipeline();
+      deliver(configDgram());
+      deliver(frameDgram(100_000, true));
+      await vi.advanceTimersByTimeAsync(3_500);
+      deliver(encodeVideoUndeliverable({ keyframeId: 100_060, stalledMs: 3000 }));
+      await vi.advanceTimersByTimeAsync(200);
+      deliver(frameDgram(3, true)); // recovered, on the restarted broadcaster
+      await vi.advanceTimersByTimeAsync(10_000); // a static screen: nothing arrives
+
+      deliver(encodeVideoUndeliverable({ keyframeId: 63, stalledMs: 3000 }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(errors).toEqual([]);
+      // Its own second notice still confirms it.
+      await vi.advanceTimersByTimeAsync(1_000);
+      deliver(encodeVideoUndeliverable({ keyframeId: 63, stalledMs: 4000 }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(errors.length).toBe(1);
+      await pipeline.stop();
+    });
+
     it('never hands the notice to the reassembler as a bad datagram', async () => {
       const { deliver, pipeline } = await startPipeline();
       deliver(configDgram());

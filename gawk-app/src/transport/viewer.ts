@@ -170,12 +170,22 @@ const MEDIA_STALL_MS = 6000;
 // behind an outage that has since cleared and arrive in a burst just before
 // the video does:
 //   1. A notice naming a keyframe this viewer already holds (serial order) is
-//      ignored.
-//   2. One notice is not a verdict: the viewer acts on a second one at least
-//      UNDELIVERABLE_CONFIRM_MS after the first, and any keyframe at or after
-//      the first one's arriving in between stands it down. A recovered relay
-//      sends no second notice; a stale burst is milliseconds wide.
+//      ignored — if that keyframe arrived within the stall the notice reports.
+//      One that arrived earlier cannot have ended this stall: it is from before
+//      it, typically from a broadcaster run the relay has since replaced, whose
+//      frame IDs compare as "later" than the new run's (a viewer wedged across
+//      a restart never receives a new-run keyframe to compare against).
+//   2. One notice is not a verdict: the viewer acts on a second one of the
+//      same stall at least UNDELIVERABLE_CONFIRM_MS after the first, and any
+//      keyframe at or after the first one's arriving in between stands it
+//      down. A recovered relay sends no second notice; a stale burst is
+//      milliseconds wide. "The same stall" is its start, now − stalledMs,
+//      within UNDELIVERABLE_EPISODE_SLACK_MS: a notice from a later stall
+//      re-arms instead of confirming an arm left over from an earlier one.
 const UNDELIVERABLE_CONFIRM_MS = 500;
+// Two notices of one stall estimate its start within transit jitter of each
+// other; two stalls' starts are at least the relay's 3 s threshold apart.
+const UNDELIVERABLE_EPISODE_SLACK_MS = 1000;
 const MAPPINGS_PROVING_LIVE = 2;
 
 // Whether a datagram belongs to the audio lane. Used only to keep audio bytes
@@ -544,13 +554,15 @@ export class ViewerPipeline {
   private mappingsSinceMedia = 0;
   private audioEverActive = false;
   // Undeliverable-notice state (UNDELIVERABLE_CONFIRM_MS). lastKeyframeId is
-  // the most recently RECEIVED keyframe, not the serial maximum: a broadcaster
-  // restart numbers frames from 0 again, and so do the relay's notices, so a
-  // maximum held over from the old timeline would make every new one look
-  // stale. The armed pair is the first unconfirmed notice.
+  // the most recently RECEIVED keyframe, not the serial maximum (a broadcaster
+  // restart numbers frames from 0 again), and lastKeyframeIdAt when it came.
+  // The armed triple is the first unconfirmed notice: when it came, the
+  // keyframe it named and the start of the stall it reported.
   private lastKeyframeId: number | null = null;
+  private lastKeyframeIdAt = 0;
   private undeliverableArmedAt: number | null = null;
   private undeliverableArmedId = 0;
+  private undeliverableArmedStallStart = 0;
   // What the relay says it is serving, from the join-time DeliveryAck.
   // Null until it arrives (or forever, against a relay that predates it).
   private servedDelivery: DeliveryServedMode | null = null;
@@ -880,11 +892,19 @@ export class ViewerPipeline {
       log.warn('malformed video-undeliverable notice; ignored:', e);
       return true;
     }
-    if (this.holdsKeyframe(notice.keyframeId)) return true; // stale
     const now = performance.now();
-    if (this.undeliverableArmedAt === null) {
+    // Guard 1: stale only if the held keyframe came within the stall.
+    if (this.holdsKeyframe(notice.keyframeId) && now - this.lastKeyframeIdAt < notice.stalledMs) {
+      return true;
+    }
+    const stallStart = now - notice.stalledMs;
+    if (
+      this.undeliverableArmedAt === null ||
+      Math.abs(stallStart - this.undeliverableArmedStallStart) > UNDELIVERABLE_EPISODE_SLACK_MS
+    ) {
       this.undeliverableArmedAt = now;
       this.undeliverableArmedId = notice.keyframeId;
+      this.undeliverableArmedStallStart = stallStart;
       return true;
     }
     if (now - this.undeliverableArmedAt < UNDELIVERABLE_CONFIRM_MS) return true;
@@ -904,6 +924,7 @@ export class ViewerPipeline {
 
   private noteKeyframeId(id: number): void {
     this.lastKeyframeId = id;
+    this.lastKeyframeIdAt = performance.now();
     if (this.undeliverableArmedAt !== null && this.holdsKeyframe(this.undeliverableArmedId)) {
       this.undeliverableArmedAt = null;
     }

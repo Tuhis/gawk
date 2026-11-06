@@ -633,7 +633,8 @@ export function parseDeliveryAck(dgram: Uint8Array): DeliveryAckMessage {
 // while the relay's keyframe hand-offs to this viewer keep moving zero bytes —
 // a static screen produces no keyframes, so it never produces this. Exactly 10
 // bytes: version, type 0x1e, uint32 keyframeId (the newest keyframe the relay
-// could not deliver), uint32 stalledMs (diagnostics). Strict fixed-length
+// could not deliver), uint32 stalledMs (how long, from the oldest undelivered
+// hand-off: the viewer dates the stall with it, docs/24 D7). Strict fixed-length
 // parse; clients parse it and never send it. The encoder exists for tests and
 // golden vectors.
 
