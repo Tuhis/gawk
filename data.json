@@ -2,7 +2,7 @@
   "components": {
     "gawk-admin": {
       "component": "gawk-admin",
-      "covered": 4920,
+      "covered": 4921,
       "label": "admin",
       "pct": 80.7,
       "total": 6097,
@@ -18,10 +18,10 @@
     },
     "gawk-app": {
       "component": "gawk-app",
-      "covered": 12171,
+      "covered": 12220,
       "label": "app",
       "pct": 87.4,
-      "total": 13933,
+      "total": 13982,
       "unit": "lines"
     },
     "gawk-broadcast-desktop": {
@@ -42,10 +42,10 @@
     },
     "gawk-server": {
       "component": "gawk-server",
-      "covered": 17588,
+      "covered": 17638,
       "label": "relay",
       "pct": 85.6,
-      "total": 20541,
+      "total": 20601,
       "unit": "statements"
     },
     "gawk-telemetry": {
