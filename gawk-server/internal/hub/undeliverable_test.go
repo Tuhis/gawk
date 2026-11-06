@@ -314,3 +314,47 @@ func TestUndeliverableNoticesStopAfterTheEpisodeCap(t *testing.T) {
 		t.Fatalf("%d notices over a long wedge, want exactly the cap of %d", got, UndeliverableMaxNotices)
 	}
 }
+
+// A broadcaster restart while the viewer is wedged: the new publisher session
+// renumbers frames from 0 and the relay keeps the subscriber, so its notices
+// name new-run keyframes the viewer has never seen and cannot compare with the
+// old-run one it holds. The viewer tells such a notice from a stale one by its
+// StalledMs (docs/24 D7): it dates the stall from the oldest undelivered
+// hand-off, so the episode must survive the publisher claim, and two notices
+// of one episode must date the same start (their StalledMs differ by their
+// send spacing, at least UndeliverableNoticeInterval).
+func TestUndeliverableEpisodeSurvivesABroadcasterRestart(t *testing.T) {
+	r := NewRegistry(discardLog, Options{UndeliverableAfter: undeliverableAfterForTest})
+	id, old, _ := r.StartPublish("")
+	defer old.Close()
+
+	f := &fakeSender{kfBlock: make(chan struct{})}
+	sub, err := r.Subscribe(id, f)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Close()
+
+	const oldRun = 100_000
+	feedKeyframes(t, old, oldRun, 30*time.Millisecond, 2*undeliverableAfterForTest)
+	_, successor, err := r.TakeOverPublish(id)
+	if err != nil {
+		t.Fatalf("TakeOverPublish: %v", err)
+	}
+	defer successor.Close()
+	feedKeyframes(t, successor, 0, 30*time.Millisecond, UndeliverableNoticeInterval+300*time.Millisecond)
+
+	notices := undeliverableNotices(t, f)
+	if len(notices) != 2 {
+		t.Fatalf("%d notices, want one from each run: %+v", len(notices), notices)
+	}
+	first, second := notices[0], notices[1]
+	if first.KeyframeID < oldRun || second.KeyframeID >= oldRun {
+		t.Fatalf("notices name keyframes %d then %d, want the old run's then the new run's",
+			first.KeyframeID, second.KeyframeID)
+	}
+	if d := time.Duration(second.StalledMs-first.StalledMs) * time.Millisecond; second.StalledMs < first.StalledMs || d < UndeliverableNoticeInterval {
+		t.Errorf("StalledMs went %d → %d across the restart: the episode restarted, want it to grow by ≥ %v",
+			first.StalledMs, second.StalledMs, UndeliverableNoticeInterval)
+	}
+}

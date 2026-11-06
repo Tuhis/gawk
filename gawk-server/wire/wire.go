@@ -829,11 +829,17 @@ const VideoUndeliverableSize = 10
 type VideoUndeliverable struct {
 	// KeyframeID is the frameID of the newest keyframe the relay handed to
 	// this subscriber and could not deliver. A viewer that already holds a
-	// keyframe at or after it (serial order) is reading a stale notice — one
-	// queued behind an outage that has since cleared — and ignores it.
+	// keyframe at or after it (serial order), received within StalledMs, is
+	// reading a stale notice — one queued behind an outage that has since
+	// cleared — and ignores it.
 	KeyframeID uint32
 	// StalledMs is how long the relay has been unable to deliver, measured
-	// from the oldest undelivered hand-off. Diagnostics only; saturates.
+	// from the oldest undelivered hand-off of the episode, which a new
+	// publisher session does not reset. Not just diagnostics: it is how a
+	// viewer dates the stall (docs/24 D7). A held keyframe older than it is
+	// from before the stall — after a broadcaster restart, from a run whose
+	// frameIDs do not compare with KeyframeID — and two notices dating the
+	// same start belong to one episode. Saturates.
 	StalledMs uint32
 }
 
