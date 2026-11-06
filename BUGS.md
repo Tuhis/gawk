@@ -4,6 +4,26 @@ Confirmed, not-yet-fixed defects. Each entry says how it was found, what the
 impact is, and where a fix would start. Remove entries when fixed (and move
 anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 
+## iOS UI tests fail on the iOS 27.2 simulator (CI pinned to 27.1)
+
+- **Found**: 2026-11-06, on PR #729's `xcode (iPhone)` job. GitHub's macOS
+  runner image `20261103.629` added iOS 27.2 simulators, and `ios.yml`'s
+  `Pick a simulator` step took the newest iOS 27 runtime. Every iPhone run on
+  that image fails the same way, on main too (run 42083194691, 7fc677aa).
+  Every run on the older image `20261021.618` passes.
+- **What fails**: `AccessibilityUITests.testThePlayers`, with 8× "Hit area is
+  too small" for the player header's "1 watching", "Copy link to …" and
+  "Server 127.0.0.1" labels, on the Player, Stats and Room player screens.
+  Also `BroadcastRoomUITests.testLeaveReturnsToNotInARoom` at line 135: after
+  Leave, the "Not in a room" button doesn't appear in time.
+- **Impact**: CI only, for now. `ios.yml` pins the picker to iOS 27.0–27.1
+  (`MAX_MINOR`). Users on iOS 27.2 likely see the same small hit areas, and
+  possibly the room-leave behaviour.
+- **Fix would start**: run the UI tests on a 27.2 simulator. Give those
+  labels a ≥ 44 pt hit area, or make them non-interactive if nothing should
+  tap them. Find out what 27.2 changed in the leave flow (timing or a real
+  state bug). Then remove the pin.
+
 ## Room header squeezed into the top-left corner while the phone sheet is open
 
 - **Found**: 2026-11-06, in `e2e/voice-panel.mjs`'s `in-voice-360.png` while
