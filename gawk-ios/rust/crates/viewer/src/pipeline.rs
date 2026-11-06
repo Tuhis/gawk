@@ -46,6 +46,10 @@ pub const MAPPINGS_PROVING_LIVE: u32 = 2;
 /// The SPA's `UNDELIVERABLE_CONFIRM_MS`: a second VideoUndeliverable notice
 /// at least this long after the first is a verdict; a burst is not.
 pub const UNDELIVERABLE_CONFIRM_MS: f64 = 500.0;
+/// The SPA's `UNDELIVERABLE_EPISODE_SLACK_MS`: two notices dating their
+/// stall's start (`now − stalled_ms`) within this of each other are one
+/// stall; two stalls start at least the relay's 3 s threshold apart.
+pub const UNDELIVERABLE_EPISODE_SLACK_MS: f64 = 1000.0;
 /// D15's drop-to-live: the newest frame received may run at most this many
 /// offsets ahead of what's on screen before the renderers are flushed and
 /// playback jumps to the next keyframe.
@@ -108,6 +112,15 @@ pub enum Stall {
     Undeliverable,
 }
 
+/// The first unconfirmed VideoUndeliverable notice (D7): when it came, the
+/// keyframe it named and the start of the stall it reported.
+#[derive(Debug, Clone, Copy)]
+struct ArmedNotice {
+    at_ms: f64,
+    keyframe_id: u32,
+    stall_start_ms: f64,
+}
+
 /// Diagnostics for the stats sheet (G3, G8).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PipelineStats {
@@ -147,11 +160,10 @@ pub struct Pipeline {
     mappings_since_media: u32,
     audio_seen: bool,
     /// The most recently received keyframe (not the serial maximum: a
-    /// broadcaster restart renumbers from 0, and the relay's notices follow).
-    last_keyframe_id: Option<u32>,
-    /// The first unconfirmed VideoUndeliverable notice: when, and which
-    /// keyframe it named.
-    undeliverable_armed: Option<(f64, u32)>,
+    /// broadcaster restart renumbers from 0) and when it arrived.
+    last_keyframe: Option<(u32, f64)>,
+    /// The first unconfirmed VideoUndeliverable notice.
+    undeliverable_armed: Option<ArmedNotice>,
     undeliverable_confirmed: bool,
     viewer_count: Option<u32>,
     drops_to_live: u64,
@@ -182,7 +194,7 @@ impl Pipeline {
             last_media_ms: None,
             mappings_since_media: 0,
             audio_seen: false,
-            last_keyframe_id: None,
+            last_keyframe: None,
             undeliverable_armed: None,
             undeliverable_confirmed: false,
             viewer_count: None,
@@ -253,36 +265,56 @@ impl Pipeline {
     }
 
     /// The relay's "video I cannot deliver" (0x1E, docs/24 finding 19), on
-    /// the SPA's rule: a notice naming a keyframe at or before the last one
-    /// received is stale; the first live one arms; a second at least
+    /// the SPA's rule (D7): a notice naming a keyframe at or before the last
+    /// one received is stale, if that keyframe arrived within the stall the
+    /// notice reports (an older one is from before the stall, typically from
+    /// a broadcaster run the relay has since replaced, whose IDs do not
+    /// compare); the first live one arms; a second of the same stall at least
     /// [`UNDELIVERABLE_CONFIRM_MS`] later is the verdict [`Self::stall`]
-    /// reports; the named keyframe arriving in between stands it down.
+    /// reports, while one from another stall re-arms; the named keyframe
+    /// arriving in between stands it down.
     fn on_undeliverable(&mut self, dgram: &[u8], now_ms: f64) {
         let Ok(notice) = gawk_wire::parse_video_undeliverable(dgram) else {
             return;
         };
-        if self.holds_keyframe(notice.keyframe_id) {
+        let stalled_ms = f64::from(notice.stalled_ms);
+        if self.holds_keyframe(notice.keyframe_id)
+            && self
+                .last_keyframe
+                .is_some_and(|(_, at)| now_ms - at < stalled_ms)
+        {
             return;
         }
+        let stall_start_ms = now_ms - stalled_ms;
         match self.undeliverable_armed {
-            None => self.undeliverable_armed = Some((now_ms, notice.keyframe_id)),
-            Some((at, _)) if now_ms - at >= UNDELIVERABLE_CONFIRM_MS => {
-                self.undeliverable_confirmed = true;
+            Some(armed)
+                if (stall_start_ms - armed.stall_start_ms).abs()
+                    <= UNDELIVERABLE_EPISODE_SLACK_MS =>
+            {
+                if now_ms - armed.at_ms >= UNDELIVERABLE_CONFIRM_MS {
+                    self.undeliverable_confirmed = true;
+                }
             }
-            Some(_) => {}
+            _ => {
+                self.undeliverable_armed = Some(ArmedNotice {
+                    at_ms: now_ms,
+                    keyframe_id: notice.keyframe_id,
+                    stall_start_ms,
+                });
+            }
         }
     }
 
     /// Whether the last keyframe received is at or after `id` (serially).
     fn holds_keyframe(&self, id: u32) -> bool {
-        self.last_keyframe_id
-            .is_some_and(|last| !gawk_wire::frame_id_ahead(id, last))
+        self.last_keyframe
+            .is_some_and(|(last, _)| !gawk_wire::frame_id_ahead(id, last))
     }
 
-    fn note_keyframe_id(&mut self, id: u32) {
-        self.last_keyframe_id = Some(id);
-        if let Some((_, armed)) = self.undeliverable_armed
-            && self.holds_keyframe(armed)
+    fn note_keyframe_id(&mut self, id: u32, now_ms: f64) {
+        self.last_keyframe = Some((id, now_ms));
+        if let Some(armed) = self.undeliverable_armed
+            && self.holds_keyframe(armed.keyframe_id)
         {
             self.undeliverable_armed = None;
         }
@@ -297,7 +329,7 @@ impl Pipeline {
                 let pacing = self.pacing(now_ms);
                 let mut reordered = std::mem::take(&mut self.reordered);
                 if f.keyframe {
-                    self.note_keyframe_id(f.frame_id);
+                    self.note_keyframe_id(f.frame_id, now_ms);
                     let kf = StreamKeyframe {
                         frame_id: f.frame_id,
                         timestamp_us: f.timestamp_us,
@@ -412,7 +444,7 @@ impl Pipeline {
         // Keyframes bypass the reassembler, so move its watermark here: what
         // makes a broadcaster restart (IDs back to 0) recover.
         self.reassembler.note_stream_keyframe(h.frame_id);
-        self.note_keyframe_id(h.frame_id);
+        self.note_keyframe_id(h.frame_id, now_ms);
         self.note_frame(h.timestamp_us, true, now_ms);
         let pacing = self.pacing(now_ms);
         let mut reordered = std::mem::take(&mut self.reordered);

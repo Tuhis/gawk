@@ -381,13 +381,15 @@ fn pings_time_sync_at_once_then_every_two_seconds() {
     assert!(p.time_sync_ping(2000.0).is_some());
 }
 
-fn undeliverable(keyframe_id: u32) -> Vec<u8> {
+/// A notice as the relay sends it: `stalled_ms` grows with the stall, so
+/// two notices of one stall date it to the same start.
+fn undeliverable(keyframe_id: u32, stalled_ms: u32) -> Vec<u8> {
     let mut d = Vec::new();
     gawk_wire::append_video_undeliverable(
         &mut d,
         gawk_wire::VideoUndeliverable {
             keyframe_id,
-            stalled_ms: 3000,
+            stalled_ms,
         },
     );
     d
@@ -401,10 +403,10 @@ fn undeliverable(keyframe_id: u32) -> Vec<u8> {
 #[test]
 fn the_undeliverable_notice_reconnects_on_a_second_notice_without_audio() {
     let (mut p, mut out) = playing(); // keyframe 0 at 1000
-    p.on_datagram(&undeliverable(10), 2000.0, &mut out);
+    p.on_datagram(&undeliverable(10, 3000), 2000.0, &mut out);
     assert_eq!(p.stall(2000.0), None, "one notice is not a verdict");
     p.on_datagram(
-        &undeliverable(20),
+        &undeliverable(20, 3499),
         2000.0 + UNDELIVERABLE_CONFIRM_MS - 1.0,
         &mut out,
     );
@@ -413,7 +415,7 @@ fn the_undeliverable_notice_reconnects_on_a_second_notice_without_audio() {
         None,
         "a burst is not two notices"
     );
-    p.on_datagram(&undeliverable(20), 3000.0, &mut out);
+    p.on_datagram(&undeliverable(20, 4000), 3000.0, &mut out);
     assert_eq!(p.stall(3000.0), Some(Stall::Undeliverable));
     assert_eq!(
         p.stats(3000.0).reassembly.bad_datagrams,
@@ -428,8 +430,8 @@ fn the_undeliverable_notice_ignores_keyframes_it_already_holds() {
     p.on_stream(&keyframe_stream(30, 30_000, "vp8", &[1]), 1500.0, &mut out);
     for i in 0..4 {
         let t = 2000.0 + 1000.0 * f64::from(i);
-        p.on_datagram(&undeliverable(21), t, &mut out);
-        p.on_datagram(&undeliverable(30), t, &mut out);
+        p.on_datagram(&undeliverable(21, 3000), t, &mut out);
+        p.on_datagram(&undeliverable(30, 3000), t, &mut out);
         assert_eq!(p.stall(t), None, "a notice for a held keyframe is stale");
     }
 }
@@ -437,10 +439,10 @@ fn the_undeliverable_notice_ignores_keyframes_it_already_holds() {
 #[test]
 fn the_undeliverable_notice_stands_down_when_the_keyframe_arrives() {
     let (mut p, mut out) = playing();
-    p.on_datagram(&undeliverable(10), 2000.0, &mut out);
+    p.on_datagram(&undeliverable(10, 3000), 2000.0, &mut out);
     p.on_stream(&keyframe_stream(10, 10_000, "vp8", &[1]), 2100.0, &mut out);
     // A later episode starts its own confirmation from scratch.
-    p.on_datagram(&undeliverable(40), 4000.0, &mut out);
+    p.on_datagram(&undeliverable(40, 3000), 4000.0, &mut out);
     assert_eq!(p.stall(4000.0), None);
 }
 
@@ -453,7 +455,50 @@ fn the_undeliverable_notice_still_acts_after_a_broadcaster_restart() {
         &mut out,
     );
     p.on_stream(&keyframe_stream(3, 3_000, "vp8", &[1]), 1400.0, &mut out); // restarted
-    p.on_datagram(&undeliverable(13), 2000.0, &mut out);
-    p.on_datagram(&undeliverable(23), 3000.0, &mut out);
+    p.on_datagram(&undeliverable(13, 3000), 2000.0, &mut out);
+    p.on_datagram(&undeliverable(23, 4000), 3000.0, &mut out);
     assert_eq!(p.stall(3000.0), Some(Stall::Undeliverable));
+}
+
+// Wedged across the restart: the relay keeps this session across a new
+// publisher session, so its notices name the new run's keyframes (60, 120)
+// while all the viewer holds is the old run's 100000, which compares as
+// "later". That keyframe came before the stall the relay reports, so it
+// cannot be what makes the notice stale.
+#[test]
+fn the_undeliverable_notice_acts_when_wedged_across_a_broadcaster_restart() {
+    let (mut p, mut out) = playing();
+    p.on_stream(
+        &keyframe_stream(100_000, 100_000, "vp8", &[1]),
+        1200.0,
+        &mut out,
+    );
+    // The wedge starts at ~1700; no new-run keyframe ever arrives.
+    p.on_datagram(&undeliverable(60, 3000), 4700.0, &mut out);
+    assert_eq!(p.stall(4700.0), None, "one notice is not a verdict");
+    p.on_datagram(&undeliverable(120, 4000), 5700.0, &mut out);
+    assert_eq!(p.stall(5700.0), Some(Stall::Undeliverable));
+}
+
+// An arm left over from an earlier stall (here across a restart, whose
+// keyframes never "reach" the armed old-run ID) must not let a much later
+// stall's first notice confirm on its own.
+#[test]
+fn the_undeliverable_notice_does_not_confirm_against_an_earlier_stall() {
+    let (mut p, mut out) = playing();
+    p.on_stream(
+        &keyframe_stream(100_000, 100_000, "vp8", &[1]),
+        1200.0,
+        &mut out,
+    );
+    p.on_datagram(&undeliverable(100_060, 3000), 4700.0, &mut out);
+    p.on_stream(&keyframe_stream(3, 3_000, "vp8", &[1]), 4900.0, &mut out); // recovered
+    p.on_datagram(&undeliverable(63, 3000), 15_000.0, &mut out);
+    assert_eq!(
+        p.stall(15_000.0),
+        None,
+        "a new stall's first notice only arms"
+    );
+    p.on_datagram(&undeliverable(63, 4000), 16_000.0, &mut out);
+    assert_eq!(p.stall(16_000.0), Some(Stall::Undeliverable));
 }
