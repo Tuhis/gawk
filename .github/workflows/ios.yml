@@ -352,7 +352,7 @@ jobs:
           devs = json.load(sys.stdin)["devices"]
           kind = os.environ["DEVICE"]
           # Newest iOS 27 runtime up to 27.1. Runner image 20261103 added
-          # 27.2 simulators, where the UI tests' accessibility audit and the
+          # 27.2 simulators, where the accessibility audit of the UI tests and the
           # room-leave flow fail (BUGS.md); unpin once they pass there.
           MAX_MINOR = 1
           def minor(rt):
