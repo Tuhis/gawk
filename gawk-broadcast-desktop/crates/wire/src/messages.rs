@@ -309,10 +309,14 @@ pub fn parse_delivery_ack(dgram: &[u8]) -> Result<(DeliveryMode, u16), WireError
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VideoUndeliverable {
     /// The newest keyframe the relay handed to this subscriber and could not
-    /// deliver. A viewer holding a keyframe at or after it (serial order) is
-    /// reading a stale notice and ignores it.
+    /// deliver. A viewer holding a keyframe at or after it (serial order),
+    /// received within `stalled_ms`, is reading a stale notice and ignores it.
     pub keyframe_id: u32,
-    /// How long the relay has been unable to deliver. Diagnostics only.
+    /// How long the relay has been unable to deliver, from the episode's
+    /// oldest undelivered hand-off (a new publisher session does not reset
+    /// it). The viewer dates the stall with it (docs/24 D7): a held keyframe
+    /// older than the stall cannot make the notice stale, and two notices
+    /// dating the same start are one episode.
     pub stalled_ms: u32,
 }
 
