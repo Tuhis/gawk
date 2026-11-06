@@ -44,6 +44,7 @@ import { fmtWatching } from '../../lib/format';
 import { readStored, writeStored } from '../../lib/storage';
 import { buildViewLink } from '../../lib/shareLink';
 import { useViewerConnection, type ViewerStatus } from './useViewerConnection';
+import { isFullErrorKind } from './fullRefusal';
 import type { ViewerEndReason, ViewerErrorKind } from '../../transport/viewer-session';
 import type { PlayoutMode } from '../../transport/playout';
 import type { ViewerStats } from '../../transport/viewer';
@@ -124,6 +125,19 @@ function errorCardCopy(
       return {
         title: 'Lost the stream',
         body: 'The stream stopped and we couldn’t reconnect. The streamer may have gone offline — try again in a moment.',
+      };
+    // BUGS.md fix 2026-11-06: the relay says "full" with a close code
+    // (4018 / 4019), so these never hedge toward "offline". The session is
+    // still retrying while they show.
+    case 'broadcast-full':
+      return {
+        title: 'This stream is full',
+        body: `“${broadcastId}” is live, but it has all the viewers it can take. Keep this page open and we’ll keep trying to get you in.`,
+      };
+    case 'relay-full':
+      return {
+        title: 'The stream server is full',
+        body: 'The stream server can’t take any more viewers right now. Keep this page open and we’ll keep trying to get you in.',
       };
     case 'unplayable':
       return {
@@ -626,8 +640,10 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
 
   // A kind-less error only happens on a drop before we ever connected
   // ('ended' while 'connecting') — read it as the stream being unreachable.
+  // A capacity refusal (4018/4019) shows its card while the session retries.
+  const full = status === 'reconnecting' && isFullErrorKind(errorKind);
   const errorCopy =
-    status === 'error' ? errorCardCopy(errorKind ?? 'unreachable', broadcastId, codec) : null;
+    status === 'error' || full ? errorCardCopy(errorKind ?? 'unreachable', broadcastId, codec) : null;
   const endCopy = status === 'ended' ? endCardCopy(endReason) : null;
 
   // Keep the display awake while a stream is on screen. The viewer paints a
@@ -762,7 +778,7 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
           relay (or a link's relay was quietly ignored). */}
       <ServerIndicator />
 
-      {(status === 'connecting' || status === 'ended' || status === 'error') && (
+      {(status === 'connecting' || status === 'ended' || status === 'error' || full) && (
         <div className={styles.center}>
           <GlassPanel className={styles.card}>
             {status === 'connecting' && (
@@ -778,14 +794,15 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
                 <Button onClick={leave}>Back to home</Button>
               </>
             )}
-            {status === 'error' && errorCopy && (
+            {(status === 'error' || full) && errorCopy && (
               <>
                 <h2 className={styles.cardTitle}>{errorCopy.title}</h2>
                 <p className={styles.cardText}>{errorCopy.body}</p>
                 <div className={styles.cardActions}>
                   {/* Retry is pointless for an unplayable codec — reloading in
-                      the same browser fails identically. */}
-                  {!errorFatal && (
+                      the same browser fails identically — and for a full
+                      stream, which is already retrying by itself. */}
+                  {!errorFatal && !full && (
                     <Button variant="secondary" onClick={() => window.location.reload()}>
                       Retry
                     </Button>

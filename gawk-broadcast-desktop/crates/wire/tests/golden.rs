@@ -1205,6 +1205,11 @@ const GOLDEN_SESSION_CLOSING_BROADCASTER_STOPPED: &str = "011700000fae";
 // R33 (docs/83 D3): SessionClosing for 4017 PublishMinted (closing_test.go
 // goldenSessionClosingPublishMintedHex).
 const GOLDEN_SESSION_CLOSING_PUBLISH_MINTED: &str = "011700000fb1";
+// SessionClosing for 4018 BroadcastFull / 4019 RelayFull, the relay's
+// capacity refusals of a viewer (closing_test.go
+// goldenSessionClosingBroadcastFullHex / goldenSessionClosingRelayFullHex).
+const GOLDEN_SESSION_CLOSING_BROADCAST_FULL: &str = "011700000fb2";
+const GOLDEN_SESSION_CLOSING_RELAY_FULL: &str = "011700000fb3";
 
 const LOCAL_RELAY_H1: [u8; 32] = {
     let mut h = [0u8; 32];
@@ -2407,4 +2412,27 @@ fn golden_session_closing_publish_minted() {
         parse_session_closing(&from_hex(GOLDEN_SESSION_CLOSING_PUBLISH_MINTED)).unwrap(),
         4017
     );
+}
+
+// A viewer refused for capacity is told 4018 (the broadcast is full) or 4019
+// (the relay is) in-band before the close (BUGS.md fix 2026-11-06). Pinned by
+// value, and NOT terminal for a viewer: it retries every 20 s.
+#[test]
+fn golden_session_closing_capacity_refusals() {
+    assert_eq!(CLOSE_CODE_BROADCAST_FULL, 4018);
+    assert_eq!(CLOSE_CODE_BROADCAST_FULL, CLOSE_CODE_PUBLISH_MINTED + 1);
+    assert_eq!(CLOSE_CODE_RELAY_FULL, 4019);
+    for (code, golden) in [
+        (
+            CLOSE_CODE_BROADCAST_FULL,
+            GOLDEN_SESSION_CLOSING_BROADCAST_FULL,
+        ),
+        (CLOSE_CODE_RELAY_FULL, GOLDEN_SESSION_CLOSING_RELAY_FULL),
+    ] {
+        let mut got = Vec::new();
+        append_session_closing(&mut got, code).unwrap();
+        assert_eq!(to_hex(&got), golden);
+        assert_eq!(parse_session_closing(&from_hex(golden)).unwrap(), code);
+        assert!(!terminal_for_viewer(code));
+    }
 }

@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -99,6 +100,30 @@ func statusDial(t *testing.T, f *HomeFleet, target string, h http.Header) (*webt
 	}
 	t.Cleanup(func() { sess.CloseWithError(0, "") })
 	return sess, http.StatusOK
+}
+
+// refusedFull asserts a viewer dial to target is upgraded and then closed
+// with 4019 RelayFull, the refusal a browser can read (a refused CONNECT's
+// 429 never reaches it, BUGS.md fix 2026-11-06).
+func refusedFull(t *testing.T, f *HomeFleet, target, what string) {
+	t.Helper()
+	sess, status := statusDial(t, f, target, nil)
+	if status != http.StatusOK {
+		t.Fatalf("%s: status %d, want an upgraded session closed 4019", what, status)
+	}
+	ctx, cancel := context.WithTimeout(pairCtx(t), 10*time.Second)
+	defer cancel()
+	for {
+		str, err := sess.AcceptUniStream(ctx)
+		if err != nil {
+			var se *webtransport.SessionError
+			if !errors.As(err, &se) || se.ErrorCode != webtransport.SessionErrorCode(wire.CloseCodeRelayFull) {
+				t.Fatalf("%s: session ended with %v, want close code %d", what, err, wire.CloseCodeRelayFull)
+			}
+			return
+		}
+		str.CancelRead(0)
+	}
 }
 
 // partyViewer joins a broadcast on the PoP.
@@ -217,7 +242,7 @@ func TestDownlinkTenPartyViewersShareOneLegAndCountInG(t *testing.T) {
 }
 
 // The leg cap (spec.limits.maxDownlinkStreams, default 20) refuses the 21st
-// distinct broadcast; the party viewer reads 429. A second viewer of a
+// distinct broadcast; the party viewer is closed 4019. A second viewer of a
 // broadcast already pulled still joins.
 func TestDownlinkLegCapRefusesThe21stBroadcast(t *testing.T) {
 	t.Parallel()
@@ -234,9 +259,7 @@ func TestDownlinkLegCapRefusesThe21stBroadcast(t *testing.T) {
 	if got := f.Pods[0].Server.PopLegs(popName); got != pops.DefaultMaxDownlinkStreams {
 		t.Fatalf("legs = %d, want %d", got, pops.DefaultMaxDownlinkStreams)
 	}
-	if _, status := statusDial(t, f, "https://"+pop.Addr()+"/subscribe/"+ids[pops.DefaultMaxDownlinkStreams], nil); status != http.StatusTooManyRequests {
-		t.Fatalf("the 21st broadcast: status %d, want 429", status)
-	}
+	refusedFull(t, f, "https://"+pop.Addr()+"/subscribe/"+ids[pops.DefaultMaxDownlinkStreams], "the 21st broadcast")
 	_, status, reason := rawLeg(t, f, f.Pods[0], pop, ids[pops.DefaultMaxDownlinkStreams], nil)
 	if status != http.StatusTooManyRequests || reason != "downlink-limit" {
 		t.Fatalf("a raw 21st leg: %d %q, want 429 downlink-limit", status, reason)
@@ -246,7 +269,7 @@ func TestDownlinkLegCapRefusesThe21stBroadcast(t *testing.T) {
 
 // The PoP's own downlink budget (the host's -downlink-budget lowering
 // home's spec.downlink) admits pulls up to its stream count; the next
-// distinct broadcast is a 429 at the PoP, and home sees no leg for it.
+// distinct broadcast is refused 4019 at the PoP, and home sees no leg for it.
 func TestDownlinkBudgetRefusesAtThePoP(t *testing.T) {
 	f, pop := StartHomeAndPop(t, 1, WithPopClient(func(o *popclient.Options) {
 		o.Relay.DownlinkBudget = config.Budget{Streams: 1}
@@ -255,9 +278,7 @@ func TestDownlinkBudgetRefusesAtThePoP(t *testing.T) {
 	_, a := homeBroadcast(t, f, f.Pods[0])
 	_, b := homeBroadcast(t, f, f.Pods[0])
 	partyViewer(t, f, pop, a)
-	if _, status := statusDial(t, f, "https://"+pop.Addr()+"/subscribe/"+b, nil); status != http.StatusTooManyRequests {
-		t.Fatalf("over the PoP's budget: status %d, want 429", status)
-	}
+	refusedFull(t, f, "https://"+pop.Addr()+"/subscribe/"+b, "over the PoP's budget")
 	if got := f.Pods[0].Server.PopLegs(popName); got != 1 {
 		t.Fatalf("legs at home = %d, want 1", got)
 	}

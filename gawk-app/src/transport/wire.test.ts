@@ -167,6 +167,8 @@ import {
   ROOM_CAP_VOICE,
   CLOSE_CODE_VOICE_UNAVAILABLE,
   CLOSE_CODE_PUBLISH_MINTED,
+  CLOSE_CODE_BROADCAST_FULL,
+  CLOSE_CODE_RELAY_FULL,
   MAX_VOICE_NAME_LEN,
   MAX_VOICE_PAYLOAD,
   MAX_VOICE_ROSTER_ENTRIES,
@@ -877,6 +879,19 @@ describe('SessionClosing (R57)', () => {
     expect(CLOSE_CODE_PUBLISH_MINTED).toBe(CLOSE_CODE_VOICE_UNAVAILABLE + 1);
     expect(toHex(encodeSessionClosing(CLOSE_CODE_PUBLISH_MINTED))).toBe('011700000fb1');
     expect(parseSessionClosing(fromHex('011700000fb1'))).toBe(4017);
+  });
+
+  // 4018 BroadcastFull / 4019 RelayFull are noticed before the relay closes
+  // a viewer it refused for capacity (BUGS.md fix 2026-11-06).
+  // closing_test.go goldenSessionClosingBroadcastFullHex / RelayFullHex.
+  it('encodes the golden 4018 and 4019 notices byte-for-byte', () => {
+    expect(CLOSE_CODE_BROADCAST_FULL).toBe(4018);
+    expect(CLOSE_CODE_BROADCAST_FULL).toBe(CLOSE_CODE_PUBLISH_MINTED + 1);
+    expect(CLOSE_CODE_RELAY_FULL).toBe(4019);
+    expect(toHex(encodeSessionClosing(CLOSE_CODE_BROADCAST_FULL))).toBe('011700000fb2');
+    expect(parseSessionClosing(fromHex('011700000fb2'))).toBe(4018);
+    expect(toHex(encodeSessionClosing(CLOSE_CODE_RELAY_FULL))).toBe('011700000fb3');
+    expect(parseSessionClosing(fromHex('011700000fb3'))).toBe(4019);
   });
 
   it('is strict: exact size, version, type, and the gawk code range', () => {

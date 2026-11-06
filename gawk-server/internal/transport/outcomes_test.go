@@ -150,13 +150,16 @@ func TestSubscribeOutcomeLimitRejected(t *testing.T) {
 		t.Fatalf("Subscribe: %v", err)
 	}
 
+	// The refusal is upgraded and closed with 4018 (subscribe_full_test.go
+	// drives that over the network). The recorder cannot upgrade, and that
+	// must not count a second outcome for one refusal.
 	w := httptest.NewRecorder()
 	srv.handleSubscribe(w, connectReq("https://relay/subscribe/"+id, map[string]string{"id": id}))
-	if w.Code != http.StatusTooManyRequests {
-		t.Fatalf("status = %d, want 429", w.Code)
-	}
 	if got := sm.ConnectionCount("subscribe", metrics.OutcomeLimitRejected); got != 1 {
 		t.Errorf("subscribe/limit_rejected = %v, want 1", got)
+	}
+	if got := sm.ConnectionCount("subscribe", metrics.OutcomeUpgradeFailed); got != 0 {
+		t.Errorf("subscribe/upgrade_failed = %v, want 0 (one refusal, one outcome)", got)
 	}
 }
 

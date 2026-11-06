@@ -489,15 +489,11 @@ func TestSubscriberLimitRejected(t *testing.T) {
 	_ = sub1
 	waitFor(t, 5*time.Second, func() bool { return r.Stats().Totals.Subscribers == 1 }, "subscriber registered")
 
-	url := fmt.Sprintf("https://127.0.0.1:%d/subscribe/%s", port, id)
-	rsp, sess, err := dialOnce(t, ctx, url, clientTLS)
-	if err == nil {
-		sess.CloseWithError(0, "")
-		t.Fatal("second subscriber dial succeeded, want 429 rejection")
-	}
-	if rsp == nil || rsp.StatusCode != http.StatusTooManyRequests {
-		t.Fatalf("second subscriber response = %v (err %v), want status 429", rsp, err)
-	}
+	// Upgraded, then closed with 4018: a browser cannot read a refused
+	// CONNECT's 429, and would show "Streamer offline" for a live stream.
+	sub2 := dialSubscriber(t, ctx, port, id, clientTLS)
+	n, nAt, code, cAt := drainUntilClosed(t, ctx, sub2)
+	assertNoticedClose(t, "second subscriber", wire.CloseCodeBroadcastFull, n, nAt, code, cAt)
 }
 
 func TestLateJoinerPrimedOverNetwork(t *testing.T) {

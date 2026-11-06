@@ -4,6 +4,7 @@ import { Button } from '../../ui/Button';
 import { IconButton } from '../../ui/IconButton';
 import { OpenIcon, SpeakerIcon, SpeakerMutedIcon } from '../../ui/Icons';
 import { useViewerConnection } from '../viewer/useViewerConnection';
+import { isFullErrorKind } from '../viewer/fullRefusal';
 import type { AudioOutput } from '../viewer/audioSink';
 import type { PlaybackConfig } from '../viewer/playbackPresets';
 import type { RoomAttachment } from '../../transport/wire';
@@ -241,7 +242,7 @@ function RoomTileSession({
   const { broadcastId } = attachment;
   // Read once per mount: the tile's level is its own persisted preference.
   const [initialVolume] = useState(() => loadTileVolume(broadcastId));
-  const { status, stats, audio, popFull, endReason, errorFatal } = useViewerConnection(
+  const { status, stats, audio, popFull, endReason, errorFatal, errorKind } = useViewerConnection(
     broadcastId,
     canvasRef,
     config.playout,
@@ -314,6 +315,10 @@ function RoomTileSession({
     // retrying every 20 s and the tile joins when a slot frees; the label is
     // on the tile's own bar.
     state = <span>Party-only right now</span>;
+  } else if (status === 'reconnecting' && isFullErrorKind(errorKind)) {
+    // 4018/4019: the broadcast or the relay is at its viewer limit. The
+    // session retries every 20 s and the tile joins when a slot frees.
+    state = <span>Full right now</span>;
   } else if (status === 'reconnecting') {
     state = <span>Reconnecting…</span>;
   }

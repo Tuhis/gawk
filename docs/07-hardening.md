@@ -47,6 +47,7 @@ fixes below). Acceptance per goal:
   - Egress bandwidth limit: Default `0` (unlimited).
   - Connection rate limiter: Default 3.0 attempts/sec (burst 10).
 - **Rate Limiting Status Code**: `429 Too Many Requests` on rate-limited connection attempts, rejected pre-upgrade. The broadcast-capacity rejection on the mint path is also pre-upgrade 429 (post-review), matching the subscribe path.
+  - **Revised 2026-11-06 for the subscribe path** (BUGS.md fix, the subscribe-capacity half of [docs/45](45-relay-refusal-reasons.md)): a browser cannot read a refused `CONNECT`'s status, so a full broadcast read as "Streamer offline". A viewer refused for capacity is now upgraded and closed with 4018 `BroadcastFull` (`max-subscribers`) or 4019 `RelayFull` (`max-total-subscribers`, or a PoP's downlink to home), noticed in-band ([docs/59](59-close-notice.md)). The rate limiter and the drain check still run first, pre-upgrade, so they bound what the upgraded refusal costs; the viewer redials a refusal every 20 s. Stripe legs and the mint path keep their pre-upgrade 429.
 - **ID obfuscation must be keyed** (post-review): broadcast IDs are only ~31^6 strong, so `/statusz` keys are a per-process HMAC-SHA256 of the ID — an unkeyed (even truncated) hash can be brute-forced offline back to joinable IDs. Keys change across server restarts; that's fine, they're only compared within one run.
 
 ---

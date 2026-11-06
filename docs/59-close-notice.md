@@ -241,7 +241,9 @@ terminal close (4000/4004/4006)
   `noticedCloseCode` is the one list to extend. R74's `4012`
   `PopUplinkFull` ([docs/76](76-pop-relays.md) item 28) is the first
   non-terminal code in it: it changes what the viewer shows and how often
-  it retries (every 20 s).
+  it retries (every 20 s). The capacity refusals `4018` `BroadcastFull`
+  and `4019` `RelayFull` (2026-11-06, the subscribe-capacity part of R43
+  landed early) follow it.
 
 ---
 

@@ -187,6 +187,15 @@ pub const CLOSE_CODE_VOICE_UNAVAILABLE: u32 = 4016;
 /// web app's OBS page is its one client; mirrored for namespace parity. Sent
 /// in-band first, and terminal: nothing redials on it.
 pub const CLOSE_CODE_PUBLISH_MINTED: u32 = 4017;
+/// Relay → a viewer it refused for capacity, on an upgraded `/subscribe`
+/// session it closes at once (a browser cannot read a refused CONNECT's 429):
+/// the broadcast is at its viewer limit. NOT terminal: the viewer says the
+/// stream is full and retries every 20 s, the 4012 pattern. Sent in-band
+/// first. Never sent to a publisher.
+pub const CLOSE_CODE_BROADCAST_FULL: u32 = 4018;
+/// As [`CLOSE_CODE_BROADCAST_FULL`], but the relay itself is at its limit
+/// (its total, or a PoP's downlink to home). NOT terminal.
+pub const CLOSE_CODE_RELAY_FULL: u32 = 4019;
 
 /// Whether a close code ends a *viewer* for good (R65, docs/67 D13): the
 /// broadcast was garbage-collected (4000) or the operator killed it (4006).

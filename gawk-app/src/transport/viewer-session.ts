@@ -3,10 +3,14 @@
 // each attempt builds a fresh one — decoder/reassembler/WebTransport
 // teardown-recreate comes for free.
 //
-// Policy: a WebTransportError exposes no HTTP status, so 429-full, a bad
-// cert hash and a wrong URL are indistinguishable in JS. The rule that
-// sidesteps this: a session that never connected fails fatally (no retry);
-// a session that drops after connecting reconnects with backoff.
+// Policy: a WebTransportError exposes no HTTP status, so a 404 (no such
+// broadcast), a bad cert hash and a wrong URL are indistinguishable in JS.
+// The rule that sidesteps this: a session that never connected fails fatally
+// (no retry); a session that drops after connecting reconnects with backoff.
+// Refusals that need a different story are therefore answered on an
+// upgraded session closed with a code: capacity (4012 PopUplinkFull, 4018
+// BroadcastFull, 4019 RelayFull) connects, closes, and retries every 20 s
+// outside the budget (isCapacityRefusal).
 
 import { log } from '../lib/logger';
 import type { ConnectOptions } from './connection';
@@ -24,7 +28,7 @@ import {
   RECONNECT_MAX_ATTEMPTS,
   broadcasterStoppedRetryMs,
   isBroadcasterStopped,
-  isPopUplinkFull,
+  isCapacityRefusal,
   isTerminalViewerClose,
   reconnectDelayMs,
   type ReconnectInfo,
@@ -35,6 +39,7 @@ import {
 export {
   ABRUPT_DROP_RETRY_DELAY_MS,
   BROADCASTER_STOPPED_RETRY_MS,
+  FULL_RETRY_MS,
   RECONNECT_MAX_ATTEMPTS,
   reconnectDelayMs,
   type ReconnectInfo,
@@ -44,12 +49,18 @@ export {
 // (which callback/rejection fired), never by sniffing error messages:
 // - 'unreachable': the first connect failed — we never saw the stream. A
 //   WebTransportError hides the HTTP status, so "no such broadcast" (404),
-//   "full" (429), a bad cert and a dead relay all land here (see the policy
-//   note above); the UI copy hedges toward the common case.
+//   a bad cert and a dead relay all land here (see the policy note above);
+//   the UI copy hedges toward the common case. "Full" no longer does: the
+//   relay says so with a close code.
 // - 'lost': we were watching and the reconnect budget ran out.
 // - 'unplayable': fatal by pipeline verdict (e.g. undecodable codec) —
 //   retrying would fail identically.
-export type ViewerErrorKind = 'unreachable' | 'lost' | 'unplayable';
+// - 'broadcast-full' / 'relay-full': the relay refused this viewer for
+//   capacity (4018 / 4019). Not fatal: the session retries every 20 s, and
+//   the screen shows the card while it does (useViewerConnection derives the
+//   kind from the reconnect's close code; ViewerSession never reports it as
+//   an error).
+export type ViewerErrorKind = 'unreachable' | 'lost' | 'unplayable' | 'broadcast-full' | 'relay-full';
 
 // Why the session ended for good — carried to the UI so the end card can say
 // something true rather than one string for every ending. Typed rather than
@@ -292,9 +303,10 @@ export class ViewerSession {
   }
 
   private scheduleReconnect(): void {
-    // A 4012 refusal is the relay answering, not failing: it never spends the
-    // budget (docs/76 item 28), so the 20 s retries go on until a slot frees.
-    this.attempt = isPopUplinkFull(this.lastCloseCode) ? 1 : this.attempt + 1;
+    // A capacity refusal (4012, 4018, 4019) is the relay answering, not
+    // failing: it never spends the budget (docs/76 item 28), so the 20 s
+    // retries go on until a slot frees.
+    this.attempt = isCapacityRefusal(this.lastCloseCode) ? 1 : this.attempt + 1;
     if (this.attempt > RECONNECT_MAX_ATTEMPTS) {
       this.cb.onError(
         new Error(`reconnect failed after ${RECONNECT_MAX_ATTEMPTS} attempts: ${this.lastReason}`),
