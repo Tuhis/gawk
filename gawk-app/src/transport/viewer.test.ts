@@ -611,9 +611,12 @@ describe('ViewerPipeline', () => {
       deliver(frameDgram(30, true));
       await vi.advanceTimersByTimeAsync(0);
 
+      // A real relay's stalledMs grows between notices; keeping it ahead of the
+      // keyframe's age keeps every pass on the stale path (docs/24 D7).
       for (let i = 0; i < 4; i++) {
-        deliver(encodeVideoUndeliverable({ keyframeId: 21, stalledMs: 3000 }));
-        deliver(encodeVideoUndeliverable({ keyframeId: 30, stalledMs: 3000 }));
+        const stalledMs = 3000 + 1000 * i;
+        deliver(encodeVideoUndeliverable({ keyframeId: 21, stalledMs }));
+        deliver(encodeVideoUndeliverable({ keyframeId: 30, stalledMs }));
         await vi.advanceTimersByTimeAsync(1_000);
       }
       expect(errors).toEqual([]);
