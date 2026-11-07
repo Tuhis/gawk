@@ -42,7 +42,7 @@
     },
     "gawk-server": {
       "component": "gawk-server",
-      "covered": 17638,
+      "covered": 17641,
       "label": "relay",
       "pct": 85.6,
       "total": 20601,
