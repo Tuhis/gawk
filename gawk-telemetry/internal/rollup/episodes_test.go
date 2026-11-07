@@ -303,6 +303,22 @@ func TestRollupCapturesTheNativeBroadcasterTarget(t *testing.T) {
 	}
 }
 
+// A main-thread browser broadcaster's row says why it fell back (#722), so
+// sessions that never offloaded group by cause instead of by browser.
+func TestRollupCapturesThePipelineFallbackReason(t *testing.T) {
+	const reason = "MediaStreamTrackProcessor unavailable in worker scope"
+	samples := []Sample{
+		{TMs: 0, Stats: map[string]any{
+			"sentFps": 60.0, "pipelineContext": "main-thread", "pipelineFallbackReason": reason,
+		}},
+		{TMs: 2000, Stats: map[string]any{"sentFps": 60.0}},
+	}
+	r := Compute(Input{SessionID: "s", Role: "broadcaster", Samples: samples})
+	if got := r.Config["pipelineFallbackReason"]; got != reason {
+		t.Errorf("pipelineFallbackReason = %q, want %q", got, reason)
+	}
+}
+
 // A viewer's resolution is what it DECODED, and must keep coming from the
 // viewer fields — the two are different measurements of different things.
 func TestViewerResolutionStillComesFromDecodedFrames(t *testing.T) {
