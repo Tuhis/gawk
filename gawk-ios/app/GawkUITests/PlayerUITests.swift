@@ -55,6 +55,9 @@ final class PlayerUITests: XCTestCase {
         watch()
         let pill = app.buttons["player.codePill"]
         XCTAssertEqual(pill.label, "Copy link to \(code)")
+        // D27: a 44 pt hit area round the 30 pt pill. From iOS 27.2 a glass
+        // view in the chrome without a content shape was framed as its text.
+        XCTAssertGreaterThanOrEqual(pill.frame.height, 44, "the pill's hit area")
         pill.tap()
         XCTAssertTrue(pill.staticTexts[code].exists, "the code is still shown")
         XCTAssertFalse(app.staticTexts["Copied"].exists)
@@ -117,7 +120,11 @@ final class PlayerUITests: XCTestCase {
     /// under the top row.
     func testALinksServerShowsAsAChip() {
         watch()
-        XCTAssertTrue(app.descendants(matching: .any)["player.serverChip"].exists)
+        let chip = app.descendants(matching: .any)["player.serverChip"]
+        XCTAssertTrue(chip.exists)
+        // Framed as the 30 pt capsule it draws, not its text and icon alone
+        // (iOS 27.2, see `Chip`).
+        XCTAssertGreaterThanOrEqual(chip.frame.height, 30, "the chip's frame")
         shot("player-server-chip", app)
     }
 
