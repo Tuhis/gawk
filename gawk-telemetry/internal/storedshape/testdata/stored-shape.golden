@@ -350,6 +350,7 @@ sessions.stats.parityChunksSent number
 sessions.stats.parityLevel number
 sessions.stats.parityRecoveryFailures number
 sessions.stats.pipelineContext string
+sessions.stats.pipelineFallbackReason string
 sessions.stats.playoutMode string
 sessions.stats.playoutOffsetMs number
 sessions.stats.presentation string

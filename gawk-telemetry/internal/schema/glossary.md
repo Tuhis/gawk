@@ -41,6 +41,12 @@
   `counters.uplinkPacketsSent` (native broadcasters only).
   `series.viewerCount` is the viewer count the relay reported to the
   broadcaster during its session.
+- `config.pipelineContext` says whether a browser broadcaster ran its
+  pipeline in a worker or on the main thread, and
+  `config.pipelineFallbackReason` says why it ran on the main thread (a
+  sentence naming the missing capability; absent when it ran in the worker).
+  Group main-thread broadcaster rows by it to see what kept them off the
+  worker.
 - In `relay`, `broadcast.viewersGlobal` is the live viewer count of a
   broadcast across the fleet at that scrape, and every pod carrying the
   broadcast reports it. For the fleet's viewers at a moment, take one value

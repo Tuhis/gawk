@@ -201,6 +201,10 @@ var BroadcasterFields = map[string]Kind{
 
 	"pipelineContext": KindString,
 	"viewerCount":     KindNumber,
+	// #722 (docs/16): why a browser broadcaster runs on the main thread,
+	// e.g. "MediaStreamTrackProcessor unavailable in worker scope"; null on
+	// the worker path.
+	"pipelineFallbackReason": KindString,
 
 	// R15 audio lane.
 	"audioState": KindString,

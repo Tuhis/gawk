@@ -284,6 +284,8 @@ var viewerConfig = []string{
 
 var broadcasterConfig = []string{
 	"autoRung", "autoCeiling", "pipelineContext", "audioState", "audioCodec",
+	// #722: why a browser broadcaster stayed on the main thread.
+	"pipelineFallbackReason",
 	// Native-engine config, in the lowerCamelCase engine.Stats now tags. Its
 	// `encoder` (a GStreamer element name) stays its own key rather than being
 	// folded into the browser's `acceleration` (a tri-state setting): the two

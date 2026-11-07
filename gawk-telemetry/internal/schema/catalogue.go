@@ -286,6 +286,8 @@ var fieldMeta = map[string]meta{
 	"uplinkMode":       {SemText, "", "How the native broadcaster's deltas leave: datagram or carrier (R73)."},
 	"uplinkModeRequested": {SemText, "",
 		"The Delivery setting asked for: reliable or lowest-latency (R73). Differs from uplinkMode on a relay without carriers."},
+	"pipelineFallbackReason": {SemText, "",
+		"Why a browser broadcaster runs its pipeline on the main thread instead of the worker, e.g. \"MediaStreamTrackProcessor unavailable in worker scope\" (Chrome); absent on the worker path. Pairs with pipelineContext."},
 	"uplinkCongestion": {SemText, "", "The QUIC congestion controller of the publish connection: cubic or bbr (R73)."},
 	"codec":            {SemText, "", "Negotiated video codec."},
 	"acceleration":     {SemText, "", "Hardware-acceleration preference the encoder was configured with."},
