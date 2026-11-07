@@ -87,6 +87,28 @@ extension XCTestCase {
         return hittable
     }
 
+    /// Drags the list up in short, slow steps until `element` is wholly
+    /// above `pinned`, a button pinned above the tab bar, and its fade.
+    /// XCTest scrolls only to an element it finds unhittable, and a row whose
+    /// centre falls in the strip between the pinned button and the tab bar
+    /// is hittable to it while the touch goes to the pinned button: on
+    /// iOS 27.2 a tap on Leave, there, ended the broadcast (CI, 2026-11-06).
+    /// Short drags, as AX5's, so no fling is still moving the list when the
+    /// tap lands.
+    @MainActor
+    func bringAbove(_ pinned: XCUIElement, _ element: XCUIElement, in app: XCUIApplication) {
+        let window = app.windows.firstMatch
+        func clear() -> Bool {
+            canTap(element) && (!canTap(pinned) || element.frame.maxY <= pinned.frame.minY - 18)
+        }
+        for _ in 0..<12 where !clear() {
+            window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6)).press(
+                forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4)),
+                withVelocity: .slow, thenHoldForDuration: 0.3)
+        }
+        XCTAssertTrue(clear(), "\(element) above \(pinned)")
+    }
+
     /// Taps `field` until it holds the keyboard. A tap that lands while its
     /// sheet or alert is still animating in does nothing, and typing then
     /// fails with "Neither element nor any descendant has keyboard focus"

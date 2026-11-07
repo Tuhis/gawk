@@ -137,7 +137,8 @@ struct FullScreenButton: View {
     }
 }
 
-/// A link's server, pinned under the top row (docs/70 D4, K11).
+/// A link's server, pinned under the top row (docs/70 D4, K11). Read, never
+/// tapped: static text, as `ViewerCountChip` is.
 struct ServerChip: View {
     let url: String
 
@@ -148,6 +149,7 @@ struct ServerChip: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Server \(hostOf(url))")
+        .accessibilityAddTraits(.isStaticText)
         .accessibilityIdentifier("player.serverChip")
     }
 }

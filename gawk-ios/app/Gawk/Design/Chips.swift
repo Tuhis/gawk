@@ -3,6 +3,11 @@ import UIKit
 
 /// A 30 pt glass capsule with 13 pt text (docs/70 §3.3): LIVE, RECONNECTING,
 /// the viewer and streaming counts, and the code pill.
+///
+/// The content shape after the glass is what keeps the capsule its
+/// accessibility frame: from iOS 27.2, inside a `GlassEffectContainer` (the
+/// player's chrome), a glass view without one is framed as its text and icon
+/// alone, without the padding or the 30 pt height.
 struct Chip<Content: View>: View {
     var tint: Color?
     @ViewBuilder var content: Content
@@ -14,6 +19,7 @@ struct Chip<Content: View>: View {
             .padding(.horizontal, 11)
             .frame(height: 30)
             .glassEffect(tint.map { Glass.regular.tint($0) } ?? .regular, in: .capsule)
+            .contentShape(.capsule)
     }
 }
 
@@ -54,7 +60,8 @@ struct ReconnectingChip: View {
     }
 }
 
-/// An eye and a number: how many are watching.
+/// An eye and a number: how many are watching. Read, never tapped, so it's
+/// static text to the accessibility audit (D27), as the combined chips are.
 struct ViewerCountChip: View {
     let count: UInt32
     var dimmed = false
@@ -67,6 +74,7 @@ struct ViewerCountChip: View {
         .opacity(dimmed ? 0.5 : 1)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(count) watching")
+        .accessibilityAddTraits(.isStaticText)
     }
 }
 
@@ -122,7 +130,8 @@ final class Copier {
 
 /// The stream's code at the top right of the player (docs/70 D5a): the code
 /// in mono and a copy icon. A tap copies the **link**, as the room's code
-/// chip does (OD12); the code stays where it is (OD4).
+/// chip does (OD12); the code stays where it is (OD4). The pill is 30 pt
+/// and its hit area 44 pt (D27), centred on it.
 struct CodePill: View {
     let code: String
     /// What a tap copies.
@@ -151,6 +160,10 @@ struct CodePill: View {
             .glassEffect(copier.isCopied ? Glass.regular.tint(Theme.accentSoft) : .regular, in: .capsule)
             .overlay(Capsule().strokeBorder(copier.isCopied ? Theme.accentLine : .clear))
             .animation(reduceMotion ? nil : .spring(duration: 0.2), value: copier.isCopied)
+            // After the glass, as `Chip`'s: this is the button's
+            // accessibility frame too.
+            .frame(minHeight: 44)
+            .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .sensoryFeedback(.success, trigger: copier.count)

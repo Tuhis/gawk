@@ -490,3 +490,39 @@ couldn't outlast it:
   or the Stats drawer.
 - **Spotlight is off** for the job; it indexed the checkout and the build
   products throughout.
+
+### 10.5 The iOS 27.2 Simulator, 2026-11-07
+
+Runner image `20261103.629` added iOS 27.2 Simulators, and two UI tests
+failed on every run there (`ios.yml` was held at 27.1 meanwhile, #730).
+
+- **A glass chip in the player's chrome lost its frame.** On 27.2, inside a
+  `GlassEffectContainer`, a view with `.glassEffect` and no content shape
+  is framed for accessibility as its text and icon alone: the viewer count,
+  the server chip and the code pill read 14–16 pt tall, not 30 pt, and the
+  audit failed them as too small to hit. The glass circles, which set
+  `.contentShape(.circle)` after the glass, kept 44 × 44. `Chip` sets
+  `.contentShape(.capsule)` after its glass. The code pill, a button, now
+  has a 44 pt hit area round its 30 pt capsule (D27), with the content
+  shape on it. The viewer count and server chips are read and never tapped,
+  so they carry the static-text trait, as the combined chips (LIVE,
+  "3 streaming") do. `PlayerUITests` pins the pill's 44 pt and the server
+  chip's 30 pt.
+
+| Goal | Verified by |
+|---|---|
+| The player's and the room player's chips and pill pass the audit on 27.2 | `AccessibilityUITests.testThePlayers` on the 27.2 Simulator in `ios.yml` |
+| The code pill takes a tap across 44 pt | `PlayerUITests.testTheCodePillCopiesAndKeepsTheCode` asserts its frame |
+| `ios.yml` takes the newest iOS 27 runtime again and logs it | The `Pick a simulator` step's output |
+
+- **Leave's tap ended the broadcast.** Not a timing or state bug in the
+  leave flow: the failure's hierarchy showed "Broadcast ended" with the
+  room still pending, and the recording showed "Ending…" right after the
+  tap. Live, the room card sits under the pinned End broadcast, and on
+  27.2 Leave's centre fell in the strip between that button and the tab
+  bar (y 790 of 874). XCTest scrolls only to an element it finds
+  unhittable, found Leave hittable there, and tapped; the touch went to
+  End broadcast. The test now drags Leave clear of the pinned button first
+  (`bringAbove` in `UITestSupport.swift`) and checks the broadcast is
+  still live after it. A person sees Leave under the button and scrolls,
+  so the app is unchanged here.

@@ -1593,6 +1593,17 @@ entries still describe code `gawk-pubsim` runs (now
   Banner` inside a view's body came from code compiled against an older
   layout. Deleting the app's `Intermediates.noindex/Gawk.build` fixed it.
   Rule this out before hunting for a memory bug. ([docs/70](70-ios-ux-redesign.md) §10.1)
+- **From iOS 27.2, a glass view in a `GlassEffectContainer` is framed for
+  accessibility as its content** (text and icon), without its padding or
+  frame, unless a content shape follows the `.glassEffect`. The audit then
+  fails a 30 pt chip as too small to hit. Put `.contentShape(…)` after the
+  glass. ([docs/70](70-ios-ux-redesign.md) §10.5)
+- **XCTest taps a row under a pinned button without scrolling** when the
+  row's centre is in the strip between the button and the tab bar: it
+  finds the row hittable there, and the touch goes to the pinned button.
+  A tap on Leave ended the broadcast that way. Drag the row clear first
+  (`bringAbove` in `UITestSupport.swift`).
+  ([docs/70](70-ios-ux-redesign.md) §10.5)
 
 **Native Linux broadcaster, in the desktop workspace (R56)**
 
