@@ -24,21 +24,6 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   tap them. Find out what 27.2 changed in the leave flow (timing or a real
   state bug). Then remove the pin.
 
-## Room header squeezed into the top-left corner while the phone sheet is open
-
-- **Found**: 2026-11-06, in `e2e/voice-panel.mjs`'s `in-voice-360.png` while
-  fixing the room footer's narrow layout.
-- **What**: below 720 px the side panel is a full-width bottom sheet, but
-  `.header[data-panel='true']` still sets `right: var(--panel-w)` (the
-  desktop column's width), so with the sheet open the header is ~40 px wide
-  and its room code, counts and icons pile up over one another at the top
-  left. `.center` and `.footer` reset this on phones; the header does not.
-- **Impact**: cosmetic while the sheet is open; the header's controls are
-  hard to hit until it closes.
-- **Fix would start**: the `@media (max-width: 719px)` rules in
-  `room.module.css` (`right: 0` for `.header[data-panel='true']`), with a
-  header check beside the footer one in `e2e/voice-fake.mjs` `overflowAt`.
-
 ## Voice panel head overflows at 1280 px in `e2e/voice-panel.mjs`
 
 - **Found**: 2026-11-06: `node e2e/voice-panel.mjs` fails 4 of 4 runs on main

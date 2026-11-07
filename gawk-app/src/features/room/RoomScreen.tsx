@@ -984,7 +984,11 @@ export function RoomView({
           showChrome,
         })
       ) : (
-      <div className={[styles.header, showChrome ? '' : styles.headerHidden].join(' ')} data-panel={sideOpen ? 'true' : 'false'}>
+      <div
+        className={[styles.header, showChrome ? '' : styles.headerHidden].join(' ')}
+        data-panel={sideOpen ? 'true' : 'false'}
+        data-testid="room-header"
+      >
         <div className={styles.headerLeft}>
           {/* The code chip is the share control, as the stream code chip
               is on a plain stream: click copies the room link (the More
