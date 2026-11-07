@@ -94,12 +94,13 @@ extension XCTestCase {
     /// is hittable to it while the touch goes to the pinned button: on
     /// iOS 27.2 a tap on Leave, there, ended the broadcast (CI, 2026-11-06).
     /// Short drags, as AX5's, so no fling is still moving the list when the
-    /// tap lands.
+    /// tap lands. The pinned button is judged by its frame, not by whether it
+    /// takes taps: one mid-fade still covers the row (review of #744).
     @MainActor
     func bringAbove(_ pinned: XCUIElement, _ element: XCUIElement, in app: XCUIApplication) {
         let window = app.windows.firstMatch
         func clear() -> Bool {
-            canTap(element) && (!canTap(pinned) || element.frame.maxY <= pinned.frame.minY - 18)
+            canTap(element) && (!pinned.exists || element.frame.maxY <= pinned.frame.minY - 18)
         }
         for _ in 0..<12 where !clear() {
             window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6)).press(

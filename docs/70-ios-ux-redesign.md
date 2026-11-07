@@ -514,6 +514,7 @@ failed on every run there (`ios.yml` was held at 27.1 meanwhile, #730).
 | The player's and the room player's chips and pill pass the audit on 27.2 | `AccessibilityUITests.testThePlayers` on the 27.2 Simulator in `ios.yml` |
 | The code pill takes a tap across 44 pt | `PlayerUITests.testTheCodePillCopiesAndKeepsTheCode` asserts its frame |
 | `ios.yml` takes the newest iOS 27 runtime again and logs it | The `Pick a simulator` step's output |
+| Leave leaves the room without ending the broadcast | `BroadcastRoomUITests.testLeaveReturnsToNotInARoom`, with its "still live" check |
 
 - **Leave's tap ended the broadcast.** Not a timing or state bug in the
   leave flow: the failure's hierarchy showed "Broadcast ended" with the
