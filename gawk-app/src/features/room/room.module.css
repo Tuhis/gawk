@@ -1123,8 +1123,15 @@
    The watching count goes (the People panel has it), and on the narrowest
    phones the streaming count too; the help spans the header instead of
    hanging off the chip (the wrap goes static, so the absolutely positioned
-   header is its containing block). */
+   header is its containing block). The panel is a full-width bottom sheet
+   here, not a column, so the header keeps the whole width instead of giving
+   the column's to it: without this it was ~40px wide over an open sheet and
+   its code, counts and icons piled up on one another. */
 @media (max-width: 719px) {
+  .header[data-panel='true'] {
+    right: 0;
+  }
+
   .header .count:not([data-live]) {
     display: none;
   }
