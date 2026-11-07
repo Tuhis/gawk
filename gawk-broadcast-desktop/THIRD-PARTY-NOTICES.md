@@ -19,11 +19,11 @@ script for what counts as a dependency here and why.
 
 **Scope:** `cargo tree -e normal --target x86_64-pc-windows-msvc` — build- and dev-dependencies (proc macros, test harnesses) are excluded because they are not part of the shipped executable.
 
-## Summary — 255 packages
+## Summary — 256 packages
 
 | License (as declared) | Packages |
 |---|---:|
-| `MIT OR Apache-2.0` | 121 |
+| `MIT OR Apache-2.0` | 122 |
 | `MIT` | 32 |
 | `Apache-2.0 OR MIT` | 25 |
 | `Unicode-3.0` | 22 |
@@ -98,7 +98,7 @@ script for what counts as a dependency here and why.
 | `femtovg` | 0.27.0 | `MIT OR Apache-2.0` | Copyright 2021 femtovg contributors<br>Copyright 2021 Developers of the femtovg project |
 | `field-offset` | 0.3.6 | `MIT OR Apache-2.0` | Copyright (c) 2016-2021 Diggory Blake, and other contributors |
 | `fixed_decimal` | 0.7.3 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
-| `flate2` | 1.1.10 | `MIT OR Apache-2.0` | Copyright (c) 2014-2026 Alex Crichton |
+| `flate2` | 1.1.11 | `MIT OR Apache-2.0` | Copyright (c) 2014-2026 Alex Crichton |
 | `float-cmp` | 0.9.0 | `MIT` | Copyright (c) 2014-2020 Optimal Computing (NZ) Ltd |
 | `fnv` | 1.0.7 | `Apache-2.0 / MIT` | Copyright (c) 2017 Contributors |
 | `foldhash` | 0.2.0 | `Zlib` | Copyright (c) 2024 Orson Peters |
@@ -286,6 +286,7 @@ script for what counts as a dependency here and why.
 | `windows-result` | 0.4.1 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
 | `windows-strings` | 0.5.1 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
 | `windows-sys` | 0.61.2 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
+| `windows-sys` | 0.59.0 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
 | `windows-sys` | 0.52.0 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
 | `windows-targets` | 0.52.6 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
 | `windows-threading` | 0.2.1 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
