@@ -213,10 +213,37 @@ export async function waitForHttp(url, ms) {
   throw new Error(`${url} did not come up`);
 }
 
+// Resolves once the page has rendered the current layout and every finite
+// CSS animation and transition on it has ended. getBoundingClientRect
+// includes transforms, so a measurement taken while the people panel is
+// still sliding in (panelIn: translateX(100%) → 0) reports its head as off
+// the right edge. A fixed sleep after a resize is not enough: the animation
+// starts on the first frame rendered after React re-lays the room out, which
+// a loaded host delays past it (BUGS.md, 2026-11-06). Infinite animations
+// (spinners, the speaking pulse) never end and are not waited for.
+export async function settled(page, ms = 5000) {
+  const ok = await page.evaluate(async (ms) => {
+    const frames = (n) => new Promise((r) => (n <= 0 ? r() : requestAnimationFrame(() => frames(n - 1).then(r))));
+    const deadline = performance.now() + ms;
+    for (;;) {
+      await frames(2);
+      const live = document
+        .getAnimations()
+        .filter((a) => a.playState === 'running' && a.effect?.getComputedTiming().endTime !== Infinity);
+      if (live.length === 0) return true;
+      if (performance.now() > deadline) return false;
+      await Promise.race([Promise.all(live.map((a) => a.finished.catch(() => {}))), new Promise((r) => setTimeout(r, 250))]);
+    }
+  }, ms);
+  if (!ok) throw new Error(`the page's animations did not settle within ${ms}ms`);
+}
+
 // Horizontal overflow of the page, the people panel or anything in the voice
 // panel at this width, or controls in the room header or footer drawn over
-// one another or squeezed below their content, as a message, or null.
+// one another or squeezed below their content, as a message, or null. It
+// measures the settled layout (see settled), not a frame of an animation.
 export async function overflowAt(page, width) {
+  await settled(page);
   for (const [testId, what] of [
     ['room-header', 'room header'],
     ['room-footer', 'room footer'],
