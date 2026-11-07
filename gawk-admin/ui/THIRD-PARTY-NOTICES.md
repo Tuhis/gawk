@@ -38,7 +38,7 @@ script for what counts as a dependency here and why.
 | `@opentelemetry/sdk-trace-web` | 2.8.0 | `Apache-2.0` | — |
 | `@opentelemetry/semantic-conventions` | 1.40.0 | `Apache-2.0` | — |
 | `@redocly/config` | 0.70.0 | `MIT` | Copyright 2024 Redocly Inc |
-| `@redocly/redoc-opentelemetry` | 0.5.1 | `MIT` | — |
+| `@redocly/redoc-opentelemetry` | 0.6.0 | `MIT` | — |
 | `@remix-run/route-pattern` | 0.22.1 | `MIT` | Copyright (c) 2025 Shopify Inc |
 | `@types/react` | 19.3.0 | `MIT` | Copyright (c) Microsoft Corporation |
 | `@types/react-dom` | 19.3.0 | `MIT` | Copyright (c) Microsoft Corporation |
@@ -52,7 +52,7 @@ script for what counts as a dependency here and why.
 | `react` | 19.3.1 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
 | `react-dom` | 19.3.1 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
 | `react-router` | 8.5.1 | `MIT` | Copyright (c) React Training LLC 2015-2019<br>Copyright (c) Remix Software Inc. 2020-2021<br>Copyright (c) Shopify Inc. 2022-2023 |
-| `redoc` | 3.0.1 | `MIT` | Copyright (c) 2015-present, Rebilly, Inc<br>Copyright (c) 2021-present, Redocly Inc |
+| `redoc` | 3.1.0 | `MIT` | Copyright (c) 2015-present, Rebilly, Inc<br>Copyright (c) 2021-present, Redocly Inc |
 | `scheduler` | 0.28.0 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
 | `styled-components` | 6.6.0 | `MIT` | Copyright (c) 2016-present Glen Maddern and Maximilian Stoiber |
 | `stylis` | 4.3.6 | `MIT` | Copyright (c) 2016-present Sultan Tarimo |
