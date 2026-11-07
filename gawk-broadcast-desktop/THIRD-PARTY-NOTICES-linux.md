@@ -137,7 +137,7 @@ script for what counts as a dependency here and why.
 | `filetime` | 0.2.29 | `MIT/Apache-2.0` | Copyright (c) 2014 Alex Crichton |
 | `fixed_decimal` | 0.7.3 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `fixedbitset` | 0.5.7 | `MIT OR Apache-2.0` | Copyright (c) 2015-2017 |
-| `flate2` | 1.1.10 | `MIT OR Apache-2.0` | Copyright (c) 2014-2026 Alex Crichton |
+| `flate2` | 1.1.11 | `MIT OR Apache-2.0` | Copyright (c) 2014-2026 Alex Crichton |
 | `float-cmp` | 0.9.0 | `MIT` | Copyright (c) 2014-2020 Optimal Computing (NZ) Ltd |
 | `fnv` | 1.0.7 | `Apache-2.0 / MIT` | Copyright (c) 2017 Contributors |
 | `foldhash` | 0.1.5 | `Zlib` | Copyright (c) 2024 Orson Peters |
