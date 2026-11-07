@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.40.1](https://github.com/Tuhis/gawk/compare/gawk-server/v0.40.0...gawk-server/v0.40.1) (2026-11-07)
+
+
+### Bug Fixes
+
+* **relay:** record the telemetry session ID before sending the hello ([#719](https://github.com/Tuhis/gawk/issues/719)) ([730c7ae](https://github.com/Tuhis/gawk/commit/730c7aec3620e803f2ce4b7a29df4b9e87f676d6))
+* **relay:** tell a viewer refused for capacity that the stream is full (4018/4019) ([#728](https://github.com/Tuhis/gawk/issues/728)) ([139555c](https://github.com/Tuhis/gawk/commit/139555c6ab8b34879431c08b36a6099abd2075f6))
+* **relay:** tell a wedged viewer its video cannot be delivered ([#729](https://github.com/Tuhis/gawk/issues/729)) ([2c91622](https://github.com/Tuhis/gawk/commit/2c916223eebc76f67c706c1d36ae6a778344d55a))
+
 ## [0.40.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.39.0...gawk-server/v0.40.0) (2026-11-05)
 
 
