@@ -3603,6 +3603,15 @@ jobs:
         if: matrix.check == 'rnnoise'
         run: node voice-rnnoise.mjs
         working-directory: e2e
+      # R79 MV6 (docs/80 §9): the voice panel against the same in-page fake,
+      # screenshots and no-overflow at 360/390/430/1280 px. It rides the
+      # rnnoise leg because it needs only that leg's app build and Chromium
+      # (~7 s); its overflow check waits for the layout to settle, so the
+      # pinned column's slide-in no longer makes it flaky (BUGS.md 2026-11-06).
+      - name: Run the voice panel browser check (R79)
+        if: matrix.check == 'rnnoise'
+        run: node voice-panel.mjs
+        working-directory: e2e
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
@@ -3610,6 +3619,7 @@ jobs:
           path: |
             e2e/out/voice
             e2e/out/voice-rnnoise
+            e2e/out/voice-panel
           if-no-files-found: ignore
 
   e2e:

@@ -24,17 +24,6 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   tap them. Find out what 27.2 changed in the leave flow (timing or a real
   state bug). Then remove the pin.
 
-## Voice panel head overflows at 1280 px in `e2e/voice-panel.mjs`
-
-- **Found**: 2026-11-06: `node e2e/voice-panel.mjs` fails 4 of 4 runs on main
-  at 32437418 with `horizontal overflow at 1280px` in the panel head
-  (`panelHead`, `panelHeadActions`, the pin button, sometimes the
-  Leave voice row). The harness is not in CI (only `voice-rnnoise.mjs` is).
-- **What**: unconfirmed whether it is real or the harness: the check runs
-  400 ms after resizing from 430 to 1280 px, when the phone sheet turns back
-  into the pinned column (which slides in), so it may be catching the slide.
-- **Fix would start**: take a screenshot at the moment of the failure; if the
-  column is mid-slide, wait for its animation to end before the check.
 
 ## Windows broadcaster: viewers black for the first minute (keyframe supersede livelock)
 

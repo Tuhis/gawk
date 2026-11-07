@@ -329,7 +329,11 @@ N real voice participants in one channel, three talking, with delivery, join
 latency and CPU per N appended to `docs/assets/80/load/results.jsonl`.
 
 `e2e/voice-panel.mjs` is MV6's: the voice panel against an in-page fake relay
-and bridge, with screenshots at phone and desktop widths.
+and bridge, with screenshots at phone and desktop widths. CI runs it in
+`e2e-voice`'s rnnoise leg. Its no-overflow check (`overflowAt` in
+`voice-fake.mjs`) measures only once every finite animation has ended: the
+pinned column slides in with a transform, and a measurement mid-slide puts
+its head off the right edge.
 
 ## RNNoise in room voice (R80, docs/81 NS4)
 
