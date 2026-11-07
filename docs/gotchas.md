@@ -42,6 +42,14 @@ Add to it when a new gotcha lands in `docs/`.
   openssl would need the network in the one lane whose claim is that it works
   offline. ([docs/41](41-local-dev-stack.md) §4.7)
 - **`go test -race` needs `CGO_ENABLED=1`** — this environment defaults to 0.
+- **client-go's fake `PrependReactor`/`AddReactor` take no lock**, while
+  `Invokes` reads the chain under one. Adding a reactor while any goroutine
+  of the code under test can still call the client (a `roomcluster` renew
+  loop, an informer) is a data race the detector only sees when that
+  goroutine wins a timing window — it surfaced once in a loaded
+  `go test -race ./...`. Install reactors before starting the goroutine
+  and arm them with an atomic flag, or give the loop an hour-long interval
+  (`TestReleaseRetriesThroughAConflict`, `loggingStore`).
 - **`gawk-telemetry` builds cgo-free by default and its SQL engine does not
   exist in that build.** `internal/sqlengine` sits behind `//go:build duckdb`;
   `go build ./...` on a fresh clone links no DuckDB and the console reports
