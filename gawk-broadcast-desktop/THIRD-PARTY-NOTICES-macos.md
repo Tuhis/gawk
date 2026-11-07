@@ -107,7 +107,7 @@ script for what counts as a dependency here and why.
 | `femtovg` | 0.27.0 | `MIT OR Apache-2.0` | Copyright 2021 femtovg contributors<br>Copyright 2021 Developers of the femtovg project |
 | `field-offset` | 0.3.6 | `MIT OR Apache-2.0` | Copyright (c) 2016-2021 Diggory Blake, and other contributors |
 | `fixed_decimal` | 0.7.3 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
-| `flate2` | 1.1.10 | `MIT OR Apache-2.0` | Copyright (c) 2014-2026 Alex Crichton |
+| `flate2` | 1.1.11 | `MIT OR Apache-2.0` | Copyright (c) 2014-2026 Alex Crichton |
 | `float-cmp` | 0.9.0 | `MIT` | Copyright (c) 2014-2020 Optimal Computing (NZ) Ltd |
 | `fnv` | 1.0.7 | `Apache-2.0 / MIT` | Copyright (c) 2017 Contributors |
 | `foldhash` | 0.2.0 | `Zlib` | Copyright (c) 2024 Orson Peters |
