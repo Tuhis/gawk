@@ -19,11 +19,11 @@ script for what counts as a dependency here and why.
 
 **Scope:** `cargo tree -e normal --target x86_64-pc-windows-msvc` — build- and dev-dependencies (proc macros, test harnesses) are excluded because they are not part of the shipped executable.
 
-## Summary — 256 packages
+## Summary — 255 packages
 
 | License (as declared) | Packages |
 |---|---:|
-| `MIT OR Apache-2.0` | 122 |
+| `MIT OR Apache-2.0` | 121 |
 | `MIT` | 32 |
 | `Apache-2.0 OR MIT` | 25 |
 | `Unicode-3.0` | 22 |
@@ -286,7 +286,6 @@ script for what counts as a dependency here and why.
 | `windows-result` | 0.4.1 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
 | `windows-strings` | 0.5.1 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
 | `windows-sys` | 0.61.2 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
-| `windows-sys` | 0.59.0 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
 | `windows-sys` | 0.52.0 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
 | `windows-targets` | 0.52.6 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
 | `windows-threading` | 0.2.1 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
