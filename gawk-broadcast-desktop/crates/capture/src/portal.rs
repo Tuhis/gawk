@@ -32,9 +32,10 @@ pub enum SourceKind {
 impl SourceKind {
     /// A virtual or unknown source takes the monitor path (D3).
     pub fn from_portal(t: Option<SourceType>) -> Self {
-        match t {
-            Some(SourceType::Window) => Self::Window,
-            _ => Self::Monitor,
+        if t == Some(SourceType::WINDOW) {
+            Self::Window
+        } else {
+            Self::Monitor
         }
     }
 
@@ -143,9 +144,9 @@ fn runtime() -> &'static tokio::runtime::Runtime {
 /// restore token (D3); a test asserts the serialized request.
 pub fn select_options() -> SelectSourcesOptions {
     SelectSourcesOptions::default()
-        .set_sources(SourceType::Monitor | SourceType::Window)
+        .set_sources(SourceType::MONITOR | SourceType::WINDOW)
         .set_multiple(false)
-        .set_cursor_mode(CursorMode::Embedded)
+        .set_cursor_mode(CursorMode::EMBEDDED)
 }
 
 /// Opens the desktop's own picker without blocking the caller; `done` runs
@@ -236,7 +237,8 @@ fn unavailable(e: &ashpd::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ashpd::zvariant::{self, OwnedValue, serialized::Context};
+    use ashpd::wire::{self, serialized::Context};
+    use ashpd::zbus::OwnedVariant;
     use std::collections::HashMap;
 
     /// D3: the request carries types, multiple and cursor mode (plus the
@@ -244,9 +246,9 @@ mod tests {
     /// restore token. Asserted on the serialized request, not on our intent.
     #[test]
     fn select_sources_never_persists_the_choice() {
-        let ctxt = Context::new_dbus(zvariant::LE, 0);
-        let bytes = zvariant::to_bytes(ctxt, &select_options()).unwrap();
-        let (dict, _): (HashMap<String, OwnedValue>, _) = bytes.deserialize().unwrap();
+        let ctxt = Context::new(wire::LE, 0);
+        let bytes = wire::to_bytes(ctxt, &select_options()).unwrap();
+        let (dict, _): (HashMap<String, OwnedVariant>, _) = bytes.deserialize().unwrap();
         let mut keys: Vec<&str> = dict.keys().map(String::as_str).collect();
         keys.sort();
         assert_eq!(keys, ["cursor_mode", "handle_token", "multiple", "types"]);
@@ -262,15 +264,15 @@ mod tests {
     #[test]
     fn a_virtual_or_unknown_source_takes_the_monitor_path() {
         assert_eq!(
-            SourceKind::from_portal(Some(SourceType::Window)),
+            SourceKind::from_portal(Some(SourceType::WINDOW)),
             SourceKind::Window
         );
         assert_eq!(
-            SourceKind::from_portal(Some(SourceType::Monitor)),
+            SourceKind::from_portal(Some(SourceType::MONITOR)),
             SourceKind::Monitor
         );
         assert_eq!(
-            SourceKind::from_portal(Some(SourceType::Virtual)),
+            SourceKind::from_portal(Some(SourceType::VIRTUAL)),
             SourceKind::Monitor
         );
         assert_eq!(SourceKind::from_portal(None), SourceKind::Monitor);
