@@ -194,7 +194,9 @@ describe('AudioSettings', () => {
     // -70..-10 of -70..0: the slider covers six sevenths of the bar.
     const slider = screen.getByLabelText(/Level threshold/) as HTMLInputElement;
     expect(slider.style.left).toBe('0%');
-    expect(parseFloat(slider.style.width)).toBeCloseTo(600 / 7, 5);
+    // CSSOM serializes the percentage to six significant digits, as browsers
+    // do (jsdom 31 too): 85.7143%, so four decimals is the precision it keeps.
+    expect(parseFloat(slider.style.width)).toBeCloseTo(600 / 7, 4);
     expect(screen.queryByText(/Learns your voice level/)).toBeNull();
   });
 
