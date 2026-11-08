@@ -29,7 +29,7 @@ script for what counts as a dependency here and why.
 | `react-dom` | 19.3.1 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
 | `RNNoise` | 0.2 | `BSD-3-Clause` | Copyright (c) 2007-2017, 2024 Jean-Marc Valin<br>Copyright (c) 2023 Amazon<br>Copyright (c) 2017, Mozilla<br>Copyright (c) 2005-2017, Xiph.Org Foundation<br>Copyright (c) 2003-2004, Mark Borgerding |
 | `scheduler` | 0.28.0 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
-| `zustand` | 5.0.16 | `MIT` | Copyright (c) 2019 Paul Henschel |
+| `zustand` | 5.1.0 | `MIT` | Copyright (c) 2019 Paul Henschel |
 
 ## License texts
 
