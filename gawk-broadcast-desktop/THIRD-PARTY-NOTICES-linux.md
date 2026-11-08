@@ -72,7 +72,7 @@ script for what counts as a dependency here and why.
 | `arrayref` | 0.3.9 | `BSD-2-Clause` | Copyright (c) 2015 David Roundy <roundyd@physics.oregonstate.edu> |
 | `arrayvec` | 0.7.8 | `MIT OR Apache-2.0` | Copyright (c) Ulrik Sverdrup "bluss" 2015-2023 |
 | `as-raw-xcb-connection` | 1.0.1 | `MIT OR Apache-2.0` | Copyright 2019 as-raw-xcb-connection Contributers |
-| `ashpd` | 0.13.13 | `MIT` | Copyright (c) 2020 Bilal Elmoussaoui |
+| `ashpd` | 0.14.0 | `MIT` | Copyright (c) 2020 Bilal Elmoussaoui |
 | `asn1-rs` | 0.7.2 | `MIT OR Apache-2.0` | Copyright (c) 2017 Pierre Chifflier |
 | `async-broadcast` | 0.7.2 | `MIT OR Apache-2.0` | Copyright 2020 Yoshua Wuyts<br>Copyright (c) 2020 Yoshua Wuyts |
 | `async-channel` | 2.5.0 | `Apache-2.0 OR MIT` | — |
@@ -410,8 +410,8 @@ script for what counts as a dependency here and why.
 | `yazi` | 0.2.2 | `Apache-2.0 OR MIT` | Copyright (c) 2020 Chad Brokaw |
 | `yeslogic-fontconfig-sys` | 6.0.1 | `MIT` | Copyright 2019 YesLogic Pty. Ltd<br>Copyright 2016 Manuel Reinhardt<br>Copyright 2014 Austin Bonander<br>Copyright 2013 The Servo Project Developers |
 | `yoke` | 0.8.4 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
-| `zbus` | 5.19.0 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
 | `zbus` | 6.2.1 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
+| `zbus` | 5.19.0 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
 | `zbus-lockstep` | 0.5.2 | `MIT` | — |
 | `zbus_names` | 4.3.5 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
 | `zbus_utils` | 6.1.0 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
