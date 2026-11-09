@@ -97,6 +97,13 @@
       minimumGroupSize: 2,
     },
     {
+      description: "pion/rtp v2 is a new module path, and gawk-whip-gateway cannot move to it alone: pion/webrtc/v4 (and v5.0.0-rc.2), pion/interceptor and pion/srtp/v3 all still require github.com/pion/rtp v1, and TrackRemote.ReadRTP hands the gateway a v1 *rtp.Packet. Renovate can only add a require line that nothing imports, which `go mod tidy` drops and CI's tidy job rejects (PR #696). Re-enable when pion/webrtc requires rtp/v2, and migrate with it.",
+      matchManagers: ["gomod"],
+      matchPackageNames: ["github.com/pion/rtp"],
+      matchUpdateTypes: ["major"],
+      enabled: false,
+    },
+    {
       description: "The Prometheus client libraries (client_golang + client_model) share a release cadence and transitive graph — land them together.",
       matchManagers: ["gomod"],
       matchPackageNames: ["github.com/prometheus/**"],
