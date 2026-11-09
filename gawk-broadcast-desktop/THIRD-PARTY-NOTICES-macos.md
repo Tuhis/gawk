@@ -159,7 +159,7 @@ script for what counts as a dependency here and why.
 | `imagesize` | 0.15.0 | `MIT` | Copyright (c) 2017 Maiddog |
 | `imgref` | 1.12.3 | `CC0-1.0 OR Apache-2.0` | — |
 | `itertools` | 0.15.0 | `MIT OR Apache-2.0` | Copyright (c) 2015 |
-| `itoa` | 1.0.18 | `MIT OR Apache-2.0` | — |
+| `itoa` | 1.0.19 | `MIT OR Apache-2.0` | — |
 | `keyboard-types` | 0.7.0 | `MIT OR Apache-2.0` | Copyright (c) 2017 Pyfisch |
 | `kurbo` | 0.13.1 | `Apache-2.0 OR MIT` | Copyright (c) 2018 Raph Levien |
 | `lazy_static` | 1.5.1 | `MIT OR Apache-2.0` | Copyright 2016 lazy-static.rs Developers |
@@ -220,7 +220,7 @@ script for what counts as a dependency here and why.
 | `oid-registry` | 0.8.1 | `MIT OR Apache-2.0` | Copyright (c) 2017 Pierre Chifflier |
 | `once_cell` | 1.21.4 | `MIT OR Apache-2.0` | — |
 | `opus` | 0.4.0 | `MIT/Apache-2.0` | Copyright (c) 2016 Tad Hardesty |
-| `opusic-sys` | 0.7.6 | `BSD-3-Clause` | Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, |
+| `opusic-sys` | 0.7.7 | `BSD-3-Clause` | Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, |
 | `parlance` | 0.1.1 | `Apache-2.0 OR MIT` | Copyright 2020 the Parley Authors |
 | `parley` | 0.11.1 | `Apache-2.0 OR MIT` | Copyright 2020 the Parley Authors |
 | `parley_data` | 0.11.1 | `Apache-2.0 OR MIT` | Copyright 2020 the Parley Authors |
@@ -272,7 +272,7 @@ script for what counts as a dependency here and why.
 | `slab` | 0.4.12 | `MIT` | Copyright (c) 2019 Carl Lerche |
 | `slint` | 1.18.1 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
 | `slotmap` | 1.1.1 | `Zlib` | Copyright (c) 2021 Orson Peters <orsonpeters@gmail.com> |
-| `smallvec` | 1.16.4 | `MIT OR Apache-2.0` | Copyright (c) 2018 The Servo Project Developers |
+| `smallvec` | 1.16.5 | `MIT OR Apache-2.0` | Copyright (c) 2018 The Servo Project Developers |
 | `smol_str` | 0.2.2 | `MIT OR Apache-2.0` | — |
 | `socket2` | 0.6.5 | `MIT OR Apache-2.0` | Copyright (c) 2014 Alex Crichton |
 | `softbuffer` | 0.4.8 | `MIT OR Apache-2.0` | Copyright 2022 Kirill Chibisov |
@@ -280,7 +280,7 @@ script for what counts as a dependency here and why.
 | `strict-num` | 0.1.1 | `MIT` | Copyright (c) 2022 Yevhenii Reizner |
 | `strum` | 0.28.0 | `MIT` | Copyright (c) 2019 Peter Glotfelty |
 | `subtle` | 2.6.1 | `BSD-3-Clause` | Copyright (c) 2016-2017 Isis Agora Lovecruft, Henry de Valence. All rights reserved<br>Copyright (c) 2016-2024 Isis Agora Lovecruft. All rights reserved |
-| `svgtypes` | 0.16.1 | `Apache-2.0 OR MIT` | Copyright (c) 2018 Yevhenii Reizner |
+| `svgtypes` | 0.16.2 | `Apache-2.0 OR MIT` | Copyright (c) 2018 Yevhenii Reizner |
 | `swash` | 0.2.10 | `Apache-2.0 OR MIT` | Copyright (c) 2020 Chad Brokaw |
 | `sys-locale` | 0.3.2 | `MIT OR Apache-2.0` | Copyright (c) 2021 1Password |
 | `taffy` | 0.10.1 | `MIT` | — |
@@ -299,7 +299,7 @@ script for what counts as a dependency here and why.
 | `unicase` | 2.10.0 | `MIT OR Apache-2.0` | Copyright (c) 2014-2026 Sean McArthur |
 | `unicode-bidi` | 0.3.18 | `MIT OR Apache-2.0` | Copyright (c) 2015 The Rust Project Developers |
 | `unicode-linebreak` | 0.1.5 | `Apache-2.0` | — |
-| `unicode-script` | 0.5.8 | `MIT OR Apache-2.0` | Copyright 2021 The Unicode-rs Developers<br>Copyright (c) 2019 Manish Goregaokar |
+| `unicode-script` | 0.5.9 | `MIT OR Apache-2.0` | Copyright 2021 The Unicode-rs Developers<br>Copyright (c) 2019 Manish Goregaokar |
 | `unicode-segmentation` | 1.13.3 | `MIT OR Apache-2.0` | Copyright (c) 2015 The Rust Project Developers |
 | `unicode-vo` | 0.1.0 | `MIT/Apache-2.0` | Copyright (c) 2018 Reizner Evgeniy |
 | `untrusted` | 0.9.0 | `ISC` | Copyright 2015-2021 Brian Smith |
@@ -310,7 +310,7 @@ script for what counts as a dependency here and why.
 | `utf8-zero` | 0.8.1 | `MIT OR Apache-2.0` | — |
 | `utf8_iter` | 1.1.0 | `Apache-2.0 OR MIT` | — |
 | `utf_types` | 1.0.0 | `Apache-2.0 OR MIT` | — |
-| `uuid` | 1.29.0 | `Apache-2.0 OR MIT` | Copyright (c) 2014 The Rust Project Developers<br>Copyright (c) 2018 Ashley Mannix, Christopher Armstrong, Dylan DPC, Hunar Roop Kahlon |
+| `uuid` | 1.29.2 | `Apache-2.0 OR MIT` | Copyright (c) 2014 The Rust Project Developers<br>Copyright (c) 2018 Ashley Mannix, Christopher Armstrong, Dylan DPC, Hunar Roop Kahlon |
 | `vtable` | 0.5.0 | `MIT OR Apache-2.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
 | `webbrowser` | 1.2.6 | `MIT OR Apache-2.0` | Copyright (c) 2015-2022 Amod Malviya |
 | `webpki-roots` | 1.0.11 | `CDLA-Permissive-2.0` | — |
