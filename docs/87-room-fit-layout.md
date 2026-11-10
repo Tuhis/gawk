@@ -229,3 +229,8 @@ findings go below it.
   decodes with, and the presentation dimensions apply the pixel aspect
   and clean aperture. VP8/VP9 frames arrive decoded and report their own
   size.
+- **The UI test's shapes.** gawk-devpub's fixtures are 320×240, so in Fit
+  a playing tile is 4:3 (Grid's tiles stay 16:9 and letterbox it); a
+  paused stream that has never played stays 16:9 until its first frame.
+  The first CI run asserted 16:9 for every tile and failed on exactly
+  that: Fit had given the playing tile the stream's 4:3.
