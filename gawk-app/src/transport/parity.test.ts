@@ -3,6 +3,7 @@ import {
   CAP_PARITY_CHUNKS,
   CAP_STRIPED_DELIVERY,
   CAP_UPLINK_CARRIERS,
+  CAP_KEYFRAME_CARRIERS,
   MAX_PARITY_DATA_CHUNKS,
   MAX_PARITY_SYMBOLS,
   PARITY_CHUNK_HEADER_SIZE,
@@ -220,6 +221,17 @@ describe('RelayCapabilities wire format', () => {
     const caps = { flags: CAP_PARITY_CHUNKS | CAP_STRIPED_DELIVERY | CAP_UPLINK_CARRIERS, parityLevel: 2 };
     const buf = encodeRelayCapabilities(caps);
     expect(hex(buf)).toBe('010f000702');
+    expect(parseRelayCapabilities(buf)).toEqual(caps);
+  });
+
+  it('carries the keyframe-carriers bit in the same 5 bytes (Go golden vector)', () => {
+    expect(CAP_KEYFRAME_CARRIERS).toBe(1 << 3);
+    const caps = {
+      flags: CAP_PARITY_CHUNKS | CAP_STRIPED_DELIVERY | CAP_UPLINK_CARRIERS | CAP_KEYFRAME_CARRIERS,
+      parityLevel: 2,
+    };
+    const buf = encodeRelayCapabilities(caps);
+    expect(hex(buf)).toBe('010f000f02');
     expect(parseRelayCapabilities(buf)).toEqual(caps);
   });
 

@@ -217,6 +217,9 @@ import {
   type VoiceRosterEntry,
   TYPE_VIDEO_UNDELIVERABLE,
   VIDEO_UNDELIVERABLE_SIZE,
+  TYPE_KEYFRAME_CARRIER,
+  encodeKeyframeCarrierPrologue,
+  parseKeyframeCarrierPrologue,
   encodeVideoUndeliverable,
   parseVideoUndeliverable,
 } from './wire';
@@ -2231,5 +2234,39 @@ describe('VideoUndeliverable (0x1E)', () => {
     expect(() => parseVideoUndeliverable(fromHex('011e0102030400000bb800'))).toThrow(); // trailing
     expect(() => parseVideoUndeliverable(fromHex('021e0102030400000bb8'))).toThrow(); // version
     expect(() => parseVideoUndeliverable(fromHex('010b0102030400000bb8'))).toThrow(); // type
+  });
+});
+
+// The keyframe carrier (R84, docs/88 D2): a broadcaster's GOP stream whose
+// prologue is version‖0x1f, the keyframe's StreamFrame at its head and carrier
+// records after it. Golden vectors byte-identical to gawk-server/wire's
+// keyframe_carrier_test.go and crates/wire's golden.rs.
+describe('KeyframeCarrier (0x1F)', () => {
+  const GOLDEN_PROLOGUE_HEX = '011f';
+  const GOLDEN_HEAD_HEX =
+    GOLDEN_PROLOGUE_HEX + GOLDEN_STREAM_FRAME_HEADER_HEX + 'a1a2a3a4a5a6' + 'b1b2b3' + GOLDEN_CARRIER_RECORD_HEX;
+
+  it('matches the Go golden prologue', () => {
+    expect(TYPE_KEYFRAME_CARRIER).toBe(0x1f);
+    expect(toHex(encodeKeyframeCarrierPrologue())).toBe(GOLDEN_PROLOGUE_HEX);
+    expect(() => parseKeyframeCarrierPrologue(fromHex(GOLDEN_PROLOGUE_HEX))).not.toThrow();
+  });
+
+  it('is told apart from the R19 carrier by its type byte', () => {
+    expect(() => parseCarrierPrologue(encodeKeyframeCarrierPrologue())).toThrow(WireError);
+    expect(() => parseKeyframeCarrierPrologue(encodeCarrierPrologue())).toThrow(WireError);
+    expect(() => parseKeyframeCarrierPrologue(new Uint8Array([0x01]))).toThrow(WireError);
+    expect(() => parseKeyframeCarrierPrologue(new Uint8Array([0x02, 0x1f]))).toThrow(WireError);
+    expect(() => parseKeyframeCarrierPrologue(new Uint8Array([0x01, 0x04]))).toThrow(WireError);
+  });
+
+  it('puts the keyframe first, then records (Go golden head)', () => {
+    const head = new Uint8Array([
+      ...encodeKeyframeCarrierPrologue(),
+      ...encodeStreamFrameHeader(goldenStreamFrameHeader),
+      0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xb1, 0xb2, 0xb3,
+      ...encodeCarrierRecord(fromHex(GOLDEN_VIDEO_CHUNK_HEX)),
+    ]);
+    expect(toHex(head)).toBe(GOLDEN_HEAD_HEX);
   });
 });
