@@ -68,7 +68,7 @@ script for what counts as a dependency here and why.
 | `ahash` | 0.8.12 | `MIT OR Apache-2.0` | Copyright (c) 2018 Tom Kaitchuck |
 | `allocator-api2` | 0.2.21 | `MIT OR Apache-2.0` | — |
 | `arboard` | 3.7.0 | `MIT OR Apache-2.0` | Copyright (c) 2022 The Arboard contributors |
-| `arc-swap` | 1.9.3 | `MIT OR Apache-2.0` | Copyright (c) 2017 arc-swap developers |
+| `arc-swap` | 1.9.4 | `MIT OR Apache-2.0` | Copyright (c) 2017 arc-swap developers |
 | `arrayref` | 0.3.9 | `BSD-2-Clause` | Copyright (c) 2015 David Roundy <roundyd@physics.oregonstate.edu> |
 | `arrayvec` | 0.7.8 | `MIT OR Apache-2.0` | Copyright (c) Ulrik Sverdrup "bluss" 2015-2023 |
 | `as-raw-xcb-connection` | 1.0.1 | `MIT OR Apache-2.0` | Copyright 2019 as-raw-xcb-connection Contributers |
@@ -76,9 +76,9 @@ script for what counts as a dependency here and why.
 | `asn1-rs` | 0.7.2 | `MIT OR Apache-2.0` | Copyright (c) 2017 Pierre Chifflier |
 | `async-broadcast` | 0.7.2 | `MIT OR Apache-2.0` | Copyright 2020 Yoshua Wuyts<br>Copyright (c) 2020 Yoshua Wuyts |
 | `async-channel` | 2.5.0 | `Apache-2.0 OR MIT` | — |
-| `async-executor` | 1.14.0 | `Apache-2.0 OR MIT` | — |
+| `async-executor` | 1.14.1 | `Apache-2.0 OR MIT` | — |
 | `async-io` | 2.6.0 | `Apache-2.0 OR MIT` | — |
-| `async-lock` | 3.4.2 | `Apache-2.0 OR MIT` | — |
+| `async-lock` | 3.5.0 | `Apache-2.0 OR MIT` | — |
 | `async-process` | 2.5.0 | `Apache-2.0 OR MIT` | — |
 | `async-signal` | 0.2.14 | `Apache-2.0 OR MIT` | — |
 | `async-task` | 4.7.1 | `Apache-2.0 OR MIT` | — |
@@ -136,7 +136,7 @@ script for what counts as a dependency here and why.
 | `field-offset` | 0.3.6 | `MIT OR Apache-2.0` | Copyright (c) 2016-2021 Diggory Blake, and other contributors |
 | `filetime` | 0.2.29 | `MIT/Apache-2.0` | Copyright (c) 2014 Alex Crichton |
 | `fixed_decimal` | 0.7.3 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
-| `fixedbitset` | 0.5.7 | `MIT OR Apache-2.0` | Copyright (c) 2015-2017 |
+| `fixedbitset` | 0.5.9 | `MIT OR Apache-2.0` | Copyright (c) 2015-2017 |
 | `flate2` | 1.1.11 | `MIT OR Apache-2.0` | Copyright (c) 2014-2026 Alex Crichton |
 | `float-cmp` | 0.9.0 | `MIT` | Copyright (c) 2014-2020 Optimal Computing (NZ) Ltd |
 | `fnv` | 1.0.7 | `Apache-2.0 / MIT` | Copyright (c) 2017 Contributors |
@@ -215,7 +215,7 @@ script for what counts as a dependency here and why.
 | `imgref` | 1.12.3 | `CC0-1.0 OR Apache-2.0` | — |
 | `indexmap` | 2.14.2 | `Apache-2.0 OR MIT` | Copyright (c) 2016--2017 |
 | `itertools` | 0.15.0 | `MIT OR Apache-2.0` | Copyright (c) 2015 |
-| `itoa` | 1.0.18 | `MIT OR Apache-2.0` | — |
+| `itoa` | 1.0.19 | `MIT OR Apache-2.0` | — |
 | `ksni` | 0.3.7 | `Unlicense` | — |
 | `kstring` | 2.0.5 | `MIT OR Apache-2.0` | Copyright (c) Individual contributors |
 | `kurbo` | 0.13.1 | `Apache-2.0 OR MIT` | Copyright (c) 2018 Raph Levien |
@@ -260,7 +260,7 @@ script for what counts as a dependency here and why.
 | `openssl-probe` | 0.2.2 | `MIT OR Apache-2.0` | Copyright (c) 2014 Alex Crichton |
 | `option-operations` | 0.6.1 | `MIT/Apache-2.0` | — |
 | `opus` | 0.4.0 | `MIT/Apache-2.0` | Copyright (c) 2016 Tad Hardesty |
-| `opusic-sys` | 0.7.6 | `BSD-3-Clause` | Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, |
+| `opusic-sys` | 0.7.7 | `BSD-3-Clause` | Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, |
 | `ordered-stream` | 0.2.0 | `MIT OR Apache-2.0` | — |
 | `os_pipe` | 1.2.3 | `MIT` | — |
 | `owned_ttf_parser` | 0.25.1 | `Apache-2.0` | — |
@@ -330,7 +330,7 @@ script for what counts as a dependency here and why.
 | `slab` | 0.4.12 | `MIT` | Copyright (c) 2019 Carl Lerche |
 | `slint` | 1.18.1 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
 | `slotmap` | 1.1.1 | `Zlib` | Copyright (c) 2021 Orson Peters <orsonpeters@gmail.com> |
-| `smallvec` | 1.16.4 | `MIT OR Apache-2.0` | Copyright (c) 2018 The Servo Project Developers |
+| `smallvec` | 1.16.5 | `MIT OR Apache-2.0` | Copyright (c) 2018 The Servo Project Developers |
 | `smithay-client-toolkit` | 0.19.2 | `MIT` | Copyright (c) 2018 Victor Berger |
 | `smol_str` | 0.2.2 | `MIT OR Apache-2.0` | — |
 | `socket2` | 0.6.5 | `MIT OR Apache-2.0` | Copyright (c) 2014 Alex Crichton |
@@ -340,7 +340,7 @@ script for what counts as a dependency here and why.
 | `strict-num` | 0.1.1 | `MIT` | Copyright (c) 2022 Yevhenii Reizner |
 | `strum` | 0.28.0 | `MIT` | Copyright (c) 2019 Peter Glotfelty |
 | `subtle` | 2.6.1 | `BSD-3-Clause` | Copyright (c) 2016-2017 Isis Agora Lovecruft, Henry de Valence. All rights reserved<br>Copyright (c) 2016-2024 Isis Agora Lovecruft. All rights reserved |
-| `svgtypes` | 0.16.1 | `Apache-2.0 OR MIT` | Copyright (c) 2018 Yevhenii Reizner |
+| `svgtypes` | 0.16.2 | `Apache-2.0 OR MIT` | Copyright (c) 2018 Yevhenii Reizner |
 | `swash` | 0.2.10 | `Apache-2.0 OR MIT` | Copyright (c) 2020 Chad Brokaw |
 | `syn` | 3.0.9 | `MIT OR Apache-2.0` | — |
 | `sys-locale` | 0.3.2 | `MIT OR Apache-2.0` | Copyright (c) 2021 1Password |
@@ -368,7 +368,7 @@ script for what counts as a dependency here and why.
 | `unicode-bidi` | 0.3.18 | `MIT OR Apache-2.0` | Copyright (c) 2015 The Rust Project Developers |
 | `unicode-ident` | 1.0.27 | `(MIT OR Apache-2.0) AND Unicode-3.0` | Copyright © 1991-2023 Unicode, Inc |
 | `unicode-linebreak` | 0.1.5 | `Apache-2.0` | — |
-| `unicode-script` | 0.5.8 | `MIT OR Apache-2.0` | Copyright 2021 The Unicode-rs Developers<br>Copyright (c) 2019 Manish Goregaokar |
+| `unicode-script` | 0.5.9 | `MIT OR Apache-2.0` | Copyright 2021 The Unicode-rs Developers<br>Copyright (c) 2019 Manish Goregaokar |
 | `unicode-segmentation` | 1.13.3 | `MIT OR Apache-2.0` | Copyright (c) 2015 The Rust Project Developers |
 | `unicode-vo` | 0.1.0 | `MIT/Apache-2.0` | Copyright (c) 2018 Reizner Evgeniy |
 | `untrusted` | 0.9.0 | `ISC` | Copyright 2015-2021 Brian Smith |
@@ -379,7 +379,7 @@ script for what counts as a dependency here and why.
 | `utf8-zero` | 0.8.1 | `MIT OR Apache-2.0` | — |
 | `utf8_iter` | 1.1.0 | `Apache-2.0 OR MIT` | — |
 | `utf_types` | 1.0.0 | `Apache-2.0 OR MIT` | — |
-| `uuid` | 1.29.0 | `Apache-2.0 OR MIT` | Copyright (c) 2014 The Rust Project Developers<br>Copyright (c) 2018 Ashley Mannix, Christopher Armstrong, Dylan DPC, Hunar Roop Kahlon |
+| `uuid` | 1.29.2 | `Apache-2.0 OR MIT` | Copyright (c) 2014 The Rust Project Developers<br>Copyright (c) 2018 Ashley Mannix, Christopher Armstrong, Dylan DPC, Hunar Roop Kahlon |
 | `vtable` | 0.5.0 | `MIT OR Apache-2.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
 | `wayland-backend` | 0.3.17 | `MIT` | Copyright (c) 2015 Elinor Berger |
 | `wayland-client` | 0.31.15 | `MIT` | Copyright (c) 2015 Elinor Berger |
@@ -393,7 +393,7 @@ script for what counts as a dependency here and why.
 | `webpki-roots` | 1.0.11 | `CDLA-Permissive-2.0` | — |
 | `weezl` | 0.1.12 | `MIT OR Apache-2.0` | Copyright (c) HeroicKatora 2020 |
 | `winit` | 0.30.13 | `Apache-2.0` | — |
-| `winnow` | 1.0.4 | `MIT` | — |
+| `winnow` | 1.0.5 | `MIT` | — |
 | `wl-clipboard-rs` | 0.9.5 | `MIT OR Apache-2.0` | Copyright (c) 2019 Ivan Molodetskikh |
 | `writeable` | 0.6.4 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `wtransport` | 0.7.1 | `MIT OR Apache-2.0` | Copyright (c) 2023 Biagio Festa |
