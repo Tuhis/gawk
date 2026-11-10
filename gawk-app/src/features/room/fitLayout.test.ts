@@ -119,7 +119,7 @@ describe('fitLayout', () => {
     // Deterministic pseudo-random inputs.
     let seed = 7;
     const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
-    for (let t = 0; t < 600; t++) {
+    for (let t = 0; t < 2000; t++) {
       const n = 1 + Math.floor(rnd() * 14);
       const as = Array.from({ length: n }, () => 0.3 + rnd() * 3.5);
       const W = 300 + rnd() * 2600;
