@@ -641,6 +641,16 @@ export function parseDeliveryAck(dgram: Uint8Array): DeliveryAckMessage {
 export const TYPE_VIDEO_UNDELIVERABLE = 0x1e;
 export const VIDEO_UNDELIVERABLE_SIZE = 10;
 
+// KeyframeCarrier: broadcaster→relay, the stream-kind discriminator of a GOP
+// stream (R84, docs/88 D2). Its prologue is version‖0x1f, then one StreamFrame
+// message exactly as a keyframe stream carries it (header, embedded config,
+// payload; keyframe flag set), then carrier records (uint16 length ‖ VideoChunk
+// or ParityChunk datagram) to the FIN. QUIC delivers a stream in order, so the
+// keyframe lands ahead of its GOP's deltas without a stream priority the page
+// cannot set. Opened only after the relay advertised CAP_KEYFRAME_CARRIERS.
+// Never a datagram; a relay never sends one.
+export const TYPE_KEYFRAME_CARRIER = 0x1f;
+
 export interface VideoUndeliverableMessage {
   keyframeId: number;
   stalledMs: number;
@@ -1011,14 +1021,19 @@ export function parseAudioConfig(dgram: Uint8Array): AudioConfigMessage {
   return config;
 }
 
-// Reliable-carrier framing. The viewer only ever parses carriers (the
-// relay writes them), but the encoders exist for tests and golden vectors.
+// Reliable-carrier framing. The viewer only ever parses carriers (the relay
+// writes them); the broadcaster writes keyframe carriers (R84) with these
+// encoders and the record encoder.
 
 export const CARRIER_PROLOGUE_SIZE = 2;
 export const CARRIER_RECORD_HEADER_SIZE = 2;
 
 export function encodeCarrierPrologue(): Uint8Array<ArrayBuffer> {
   return new Uint8Array([WIRE_VERSION, TYPE_RELIABLE_CARRIER]);
+}
+
+export function encodeKeyframeCarrierPrologue(): Uint8Array<ArrayBuffer> {
+  return new Uint8Array([WIRE_VERSION, TYPE_KEYFRAME_CARRIER]);
 }
 
 export function encodeCarrierRecord(dgram: Uint8Array): Uint8Array<ArrayBuffer> {
@@ -1040,6 +1055,18 @@ export function parseCarrierPrologue(buf: Uint8Array): void {
   }
   if (buf[1] !== TYPE_RELIABLE_CARRIER) {
     throw new WireError(`unexpected message type 0x${buf[1].toString(16)}, want reliable carrier`);
+  }
+}
+
+export function parseKeyframeCarrierPrologue(buf: Uint8Array): void {
+  if (buf.length < CARRIER_PROLOGUE_SIZE) {
+    throw new WireError(`keyframe carrier prologue too short: ${buf.length} bytes, need ${CARRIER_PROLOGUE_SIZE}`);
+  }
+  if (buf[0] !== WIRE_VERSION) {
+    throw new WireError(`unsupported version 0x${buf[0].toString(16)}`);
+  }
+  if (buf[1] !== TYPE_KEYFRAME_CARRIER) {
+    throw new WireError(`unexpected message type 0x${buf[1].toString(16)}, want keyframe carrier`);
   }
 }
 

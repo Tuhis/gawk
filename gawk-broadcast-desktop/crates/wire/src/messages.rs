@@ -12,9 +12,9 @@ use crate::{
     STREAM_FRAME_HEADER_SIZE, TELEMETRY_BROADCAST_KEY_SIZE, TELEMETRY_HELLO_SIZE,
     TELEMETRY_SESSION_TOKEN_SIZE, TIME_SYNC_SIZE, TYPE_AUDIO_CONFIG, TYPE_AUDIO_FRAME,
     TYPE_BROADCAST_ANNOUNCE, TYPE_CLOCK_MAPPING, TYPE_DECODER_CONFIG, TYPE_DELIVERY_ACK,
-    TYPE_RELAY_IDENTITY, TYPE_RELIABLE_CARRIER, TYPE_RESUME_TOKEN, TYPE_SESSION_CLOSING,
-    TYPE_STREAM_FRAME, TYPE_TELEMETRY_ENDPOINT, TYPE_TELEMETRY_HELLO, TYPE_TIME_SYNC,
-    TYPE_VIDEO_CHUNK, TYPE_VIDEO_UNDELIVERABLE, TYPE_VIEWER_COUNT, VERSION,
+    TYPE_KEYFRAME_CARRIER, TYPE_RELAY_IDENTITY, TYPE_RELIABLE_CARRIER, TYPE_RESUME_TOKEN,
+    TYPE_SESSION_CLOSING, TYPE_STREAM_FRAME, TYPE_TELEMETRY_ENDPOINT, TYPE_TELEMETRY_HELLO,
+    TYPE_TIME_SYNC, TYPE_VIDEO_CHUNK, TYPE_VIDEO_UNDELIVERABLE, TYPE_VIEWER_COUNT, VERSION,
     VIDEO_CHUNK_HEADER_SIZE, VIDEO_UNDELIVERABLE_SIZE, VIEWER_COUNT_SIZE,
 };
 
@@ -591,6 +591,25 @@ pub fn parse_carrier_prologue(buf: &[u8]) -> Result<(), WireError> {
         });
     }
     check_prefix(buf, TYPE_RELIABLE_CARRIER)
+}
+
+/// Appends the two-byte keyframe carrier prologue (R84, docs/88 D2): VERSION,
+/// then TYPE_KEYFRAME_CARRIER. The GOP's keyframe StreamFrame follows it, then
+/// its records.
+pub fn append_keyframe_carrier_prologue(dst: &mut Vec<u8>) {
+    dst.extend_from_slice(&[VERSION, TYPE_KEYFRAME_CARRIER]);
+}
+
+/// Validates the two-byte keyframe carrier prologue at the start of `buf`.
+/// Does not require anything beyond it: the StreamFrame and records follow.
+pub fn parse_keyframe_carrier_prologue(buf: &[u8]) -> Result<(), WireError> {
+    if buf.len() < CARRIER_PROLOGUE_SIZE {
+        return Err(WireError::ShortDatagram {
+            len: buf.len(),
+            need: CARRIER_PROLOGUE_SIZE,
+        });
+    }
+    check_prefix(buf, TYPE_KEYFRAME_CARRIER)
 }
 
 /// Appends one carrier record (u16 BE length, then the datagram verbatim).

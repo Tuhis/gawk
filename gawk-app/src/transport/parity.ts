@@ -59,10 +59,17 @@ export const CAP_STRIPED_DELIVERY = 1 << 1;
 
 /**
  * The relay ingests reliable carrier streams from a publisher (R73, docs/75
- * D2). Constant only: the browser broadcaster does not open carriers (a
- * browser Reliable mode is its own later design) and viewers ignore it.
+ * D2). Viewers ignore it; the browser broadcaster opens carriers only with
+ * CAP_KEYFRAME_CARRIERS beside it (R84, docs/88 D1).
  */
 export const CAP_UPLINK_CARRIERS = 1 << 2;
+
+/**
+ * The relay also ingests keyframe carriers (R84, docs/88 D2): a GOP stream
+ * with the keyframe's StreamFrame at its head (TYPE_KEYFRAME_CARRIER).
+ * Advertised only on publish sessions and only beside CAP_UPLINK_CARRIERS.
+ */
+export const CAP_KEYFRAME_CARRIERS = 1 << 3;
 
 // --- GF(2^8), primitive polynomial 0x11D, generator 2 ----------------------
 

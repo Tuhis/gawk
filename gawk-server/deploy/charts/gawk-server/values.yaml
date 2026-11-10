@@ -486,11 +486,13 @@ config:
   # R73 reliable uplink (docs/75 D2): accept a broadcaster's reliable carrier
   # streams, so its deltas can ride one QUIC stream per GOP instead of
   # datagrams and a loss on the broadcaster's uplink is retransmitted rather
-  # than lost for every viewer. On by default: a broadcaster opens carriers
-  # only after seeing the capability bit, so older broadcasters and datagram
-  # broadcasters are unaffected. Off: the bit is never advertised, a carrier
-  # stream is rejected as bad input, and /statusz, /metrics and the wire are
-  # byte-identical to pre-R73.
+  # than lost for every viewer. Since R84 (docs/88 D2) it also accepts the
+  # browser's keyframe carriers, the GOP's keyframe at the head of its
+  # carrier. On by default: a broadcaster opens carriers only after seeing the
+  # capability bits, so older broadcasters and datagram broadcasters are
+  # unaffected. Off: neither bit is advertised, a carrier stream is rejected
+  # as bad input, and /statusz, /metrics and the wire are byte-identical to
+  # pre-R73.
   uplinkCarriers: "true"
   # The highest broadcaster bitrate the relay's initial QUIC receive windows
   # are sized for (docs/75 D10): 2 MB per stream and 3 MB per connection at

@@ -80,6 +80,15 @@ const (
 	// without it rejects a publisher's 0x0A stream as bad input — so a new
 	// broadcaster against an old relay stays byte-identical to pre-R73.
 	CapUplinkCarriers uint16 = 1 << 2
+
+	// CapKeyframeCarriers means the relay also ingests keyframe carriers
+	// (R84, docs/88 D2): a publisher's GOP stream whose prologue is
+	// Version‖TypeKeyframeCarrier, the GOP's keyframe StreamFrame at its head
+	// and R73 records after it. Sent only on publish sessions and only beside
+	// CapUplinkCarriers. A broadcaster that does not see this bit opens no
+	// keyframe carrier — a relay without it rejects the 0x1F stream as bad
+	// input — so a new broadcaster against an older relay is unchanged.
+	CapKeyframeCarriers uint16 = 1 << 3
 )
 
 var (

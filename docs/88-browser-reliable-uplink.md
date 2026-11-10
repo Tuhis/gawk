@@ -2,12 +2,14 @@
 
 **Status**: designed 2026-11-10 from a lab pass on Chrome's own QUIC stack
 (§4, §11), building on [docs/75](75-reliable-uplink.md)'s F18. Owner
-decisions OD1–OD6 pending (§3). No chunk started; BR0, the gaming-PC
-measurement, comes first and gates the rest (§8). `BR` = Browser Reliable.
+decisions OD1–OD6 taken 2026-11-10 (§3): the keyframe inline (K3), the
+recommendations for the rest, *Lowest latency* the default until BR0 and
+BR5 hold. The owner chose to build BR1–BR4 before BR0 (§8 *Order*); BR0
+and BR5 gate the default, not the code. `BR` = Browser Reliable.
 
 Touches `gawk-app` (the browser broadcaster's send path, one setting,
-Diagnostics, telemetry fields), and — only if OD1 picks the inline keyframe
-(K3) — `gawk-server` (one stream type and one capability bit on RU1's
+Diagnostics, telemetry fields), and, because OD1 took the inline keyframe
+(K3), `gawk-server` (one stream type and one capability bit on RU1's
 carrier ingest) and the wire mirrors. No viewer change.
 
 ---
@@ -150,19 +152,25 @@ limited a 1080p stream here; why it halved is not known. It is one more
 reason the gaming PC must be measured rather than inferred (BR0).
 
 
-## 3. Owner decisions (pending)
+## 3. Owner decisions (taken 2026-11-10)
 
-None of these is decided. Each row gives the options, what the lab says,
-and a recommendation.
+The owner decided OD1 on 2026-11-10 in their own words: **"Get rid of the
+extra round trip."** That is K3, the keyframe at the head of its GOP's
+stream (D2), not the K1 gate that waits for the keyframe stream's
+acknowledgement. The same day the owner took the recommendation below for
+OD3–OD6, and for OD2 the half that can be decided before the PC and field
+passes: *Lowest latency* stays the default, *Reliable* opt-in, because BR0
+and BR5 have not run. Each row keeps the options, what the lab said and
+the recommendation that was taken.
 
-| # | Question | Options | What the lab says | Recommendation |
-|---|---|---|---|---|
-| OD1 | How does a GOP's keyframe get ahead of its deltas (§5.2)? | **K1** the gate on acknowledgement, relay unchanged; **K3** the keyframe inline at the head of the GOP's stream, one stream type and one capability bit on the relay (BR1); **K1 now, K3 later** | K1 costs about a round trip on long clean paths (F2: 83 vs 67 ms at 40 ms, 167 vs 100 ms at 100 ms) and falls below today's datagrams under bursts at 40 ms (F3: 83.0 vs 84.4 %). K3 costs nothing on a clean path and matches or beats K1 on every lossy cell measured (F3, F4) | **K3**. It is the only option that meets OD5's "design away" without a heuristic, and the relay change is small, contained in RU1's own carrier reader. On a relay that advertises `CapUplinkCarriers` but not the new bit, the browser sends datagrams (one carrier path to maintain, not two); fleet relays upgrade with the release. K1 first would ship a mode with a known per-GOP cost and then change its wire form. |
-| OD2 | What does a browser broadcaster get by default? | **Reliable** once BR4 and BR5 hold, as the native apps since 2026-11-05 (docs/75 D4); **Lowest latency**, Reliable opt-in; **Reliable from the first release** | With K3, no cost on a clean path at 10–100 ms (F2), better for every preset under light loss, bursts and outages (F3, F4), no worse where Cubic collapses (F5). Unmeasured: the gaming PC and Chrome on Windows (BR0), a real capture and encode beside it | **Reliable, after BR4's lab criteria and BR5's field pass**, shipping opt-in until then — the order docs/75 D4 first set for the native apps. *Lowest latency* stays a real choice (docs/75 F3's live-edge trade). |
-| OD3 | Does the browser get a Delivery setting? | **A** the native control and copy under *Stream quality*; **B** none, Reliable whenever the relay can | The modes differ only for a live-edge viewer on a long lossy path (docs/75 F3); that is the case for a choice, and the native apps offer it | **A**: one control in both apps, the same words (§7). |
-| OD4 | Which browsers engage it? | **Chromium only**, Firefox and Safari each after its own BR0-B pass; **every browser with WebTransport streams** | Only Chrome measured (§5.8). Firefox's and Safari's `close()`, schedulers and congestion control are unknown here | **Chromium first** (Chrome, Edge, and other Chromium browsers), Firefox and Safari each when its measurement holds; datagrams until then. |
-| OD5 | Under K3, how is a retired GOP stream ended (§5.3)? | **RU9's rule**: FIN at rotation, queued records shed, aborted only if unacknowledged 2 s after it opened; **docs/75 D3's**: reset 150 ms after the FIN | Under D3's reset, 136 of 199 and 194 of 200 keyframes were never acknowledged where Cubic collapses (F5) — F-12's livelock. RU9's rule landed as many as today's datagrams, at a bounded latency (384 ms and 1.2 s on screen) | **RU9's rule**. It keeps the browser's one keyframe guarantee, and the stale records it lets drain are bounded by what was written before the rotation. |
-| OD6 | Do shed GOPs step the browser's auto-ladder down? | **No**: the notice asks the broadcaster (RU9's choice); **yes**: a shed GOP is a rung-down signal for `FallbackController` | Not measured. RU9 deferred it here ("the browser Reliable milestone revisits it") | **No, not in this milestone.** No gawk sender's ladder reacts to the network (docs/09, docs/38 D11); a shed GOP under a radio outage is not a capacity signal (docs/75's warning lesson, `docs/gotchas.md`). Revisit with BR5's telemetry. |
+| # | Question | Options | What the lab says | Recommendation | Decided (2026-11-10) |
+|---|---|---|---|---|---|
+| OD1 | How does a GOP's keyframe get ahead of its deltas (§5.2)? | **K1** the gate on acknowledgement, relay unchanged; **K3** the keyframe inline at the head of the GOP's stream, one stream type and one capability bit on the relay (BR1); **K1 now, K3 later** | K1 costs about a round trip on long clean paths (F2: 83 vs 67 ms at 40 ms, 167 vs 100 ms at 100 ms) and falls below today's datagrams under bursts at 40 ms (F3: 83.0 vs 84.4 %). K3 costs nothing on a clean path and matches or beats K1 on every lossy cell measured (F3, F4) | **K3**. It is the only option that meets OD5's "design away" without a heuristic, and the relay change is small, contained in RU1's own carrier reader. On a relay that advertises `CapUplinkCarriers` but not the new bit, the browser sends datagrams (one carrier path to maintain, not two); fleet relays upgrade with the release. K1 first would ship a mode with a known per-GOP cost and then change its wire form. | **K3** (owner: "Get rid of the extra round trip.") |
+| OD2 | What does a browser broadcaster get by default? | **Reliable** once BR4 and BR5 hold, as the native apps since 2026-11-05 (docs/75 D4); **Lowest latency**, Reliable opt-in; **Reliable from the first release** | With K3, no cost on a clean path at 10–100 ms (F2), better for every preset under light loss, bursts and outages (F3, F4), no worse where Cubic collapses (F5). Unmeasured: the gaming PC and Chrome on Windows (BR0), a real capture and encode beside it | **Reliable, after BR4's lab criteria and BR5's field pass**, shipping opt-in until then — the order docs/75 D4 first set for the native apps. *Lowest latency* stays a real choice (docs/75 F3's live-edge trade). | **Lowest latency by default, Reliable opt-in**, until BR0 and BR5 hold; the flip to Reliable is decided then (BR5) |
+| OD3 | Does the browser get a Delivery setting? | **A** the native control and copy under *Stream quality*; **B** none, Reliable whenever the relay can | The modes differ only for a live-edge viewer on a long lossy path (docs/75 F3); that is the case for a choice, and the native apps offer it | **A**: one control in both apps, the same words (§7). | **A**, as recommended |
+| OD4 | Which browsers engage it? | **Chromium only**, Firefox and Safari each after its own BR0-B pass; **every browser with WebTransport streams** | Only Chrome measured (§5.8). Firefox's and Safari's `close()`, schedulers and congestion control are unknown here | **Chromium first** (Chrome, Edge, and other Chromium browsers), Firefox and Safari each when its measurement holds; datagrams until then. | **Chromium only**, as recommended |
+| OD5 | Under K3, how is a retired GOP stream ended (§5.3)? | **RU9's rule**: FIN at rotation, queued records shed, aborted only if unacknowledged 2 s after it opened; **docs/75 D3's**: reset 150 ms after the FIN | Under D3's reset, 136 of 199 and 194 of 200 keyframes were never acknowledged where Cubic collapses (F5) — F-12's livelock. RU9's rule landed as many as today's datagrams, at a bounded latency (384 ms and 1.2 s on screen) | **RU9's rule**. It keeps the browser's one keyframe guarantee, and the stale records it lets drain are bounded by what was written before the rotation. | **RU9's rule**, as recommended |
+| OD6 | Do shed GOPs step the browser's auto-ladder down? | **No**: the notice asks the broadcaster (RU9's choice); **yes**: a shed GOP is a rung-down signal for `FallbackController` | Not measured. RU9 deferred it here ("the browser Reliable milestone revisits it") | **No, not in this milestone.** No gawk sender's ladder reacts to the network (docs/09, docs/38 D11); a shed GOP under a radio outage is not a capacity signal (docs/75's warning lesson, `docs/gotchas.md`). Revisit with BR5's telemetry. | **No**, as recommended |
 
 ## 4. How it was measured
 
@@ -291,7 +299,7 @@ because keyframes wait behind the carrier (p50 43 / p95 77 ms against
 | K5 | **Gate with a deadline**: K1, but release the records at most *x* ms after the handover | unchanged | a heuristic: any fixed *x* is wrong on some RTT, and Chrome gives a page no RTT to scale it by (no `getStats()`) | not measured |
 
 **K3's wire form.** A new uni-stream type, `TypeKeyframeCarrier`
-(`0x1F`, the next free on 2026-11-10 — BR1 takes whatever is free when it lands), whose prologue `version ‖ 0x1F` is followed by one
+(`0x1F`: still free when BR1 landed, checked across every file of `gawk-server/wire`, where `TestWireTypesAreDistinct` now guards it), whose prologue `version ‖ 0x1F` is followed by one
 StreamFrame message exactly as a keyframe stream carries it today (header,
 embedded decoder config, payload; its length declared in its header,
 bounded by `MaxKeyframeBytes`), then RU1's records to the FIN. The relay
@@ -532,7 +540,7 @@ OD5).
 ## 7. What users see
 
 **The broadcaster** (the browser's Settings panel, under *Stream quality*,
-if OD3 takes option A):
+OD3 took option A):
 
 | Element | Copy |
 |---|---|
@@ -576,10 +584,15 @@ browser broadcaster's viewers get, by preset, from the lab (§2, §11; Chrome
 
 ### Order
 
-1. **BR0 first, and alone**: the gaming-PC measurement. Nothing below
-   starts until it is recorded, because it can change OD1 (if Chrome on
-   Windows schedules streams or datagrams differently) and OD2.
-2. **BR1 and BR2 together** (BR1 only if OD1 picks K3), behind the
+1. **BR0**: the gaming-PC measurement. As designed it came first and
+   alone, because it can change OD1 (if Chrome on Windows schedules
+   streams or datagrams differently) and OD2. **The owner chose on
+   2026-11-10 to build BR1–BR4 before it.** Building behind an opt-in
+   setting is safe because nothing changes for anyone who does not pick
+   *Reliable*, and BR0 and BR5 still gate the default. BR0 now gates OD2
+   and G8, not the code; if it contradicts OD1, OD1 is revisited with its
+   numbers.
+2. **BR1 and BR2 together** (BR1 because OD1 took K3), behind the
    setting, with *Lowest latency* the default until BR5.
 3. **BR3 and BR4** with them: the UI, Diagnostics, telemetry, and the lab
    and CI criteria on the shipping code.
@@ -663,7 +676,7 @@ none.
 | G8 judged: where the PC differs from the lab by more than the spread, §2 says how, and OD1/OD2 are revisited before BR2 starts | review |
 | `sender.mjs` and `run.sh` run on Windows (the Linux runs unchanged: the matrix's own commands still reproduce §11 on the lab host) | manual |
 
-### BR1 — Relay and wire: the keyframe carrier (only if OD1 picks K3)
+### BR1 — Relay and wire: the keyframe carrier (OD1 took K3)
 
 | Acceptance criterion | Verified by |
 |---|---|
@@ -673,6 +686,57 @@ none.
 | A 0x1F stream counts against `MaxUplinkCarriers` and never takes one of `acceptKeyframeStreams`' four slots; a StreamFrame larger than `MaxKeyframeBytes`, a malformed one, or one with the keyframe flag clear ends the stream (`CancelRead`) with nothing cached | unit |
 | A hostile publisher holding a hole inside the keyframe part keeps at most its connection receive window of relay memory (RU1's test, extended) | unit |
 | A commit touching `gawk-broadcast-desktop/` in the same PR for the `crates/wire` mirror (CONTRIBUTING) | review |
+
+**As built (2026-11-10).** `0x1F` and `1 << 3` were still free (every
+`Type*` constant in `gawk-server/wire`, not only `wire.go`'s header list;
+`TestWireTypesAreDistinct` walks the package's sources so a collision now
+fails a test). Golden vectors `011f` (prologue), `010f000f02` (all four
+capability bits, parity 2) and a whole stream head (prologue, the golden
+StreamFrame, one record) are byte-identical in `wire/keyframe_carrier_test.go`,
+`wire.test.ts`/`parity.test.ts` and `crates/wire/tests/golden.rs`.
+
+- **No new knob.** The bit rides `-uplink-carriers`: on, the relay
+  advertises `CapUplinkCarriers | CapKeyframeCarriers` on publish sessions;
+  off, neither, and a 0x1F stream fails the keyframe reader as bad input
+  as before (`TestKeyframeCarrierRejectedWithCarriersOff`; the publisher's
+  capabilities stay `010f000302`).
+- **Where.** `hub.IngestKeyframeCarrier` (`internal/hub/uplink.go`) reads the
+  prologue and the StreamFrame, calls `onKeyframe` as soon as the declared
+  length is in, then runs RU1's record loop (`ingestUplinkRecords`, shared
+  with `IngestUplinkCarrier`). `classifyUniStream` routes 0x1F to it on a
+  publisher's session only, giving the keyframe-stream slot back after the
+  2-byte peek as it does for 0x0A; an edge's upstream never sends one, so an
+  edge still reads 0x1F as an unreadable keyframe stream
+  (`TestEdgeStreamsKeyframeCarrierIsNotRead`). A PoP's own publish route is
+  the relay's (`handlePublish`), so a browser behind a PoP gets the bit and
+  the PoP's leg to home carries the keyframe as a keyframe stream, unchanged;
+  the leg's own capabilities (`sendLegCapabilities`) do not carry it.
+- **Rejections.** A head that is not a keyframe StreamFrame (another type,
+  a bad version, the keyframe flag clear) is counted as bad input, one over
+  `MaxKeyframeBytes` as oversize; a stream cut short inside its keyframe
+  (RU9's 2 s abort) is neither. All three are reset with nothing cached or
+  fanned out (`TestKeyframeCarrierRejectsBadKeyframes`).
+- **Memory.** The keyframe part is read into a buffer that grows with the
+  bytes read (64 KiB steps, doubling), never allocated whole from the
+  declared length. `TestKeyframeCarrierHostileHoleIsBounded`: three
+  keyframe carriers each declaring an 8 MiB keyframe with a hole 64 KiB in;
+  the relay's QUIC held **2.80 MB** past the holes (2 803 308 bytes, RU1's
+  figure) and the process heap grew **4.4 MB**, inside the 3 MB initial /
+  15 MiB maximum connection window. Allocating the declared length up front
+  grew it **29.4 MB** (the test's red run).
+- **Tests** (red first, before the code): the keyframe in the cache and on
+  a subscriber's keyframe stream while the FIN is held back
+  (`TestKeyframeCarrierKeyframeLandsBeforeFIN`, and over a real quic-go
+  session `TestKeyframeCarrierOverRealSession`); RU1's property test over
+  random GOPs, keyframe carriers against keyframe streams plus datagrams
+  (`TestKeyframeCarrierIngestsExactlyAsKeyframeStreamAndDatagrams`); the
+  shared `MaxUplinkCarriers` and no keyframe-stream slot taken
+  (`TestKeyframeCarrierCountsAgainstMaxUplinkCarriers`,
+  `TestKeyframeCarriersTakeNoKeyframeStreamSlot`).
+- **gawk-ios** compiles `crates/wire` by path but neither uses nor
+  receives the new type or bit (the native engine does not open keyframe
+  carriers, §10), so the PR carries no `gawk-ios/` commit, as RU1's bit
+  did not; its Rust gates were run against the change.
 
 ### BR2 — The browser's carrier lane
 
@@ -695,7 +759,7 @@ pipeline runs (docs/16).
 
 | Acceptance criterion | Verified by |
 |---|---|
-| The Delivery control (if OD3 = A) with §7's exact copy, under *Stream quality*; persists in `broadcastSettingsStore`; a blank value follows the default; applies at the next keyframe without a restart | unit + manual |
+| The Delivery control (OD3 = A) with §7's exact copy, under *Stream quality*; persists in `broadcastSettingsStore`; a blank value follows the default; applies at the next keyframe without a restart | unit + manual |
 | No docs/57 principle-3 term in a main-flow string (the existing string test, extended to the new strings) | unit |
 | Diagnostics and *Copy diagnostics* show §7's rows | unit |
 | The notice reads as RU9's, reachable by keyboard and screen reader as RU9 requires | unit |
@@ -721,7 +785,8 @@ pipeline runs (docs/16).
 - **The lab is one host and headless Chrome on Linux.** Chrome's
   per-datagram step and its scheduler between streams may differ on
   Windows and macOS; the renderer here does nothing but send. BR0 exists
-  for this, and nothing ships before it.
+  for this. The code ships before it, opt-in (§8 *Order*); the default
+  does not change before it.
 - **Chrome can change underneath.** No priority API, no stats, Cubic
   regardless (§5.5): a future Chrome that adds `sendOrder` or BBR changes
   the trade-offs (K4 becomes possible, F4's collapse moves). Table S4 is the
