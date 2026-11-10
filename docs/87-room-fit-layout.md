@@ -188,13 +188,15 @@ findings go below it.
   there; it still catches an exhaustive search at 40 tiles (it guards the
   number of candidates, not a constant-factor slowdown). The 2 000-input
   property test hit Vitest's 5 s default timeout there too; it keeps its
-  2 000 inputs with a 30 s timeout (2.6 s locally under coverage). With the
+  2 000 inputs with a 30 s timeout (past 5 s on CI under coverage, 2.6 s
+  locally, so 30 s leaves several times CI's figure). With the
   floor removed it fails at inputs 28, 681 and 1514, so it guards D5's
   floor independently of the deterministic case.
 - **D5's Grid floor**, added after the design PR's review, was test-first:
   the property test with a previous arrangement (2 000 random inputs)
-  found one kept arrangement scoring 47.08 against Grid's 47.18 before
-  the floor went in.
+  stopped at its first failure, a kept arrangement scoring 47.08 against
+  Grid's 47.18, before the floor went in. A later counting run with the
+  floor removed found three such inputs (28, 681 and 1514; the bullet above).
 - **D5 keeps its previous result in React state**, recomputed during render
   when its inputs change, not in a ref read during render.
 - **The e2e** (`e2e/run.mjs --rooms`, run locally against Playwright's
