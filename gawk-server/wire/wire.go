@@ -253,6 +253,20 @@ const (
 	// counts it as a bad datagram and drops it; clients parse it and never
 	// send it.
 	TypeVideoUndeliverable = 0x1E
+
+	// TypeKeyframeCarrier identifies a keyframe carrier (R84, docs/88 D2): a
+	// publisher→relay unidirectional stream carrying one GOP, keyframe first.
+	// Its prologue is Version‖TypeKeyframeCarrier, followed by one StreamFrame
+	// message exactly as a keyframe stream carries it (header, embedded
+	// DecoderConfig, payload; its keyframe flag set), then R73 carrier records
+	// (uint16 length ‖ VideoChunk or ParityChunk datagram) to the FIN. QUIC
+	// delivers a stream in order, so the keyframe lands before its GOP's
+	// deltas without a stream priority the browser cannot set. The relay hands
+	// the StreamFrame on as soon as its declared length is read and ingests the
+	// rest as a carrier. A publisher opens one only after seeing
+	// CapKeyframeCarriers; a relay without it rejects the stream as bad input.
+	// Never a datagram, never sent by a relay.
+	TypeKeyframeCarrier = 0x1F
 )
 
 // DeliveryMode names what a subscriber is actually being served, as carried
@@ -428,7 +442,8 @@ const (
 	// ViewerCountSize is the exact size of a ViewerCount datagram (R18).
 	ViewerCountSize = 6
 	// CarrierPrologueSize is the size of the reliable-carrier stream prologue
-	// (Version + TypeReliableCarrier), written once when the stream opens.
+	// (Version + TypeReliableCarrier), written once when the stream opens; the
+	// keyframe carrier's (Version + TypeKeyframeCarrier) is the same size.
 	CarrierPrologueSize = 2
 	// CarrierRecordHeaderSize is the size of the uint16 length prefix in front
 	// of every carrier record.
@@ -1141,6 +1156,31 @@ func ParseCarrierPrologue(buf []byte) error {
 	if buf[1] != TypeReliableCarrier {
 		return fmt.Errorf("%w: got 0x%02x, want reliable carrier 0x%02x",
 			ErrBadType, buf[1], TypeReliableCarrier)
+	}
+	return nil
+}
+
+// AppendKeyframeCarrierPrologue appends the two-byte keyframe carrier stream
+// prologue (R84, docs/88 D2): Version, then TypeKeyframeCarrier. The GOP's
+// keyframe StreamFrame follows it, then its records.
+func AppendKeyframeCarrierPrologue(dst []byte) []byte {
+	return append(dst, Version, TypeKeyframeCarrier)
+}
+
+// ParseKeyframeCarrierPrologue validates the two-byte keyframe carrier
+// prologue at the start of buf. It does not require anything beyond the
+// prologue: the StreamFrame and records follow on the stream.
+func ParseKeyframeCarrierPrologue(buf []byte) error {
+	if len(buf) < CarrierPrologueSize {
+		return fmt.Errorf("%w: %d bytes, need at least %d for keyframe carrier prologue",
+			ErrShortDatagram, len(buf), CarrierPrologueSize)
+	}
+	if buf[0] != Version {
+		return fmt.Errorf("%w: 0x%02x", ErrBadVersion, buf[0])
+	}
+	if buf[1] != TypeKeyframeCarrier {
+		return fmt.Errorf("%w: got 0x%02x, want keyframe carrier 0x%02x",
+			ErrBadType, buf[1], TypeKeyframeCarrier)
 	}
 	return nil
 }

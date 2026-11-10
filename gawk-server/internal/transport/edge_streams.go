@@ -57,7 +57,9 @@ func (es *edgeSession) acceptStreams(ctx context.Context, up edgeUpstream, pub *
 		wg.Add(1)
 		go func(st io.Reader) {
 			defer wg.Done()
-			classifyUniStream(st, func() { resetEdgeStream(st) }, sem, pub, log)
+			// An edge reads what its upstream relays send, which never
+			// includes a publisher's keyframe carrier (docs/88 D2).
+			classifyUniStream(st, func() { resetEdgeStream(st) }, sem, pub, false, log)
 		}(stream)
 	}
 }
@@ -70,32 +72,49 @@ func (es *edgeSession) acceptStreams(ctx context.Context, up edgeUpstream, pub *
 // PoP's downlink leg writer sends (docs/76 item 18), read by
 // Publisher.IngestUplinkCarrier after the slot is given back, since a carrier
 // lives for a GOP and the hub bounds carriers itself (hub.MaxUplinkCarriers).
-// Anything else goes to the keyframe reader with the peeked bytes replayed,
-// so it sees exactly what the upstream sent.
-func classifyUniStream(r io.Reader, cancel func(), sem chan struct{}, pub *hub.Publisher, log *slog.Logger) {
+// With keyframeCarriers (a publisher's session, never an edge's),
+// Version‖TypeKeyframeCarrier is an R84 keyframe carrier (docs/88 D2), read by
+// Publisher.IngestKeyframeCarrier the same way. Anything else goes to the
+// keyframe reader with the peeked bytes replayed, so it sees exactly what the
+// upstream sent.
+func classifyUniStream(r io.Reader, cancel func(), sem chan struct{}, pub *hub.Publisher, keyframeCarriers bool, log *slog.Logger) {
 	release := sync.OnceFunc(func() { <-sem })
 	defer release()
 	var head [wire.CarrierPrologueSize]byte
 	n, _ := io.ReadFull(r, head[:])
-	if n == len(head) && wire.ParseCarrierPrologue(head[:]) == nil {
-		release()
-		err := pub.IngestUplinkCarrier(io.MultiReader(bytes.NewReader(head[:]), r))
-		if err == nil {
+	if n == len(head) {
+		var ingest func(io.Reader) error
+		switch {
+		case wire.ParseCarrierPrologue(head[:]) == nil:
+			ingest = pub.IngestUplinkCarrier
+		case keyframeCarriers && wire.ParseKeyframeCarrierPrologue(head[:]) == nil:
+			ingest = pub.IngestKeyframeCarrier
+		}
+		if ingest != nil {
+			release()
+			if err := ingest(io.MultiReader(bytes.NewReader(head[:]), r)); err != nil {
+				cancel()
+				logCarrierEnd(log, err)
+			}
 			return
 		}
-		cancel()
-		switch {
-		case errors.Is(err, hub.ErrUplinkCarrierLimit):
-			log.Warn("carrier rejected: too many concurrent", "max", hub.MaxUplinkCarriers)
-		case errors.Is(err, hub.ErrBadUplinkRecord):
-			log.Warn("carrier ended: malformed record", "err", err)
-		default:
-			log.Debug("carrier ended", "err", err)
-		}
-		return
 	}
 	if err := pub.IngestKeyframeStream(io.MultiReader(bytes.NewReader(head[:n]), r)); err != nil {
 		cancel()
 		log.Debug("keyframe stream ingest failed", "err", err)
+	}
+}
+
+// logCarrierEnd logs why a carrier of either kind ended early.
+func logCarrierEnd(log *slog.Logger, err error) {
+	switch {
+	case errors.Is(err, hub.ErrUplinkCarrierLimit):
+		log.Warn("carrier rejected: too many concurrent", "max", hub.MaxUplinkCarriers)
+	case errors.Is(err, hub.ErrBadUplinkRecord):
+		log.Warn("carrier ended: malformed record", "err", err)
+	case errors.Is(err, hub.ErrBadKeyframeCarrier):
+		log.Warn("keyframe carrier ended: malformed keyframe", "err", err)
+	default:
+		log.Debug("carrier ended", "err", err)
 	}
 }

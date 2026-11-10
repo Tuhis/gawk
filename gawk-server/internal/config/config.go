@@ -277,10 +277,12 @@ type Config struct {
 
 	// UplinkCarriers accepts reliable carrier streams from publishers (R73,
 	// docs/75 D2): the relay advertises CapUplinkCarriers on publish sessions
-	// and routes a publisher's 0x0A uni stream to the carrier reader. On by
-	// default. Off: the bit is never sent, a 0x0A stream is rejected as bad
-	// input as before, and /statusz, /metrics and the wire are byte-identical
-	// to the pre-R73 relay.
+	// and routes a publisher's 0x0A uni stream to the carrier reader. Since
+	// R84 (docs/88 D2) it also advertises CapKeyframeCarriers beside it and
+	// reads a publisher's 0x1F keyframe carrier (the GOP's keyframe at the
+	// head of its carrier). On by default. Off: neither bit is sent, a 0x0A
+	// or 0x1F stream is rejected as bad input as before, and /statusz,
+	// /metrics and the wire are byte-identical to the pre-R73 relay.
 	UplinkCarriers bool
 
 	// UplinkMaxBitrateBytes is the highest broadcaster bitrate the relay
@@ -501,7 +503,7 @@ func parse(args []string, getenv func(string) string, p Profile, register func(f
 	stripedDelivery := fs.Bool("striped-delivery", envBool("GAWK_STRIPED_DELIVERY", true),
 		"accept R30 stripe-leg subscribe sessions (?stripe=N&leg=j) and StripeState suppression; off is byte-identical to pre-R30")
 	uplinkCarriers := fs.Bool("uplink-carriers", envBool("GAWK_UPLINK_CARRIERS", true),
-		"accept R73 reliable uplink carriers from broadcasters (advertised to publishers); off is byte-identical to pre-R73")
+		"accept R73 reliable uplink carriers and R84 keyframe carriers from broadcasters (advertised to publishers); off is byte-identical to pre-R73")
 	uplinkMaxBitrate := fs.String("uplink-max-bitrate", env("GAWK_UPLINK_MAX_BITRATE", "50mbps"),
 		"highest broadcaster bitrate the initial QUIC receive windows are sized for (R73, docs/75 D10); 0 keeps quic-go's defaults")
 	metricsAddr := fs.String("metrics-addr", env("GAWK_METRICS_ADDR", p.MetricsAddr),

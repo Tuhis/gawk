@@ -1157,7 +1157,8 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 // requests no parity. Nothing is sent when there is nothing to advertise.
 // Growth is new bits in the flags word, never new bytes: both producer
 // mirrors parse it strictly by size. CapUplinkCarriers is a publisher's
-// business only (docs/75 D2), so a subscriber's message is unchanged by it.
+// business only (docs/75 D2), so a subscriber's message is unchanged by it;
+// CapKeyframeCarriers rides beside it and nowhere else (docs/88 D2).
 func (s *Server) sendRelayCapabilities(sess *webtransport.Session, log *slog.Logger, publish bool) {
 	caps := wire.RelayCapabilities{}
 	if s.cfg.ParityDefault > 0 {
@@ -1168,7 +1169,7 @@ func (s *Server) sendRelayCapabilities(sess *webtransport.Session, log *slog.Log
 		caps.Flags |= wire.CapStripedDelivery
 	}
 	if publish && s.cfg.UplinkCarriers {
-		caps.Flags |= wire.CapUplinkCarriers
+		caps.Flags |= wire.CapUplinkCarriers | wire.CapKeyframeCarriers
 	}
 	if caps.Flags == 0 {
 		return
@@ -1263,7 +1264,8 @@ const maxConcurrentKeyframeStreams = 4
 
 // acceptKeyframeStreams reads the publisher's uni streams and hands each to
 // the hub: keyframe streams for ingestion + fan-out and, with
-// -uplink-carriers on, R73 uplink carriers to the carrier reader. It returns
+// -uplink-carriers on, R73 uplink carriers and R84 keyframe carriers to the
+// carrier readers. It returns
 // when the session's context is cancelled (AcceptUniStream errors). Any
 // stream whose ingest fails is reset; records a carrier delivered before
 // its error were forwarded.
@@ -1289,8 +1291,9 @@ func (s *Server) acceptKeyframeStreams(ctx context.Context, sess *webtransport.S
 				// The edge pump's classification (edge_streams.go), so a
 				// publisher and a PoP's downlink read streams one way: the
 				// prologue (docs/75 D2) tells a carrier, which gives its slot
-				// back, from a keyframe stream, replayed byte for byte.
-				classifyUniStream(st, reset, sem, pub, log)
+				// back, from a keyframe stream, replayed byte for byte. A
+				// publisher may also open R84 keyframe carriers (docs/88 D2).
+				classifyUniStream(st, reset, sem, pub, true, log)
 				return
 			}
 			// Carriers off: nothing is peeked, every stream is a keyframe
