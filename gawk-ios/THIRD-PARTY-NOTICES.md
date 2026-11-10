@@ -76,7 +76,7 @@ script for what counts as a dependency here and why.
 | `equivalent` | 1.0.3 | `Apache-2.0 OR MIT` | Copyright (c) 2016--2023 |
 | `errno` | 0.3.14 | `MIT OR Apache-2.0` | Copyright (c) 2014 Chris Wong |
 | `fastrand` | 2.5.0 | `Apache-2.0 OR MIT` | — |
-| `flate2` | 1.1.10 | `MIT OR Apache-2.0` | Copyright (c) 2014-2026 Alex Crichton |
+| `flate2` | 1.1.11 | `MIT OR Apache-2.0` | Copyright (c) 2014-2026 Alex Crichton |
 | `form_urlencoded` | 1.2.2 | `MIT OR Apache-2.0` | Copyright (c) 2013-2016 The rust-url developers |
 | `getrandom` | 0.2.17 | `MIT OR Apache-2.0` | Copyright (c) 2018-2024 The rust-random Project Developers<br>Copyright (c) 2014 The Rust Project Developers |
 | `getrandom` | 0.4.3 | `MIT OR Apache-2.0` | Copyright (c) 2018-2026 The rust-random Project Developers<br>Copyright (c) 2014 The Rust Project Developers |
@@ -96,7 +96,7 @@ script for what counts as a dependency here and why.
 | `idna` | 1.1.0 | `MIT OR Apache-2.0` | Copyright (c) 2013-2025 The rust-url developers |
 | `idna_adapter` | 1.2.2 | `Apache-2.0 OR MIT` | Copyright (c) The rust-url developers |
 | `indexmap` | 2.14.2 | `Apache-2.0 OR MIT` | Copyright (c) 2016--2017 |
-| `itoa` | 1.0.18 | `MIT OR Apache-2.0` | — |
+| `itoa` | 1.0.19 | `MIT OR Apache-2.0` | — |
 | `lazy_static` | 1.5.1 | `MIT OR Apache-2.0` | Copyright 2016 lazy-static.rs Developers |
 | `libc` | 0.2.191 | `MIT OR Apache-2.0` | Copyright (c) The Rust Project Developers |
 | `libopus` | 1.6.1 | `BSD-3-Clause` | Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, |
@@ -129,7 +129,7 @@ script for what counts as a dependency here and why.
 | `once_cell` | 1.21.4 | `MIT OR Apache-2.0` | — |
 | `openssl-probe` | 0.2.2 | `MIT OR Apache-2.0` | Copyright (c) 2014 Alex Crichton |
 | `opus` | 0.4.0 | `MIT/Apache-2.0` | Copyright (c) 2016 Tad Hardesty |
-| `opusic-sys` | 0.7.6 | `BSD-3-Clause` | Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, |
+| `opusic-sys` | 0.7.7 | `BSD-3-Clause` | Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, |
 | `pem` | 4.0.0 | `MIT` | Copyright (c) 2016 Jonathan Creekmore |
 | `percent-encoding` | 2.3.2 | `MIT OR Apache-2.0` | Copyright (c) 2013-2025 The rust-url developers |
 | `pin-project-lite` | 0.2.17 | `Apache-2.0 OR MIT` | — |
@@ -161,7 +161,7 @@ script for what counts as a dependency here and why.
 | `shiguredo_libvpx` | 2026.2.0-canary.3 | `Apache-2.0` | — |
 | `simd-adler32` | 0.3.10 | `MIT` | — |
 | `slab` | 0.4.12 | `MIT` | Copyright (c) 2019 Carl Lerche |
-| `smallvec` | 1.16.4 | `MIT OR Apache-2.0` | Copyright (c) 2018 The Servo Project Developers |
+| `smallvec` | 1.16.5 | `MIT OR Apache-2.0` | Copyright (c) 2018 The Servo Project Developers |
 | `socket2` | 0.6.5 | `MIT OR Apache-2.0` | Copyright (c) 2014 Alex Crichton |
 | `stable_deref_trait` | 1.2.1 | `MIT OR Apache-2.0` | Copyright (c) 2017 Robert Grosse |
 | `static_assertions` | 1.1.0 | `MIT OR Apache-2.0` | Copyright (c) 2017 Nikolai Vazquez |
@@ -180,8 +180,8 @@ script for what counts as a dependency here and why.
 | `uniffi_core` | 0.32.2 | `MPL-2.0` | — |
 | `uniffi_pipeline` | 0.32.2 | `MPL-2.0` | — |
 | `untrusted` | 0.9.0 | `ISC` | Copyright 2015-2021 Brian Smith |
-| `ureq` | 3.5.0 | `MIT OR Apache-2.0` | Copyright (c) 2019 Martin Algesten |
-| `ureq-proto` | 0.6.5 | `MIT OR Apache-2.0` | Copyright 2022 Martin Algesten |
+| `ureq` | 3.5.1 | `MIT OR Apache-2.0` | Copyright (c) 2019 Martin Algesten |
+| `ureq-proto` | 0.7.1 | `MIT OR Apache-2.0` | Copyright 2022 Martin Algesten |
 | `url` | 2.5.8 | `MIT OR Apache-2.0` | Copyright (c) 2013-2025 The rust-url developers |
 | `utf8-zero` | 0.8.1 | `MIT OR Apache-2.0` | — |
 | `utf8_iter` | 1.1.0 | `Apache-2.0 OR MIT` | — |

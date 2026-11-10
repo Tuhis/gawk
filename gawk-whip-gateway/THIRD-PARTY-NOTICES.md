@@ -41,7 +41,7 @@ script for what counts as a dependency here and why.
 | `github.com/munnerz/goautoneg` | v0.0.0-20191010083416-a7dc8b61c822 | `BSD-3-Clause` | Copyright (c) 2011, Open Knowledge Foundation Ltd |
 | `github.com/pion/datachannel` | v1.6.3 | `MIT` | Copyright (c) 2026 The Pion community <https://pion.ly> |
 | `github.com/pion/dtls/v3` | v3.1.15 | `MIT OR UNKNOWN` | Copyright (c) 2026 The Pion community <https://pion.ly> |
-| `github.com/pion/ice/v4` | v4.4.8 | `MIT` | Copyright (c) 2026 The Pion community <https://pion.ly> |
+| `github.com/pion/ice/v4` | v4.4.9 | `MIT` | Copyright (c) 2026 The Pion community <https://pion.ly> |
 | `github.com/pion/interceptor` | v0.1.51 | `MIT` | Copyright (c) 2026 The Pion community <https://pion.ly> |
 | `github.com/pion/logging` | v0.2.4 | `MIT` | Copyright (c) 2023 The Pion community <https://pion.ly> |
 | `github.com/pion/mdns/v2` | v2.2.2 | `MIT` | Copyright (c) 2018 |

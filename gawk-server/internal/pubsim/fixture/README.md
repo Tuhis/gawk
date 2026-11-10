@@ -52,8 +52,10 @@ threshold (docs/34 finding 4) and a striped viewer then correctly engages
 nothing. Delta frames measure p10=12 / median=15 / max=20 chunks;
 `TestLargeFixtureDeltasExceedBurstThreshold` pins the property so a
 regenerated clip cannot silently drop under the threshold. Published by
-`gawk-pubsim -fixture large`; used ONLY by the striped e2e pass — every other
-tier-1 step keeps `sample.ts` so its cost and flake profile stay untouched.
+`gawk-pubsim -fixture large`; used ONLY by the striped e2e pass and, since
+R83, by the rooms pass's second publisher, the only 16:9 shape for its Fit
+step (docs/87 §5) — every other tier-1 step keeps `sample.ts` so its cost
+and flake profile stay untouched.
 
 Regenerated with:
 

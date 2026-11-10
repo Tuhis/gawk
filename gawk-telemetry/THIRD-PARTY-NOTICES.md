@@ -27,7 +27,7 @@ script for what counts as a dependency here and why.
 
 | Package | Version | License | Copyright |
 |---|---|---|---|
-| `github.com/anthropics/anthropic-sdk-go/v2` | v2.7.0 | `Apache-2.0 OR Apache-2.0 OR MIT` | Copyright 2023 Anthropic, PBC |
+| `github.com/anthropics/anthropic-sdk-go/v2` | v2.8.0 | `Apache-2.0 OR Apache-2.0 OR MIT` | Copyright 2023 Anthropic, PBC |
 | `github.com/bahlo/generic-list-go` | v0.2.0 | `BSD-3-Clause` | Copyright (c) 2009 The Go Authors. All rights reserved |
 | `github.com/buger/jsonparser` | v1.1.2 | `MIT` | Copyright (c) 2016 Leonid Bugaev |
 | `github.com/coreos/go-oidc/v3` | v3.21.0 | `Apache-2.0 OR UNKNOWN` | Copyright 2014 CoreOS, Inc |
