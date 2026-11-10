@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The tables docs/88 §11 prints (R84, the browser Reliable uplink), generated
-from matrix.py's r84-a, r84-b and r84-c158 runs so no number is transcribed by
-hand. Prints markdown to stdout.
+from matrix.py's r84-a, r84-b, r84-c158 and r84-br4 runs so no number is
+transcribed by hand. Prints markdown to stdout.
 
     python3 tools/uplinklab/r84tables.py
 
@@ -31,6 +31,10 @@ MODE_LABEL = {
     "c151-inline-f12": "carrier, keyframe inline",
     "c158-dgram": "datagrams (today, RU9)",
     "c158-inline-f12": "carrier, keyframe inline",
+    # BR4: the shipping code, both delivery modes.
+    "c151-reliable": "Reliable (shipping)",
+    "c157-reliable": "Reliable (shipping)",
+    "c158-reliable": "Reliable (shipping)",
 }
 PATH_LABEL = {
     "rtt10-clean": ("10 ms", "clean"), "rtt40-clean": ("40 ms", "clean"), "rtt100-clean": ("100 ms", "clean"),
@@ -220,6 +224,106 @@ if c158:
             cpu = i.get("cpu", ["", "", ""])
             print(f"| {' '.join(PATH_LABEL[n])} | {mode[1:4]} | {MODE_LABEL[mode]} | {i.get('cc', ['–'])[0]} | {sent} | "
                   f"{mbps} | {i.get('gap_us', ['', '–'])[1]} | {cpu[1]} · {cpu[2]} | {med(n, mode, 'adaptive')} | {ready(s)} |")
+
+# --- BR4: the shipping code (docs/88 §8) -------------------------------------
+
+
+def kf_outcomes(name, mode):
+    """Keyframes produced (F lines with the key flag) and how each ended (K
+    lines' outcome), from the sender's log."""
+    produced = sum(1 for x in send_lines(name, mode, "F") if x[2] == "1")
+    out = {}
+    for x in send_lines(name, mode, "K"):
+        out[x[4]] = out.get(x[4], 0) + 1
+    return produced, out
+
+
+def med_shown(name, mode, k):
+    return statistics.median(min(100, v["shownPct"]) for v in phases(name, mode, k))
+
+
+BR4_MODES = [m for m in ("c151-dgram", "c151-reliable", "c157-dgram", "c157-reliable", "c158-dgram", "c158-reliable")
+             if any(m in R[n] for n in R)]
+if any(m.endswith("-reliable") for m in BR4_MODES):
+    order = [n for n in PATH_LABEL if n in R and any(m in R[n] for m in BR4_MODES) and n not in runs_a]
+    print("\n#### Table S5 — BR4: the shipping code, Lowest latency against Reliable\n")
+    print("`matrix.py r84-br4`, one 100 s run a cell, then `phase.py`. *Lowest latency* is RU9's datagram path")
+    print("as it ships; *Reliable* the shipping `KeyframeSender` GOP streams and `CarrierSender` (BR2) on the")
+    print("lab page. Viewer columns: shown · stalled, the median over four presentation phases (F1); the")
+    print("Balanced viewer's on-screen latency p50 at phase 0. *Keyframes*: acknowledged of produced, and")
+    print("how many the 2 s rule aborted.\n")
+    print("| RTT | Path | Chrome | Sender | Balanced | Lowest latency | Smoother | Most stable | "
+          "Decode-ready p50 / p99 ms · undecodable | Keyframes acked / produced · aborted | Deltas shed | Steal |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
+    for n in order:
+        rtt, path = PATH_LABEL[n]
+        for mode in BR4_MODES:
+            s = R[n].get(mode)
+            if not s:
+                continue
+            i = sent_info(n, mode)
+            produced, out = kf_outcomes(n, mode)
+            label = "datagrams (Lowest latency, RU9)" if mode.endswith("-dgram") else MODE_LABEL[mode]
+            print(f"| {rtt} | {path} | {mode[1:4]} | {label} | {med(n, mode, 'adaptive')} · {lat(s, 'adaptive')} | "
+                  f"{med(n, mode, 'off')} | {med(n, mode, 'resilient-parity')} | {med(n, mode, 'deep-parity')} | "
+                  f"{ready(s)} | {out.get('sent', 0)} / {produced} · {out.get('aborted', 0)} | {i.get('shed', 0)} | "
+                  f"{steal(n, mode)} |")
+
+    print("\n#### Table S6 — BR4's goals on the shipping code\n")
+    print("G1–G5 (§8) judged on table S5's runs. G1: Reliable against Lowest latency, the Balanced viewer's")
+    print("on-screen latency p50 (phase 0) within one vsync (17 ms) and shown (four-phase median) within 1")
+    print("point. G5's notice half is the unit table test (`uplink-monitor.test.ts`).\n")
+    print("| Goal | Chrome | Cell | Lowest latency | Reliable | Bound | Met |")
+    print("|---|---|---|---|---|---|---|")
+
+    def row(goal, major, n, dg, rel, bound, ok):
+        print(f"| {goal} | {major} | {' '.join(PATH_LABEL[n])} | {dg} | {rel} | {bound} | {'yes' if ok else '**no**'} |")
+
+    for major in ("151", "157", "158"):
+        dgm, rel = f"c{major}-dgram", f"c{major}-reliable"
+        for n in ("rtt10-clean", "rtt40-clean", "rtt100-clean"):
+            a, b = R.get(n, {}).get(dgm), R.get(n, {}).get(rel)
+            if not a or not b:
+                continue
+            la, lb = a["view"]["adaptive"]["latencyMs"]["p50"], b["view"]["adaptive"]["latencyMs"]["p50"]
+            sa, sb = med_shown(n, dgm, "adaptive"), med_shown(n, rel, "adaptive")
+            row("G1", major, n, f"{f(la)} ms · {sa:.1f} %", f"{f(lb)} ms · {sb:.1f} %",
+                "Δ ≤ 17 ms · Δ ≤ 1 pt", abs(lb - la) <= 17 and abs(sb - sa) <= 1)
+        for n in ("rtt10-loss0.001", "rtt10-loss0.005"):
+            b = R.get(n, {}).get(rel)
+            if not b:
+                continue
+            sb = med_shown(n, rel, "adaptive")
+            sa = f"{med_shown(n, dgm, 'adaptive'):.1f} %" if R[n].get(dgm) else "–"
+            row("G2", major, n, sa, f"{sb:.1f} %", "Balanced ≥ 99 %", sb >= 99)
+        for n, bound in (("rtt10-ge1pct", 98), ("rtt10-out80drop", 98), ("rtt40-ge1pct", 95), ("rtt40-out80drop", 95)):
+            if not R.get(n, {}).get(rel):
+                continue
+            vals = [med_shown(n, rel, k) for k in ("resilient-parity", "deep-parity")]
+            dvals = ([f"{med_shown(n, dgm, k):.1f}" for k in ("resilient-parity", "deep-parity")]
+                     if R[n].get(dgm) else ["–", "–"])
+            # Two decimals: a bound met or missed by less than 0.05 point
+            # must not read as met.
+            row("G3", major, n, " · ".join(dvals) + " %", " · ".join(f"{v:.2f}" for v in vals) + " %",
+                f"Smoother · Most stable ≥ {bound} %", min(vals) >= bound)
+        for n in ("hi-rtt10-clean", "hi-rtt10-rate80M"):
+            if not R.get(n, {}).get(rel):
+                continue
+            sb = med_shown(n, rel, "adaptive")
+            sa = f"{med_shown(n, dgm, 'adaptive'):.1f} %" if R[n].get(dgm) else "–"
+            row("G4", major, n, sa, f"{sb:.1f} %", "Balanced ≥ 97 %", sb >= 97)
+        for n in ("rtt40-loss0.005", "rtt100-loss0.01"):
+            a, b = R.get(n, {}).get(dgm), R.get(n, {}).get(rel)
+            if not a or not b:
+                continue
+            pa, oa = kf_outcomes(n, dgm)
+            pb, ob = kf_outcomes(n, rel)
+            ready_b = b["transport"]["ready_lat_ms"]["p50"]
+            other = sum(v for k, v in ob.items() if k not in ("sent", "aborted", "replaced", "discarded"))
+            ok = ready_b < 1500 and ob.get("sent", 0) >= oa.get("sent", 0) - 0.05 * pb and other == 0
+            row("G5", major, n, f"{f(a['transport']['ready_lat_ms']['p50'])} ms · {oa.get('sent', 0)} of {pa} keyframes",
+                f"{f(ready_b)} ms · {ob.get('sent', 0)} of {pb} keyframes, {other} ended otherwise",
+                "decode-ready p50 < 1.5 s; keyframes ≥ datagrams' − 5 %; only RU9's rules", ok)
 
 if not R:
     print("no results under", OUT)

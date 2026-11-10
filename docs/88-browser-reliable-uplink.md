@@ -5,7 +5,10 @@
 decisions OD1–OD6 taken 2026-11-10 (§3): the keyframe inline (K3), the
 recommendations for the rest, *Lowest latency* the default until BR0 and
 BR5 hold. The owner chose to build BR1–BR4 before BR0 (§8 *Order*); BR0
-and BR5 gate the default, not the code. `BR` = Browser Reliable.
+and BR5 gate the default, not the code. BR1–BR4 built 2026-11-10, opt-in;
+on the shipping code G1, G2, G4 and G5 are met on Chrome 151, 157 (stable)
+and 158, G3 on 157 and 158 and missed by 0.02 point on 151 (§8 BR4, §11
+tables S5–S6). BR0 and BR5 not run. `BR` = Browser Reliable.
 
 Touches `gawk-app` (the browser broadcaster's send path, one setting,
 Diagnostics, telemetry fields), and, because OD1 took the inline keyframe
@@ -219,6 +222,20 @@ shipping viewer code once per preset.
   request for a directory is a 404 (Chrome 151 asked for `/` mid-run, and
   the server crashed on the read, orphaning the run's Chrome).
 - `r84tables.py`: §11's tables, generated from the runs.
+
+BR4 (2026-11-10) adds, for the pass on the shipping code:
+
+- `gawk-app/lab/uplink-sender.lab.ts`: `mode=reliable`, the shipping
+  Reliable mode — `KeyframeSender`'s GOP streams and the shipping
+  `CarrierSender`, as `BroadcastPipeline` runs them on a relay with both
+  carrier bits.
+- `gawk-server/cmd/gawk-uplinklab` (`recv`): reads a 0x1F keyframe
+  carrier, logging the keyframe complete once its declared length is in,
+  as the relay hands it on, then the records.
+- `matrix.py`: mode `c<major>-reliable` (on 151, 157 and 158) and set
+  `r84-br4` (r84-b's cells and the clean 1440p one, in both delivery
+  modes); `r84tables.py`: tables S5 and S6 and G1–G5's verdicts;
+  `r84persec.py`: the per-second counters of BR2's notice table test.
 
 **Comparisons.** *Datagrams (today, RU9)* is gawk-app's shipping send path
 (RU9's bounded `DatagramSender` and `KeyframeSender`). *Carrier, no gate*
@@ -611,7 +628,7 @@ BR0's procedure on the gaming PC, "field" is BR5.
 | G2 | **Light loss where Chrome's Cubic holds**: at 10 ms with 0.1 and 0.5 % loss, the Balanced viewer ≥ 99 % shown | lab + PC |
 | G3 | **Bursts and outages stop freezing the stable presets**: at 10 ms (bursts, radio away 80 ms) *Smoother* and *Most stable* ≥ 98 % shown, and at 40 ms ≥ 95 % (BUGS.md's entry) | lab |
 | G4 | **The high rung passes the datagram ceiling**: 1440p at 10 ms, clean and behind 80 Mbps, Balanced ≥ 97 % shown | lab + PC |
-| G5 | **Latency stays bounded, and keyframes land, where nothing can carry the stream**: on the cells where Chrome's Cubic collapses (40 ms 0.5 %, 100 ms 1 %), decode-ready p50 under 1.5 s; keyframes acknowledged no fewer than RU9's datagrams on the same cell, less 5 % of those produced; no keyframe ended by a rule other than RU9's 2 s (as built, RU9's newest-registration supersede can also end a retired GOP stream's keyframe, §8 BR2; BR4 counts it apart); the notice raises (its table test, on the lab's counters) | lab + unit |
+| G5 | **Latency stays bounded, and keyframes land, where nothing can carry the stream**: on the cells where Chrome's Cubic collapses (40 ms 0.5 %, 100 ms 1 %), decode-ready p50 under 1.5 s; keyframes acknowledged no fewer than RU9's datagrams on the same cell, less 5 % of those produced; no keyframe ended by a rule other than RU9's 2 s (as built, RU9's newest-registration supersede can also end a retired GOP stream's keyframe, §8 BR2; the lab logs both as aborted, and BR4 judges what ended any other way); the notice raises (its table test, on the lab's counters) | lab + unit |
 | G6 | **Compatibility**: on a relay without the bit(s) the browser sends today's datagrams byte for byte; with `-uplink-carriers=false` likewise; an old browser on a new relay is unchanged | integration (real `gawk-server`) + unit |
 | G7 | **Viewers untouched**: no viewer code changes; the relay's records from a browser carrier are byte-identical to the datagrams the same frames would have produced | review + unit |
 | G8 | **The gaming PC confirms the lab**: BR0's cells within table M's spread of §11's (5 points Balanced, 9 Smoother) or the doc records why not | PC |
@@ -851,6 +868,61 @@ copy and its accessibility are RU9's, unchanged and still tested there.
 | `r84-b`'s cells re-run on it (Chrome 151 and the current stable), four-phase medians: G1–G5 judged and recorded in §11 | lab |
 | The e2e harness's browser-broadcast mode (`e2e/run.mjs --browser-broadcast`) gains an uplink-loss pass in Reliable mode: the R29 forwarder between the browser broadcaster and the relay drops bursts, and a *Smoother* viewer sees no freeze where the same pass on *Lowest latency* does (flow-shaped, docs/25 Decision 6) | e2e (tier 1) |
 
+**Run (2026-11-10).** The lab page's `mode=reliable` on this tree,
+`r84-br4` on this host (§4's: 8 vCPU, loopback, one run at a time), Chrome
+for Testing **151.0.7922.34** (docs/88's), **157.0.8103.50** (Linux stable
+that day) and **158.0.8127.18**, then `phase.py`; 116 runs of 100 s, CPU
+steal ≤ 2.2 % in every kept run (`UPLINK_STEAL_MAX=3`; eight set aside
+and re-run). The Reliable cells first run with the page built before
+#765's review fixes were re-run on the page built from `00d0f29c` (#765's
+head); every Reliable figure below is that code. §11 tables S5 and S6.
+
+- **G1 — met on all three.** Reliable and *Lowest latency* put the
+  Balanced viewer on screen at the same p50, 50 / 67 / 100 ms at 10 / 40 /
+  100 ms, on 151, 157 and 158; shown within 0.2 point (four-phase medians,
+  99.7–100.0 %). The keyframe gate's round trip (docs/75 P1, §11 S3: 83 and
+  167 ms) is gone on the shipping code.
+- **G2 — met**: Balanced 99.2–99.5 % at 10 ms with 0.1 and 0.5 % loss
+  (*Lowest latency* 74.2–97.3 %).
+- **G3 — met on 157 and 158; on 151 missed by 0.02 point** at 40 ms under
+  bursts (*Smoother* 94.99 %, *Most stable* 95.5 %; 157 95.3 / 95.6 %, 158
+  95.3 / 95.7 %), one 100 s run, inside docs/75 table M's ~9-point
+  *Smoother* spread. Everywhere else 98.0–100 % (*Lowest latency* 69.1–
+  80.7 %).
+- **G4 — met**: 1440p at 10 ms, clean 99.3–99.6 % and behind 80 Mbps
+  98.6–98.8 % (*Lowest latency* 69.2–77.3 %, past Chrome's datagram
+  ceiling).
+- **G5 — met**: where Cubic collapses, decode-ready p50 251–260 ms (40 ms,
+  0.5 %) and 888–928 ms (100 ms, 1 %); keyframes acknowledged 133–136 of
+  200 against *Lowest latency*'s 136–140, within 5 % of those produced;
+  none ended by anything but RU9's rules. The notice half is BR2's table
+  test.
+- *Lowest latency*'s own figures at 10 ms with light loss read lower than
+  §11 S2's (Balanced 95.6 / 74.2 % against 99.3 / 94.6 % at 0.1 / 0.5 %
+  on 151). Its code did not change; why the pass differs is not known, and
+  no goal compares against it there.
+
+**The e2e pass (2026-11-10).** `e2e/run.mjs --browser-broadcast` gains two
+uplink-outage passes, a browser broadcaster behind a forwarder that drops
+every uplink packet for 150 ms of each 1.5 s, on *Lowest latency* and on
+*Reliable* (seeded through the Delivery setting's storage key), each
+watched by a *Smoother* viewer for 12 s. The criterion as written — no
+freeze on Reliable — **does not hold literally**, and the reason is in the
+design, not the code: when an outage straddles a GOP rotation, the next
+GOP's stream can land its keyframe at the relay before QUIC has
+retransmitted the old GOP's tail, and the relay drops that tail as stale
+(docs/75 D2), so the viewer jumps to the newer keyframe (a gap resync onto
+a keyframe it holds, not a wait for one). That is the share of table S5's
+98–99 % that is not 100. Six local runs: *Lowest latency* 7–9 resyncs, every
+one a freeze to the next keyframe; *Reliable* 0–6, in every run that logged it with stale records
+dropped at the relay, nothing shed, the carrier engaged. The pass asserts
+exactly that (the control froze; Reliable engaged, shed nothing, resynced
+less than the control, and only where the relay dropped a stale tail). The
+relay's ingress-loss window, which would show the uplink losing nothing,
+finalizes a frame ~34 s later and cannot judge a 12 s pass. Forwarding a
+GOP's stale tail to reliable viewers instead of dropping it is a relay
+question for BR5's telemetry, not this milestone's.
+
 ### BR5 — The field pass, then the default
 
 | Acceptance criterion | Verified by |
@@ -1032,6 +1104,173 @@ net-log's `QUIC_CONGESTION_CONTROL_CONFIGURED`. Packet gap: within a burst (unde
 | 40 ms clean | 158 | carrier, keyframe inline | CUBIC_BYTES | 5 079 / 5 079 | 11.0 | 62 | 18.4 · 7.1 | 99.9 % · 0.0 % | 21 / 41 · 0.0 % |
 | 10 ms 1440p clean | 158 | datagrams (today, RU9) | CUBIC_BYTES | 307 607 / 356 198 | 36.7 | 232 | 69.5 · 44.7 | 75.7 % · 24.9 % | 38 / 518 · 8.5 % |
 | 10 ms 1440p clean | 158 | carrier, keyframe inline | CUBIC_BYTES | 5 079 / 5 079 | 41.7 | 50 | 48.1 · 11.7 | 99.4 % · 0.4 % | 9 / 48 · 0.0 % |
+
+#### Table S5 — BR4: the shipping code, Lowest latency against Reliable
+
+`matrix.py r84-br4`, one 100 s run a cell, then `phase.py`. *Lowest latency* is RU9's datagram path
+as it ships; *Reliable* the shipping `KeyframeSender` GOP streams and `CarrierSender` (BR2) on the
+lab page. Viewer columns: shown · stalled, the median over four presentation phases (F1); the
+Balanced viewer's on-screen latency p50 at phase 0. *Keyframes*: acknowledged of produced, and
+how many the 2 s rule aborted.
+
+| RTT | Path | Chrome | Sender | Balanced | Lowest latency | Smoother | Most stable | Decode-ready p50 / p99 ms · undecodable | Keyframes acked / produced · aborted | Deltas shed | Steal |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 10 ms | clean | 151 | datagrams (Lowest latency, RU9) | 100.0 % · 0.0 % · 50 ms | 95.9 % · 0.8 % (one phase 89.4) | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 8 / 27 · 0.0 % | 200 / 200 · 0 | 0 | 0.1 % |
+| 10 ms | clean | 151 | Reliable (shipping) | 99.9 % · 0.0 % · 50 ms | 96.6 % · 1.6 % (one phase 86.8) | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 6 / 25 · 0.0 % | 199 / 200 · 0 | 0 | 0.1 % |
+| 10 ms | clean | 157 | datagrams (Lowest latency, RU9) | 100.0 % · 0.0 % · 50 ms | 96.2 % · 0.9 % | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 8 / 24 · 0.0 % | 200 / 200 · 0 | 0 | 0.1 % |
+| 10 ms | clean | 157 | Reliable (shipping) | 99.9 % · 0.0 % · 50 ms | 96.8 % · 1.5 % (one phase 89.5) | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 6 / 26 · 0.0 % | 199 / 200 · 0 | 0 | 0.1 % |
+| 10 ms | clean | 158 | datagrams (Lowest latency, RU9) | 100.0 % · 0.0 % · 50 ms | 96.0 % · 1.0 % | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 8 / 24 · 0.0 % | 200 / 200 · 0 | 0 | 0.0 % |
+| 10 ms | clean | 158 | Reliable (shipping) | 100.0 % · 0.0 % · 50 ms | 96.8 % · 1.5 % (one phase 89.3) | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 6 / 25 · 0.0 % | 199 / 200 · 0 | 0 | 0.1 % |
+| 40 ms | clean | 151 | datagrams (Lowest latency, RU9) | 100.0 % · 0.0 % · 67 ms | 94.9 % · 0.8 % (one phase 87.6) | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 23 / 39 · 0.0 % | 200 / 200 · 0 | 0 | 0.1 % |
+| 40 ms | clean | 151 | Reliable (shipping) | 100.0 % · 0.0 % · 67 ms | 96.4 % · 2.5 % | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 21 / 47 · 0.0 % | 199 / 200 · 0 | 0 | 0.1 % |
+| 40 ms | clean | 157 | datagrams (Lowest latency, RU9) | 100.0 % · 0.0 % · 67 ms | 95.6 % · 0.7 % (one phase 87.2) | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 23 / 37 · 0.0 % | 200 / 200 · 0 | 0 | 0.1 % |
+| 40 ms | clean | 157 | Reliable (shipping) | 99.9 % · 0.0 % · 67 ms | 97.1 % · 1.6 % | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 21 / 39 · 0.0 % | 199 / 200 · 0 | 0 | 0.1 % |
+| 40 ms | clean | 158 | datagrams (Lowest latency, RU9) | 100.0 % · 0.0 % · 67 ms | 95.5 % · 0.4 % (one phase 88.8) | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 23 / 37 · 0.0 % | 200 / 200 · 0 | 0 | 0.1 % |
+| 40 ms | clean | 158 | Reliable (shipping) | 99.9 % · 0.0 % · 67 ms | 96.2 % · 3.3 % (one phase 91.1) | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 21 / 45 · 0.0 % | 199 / 200 · 0 | 0 | 0.1 % |
+| 100 ms | clean | 151 | datagrams (Lowest latency, RU9) | 100.0 % · 0.0 % (one phase 86.1) · 100 ms | 93.2 % · 0.9 % | 99.9 % · 0.0 % (one phase 86.0) | 100.0 % · 0.0 % (one phase 85.2) | 54 / 73 · 0.0 % | 200 / 200 · 0 | 0 | 0.1 % |
+| 100 ms | clean | 151 | Reliable (shipping) | 99.9 % · 0.0 % · 100 ms | 96.1 % · 2.6 % (one phase 85.8) | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 52 / 73 · 0.0 % | 199 / 200 · 0 | 0 | 0.1 % |
+| 100 ms | clean | 157 | datagrams (Lowest latency, RU9) | 99.9 % · 0.0 % (one phase 91.2) · 100 ms | 93.5 % · 1.1 % | 99.9 % · 0.0 % (one phase 91.1) | 100.0 % · 0.0 % (one phase 90.6) | 54 / 71 · 0.0 % | 200 / 200 · 0 | 0 | 0.1 % |
+| 100 ms | clean | 157 | Reliable (shipping) | 99.7 % · 0.0 % · 100 ms | 95.8 % · 2.9 % (one phase 88.8) | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 51 / 75 · 0.0 % | 199 / 200 · 0 | 0 | 0.1 % |
+| 100 ms | clean | 158 | datagrams (Lowest latency, RU9) | 99.9 % · 0.0 % (one phase 86.1) · 100 ms | 93.2 % · 0.6 % | 99.9 % · 0.0 % (one phase 86.0) | 100.0 % · 0.0 % (one phase 85.2) | 54 / 71 · 0.0 % | 200 / 200 · 0 | 0 | 0.7 % |
+| 100 ms | clean | 158 | Reliable (shipping) | 99.9 % · 0.0 % · 100 ms | 96.3 % · 2.4 % (one phase 87.1) | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 51 / 73 · 0.0 % | 199 / 200 · 0 | 0 | 0.1 % |
+| 10 ms | 0.1 % loss | 151 | datagrams (Lowest latency, RU9) | 95.6 % · 3.8 % · 50 ms | 87.3 % · 13.9 % (one phase 80.1) | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 9 / 73 · 0.0 % | 200 / 200 · 0 | 0 | 0.6 % |
+| 10 ms | 0.1 % loss | 151 | Reliable (shipping) | 99.5 % · 0.1 % · 67 ms | 88.0 % · 10.3 % (one phase 82.2) | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 7 / 64 · 0.0 % | 199 / 200 · 0 | 0 | 0.4 % |
+| 10 ms | 0.1 % loss | 157 | datagrams (Lowest latency, RU9) | 97.3 % · 1.9 % · 50 ms | 89.7 % · 11.8 % | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 8 / 71 · 0.0 % | 200 / 200 · 0 | 0 | 0.1 % |
+| 10 ms | 0.1 % loss | 157 | Reliable (shipping) | 99.5 % · 0.3 % · 67 ms | 87.3 % · 10.8 % | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 7 / 69 · 0.0 % | 199 / 200 · 0 | 0 | 0.1 % |
+| 10 ms | 0.1 % loss | 158 | datagrams (Lowest latency, RU9) | 97.3 % · 2.6 % · 67 ms | 87.5 % · 12.8 % | 99.4 % · 0.4 % | 100.0 % · 0.0 % | 9 / 105 · 0.0 % | 200 / 200 · 0 | 0 | 1.6 % |
+| 10 ms | 0.1 % loss | 158 | Reliable (shipping) | 99.3 % · 0.6 % · 83 ms | 86.5 % · 11.7 % (one phase 80.4) | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 7 / 79 · 0.0 % | 199 / 200 · 0 | 0 | 2.2 % |
+| 10 ms | 0.5 % loss | 151 | datagrams (Lowest latency, RU9) | 74.2 % · 27.9 % · 100 ms | 63.1 % · 38.8 % | 98.8 % · 1.1 % | 99.4 % · 0.6 % | 9 / 151 · 0.3 % | 200 / 200 · 0 | 0 | 0.2 % |
+| 10 ms | 0.5 % loss | 151 | Reliable (shipping) | 99.2 % · 0.7 % · 133 ms | 77.4 % · 19.1 % | 99.8 % · 0.1 % | 100.0 % · 0.0 % | 11 / 135 · 0.0 % | 199 / 200 · 0 | 0 | 2.1 % |
+| 10 ms | 0.5 % loss | 157 | datagrams (Lowest latency, RU9) | 76.7 % · 25.5 % · 100 ms | 64.5 % · 37.3 % | 99.5 % · 0.4 % | 100.0 % · 0.0 % | 9 / 152 · 0.0 % | 200 / 200 · 0 | 0 | 0.1 % |
+| 10 ms | 0.5 % loss | 157 | Reliable (shipping) | 99.2 % · 0.6 % · 133 ms | 78.0 % · 18.7 % | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 11 / 129 · 0.0 % | 199 / 200 · 0 | 0 | 0.1 % |
+| 10 ms | 0.5 % loss | 158 | datagrams (Lowest latency, RU9) | 75.0 % · 27.0 % · 84 ms | 63.5 % · 38.1 % | 98.5 % · 1.2 % | 99.0 % · 0.9 % | 9 / 154 · 0.7 % | 200 / 200 · 0 | 0 | 0.1 % |
+| 10 ms | 0.5 % loss | 158 | Reliable (shipping) | 99.3 % · 0.6 % · 133 ms | 78.0 % · 18.3 % | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 11 / 125 · 0.0 % | 199 / 200 · 0 | 0 | 0.2 % |
+| 10 ms | bursts (GE) | 151 | datagrams (Lowest latency, RU9) | 82.5 % · 20.7 % · 67 ms | 70.2 % · 33.6 % | 80.4 % · 20.7 % | 80.7 % · 21.1 % | 9 / 120 · 20.9 % | 200 / 200 · 0 | 0 | 0.2 % |
+| 10 ms | bursts (GE) | 151 | Reliable (shipping) | 99.4 % · 0.3 % · 100 ms | 82.7 % · 15.4 % | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 9 / 101 · 0.0 % | 199 / 200 · 0 | 0 | 1.8 % |
+| 10 ms | bursts (GE) | 157 | datagrams (Lowest latency, RU9) | 87.3 % · 15.5 % · 83 ms | 72.7 % · 30.1 % | 78.6 % · 22.1 % | 78.2 % · 21.5 % | 8 / 118 · 21.7 % | 200 / 200 · 0 | 0 | 0.1 % |
+| 10 ms | bursts (GE) | 157 | Reliable (shipping) | 99.1 % · 0.8 % (one phase 73.7) · 100 ms | 82.0 % · 15.2 % | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 8 / 98 · 0.0 % | 199 / 200 · 0 | 0 | 0.1 % |
+| 10 ms | bursts (GE) | 158 | datagrams (Lowest latency, RU9) | 88.6 % · 12.7 % · 100 ms | 70.0 % · 31.2 % (one phase 64.5) | 80.7 % · 21.0 % | 80.6 % · 19.7 % | 9 / 122 · 19.8 % | 200 / 200 · 0 | 0 | 1.1 % |
+| 10 ms | bursts (GE) | 158 | Reliable (shipping) | 99.2 % · 0.8 % · 100 ms | 82.7 % · 15.0 % | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 9 / 97 · 0.0 % | 199 / 200 · 0 | 0 | 0.1 % |
+| 10 ms | radio away 80 ms | 151 | datagrams (Lowest latency, RU9) | 76.4 % · 25.1 % · 134 ms | 66.0 % · 35.9 % | 71.6 % · 29.6 % | 71.7 % · 30.9 % | 9 / 92 · 28.0 % | 200 / 200 · 0 | 0 | 0.1 % |
+| 10 ms | radio away 80 ms | 151 | Reliable (shipping) | 98.3 % · 2.0 % · 133 ms | 80.5 % · 21.4 % (one phase 75.3) | 99.1 % · 0.6 % | 99.9 % · 0.1 % | 7 / 149 · 0.1 % | 199 / 200 · 0 | 4 | 0.1 % |
+| 10 ms | radio away 80 ms | 157 | datagrams (Lowest latency, RU9) | 76.4 % · 25.2 % · 134 ms | 65.7 % · 35.8 % | 71.5 % · 29.7 % | 71.6 % · 30.0 % | 8 / 107 · 27.6 % | 200 / 200 · 0 | 0 | 0.0 % |
+| 10 ms | radio away 80 ms | 157 | Reliable (shipping) | 97.6 % · 2.9 % · 133 ms | 80.4 % · 22.2 % (one phase 73.6) | 99.0 % · 0.8 % | 99.9 % · 0.1 % | 7 / 156 · 0.1 % | 199 / 200 · 0 | 4 | 0.1 % |
+| 10 ms | radio away 80 ms | 158 | datagrams (Lowest latency, RU9) | 75.2 % · 26.1 % · 217 ms | 64.0 % · 37.5 % | 71.3 % · 30.1 % | 73.9 % · 27.9 % | 8 / 438 · 26.5 % | 200 / 200 · 0 | 38 | 0.1 % |
+| 10 ms | radio away 80 ms | 158 | Reliable (shipping) | 98.0 % · 2.4 % · 133 ms | 78.7 % · 22.2 % | 99.1 % · 0.8 % | 99.9 % · 0.1 % | 7 / 154 · 0.1 % | 199 / 200 · 0 | 6 | 1.8 % |
+| 40 ms | 0.1 % loss | 151 | datagrams (Lowest latency, RU9) | 92.5 % · 6.8 % (one phase 85.1) · 167 ms | 64.9 % · 34.7 % | 93.6 % · 7.5 % (one phase 80.7) | 100.0 % · 0.0 % (one phase 86.2) | 27 / 269 · 0.0 % | 200 / 200 · 0 | 0 | 0.2 % |
+| 40 ms | 0.1 % loss | 151 | Reliable (shipping) | 99.2 % · 0.4 % · 200 ms | 75.7 % · 26.5 % | 99.1 % · 0.5 % | 99.7 % · 0.4 % | 28 / 207 · 0.2 % | 199 / 200 · 0 | 9 | 0.3 % |
+| 40 ms | 0.1 % loss | 157 | datagrams (Lowest latency, RU9) | 97.1 % · 3.3 % · 234 ms | 69.8 % · 32.0 % | 95.0 % · 5.7 % | 100.0 % · 0.0 % (one phase 94.9) | 26 / 273 · 0.0 % | 200 / 200 · 0 | 0 | 0.1 % |
+| 40 ms | 0.1 % loss | 157 | Reliable (shipping) | 99.7 % · 0.2 % (one phase 90.3) · 217 ms | 75.9 % · 27.0 % | 99.5 % · 0.3 % | 99.8 % · 0.2 % | 28 / 211 · 0.1 % | 199 / 200 · 0 | 5 | 0.1 % |
+| 40 ms | 0.1 % loss | 158 | datagrams (Lowest latency, RU9) | 97.2 % · 3.5 % · 234 ms | 70.3 % · 32.2 % (one phase 64.5) | 95.2 % · 5.9 % | 100.0 % · 0.0 % (one phase 85.3) | 25 / 275 · 0.0 % | 200 / 200 · 0 | 0 | 0.1 % |
+| 40 ms | 0.1 % loss | 158 | Reliable (shipping) | 99.8 % · 0.2 % · 217 ms | 75.5 % · 26.6 % | 99.5 % · 0.3 % | 99.9 % · 0.1 % (one phase 85.2) | 28 / 207 · 0.0 % | 199 / 200 · 0 | 2 | 1.4 % |
+| 40 ms | bursts (GE) | 151 | datagrams (Lowest latency, RU9) | 77.6 % · 21.8 % · 367 ms | 41.6 % · 60.2 % | 74.4 % · 26.0 % | 75.9 % · 23.7 % | 139 / 556 · 22.5 % | 200 / 200 · 0 | 244 | 0.1 % |
+| 40 ms | bursts (GE) | 151 | Reliable (shipping) | 95.3 % · 5.2 % · 367 ms | 64.2 % · 37.9 % | 95.0 % · 5.3 % | 95.5 % · 5.2 % | 94 / 448 · 6.1 % | 199 / 200 · 0 | 345 | 1.4 % |
+| 40 ms | bursts (GE) | 157 | datagrams (Lowest latency, RU9) | 81.9 % · 17.2 % · 367 ms | 43.6 % · 57.4 % | 79.2 % · 22.2 % | 80.6 % · 20.8 % | 126 / 739 · 20.8 % | 200 / 200 · 0 | 344 | 0.1 % |
+| 40 ms | bursts (GE) | 157 | Reliable (shipping) | 95.8 % · 4.9 % · 367 ms | 63.6 % · 39.3 % | 95.3 % · 5.2 % | 95.6 % · 5.6 % | 90 / 463 · 6.0 % | 199 / 200 · 0 | 339 | 0.1 % |
+| 40 ms | bursts (GE) | 158 | datagrams (Lowest latency, RU9) | 82.6 % · 16.9 % · 367 ms | 42.8 % · 58.1 % | 80.7 % · 19.2 % | 82.0 % · 18.4 % | 128 / 811 · 19.0 % | 200 / 200 · 0 | 307 | 0.1 % |
+| 40 ms | bursts (GE) | 158 | Reliable (shipping) | 95.8 % · 4.7 % · 367 ms | 63.5 % · 39.4 % | 95.3 % · 4.8 % | 95.7 % · 5.5 % | 91 / 436 · 5.9 % | 199 / 200 · 0 | 333 | 0.1 % |
+| 40 ms | radio away 80 ms | 151 | datagrams (Lowest latency, RU9) | 75.3 % · 26.1 % · 317 ms | 48.2 % · 53.9 % | 72.2 % · 29.4 % | 73.9 % · 28.3 % (one phase 64.4) | 29 / 300 · 27.1 % | 200 / 200 · 0 | 0 | 0.1 % |
+| 40 ms | radio away 80 ms | 151 | Reliable (shipping) | 97.7 % · 2.5 % · 250 ms | 67.0 % · 35.4 % | 98.0 % · 1.7 % | 99.5 % · 0.5 % | 45 / 302 · 0.3 % | 199 / 200 · 0 | 19 | 0.1 % |
+| 40 ms | radio away 80 ms | 157 | datagrams (Lowest latency, RU9) | 76.8 % · 24.1 % · 333 ms | 47.9 % · 54.1 % | 70.9 % · 30.6 % | 73.1 % · 29.0 % | 27 / 301 · 27.9 % | 200 / 200 · 0 | 0 | 0.1 % |
+| 40 ms | radio away 80 ms | 157 | Reliable (shipping) | 98.1 % · 2.2 % · 250 ms | 67.8 % · 34.6 % | 98.2 % · 1.8 % | 99.6 % · 0.3 % (one phase 84.9) | 46 / 278 · 0.2 % | 199 / 200 · 0 | 14 | 0.1 % |
+| 40 ms | radio away 80 ms | 158 | datagrams (Lowest latency, RU9) | 75.9 % · 25.7 % · 250 ms | 48.3 % · 54.6 % | 69.8 % · 31.2 % | 73.2 % · 28.9 % (one phase 62.8) | 27 / 290 · 27.8 % | 200 / 200 · 0 | 0 | 0.1 % |
+| 40 ms | radio away 80 ms | 158 | Reliable (shipping) | 97.8 % · 2.4 % · 250 ms | 67.5 % · 34.7 % | 97.9 % · 2.1 % | 99.4 % · 0.5 % | 44 / 284 · 0.4 % | 199 / 200 · 0 | 23 | 0.1 % |
+| 100 ms | 0.1 % loss | 151 | datagrams (Lowest latency, RU9) | 58.9 % · 36.7 % · 400 ms | 47.4 % · 43.6 % | 73.2 % · 27.6 % | 77.3 % · 22.4 % | 389 / 1105 · 26.9 % | 200 / 200 · 0 | 1532 | 0.1 % |
+| 100 ms | 0.1 % loss | 151 | Reliable (shipping) | 80.5 % · 19.2 % · 400 ms | 60.6 % · 34.0 % | 82.9 % · 18.3 % | 82.9 % · 18.4 % | 267 / 677 · 23.2 % | 199 / 200 · 0 | 1315 | 0.1 % |
+| 100 ms | 0.1 % loss | 157 | datagrams (Lowest latency, RU9) | 63.6 % · 35.8 % · 484 ms | 46.9 % · 44.3 % | 73.9 % · 28.4 % | 80.7 % · 20.7 % | 374 / 1152 · 24.8 % | 200 / 200 · 0 | 1412 | 0.2 % |
+| 100 ms | 0.1 % loss | 157 | Reliable (shipping) | 78.6 % · 21.7 % · 400 ms | 59.7 % · 35.2 % | 81.0 % · 21.0 % | 80.9 % · 20.2 % | 269 / 650 · 22.9 % | 199 / 200 · 0 | 1310 | 0.2 % |
+| 100 ms | 0.1 % loss | 158 | datagrams (Lowest latency, RU9) | 65.5 % · 32.7 % · 400 ms | 49.0 % · 42.0 % | 76.5 % · 23.9 % | 81.1 % · 19.8 % | 355 / 1142 · 25.5 % | 200 / 200 · 0 | 1443 | 0.1 % |
+| 100 ms | 0.1 % loss | 158 | Reliable (shipping) | 77.6 % · 22.1 % · 400 ms | 60.4 % · 33.5 % | 80.9 % · 20.4 % | 80.7 % · 20.6 % | 277 / 692 · 24.9 % | 199 / 200 · 0 | 1420 | 0.1 % |
+| 10 ms | 1440p clean | 151 | datagrams (Lowest latency, RU9) | 75.4 % · 24.8 % · 367 ms | 59.5 % · 36.4 % | 85.6 % · 14.8 % | 89.6 % · 10.0 % | 92 / 519 · 9.5 % | 200 / 200 · 0 | 600 | 0.1 % |
+| 10 ms | 1440p clean | 151 | Reliable (shipping) | 99.3 % · 0.4 % · 50 ms | 93.7 % · 6.6 % (one phase 85.4) | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 10 / 48 · 0.0 % | 199 / 200 · 0 | 0 | 0.1 % |
+| 10 ms | 1440p clean | 157 | datagrams (Lowest latency, RU9) | 77.3 % · 23.4 % · 367 ms | 67.2 % · 29.4 % | 87.4 % · 13.1 % | 95.0 % · 5.0 % | 20 / 514 · 4.7 % | 200 / 200 · 0 | 291 | 0.1 % |
+| 10 ms | 1440p clean | 157 | Reliable (shipping) | 99.6 % · 0.1 % · 50 ms | 94.5 % · 5.6 % (one phase 86.7) | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 9 / 44 · 0.0 % | 199 / 200 · 0 | 0 | 0.1 % |
+| 10 ms | 1440p clean | 158 | datagrams (Lowest latency, RU9) | 75.9 % · 24.2 % · 350 ms | 64.9 % · 31.3 % | 86.3 % · 14.0 % | 92.4 % · 7.6 % | 28 / 518 · 6.7 % | 200 / 200 · 0 | 423 | 0.1 % |
+| 10 ms | 1440p clean | 158 | Reliable (shipping) | 99.5 % · 0.3 % · 50 ms | 93.7 % · 5.9 % (one phase 84.8) | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 10 / 45 · 0.0 % | 199 / 200 · 0 | 0 | 0.1 % |
+| 10 ms | 1440p 0.1 % loss | 151 | datagrams (Lowest latency, RU9) | 58.9 % · 44.1 % · 367 ms | 47.7 % · 53.9 % | 76.8 % · 23.5 % (one phase 69.1) | 81.3 % · 19.3 % | 240 / 522 · 15.3 % | 200 / 200 · 0 | 921 | 0.0 % |
+| 10 ms | 1440p 0.1 % loss | 151 | Reliable (shipping) | 98.9 % · 0.9 % · 133 ms | 82.7 % · 15.5 % | 99.6 % · 0.3 % | 99.7 % · 0.3 % | 18 / 132 · 0.5 % | 199 / 200 · 0 | 26 | 0.1 % |
+| 10 ms | 1440p 0.1 % loss | 157 | datagrams (Lowest latency, RU9) | 73.8 % · 27.1 % · 367 ms | 56.7 % · 44.0 % | 85.7 % · 14.7 % | 90.1 % · 9.5 % | 112 / 518 · 8.6 % | 200 / 200 · 0 | 510 | 0.1 % |
+| 10 ms | 1440p 0.1 % loss | 157 | Reliable (shipping) | 98.9 % · 0.9 % · 133 ms | 82.4 % · 15.5 % | 99.4 % · 0.3 % | 99.7 % · 0.3 % (one phase 94.5) | 18 / 130 · 0.5 % | 199 / 200 · 0 | 28 | 0.0 % |
+| 10 ms | 1440p 0.1 % loss | 158 | datagrams (Lowest latency, RU9) | 73.6 % · 27.2 % · 367 ms | 57.4 % · 43.2 % | 84.5 % · 16.1 % | 88.7 % · 11.7 % | 123 / 517 · 10.4 % | 200 / 200 · 0 | 599 | 0.0 % |
+| 10 ms | 1440p 0.1 % loss | 158 | Reliable (shipping) | 99.0 % · 0.8 % · 133 ms | 82.4 % · 15.6 % | 99.5 % · 0.2 % | 99.7 % · 0.2 % (one phase 94.6) | 19 / 128 · 0.4 % | 199 / 200 · 0 | 23 | 0.1 % |
+| 10 ms | 1440p bursts | 151 | datagrams (Lowest latency, RU9) | 29.5 % · 75.8 % · 367 ms | 22.9 % · 81.7 % | 27.6 % · 75.8 % | 29.1 % · 72.9 % | 257 / 536 · 68.6 % | 200 / 200 · 0 | 1436 | 0.0 % |
+| 10 ms | 1440p bursts | 151 | Reliable (shipping) | 93.1 % · 7.1 % · 184 ms | 75.9 % · 18.3 % | 93.5 % · 7.0 % | 93.7 % · 7.2 % | 66 / 219 · 5.9 % | 199 / 200 · 0 | 338 | 0.1 % |
+| 10 ms | 1440p bursts | 157 | datagrams (Lowest latency, RU9) | 38.8 % · 65.3 % · 367 ms | 28.2 % · 76.3 % | 39.4 % · 63.5 % | 39.9 % · 63.6 % | 215 / 521 · 62.0 % | 200 / 200 · 0 | 929 | 0.1 % |
+| 10 ms | 1440p bursts | 157 | Reliable (shipping) | 94.1 % · 6.4 % · 184 ms | 76.7 % · 18.2 % | 94.4 % · 6.1 % | 94.3 % · 6.4 % | 63 / 220 · 5.5 % | 199 / 200 · 0 | 308 | 0.1 % |
+| 10 ms | 1440p bursts | 158 | datagrams (Lowest latency, RU9) | 35.0 % · 69.7 % · 367 ms | 27.6 % · 76.2 % | 35.4 % · 67.6 % | 38.0 % · 65.9 % | 217 / 521 · 62.9 % | 200 / 200 · 0 | 1071 | 0.1 % |
+| 10 ms | 1440p bursts | 158 | Reliable (shipping) | 93.3 % · 7.2 % · 200 ms | 75.9 % · 18.3 % | 93.3 % · 7.2 % | 93.4 % · 7.5 % | 65 / 217 · 5.9 % | 199 / 200 · 0 | 331 | 0.1 % |
+| 10 ms | 1440p 80 Mbps | 151 | datagrams (Lowest latency, RU9) | 69.2 % · 30.9 % · 367 ms | 54.5 % · 43.6 % | 85.2 % · 15.1 % | 90.1 % · 9.8 % | 107 / 518 · 8.2 % | 200 / 200 · 0 | 529 | 0.1 % |
+| 10 ms | 1440p 80 Mbps | 151 | Reliable (shipping) | 98.8 % · 1.0 % · 83 ms | 90.3 % · 10.6 % | 99.7 % · 0.0 % | 100.0 % · 0.0 % (one phase 94.2) | 13 / 77 · 0.0 % | 199 / 200 · 0 | 0 | 0.1 % |
+| 10 ms | 1440p 80 Mbps | 157 | datagrams (Lowest latency, RU9) | 71.2 % · 29.5 % · 367 ms | 59.8 % · 39.0 % | 86.4 % · 13.5 % (one phase 72.7) | 94.6 % · 5.3 % | 30 / 518 · 4.8 % | 200 / 200 · 0 | 314 | 0.0 % |
+| 10 ms | 1440p 80 Mbps | 157 | Reliable (shipping) | 98.6 % · 1.2 % · 83 ms | 90.2 % · 10.6 % | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 13 / 76 · 0.0 % | 199 / 200 · 0 | 0 | 0.1 % |
+| 10 ms | 1440p 80 Mbps | 158 | datagrams (Lowest latency, RU9) | 73.7 % · 27.1 % · 367 ms | 61.8 % · 36.7 % | 86.5 % · 14.0 % | 94.7 % · 5.2 % | 25 / 511 · 4.8 % | 200 / 200 · 0 | 312 | 0.0 % |
+| 10 ms | 1440p 80 Mbps | 158 | Reliable (shipping) | 98.8 % · 1.1 % · 83 ms | 90.1 % · 10.5 % | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 13 / 77 · 0.0 % | 199 / 200 · 0 | 0 | 0.1 % |
+| 10 ms | 1440p 80 Mbps + outages | 151 | datagrams (Lowest latency, RU9) | 52.2 % · 50.5 % · 367 ms | 39.3 % · 62.3 % | 65.4 % · 35.9 % (one phase 58.6) | 68.4 % · 33.1 % | 259 / 510 · 31.0 % | 200 / 200 · 0 | 1017 | 0.0 % |
+| 10 ms | 1440p 80 Mbps + outages | 151 | Reliable (shipping) | 97.2 % · 3.3 % · 183 ms | 77.6 % · 24.7 % | 97.3 % · 3.2 % | 97.9 % · 2.3 % | 16 / 179 · 2.0 % | 199 / 200 · 0 | 115 | 0.1 % |
+| 10 ms | 1440p 80 Mbps + outages | 157 | datagrams (Lowest latency, RU9) | 57.6 % · 44.3 % · 367 ms | 42.4 % · 58.3 % | 63.5 % · 38.1 % | 67.9 % · 33.6 % | 153 / 515 · 30.2 % | 200 / 200 · 0 | 577 | 0.0 % |
+| 10 ms | 1440p 80 Mbps + outages | 157 | Reliable (shipping) | 97.5 % · 3.1 % · 183 ms | 77.9 % · 24.4 % | 97.5 % · 3.0 % | 98.1 % · 2.1 % | 16 / 175 · 1.8 % | 199 / 200 · 0 | 106 | 0.0 % |
+| 10 ms | 1440p 80 Mbps + outages | 158 | datagrams (Lowest latency, RU9) | 52.2 % · 50.3 % · 367 ms | 39.2 % · 62.0 % | 61.1 % · 40.4 % | 64.4 % · 36.3 % | 208 / 516 · 33.8 % | 200 / 200 · 0 | 880 | 0.1 % |
+| 10 ms | 1440p 80 Mbps + outages | 158 | Reliable (shipping) | 96.9 % · 3.6 % · 183 ms | 77.3 % · 24.8 % | 97.0 % · 3.3 % | 97.7 % · 2.4 % | 16 / 181 · 2.1 % | 199 / 200 · 0 | 118 | 0.1 % |
+| 40 ms | 0.5 % loss | 151 | datagrams (Lowest latency, RU9) | 40.4 % · 60.5 % · 367 ms | 31.9 % · 65.4 % | 55.3 % · 46.2 % | 64.0 % · 38.2 % | 365 / 1079 · 32.5 % | 200 / 200 · 0 | 1841 | 0.1 % |
+| 40 ms | 0.5 % loss | 151 | Reliable (shipping) | 64.2 % · 36.3 % · 367 ms | 49.0 % · 49.3 % | 68.2 % · 33.8 % | 68.2 % · 32.7 % | 251 / 625 · 28.3 % | 199 / 200 · 0 | 1615 | 0.1 % |
+| 40 ms | 0.5 % loss | 157 | datagrams (Lowest latency, RU9) | 43.4 % · 55.3 % · 417 ms | 36.0 % · 58.6 % | 57.3 % · 45.0 % | 64.7 % · 35.5 % | 397 / 1194 · 31.5 % | 200 / 200 · 0 | 1776 | 0.1 % |
+| 40 ms | 0.5 % loss | 157 | Reliable (shipping) | 63.4 % · 35.3 % · 367 ms | 50.3 % · 45.8 % | 67.7 % · 34.0 % | 67.4 % · 33.4 % | 260 / 665 · 29.4 % | 199 / 200 · 0 | 1672 | 0.1 % |
+| 40 ms | 0.5 % loss | 158 | datagrams (Lowest latency, RU9) | 45.4 % · 54.0 % · 383 ms | 36.1 % · 58.2 % | 57.3 % · 44.8 % | 64.9 % · 35.5 % | 347 / 1165 · 31.6 % | 200 / 200 · 0 | 1785 | 0.1 % |
+| 40 ms | 0.5 % loss | 158 | Reliable (shipping) | 63.5 % · 36.1 % · 367 ms | 50.0 % · 46.8 % | 66.8 % · 34.8 % | 67.4 % · 33.7 % | 260 / 664 · 29.5 % | 199 / 200 · 0 | 1682 | 0.1 % |
+| 100 ms | 1 % loss | 151 | datagrams (Lowest latency, RU9) | 3.9 % · 99.3 % · 717 ms | 3.8 % · 99.5 % | 6.3 % · 96.4 % | 6.4 % · 96.4 % | 1096 / 2395 · 94.0 % | 140 / 200 · 3 | 5299 | 0.1 % |
+| 100 ms | 1 % loss | 151 | Reliable (shipping) | 4.2 % · 99.2 % · 1000 ms | 4.0 % · 99.7 % | 4.8 % · 97.7 % | 4.8 % · 97.7 % | 927 / 2420 · 95.1 % | 136 / 200 · 4 | 5358 | 0.1 % |
+| 100 ms | 1 % loss | 157 | datagrams (Lowest latency, RU9) | 3.6 % · 99.3 % · 1117 ms | 3.5 % · 99.5 % | 5.5 % · 97.1 % | 5.6 % · 97.1 % | 1079 / 2407 · 94.2 % | 136 / 200 · 7 | 5297 | 0.1 % |
+| 100 ms | 1 % loss | 157 | Reliable (shipping) | 4.6 % · 99.1 % · 1084 ms | 4.5 % · 99.7 % | 5.2 % · 97.3 % | 5.2 % · 97.3 % | 888 / 2223 · 94.8 % | 133 / 200 · 7 | 5314 | 0.1 % |
+| 100 ms | 1 % loss | 158 | datagrams (Lowest latency, RU9) | 3.9 % · 99.3 % · 934 ms | 3.8 % · 99.2 % | 5.8 % · 96.9 % | 6.1 % · 96.7 % | 922 / 2339 · 94.2 % | 136 / 200 · 6 | 5302 | 0.1 % |
+| 100 ms | 1 % loss | 158 | Reliable (shipping) | 4.9 % · 99.2 % · 1017 ms | 4.8 % · 99.5 % | 5.5 % · 97.0 % | 5.6 % · 97.0 % | 928 / 2332 · 94.5 % | 133 / 200 · 4 | 5324 | 0.1 % |
+
+#### Table S6 — BR4's goals on the shipping code
+
+G1–G5 (§8) judged on table S5's runs. G1: Reliable against Lowest latency, the Balanced viewer's
+on-screen latency p50 (phase 0) within one vsync (17 ms) and shown (four-phase median) within 1
+point. G5's notice half is the unit table test (`uplink-monitor.test.ts`).
+
+| Goal | Chrome | Cell | Lowest latency | Reliable | Bound | Met |
+|---|---|---|---|---|---|---|
+| G1 | 151 | 10 ms clean | 50 ms · 100.0 % | 50 ms · 99.9 % | Δ ≤ 17 ms · Δ ≤ 1 pt | yes |
+| G1 | 151 | 40 ms clean | 67 ms · 100.0 % | 67 ms · 100.0 % | Δ ≤ 17 ms · Δ ≤ 1 pt | yes |
+| G1 | 151 | 100 ms clean | 100 ms · 100.0 % | 100 ms · 99.9 % | Δ ≤ 17 ms · Δ ≤ 1 pt | yes |
+| G2 | 151 | 10 ms 0.1 % loss | 95.6 % | 99.5 % | Balanced ≥ 99 % | yes |
+| G2 | 151 | 10 ms 0.5 % loss | 74.2 % | 99.2 % | Balanced ≥ 99 % | yes |
+| G3 | 151 | 10 ms bursts (GE) | 80.4 · 80.7 % | 99.90 · 100.00 % | Smoother · Most stable ≥ 98 % | yes |
+| G3 | 151 | 10 ms radio away 80 ms | 71.6 · 71.7 % | 99.15 · 99.86 % | Smoother · Most stable ≥ 98 % | yes |
+| G3 | 151 | 40 ms bursts (GE) | 74.4 · 75.9 % | 94.98 · 95.47 % | Smoother · Most stable ≥ 95 % | **no** |
+| G3 | 151 | 40 ms radio away 80 ms | 72.2 · 73.9 % | 98.01 · 99.49 % | Smoother · Most stable ≥ 95 % | yes |
+| G4 | 151 | 10 ms 1440p clean | 75.4 % | 99.3 % | Balanced ≥ 97 % | yes |
+| G4 | 151 | 10 ms 1440p 80 Mbps | 69.2 % | 98.8 % | Balanced ≥ 97 % | yes |
+| G5 | 151 | 40 ms 0.5 % loss | 365 ms · 200 of 200 keyframes | 251 ms · 199 of 200 keyframes, 0 ended otherwise | decode-ready p50 < 1.5 s; keyframes ≥ datagrams' − 5 %; only RU9's rules | yes |
+| G5 | 151 | 100 ms 1 % loss | 1096 ms · 140 of 200 keyframes | 927 ms · 136 of 200 keyframes, 0 ended otherwise | decode-ready p50 < 1.5 s; keyframes ≥ datagrams' − 5 %; only RU9's rules | yes |
+| G1 | 157 | 10 ms clean | 50 ms · 100.0 % | 50 ms · 99.9 % | Δ ≤ 17 ms · Δ ≤ 1 pt | yes |
+| G1 | 157 | 40 ms clean | 67 ms · 100.0 % | 67 ms · 99.9 % | Δ ≤ 17 ms · Δ ≤ 1 pt | yes |
+| G1 | 157 | 100 ms clean | 100 ms · 99.9 % | 100 ms · 99.7 % | Δ ≤ 17 ms · Δ ≤ 1 pt | yes |
+| G2 | 157 | 10 ms 0.1 % loss | 97.3 % | 99.5 % | Balanced ≥ 99 % | yes |
+| G2 | 157 | 10 ms 0.5 % loss | 76.7 % | 99.2 % | Balanced ≥ 99 % | yes |
+| G3 | 157 | 10 ms bursts (GE) | 78.6 · 78.2 % | 99.90 · 100.00 % | Smoother · Most stable ≥ 98 % | yes |
+| G3 | 157 | 10 ms radio away 80 ms | 71.5 · 71.6 % | 98.98 · 99.89 % | Smoother · Most stable ≥ 98 % | yes |
+| G3 | 157 | 40 ms bursts (GE) | 79.2 · 80.6 % | 95.32 · 95.58 % | Smoother · Most stable ≥ 95 % | yes |
+| G3 | 157 | 40 ms radio away 80 ms | 70.9 · 73.1 % | 98.15 · 99.60 % | Smoother · Most stable ≥ 95 % | yes |
+| G4 | 157 | 10 ms 1440p clean | 77.3 % | 99.6 % | Balanced ≥ 97 % | yes |
+| G4 | 157 | 10 ms 1440p 80 Mbps | 71.2 % | 98.6 % | Balanced ≥ 97 % | yes |
+| G5 | 157 | 40 ms 0.5 % loss | 397 ms · 200 of 200 keyframes | 260 ms · 199 of 200 keyframes, 0 ended otherwise | decode-ready p50 < 1.5 s; keyframes ≥ datagrams' − 5 %; only RU9's rules | yes |
+| G5 | 157 | 100 ms 1 % loss | 1079 ms · 136 of 200 keyframes | 888 ms · 133 of 200 keyframes, 0 ended otherwise | decode-ready p50 < 1.5 s; keyframes ≥ datagrams' − 5 %; only RU9's rules | yes |
+| G1 | 158 | 10 ms clean | 50 ms · 100.0 % | 50 ms · 100.0 % | Δ ≤ 17 ms · Δ ≤ 1 pt | yes |
+| G1 | 158 | 40 ms clean | 67 ms · 100.0 % | 67 ms · 99.9 % | Δ ≤ 17 ms · Δ ≤ 1 pt | yes |
+| G1 | 158 | 100 ms clean | 100 ms · 99.9 % | 100 ms · 99.9 % | Δ ≤ 17 ms · Δ ≤ 1 pt | yes |
+| G2 | 158 | 10 ms 0.1 % loss | 97.3 % | 99.3 % | Balanced ≥ 99 % | yes |
+| G2 | 158 | 10 ms 0.5 % loss | 75.0 % | 99.3 % | Balanced ≥ 99 % | yes |
+| G3 | 158 | 10 ms bursts (GE) | 80.7 · 80.6 % | 99.90 · 100.00 % | Smoother · Most stable ≥ 98 % | yes |
+| G3 | 158 | 10 ms radio away 80 ms | 71.3 · 73.9 % | 99.09 · 99.86 % | Smoother · Most stable ≥ 98 % | yes |
+| G3 | 158 | 40 ms bursts (GE) | 80.7 · 82.0 % | 95.35 · 95.72 % | Smoother · Most stable ≥ 95 % | yes |
+| G3 | 158 | 40 ms radio away 80 ms | 69.8 · 73.2 % | 97.95 · 99.38 % | Smoother · Most stable ≥ 95 % | yes |
+| G4 | 158 | 10 ms 1440p clean | 75.9 % | 99.5 % | Balanced ≥ 97 % | yes |
+| G4 | 158 | 10 ms 1440p 80 Mbps | 73.7 % | 98.8 % | Balanced ≥ 97 % | yes |
+| G5 | 158 | 40 ms 0.5 % loss | 347 ms · 200 of 200 keyframes | 260 ms · 199 of 200 keyframes, 0 ended otherwise | decode-ready p50 < 1.5 s; keyframes ≥ datagrams' − 5 %; only RU9's rules | yes |
+| G5 | 158 | 100 ms 1 % loss | 922 ms · 136 of 200 keyframes | 928 ms · 133 of 200 keyframes, 0 ended otherwise | decode-ready p50 < 1.5 s; keyframes ≥ datagrams' − 5 %; only RU9's rules | yes |
 
 ## 12. References
 

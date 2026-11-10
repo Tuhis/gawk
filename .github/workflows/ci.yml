@@ -3635,7 +3635,8 @@ jobs:
     # scenarios each (run 41302323482):
     #
     #   viewer      muxer check 5 s, browser E2E 109 s
-    #   publish     telemetry 72 s, browser broadcaster 44 s, screening notice 13 s
+    #   publish     telemetry 72 s, browser broadcaster ~120 s (R84's two uplink-outage
+    #               passes included, measured locally), screening notice 13 s
     #   rooms-pop   rooms 11 s, gated rooms 21 s, the three R74 PoP scripts ~45 s
     #
     # A new scenario goes in the shortest group. fail-fast off: one group's
