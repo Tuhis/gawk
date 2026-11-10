@@ -6,7 +6,7 @@ replace github.com/Tuhis/gawk/gawk-server => ../gawk-server
 
 require (
 	github.com/Tuhis/gawk/gawk-server v0.0.0-00010101000000-000000000000
-	github.com/pion/ice/v4 v4.4.8
+	github.com/pion/ice/v4 v4.4.9
 	github.com/pion/interceptor v0.1.51
 	github.com/pion/logging v0.2.4
 	github.com/pion/rtcp v1.2.20
