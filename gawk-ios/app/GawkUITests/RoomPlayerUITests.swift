@@ -94,9 +94,9 @@ final class RoomPlayerUITests: XCTestCase {
 
     /// R83 Fit (docs/87): every tile inside the window at its stream's
     /// shape in both orientations, without scrolling, and it plays like
-    /// Grid: four at once. gawk-devpub's fixtures are 320×240, so a playing
-    /// tile turns 4:3 (Grid keeps 16:9 tiles and letterboxes them); a
-    /// paused stream that has never played is 16:9 until its first frame.
+    /// Grid: four at once, no two tiles overlapping. gawk-devpub's fixtures
+    /// are 320×240, so a playing tile turns 4:3 (Grid keeps 16:9 tiles and
+    /// letterboxes them); the paused stream has never played, so it is 16:9.
     func testFitFitsTheScreen() throws {
         open(try UIEnv.require("GAWK_UI_ROOM_CODE")[0], streams: 5)
         app.buttons["room.layout.fit"].tap()
@@ -109,13 +109,23 @@ final class RoomPlayerUITests: XCTestCase {
                 let all = self.tiles.allElementsBoundByIndex
                 let frames = all.map(\.frame)
                 let playing = all.filter { $0.label.hasSuffix(", playing") }.map(\.frame)
+                let paused = all.filter { !$0.label.hasSuffix(", playing") }.map(\.frame)
                 seen = "window \(window), tiles \(frames), playing \(playing)"
                 let ratio = { (f: CGRect) in f.width / f.height }
+                // No two tiles overlap (1 pt in from each edge).
+                let apart = frames.indices.allSatisfy { i in
+                    frames.indices.allSatisfy { j in
+                        j <= i || !frames[i].insetBy(dx: 1, dy: 1).intersects(frames[j].insetBy(dx: 1, dy: 1))
+                    }
+                }
                 return frames.count == 5
                     && frames.allSatisfy { window.insetBy(dx: -1, dy: -1).contains($0) }
-                    && playing.count == 4
+                    && apart
+                    && playing.count == 4 && paused.count == 1
                     && playing.allSatisfy { abs(ratio($0) - 4 / 3) < 0.03 }
-                    && frames.allSatisfy { abs(ratio($0) - 4 / 3) < 0.03 || abs(ratio($0) - 16 / 9) < 0.03 }
+                    // Never played (nothing taps before the loop): the 16:9
+                    // default, not another stream's shape (D7, D12).
+                    && paused.allSatisfy { abs(ratio($0) - 16 / 9) < 0.03 }
             }
             let fitted = expectation(for: fits, evaluatedWith: nil)
             if XCTWaiter.wait(for: [fitted], timeout: UIWait.step) != .completed {
