@@ -23,6 +23,7 @@ const { created, scripts, roomSessions, FakeRoomSession } = vi.hoisted(() => {
     stop(): Promise<void>;
     setLadder(): void;
     setEncoderSettings(): void;
+    setDelivery(): void;
   }
   const created: FakeSession[] = [];
   const scripts: Array<(cbs: BroadcastCallbacks) => Promise<void>> = [];
@@ -78,6 +79,7 @@ vi.mock('./workerBroadcastSession', () => ({
       stop: async () => callbacks.onEnded(),
       setLadder: () => {},
       setEncoderSettings: () => {},
+      setDelivery: () => {},
     };
     created.push(session);
     return session;

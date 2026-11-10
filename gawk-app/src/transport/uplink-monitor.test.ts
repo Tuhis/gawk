@@ -12,6 +12,7 @@ import {
   UplinkMonitor,
   type UplinkSample,
 } from './uplink-monitor';
+import { R84_LAB_SECONDS } from './uplink-monitor.r84-fixture';
 
 const healthy = (superseded = 0): UplinkSample => ({
   staleDropped: 0,
@@ -87,5 +88,57 @@ describe('UplinkMonitor (RU9, the engine rule)', () => {
     expect(m.observe({ ...st })).toBe(true);
     for (let i = 1; i < 15; i++) expect(m.observe({ ...st }), `clean second ${i}`).toBe(true);
     expect(m.observe({ ...st })).toBe(false);
+  });
+});
+
+// docs/88 D5, G5: in Reliable mode the notice reads the carrier lane's counts
+// — a second is bad on any shed record, on two or more keyframe streams
+// superseded or failed, or on a sent rate under 75 % of the encode rate —
+// replayed here second by second from docs/88's lab runs of the inline carrier
+// on Chrome 151 (uplink-monitor.r84-fixture.ts). Quiet wherever the carrier
+// carries the stream (clean at 10–100 ms, light loss, bursts and outages at
+// 10 ms, outages at 40 ms); raised where Chrome's Cubic collapses (40 ms with
+// 0.5 % loss, 100 ms with 1 %) and under 40 ms bursts, where records were shed
+// for 58 of the run's seconds.
+describe('UplinkMonitor in Reliable mode, on the lab counters (docs/88 D5)', () => {
+  function replay(rows: readonly (readonly [number, number, number, number, number])[]) {
+    const m = new UplinkMonitor();
+    let shed = 0;
+    let superseded = 0;
+    let failed = 0;
+    let firstWarnAt: number | null = null;
+    let warnedSeconds = 0;
+    rows.forEach(([encoded, sent, recordsShed, sup, fail], i) => {
+      shed += recordsShed;
+      superseded += sup;
+      failed += fail;
+      const warned = m.observe({
+        staleDropped: shed,
+        keyframeStreamsSuperseded: superseded,
+        keyframeStreamsFailed: failed,
+        encoderFps: encoded,
+        sentFps: sent,
+      });
+      if (warned) {
+        warnedSeconds++;
+        firstWarnAt ??= i;
+      }
+    });
+    return { firstWarnAt, warnedSeconds };
+  }
+
+  it.each(['rtt10-clean', 'rtt40-clean', 'rtt100-clean', 'rtt10-loss0.005', 'rtt10-ge1pct', 'rtt10-out80drop', 'rtt40-out80drop'])(
+    '%s: never raised',
+    (cell) => {
+      expect(replay(R84_LAB_SECONDS[cell]).firstWarnAt).toBeNull();
+    },
+  );
+
+  it.each([
+    ['rtt40-loss0.005', 13, 87],
+    ['rtt100-loss0.01', 9, 92],
+    ['rtt40-ge1pct', 32, 58],
+  ])('%s: raised at second %i, up for %i seconds', (cell, first, seconds) => {
+    expect(replay(R84_LAB_SECONDS[cell])).toEqual({ firstWarnAt: first, warnedSeconds: seconds });
   });
 });

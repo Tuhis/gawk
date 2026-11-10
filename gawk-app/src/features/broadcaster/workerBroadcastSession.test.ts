@@ -130,6 +130,7 @@ describe('WorkerBroadcastSession start + ladder', () => {
         selection: 720,
         framerate: 30,
         encoderSettings: DEFAULT_ENCODER_SETTINGS,
+        delivery: 'lowest-latency',
       },
     ]);
   });
@@ -147,6 +148,15 @@ describe('WorkerBroadcastSession start + ladder', () => {
     const settings = { hwPreference: 'software' as const, bitrateOverride: 2_000_000, codecOverride: 'vp8' };
     session.setEncoderSettings(settings);
     expect(worker.commands()).toContainEqual({ type: 'setEncoderSettings', settings });
+  });
+
+  it('carries the Delivery setting on start and posts live changes (docs/88 D6, no restart)', () => {
+    const { session, worker } = makeSession();
+    session.setDelivery('reliable');
+    void session.start().catch(() => {});
+    expect(worker.commands()[0]).toMatchObject({ type: 'start', delivery: 'reliable' });
+    session.setDelivery('lowest-latency');
+    expect(worker.commands()).toContainEqual({ type: 'setDelivery', delivery: 'lowest-latency' });
   });
 
   it('resolves start() on the started event', async () => {

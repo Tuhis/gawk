@@ -25,11 +25,29 @@
 // The next keyframe starts on the previous one's handover, not its
 // acknowledgement, so a long path's round trip does not hold it back. Which
 // GOPs' deltas must give way (deltasBlocked) follows the same two clocks.
+//
+// A keyframe produced with `carrier` (docs/88 D2, D3: the browser's Reliable
+// mode) opens a GOP stream instead: the 0x1F prologue and the keyframe, then
+// the GOP's records, which the CarrierLane writes once the keyframe has been
+// handed over. It is the same stream under the same rules — it counts toward
+// the two in Chrome, its keyframe must be handed over before the next starts,
+// and only RU9's rules end it early (the 2 s age, a newer registration). What
+// differs is its end: it is not closed on handover but kept open for its GOP,
+// and FINned ("retired") when a
+// newer keyframe is produced, its queued records shed, any write in progress
+// left to finish. It is never reset for its deltas' sake.
 
 import { log } from '../lib/logger';
+import { encodeKeyframeCarrierPrologue } from './wire';
 
 // How long after it opened an unacknowledged keyframe stream is aborted, if a
 // newer keyframe arrives (the engine's KEYFRAME_WRITE_CANCEL_AGE_MS).
+//
+// It must stay well above one GOP: a GOP stream (carrier) is held open, so
+// unacknowledged, until the next keyframe retires it, and the age check runs
+// before that retirement. With a GOP of 2 s or more every GOP stream would be
+// aborted at the next keyframe; at the 500 ms default a retired GOP stream
+// gets about 1.5 s after its FIN to be acknowledged (review of #765).
 export const KEYFRAME_ABORT_AGE_MS = 2000;
 
 // How a keyframe left: acknowledged, failed on its own (opening, writing or
@@ -58,6 +76,24 @@ export interface KeyframeSenderEvents {
   ended?(gop: number, outcome: KeyframeOutcome, bytes: number): void;
 }
 
+// The carrier lane's side of a GOP stream (CarrierSender): told when the
+// stream can take records, when it is retired, and how it ended.
+export interface CarrierLane {
+  // The keyframe was handed over: `write` puts bytes on the GOP's stream.
+  opened(gop: number, write: (bytes: Uint8Array<ArrayBuffer>) => Promise<void>): void;
+  // A newer keyframe was produced: nothing more of this GOP is written.
+  retired(gop: number): void;
+  // The stream left for good (any outcome).
+  ended(gop: number, outcome: KeyframeOutcome): void;
+  // The session went away: drop everything queued, uncounted.
+  reset(): void;
+}
+
+// Where a GOP stream stands, for its deltas: 'pending' while its keyframe is
+// being opened or written (records queue), 'open' once it can take records,
+// 'gone' otherwise (no GOP stream, waiting in the slot, retired or ended).
+export type CarrierState = 'pending' | 'open' | 'gone';
+
 export interface KeyframeSenderOptions {
   now: () => number;
   // One GOP (keyframeIntervalMs): a keyframe not handed over within this of
@@ -76,6 +112,9 @@ interface Keyframe {
   phase: Phase;
   openedAt: number;
   writer: KeyframeStreamWriter | null;
+  // A GOP stream (docs/88 D2): kept open after its handover until retired.
+  carrier: boolean;
+  retired: boolean;
 }
 
 // How many recent GOPs deltasBlocked() can answer for. A delta is never more
@@ -83,7 +122,12 @@ interface Keyframe {
 const GOPS_REMEMBERED = 16;
 
 export class KeyframeSender {
-  readonly counters = { sent: 0, failed: 0, superseded: 0, bytesSent: 0 };
+  // carriersOpened / carriersAborted: GOP streams opened, and aborted by the
+  // 2 s rule (docs/88 D7, reported as uplinkCarriersOpened/-Expired). A
+  // retired GOP stream still writing its keyframe when a newer one registers
+  // is superseded (RU9's newest-registration rule) and counted as superseded
+  // and failed, not as a 2 s expiry.
+  readonly counters = { sent: 0, failed: 0, superseded: 0, bytesSent: 0, carriersOpened: 0, carriersAborted: 0 };
 
   private readonly now: () => number;
   private readonly gopMs: number;
@@ -97,12 +141,18 @@ export class KeyframeSender {
   private draining: Keyframe[] = [];
   private waiter: Keyframe | null = null;
   private byGop = new Map<number, Keyframe>();
+  private lane: CarrierLane | null = null;
 
   constructor(opts: KeyframeSenderOptions) {
     this.now = opts.now;
     this.gopMs = opts.gopMs;
     this.abortAgeMs = opts.abortAgeMs ?? KEYFRAME_ABORT_AGE_MS;
     this.events = opts.events ?? {};
+  }
+
+  // The carrier lane GOP streams report to (one per pipeline).
+  setCarrierLane(lane: CarrierLane): void {
+    this.lane = lane;
   }
 
   // Points the sender at a (new) session.
@@ -119,6 +169,8 @@ export class KeyframeSender {
   detach(countUnfinished: boolean): void {
     this.generation++;
     this.open = null;
+    // Nothing queued for the old session's GOP streams is sent on any other.
+    this.lane?.reset();
     const unfinished = [...this.draining, ...(this.writing ? [this.writing] : [])];
     for (const kf of this.byGop.values()) if (kf.phase === 'opening') unfinished.push(kf);
     for (const kf of unfinished) {
@@ -134,15 +186,27 @@ export class KeyframeSender {
   // A keyframe produced while there was no session to send it on: its GOP's
   // deltas cannot be decoded either. Nothing is counted — no stream existed.
   missed(gop: number): void {
-    this.remember({ gop, msg: new Uint8Array(0), producedAt: this.now(), phase: 'discarded', openedAt: 0, writer: null });
+    this.remember({
+      gop,
+      msg: new Uint8Array(0),
+      producedAt: this.now(),
+      phase: 'discarded',
+      openedAt: 0,
+      writer: null,
+      carrier: false,
+      retired: false,
+    });
   }
 
-  // A keyframe was produced: the abort check first, then start or wait.
-  produce(gop: number, msg: Uint8Array<ArrayBuffer>): void {
+  // A keyframe was produced: the abort check first, then the GOP streams it
+  // supersedes are retired, then it starts or waits. `carrier` opens a GOP
+  // stream for it (docs/88 D2) instead of a keyframe stream.
+  produce(gop: number, msg: Uint8Array<ArrayBuffer>, opts: { carrier?: boolean } = {}): void {
     const now = this.now();
     let aborted = false;
     for (const kf of [...this.draining, ...(this.writing ? [this.writing] : [])]) {
       if (now - kf.openedAt >= this.abortAgeMs) {
+        if (kf.carrier) this.counters.carriersAborted++;
         this.abort(kf);
         aborted = true;
       }
@@ -151,8 +215,18 @@ export class KeyframeSender {
       this.end(this.waiter, 'discarded', true);
       this.waiter = null;
     }
+    this.retireCarriers();
 
-    const kf: Keyframe = { gop, msg, producedAt: now, phase: 'waiting', openedAt: 0, writer: null };
+    const kf: Keyframe = {
+      gop,
+      msg,
+      producedAt: now,
+      phase: 'waiting',
+      openedAt: 0,
+      writer: null,
+      carrier: opts.carrier === true,
+      retired: false,
+    };
     this.remember(kf);
     if (this.canStart()) {
       this.start(kf);
@@ -186,6 +260,44 @@ export class KeyframeSender {
       default:
         return false;
     }
+  }
+
+  // Where gop's GOP stream stands for its deltas (see CarrierState).
+  carrierState(gop: number): CarrierState {
+    const kf = this.byGop.get(gop);
+    if (!kf || !kf.carrier || kf.retired) return 'gone';
+    switch (kf.phase) {
+      case 'opening':
+      case 'writing':
+        return 'pending';
+      case 'draining':
+        return 'open';
+      default:
+        return 'gone';
+    }
+  }
+
+  // Every GOP stream still open is retired: its lane stops writing to it and
+  // it is FINned behind any write in progress (one still opening is FINned
+  // right after its keyframe). Never reset here, nor for its deltas: only
+  // RU9's rules end it early (the 2 s age; a newer registration superseding
+  // it while its keyframe is still being written).
+  private retireCarriers(): void {
+    for (const kf of this.byGop.values()) {
+      if (!kf.carrier || kf.retired) continue;
+      if (kf.phase !== 'opening' && kf.phase !== 'writing' && kf.phase !== 'draining') continue;
+      kf.retired = true;
+      this.lane?.retired(kf.gop);
+      if (kf.writer) this.finish(kf, this.generation);
+    }
+  }
+
+  // FIN: close() resolves once every byte is acknowledged.
+  private finish(kf: Keyframe, gen: number): void {
+    kf.writer!.close().then(
+      () => this.onAcknowledged(kf, gen),
+      (e: unknown) => this.onStreamError(kf, e, gen),
+    );
   }
 
   private inChrome(): number {
@@ -231,6 +343,18 @@ export class KeyframeSender {
     }
     kf.writer = writer;
     kf.openedAt = this.now();
+    // A retired GOP keyframe that opens once a newer keyframe is in Chrome
+    // (being written or draining) is stale: it releases its own empty stream
+    // rather than supersede the newer one or be written behind it, which
+    // would move the relay's cached keyframe backwards (review of #765). GOPs
+    // are numbered in production order.
+    const newerInChrome = [this.writing, ...this.draining].some((o) => o !== null && o.gop > kf.gop);
+    if (kf.carrier && kf.retired && newerInChrome) {
+      void writer.abort().catch(() => {});
+      kf.writer = null;
+      this.end(kf, 'replaced', true);
+      return;
+    }
     // Newest registration wins: a stream that opens becomes the one being
     // written, aborting any other still being written (the engine's
     // supersede-at-register).
@@ -242,7 +366,9 @@ export class KeyframeSender {
       // waits.
       void writer.abort().catch(() => {});
       kf.writer = null;
-      if (this.waiter) {
+      // A retired GOP keyframe never waits again: a newer keyframe exists, and
+      // sending it later would put an older keyframe behind the newer one.
+      if (this.waiter || (kf.carrier && kf.retired)) {
         this.end(kf, 'replaced', true);
       } else {
         kf.phase = 'waiting';
@@ -251,12 +377,16 @@ export class KeyframeSender {
       }
       return;
     }
+    if (kf.carrier) this.counters.carriersOpened++;
     kf.phase = 'writing';
     this.writing = kf;
-    writer.write(kf.msg).then(
+    const first = kf.carrier ? concatBytes(encodeKeyframeCarrierPrologue(), kf.msg) : kf.msg;
+    writer.write(first).then(
       () => this.onHandedOver(kf, gen),
       (e: unknown) => this.onStreamError(kf, e, gen),
     );
+    // Retired while it was opening: nothing of its GOP follows the keyframe.
+    if (kf.carrier && kf.retired) this.finish(kf, gen);
   }
 
   private onHandedOver(kf: Keyframe, gen: number): void {
@@ -265,10 +395,18 @@ export class KeyframeSender {
     this.writing = null;
     this.draining.push(kf);
     this.events.handedOver?.(kf.gop);
-    kf.writer!.close().then(
-      () => this.onAcknowledged(kf, gen),
-      (e: unknown) => this.onStreamError(kf, e, gen),
-    );
+    if (!kf.carrier) {
+      this.finish(kf, gen);
+    } else if (!kf.retired) {
+      // The GOP stream takes its records now; it is FINned when retired.
+      const writer = kf.writer!;
+      this.lane?.opened(kf.gop, (bytes) =>
+        writer.write(bytes).catch((e: unknown) => {
+          this.onStreamError(kf, e, gen);
+          throw e;
+        }),
+      );
+    }
     this.pump();
   }
 
@@ -309,6 +447,7 @@ export class KeyframeSender {
 
   private end(kf: Keyframe, outcome: KeyframeOutcome, count: boolean): void {
     kf.phase = outcome;
+    if (kf.carrier) this.lane?.ended(kf.gop, outcome);
     if (count) {
       switch (outcome) {
         case 'sent':
@@ -339,4 +478,11 @@ export class KeyframeSender {
     this.waiter = null;
     this.start(kf);
   }
+}
+
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
 }

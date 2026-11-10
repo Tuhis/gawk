@@ -182,3 +182,47 @@ describe('broadcastSettingsStore with storage unavailable', () => {
     });
   });
 });
+
+// docs/88 D6, §7: the Delivery setting. A blank stored value follows the
+// default (Lowest latency until BR0 and BR5 hold), as a blank uplinkDelivery
+// does in the native broadcast.json; a word is stored only once the
+// broadcaster picks something other than what a blank shows.
+describe('broadcastSettingsStore delivery (R84)', () => {
+  const LS_DELIVERY = 'gawk.uplinkDelivery';
+
+  async function loadModule() {
+    vi.resetModules();
+    return import('./broadcastSettingsStore');
+  }
+
+  it('a blank value follows the default, Lowest latency', async () => {
+    const mod = await loadModule();
+    expect(mod.useBroadcastSettingsStore.getState().uplinkDelivery).toBeNull();
+    expect(mod.deliveryFromStore()).toBe('lowest-latency');
+  });
+
+  it('a garbage stored value reads as blank', async () => {
+    localStorage.setItem(LS_DELIVERY, 'turbo');
+    const mod = await loadModule();
+    expect(mod.useBroadcastSettingsStore.getState().uplinkDelivery).toBeNull();
+    expect(mod.deliveryFromStore()).toBe('lowest-latency');
+  });
+
+  it('picking Reliable stores it, and it survives a reload', async () => {
+    let mod = await loadModule();
+    mod.useBroadcastSettingsStore.getState().setUplinkDelivery('reliable');
+    expect(localStorage.getItem(LS_DELIVERY)).toBe('reliable');
+    mod = await loadModule();
+    expect(mod.deliveryFromStore()).toBe('reliable');
+  });
+
+  it('picking what a blank already shows leaves it blank, so a later default flip reaches it', async () => {
+    const mod = await loadModule();
+    mod.useBroadcastSettingsStore.getState().setUplinkDelivery('lowest-latency');
+    expect(localStorage.getItem(LS_DELIVERY)).toBeNull();
+    mod.useBroadcastSettingsStore.getState().setUplinkDelivery('reliable');
+    mod.useBroadcastSettingsStore.getState().setUplinkDelivery('lowest-latency');
+    expect(localStorage.getItem(LS_DELIVERY)).toBe('lowest-latency');
+    expect(mod.deliveryFromStore()).toBe('lowest-latency');
+  });
+});
