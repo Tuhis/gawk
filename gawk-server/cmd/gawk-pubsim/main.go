@@ -106,9 +106,10 @@ func run() error {
 	// R30 (docs/35 §12): the default clip's ~2–4-chunk deltas sit under one
 	// stripe share, so a striped viewer against it correctly engages nothing.
 	// The large clip's deltas are all past the ~8-chunk burst threshold,
-	// which is what the striped e2e pass needs — and only that pass: every
-	// other tier-1 step keeps the small clip so its cost and flake profile
-	// stay untouched.
+	// which is what the striped e2e pass needs. The rooms pass's second
+	// publisher uses it too, as the only 16:9 shape for R83's Fit step
+	// (docs/87 §5); every other tier-1 step keeps the small clip so its cost
+	// and flake profile stay untouched.
 	// R40 (docs/71 CF8): `magenta` is the screening fixture — 45 s of solid
 	// magenta then 45 s of solid grey at the default 30 fps, looped, so one
 	// publisher session trips a screening window (the test model scores
