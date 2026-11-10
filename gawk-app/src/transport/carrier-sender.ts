@@ -92,12 +92,15 @@ interface Gop {
   write: ((bytes: Uint8Array<ArrayBuffer>) => Promise<void>) | null;
   busy: boolean;
   done: boolean;
+  // The session went away (reset): an in-flight write's rejection is not a
+  // shed record.
+  gone: boolean;
 }
 
 export class CarrierSender implements CarrierLane {
   // recordsShed: records (datagrams) dropped unwritten, docs/75 D8's
-  // uplinkRecordsShed. recordsSent / framesSent: handed to the browser.
-  readonly counters = { recordsShed: 0, recordsSent: 0, framesSent: 0 };
+  // uplinkRecordsShed (the notice's drop input in Reliable mode).
+  readonly counters = { recordsShed: 0 };
 
   private readonly keyframes: KeyframeSender;
   private gops = new Map<number, Gop>();
@@ -145,6 +148,7 @@ export class CarrierSender implements CarrierLane {
       for (const f of g.queue.splice(0)) f.reject(gone);
       g.write = null;
       g.done = true;
+      g.gone = true;
     }
     this.gops.clear();
   }
@@ -152,7 +156,7 @@ export class CarrierSender implements CarrierLane {
   private gop(gop: number): Gop {
     let g = this.gops.get(gop);
     if (!g) {
-      g = { queue: [], write: null, busy: false, done: false };
+      g = { queue: [], write: null, busy: false, done: false, gone: false };
       this.gops.set(gop, g);
     }
     return g;
@@ -177,14 +181,14 @@ export class CarrierSender implements CarrierLane {
     const f = g.queue.shift()!;
     g.busy = true;
     g.write(f.bytes).then(
-      () => {
-        this.counters.recordsSent += f.records;
-        this.counters.framesSent++;
-        f.resolve('sent');
-      },
+      () => f.resolve('sent'),
       () => {
         // The stream failed or was aborted under it: KeyframeSender ends it,
-        // which sheds the rest.
+        // which sheds the rest. After a reset the session is gone instead.
+        if (g.gone) {
+          f.reject(new Error('session ended'));
+          return;
+        }
         this.counters.recordsShed += f.records;
         f.resolve('dropped');
       },

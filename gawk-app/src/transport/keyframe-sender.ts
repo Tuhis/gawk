@@ -41,6 +41,12 @@ import { encodeKeyframeCarrierPrologue } from './wire';
 
 // How long after it opened an unacknowledged keyframe stream is aborted, if a
 // newer keyframe arrives (the engine's KEYFRAME_WRITE_CANCEL_AGE_MS).
+//
+// It must stay well above one GOP: a GOP stream (carrier) is held open, so
+// unacknowledged, until the next keyframe retires it, and the age check runs
+// before that retirement. With a GOP of 2 s or more every GOP stream would be
+// aborted at the next keyframe; at the 500 ms default a retired GOP stream
+// gets about 1.5 s after its FIN to be acknowledged (review of #765).
 export const KEYFRAME_ABORT_AGE_MS = 2000;
 
 // How a keyframe left: acknowledged, failed on its own (opening, writing or
@@ -116,7 +122,10 @@ const GOPS_REMEMBERED = 16;
 
 export class KeyframeSender {
   // carriersOpened / carriersAborted: GOP streams opened, and aborted by the
-  // 2 s rule (docs/88 D7, reported as uplinkCarriersOpened/-Expired).
+  // 2 s rule (docs/88 D7, reported as uplinkCarriersOpened/-Expired). A
+  // retired GOP stream still writing its keyframe when a newer one registers
+  // is superseded (RU9's newest-registration rule) and counted as superseded
+  // and failed, not as a 2 s expiry.
   readonly counters = { sent: 0, failed: 0, superseded: 0, bytesSent: 0, carriersOpened: 0, carriersAborted: 0 };
 
   private readonly now: () => number;
@@ -196,6 +205,7 @@ export class KeyframeSender {
     let aborted = false;
     for (const kf of [...this.draining, ...(this.writing ? [this.writing] : [])]) {
       if (now - kf.openedAt >= this.abortAgeMs) {
+        if (kf.carrier) this.counters.carriersAborted++;
         this.abort(kf);
         aborted = true;
       }
@@ -341,7 +351,9 @@ export class KeyframeSender {
       // waits.
       void writer.abort().catch(() => {});
       kf.writer = null;
-      if (this.waiter) {
+      // A retired GOP keyframe never waits again: a newer keyframe exists, and
+      // sending it later would put an older keyframe behind the newer one.
+      if (this.waiter || (kf.carrier && kf.retired)) {
         this.end(kf, 'replaced', true);
       } else {
         kf.phase = 'waiting';
@@ -408,7 +420,6 @@ export class KeyframeSender {
   // RST_STREAM. Counts as superseded and, being unfinished, as failed — as
   // the engine counts a cancelled write.
   private abort(kf: Keyframe): void {
-    if (kf.carrier) this.counters.carriersAborted++;
     this.leaveChrome(kf);
     void kf.writer?.abort().catch(() => {});
     this.end(kf, 'aborted', true);

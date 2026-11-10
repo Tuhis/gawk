@@ -7,7 +7,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CarrierSender, DELIVERY_HINTS, DELIVERY_LABEL, DELIVERY_LABELS, engageCarrier, frameRecords, isChromium } from './carrier-sender';
-import { KeyframeSender, type KeyframeStreamWriter } from './keyframe-sender';
+import { KEYFRAME_ABORT_AGE_MS, KeyframeSender, type KeyframeStreamWriter } from './keyframe-sender';
+import { DEFAULT_CAPTURE_CONFIG } from '../media/types';
 import { packetizeFrameWithParity, packetizeStreamKeyframe } from './packetizer';
 import { CAP_KEYFRAME_CARRIERS, CAP_PARITY_CHUNKS, CAP_UPLINK_CARRIERS } from './parity';
 import { encodeCarrierRecord, encodeKeyframeCarrierPrologue } from './wire';
@@ -348,6 +349,55 @@ describe('CarrierSender — lifecycle on RU9\'s rules (D3)', () => {
   });
 });
 
+describe('CarrierSender — overlapping opens (review of #765)', () => {
+  it('a retired GOP stream superseded when a newer one registers is not a 2 s expiry', async () => {
+    const { kf, streams, produce } = harness();
+    produce(1); // opening
+    await settle();
+    produce(2); // retires 1 while it is still opening; nothing is being written, so 2 starts opening too
+    await settle();
+    expect(streams.length).toBe(2);
+    streams[0].open(); // 1 writes its keyframe, then its FIN
+    await settle();
+    streams[1].open(); // newest registration wins: 1, still being written, is superseded
+    await settle();
+    expect(streams[0].aborted).toBe(true);
+    expect(kf.counters.carriersAborted).toBe(0); // uplinkCarriersExpired is the 2 s rule's alone
+    expect(kf.counters.superseded).toBe(1);
+    expect(kf.counters.failed).toBe(1);
+  });
+
+  it('a retired keyframe that opens with two in Chrome is replaced, never the waiter, and its queue is shed', async () => {
+    const { lane, streams, produce, send, events, results } = harness();
+    produce(1); // 1 draining
+    await settle();
+    streams[0].open();
+    await settle();
+    streams[0].handOver(0);
+    await settle();
+    produce(2); // retires 1; 2 starts opening (one in Chrome)
+    send(2, 1); // queued behind 2's keyframe
+    await settle();
+    produce(3); // retires 2 while it is still opening; nothing is being written: 3 opens too
+    await settle();
+    expect(streams.length).toBe(3);
+    streams[2].open(); // 3 registers first, is written and handed over: two in Chrome (1, 3)
+    await settle();
+    streams[2].handOver(0);
+    await settle();
+    streams[1].open(); // 2 opens late, with two draining: it must not become the waiter
+    await settle();
+    expect(events).toContain('replaced 2');
+    expect(results).toContain('2.1 dropped');
+    expect(lane.counters.recordsShed).toBeGreaterThan(0);
+    // Nothing of 2 is ever written after 3: freeing Chrome starts no stream for it.
+    streams[0].ack();
+    await settle();
+    expect(streams.length).toBe(3);
+    expect(streams[1].writes.length).toBe(0);
+  });
+});
+
 describe('CarrierSender — resume', () => {
   it('a new session starts with no stream, sends nothing queued on the old one, and its first keyframe opens the first GOP stream', async () => {
     const { kf, streams, produce, send, results } = harness();
@@ -421,5 +471,11 @@ describe('Delivery copy (§7), the native words', () => {
     expect(DELIVERY_HINTS['lowest-latency']).toBe(
       'Viewers never wait for dropped video. If your connection drops some, they see brief freezes.',
     );
+  });
+});
+
+describe('the GOP and the 2 s rule (review of #765)', () => {
+  it('a GOP is well under the abort age, or every held-open GOP stream would be aborted at the next keyframe', () => {
+    expect(DEFAULT_CAPTURE_CONFIG.keyframeIntervalMs * 2).toBeLessThanOrEqual(KEYFRAME_ABORT_AGE_MS);
   });
 });
