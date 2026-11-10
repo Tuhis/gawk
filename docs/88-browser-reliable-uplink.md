@@ -345,7 +345,9 @@ is reset if it is not acknowledged 150 ms after its FIN.
   - *A retired GOP stream is never reset for its deltas' sake.* At rotation
     its queued records are shed and it is FINned; a write blocked on it
     finishes (Chrome has taken the bytes; nothing more of that GOP is
-    written); it is aborted only by RU9's 2 s rule. The cost is that on a
+    written); only RU9's rules end it early (the 2 s age, and as built a
+    newer keyframe's registration superseding it while its own keyframe is
+    still being written, §8 BR2). The cost is that on a
     link that cannot keep up, up to one GOP of records already handed to
     Chrome is still sent after the next keyframe has started — bounded by
     what was written before rotation, never growing.
@@ -609,7 +611,7 @@ BR0's procedure on the gaming PC, "field" is BR5.
 | G2 | **Light loss where Chrome's Cubic holds**: at 10 ms with 0.1 and 0.5 % loss, the Balanced viewer ≥ 99 % shown | lab + PC |
 | G3 | **Bursts and outages stop freezing the stable presets**: at 10 ms (bursts, radio away 80 ms) *Smoother* and *Most stable* ≥ 98 % shown, and at 40 ms ≥ 95 % (BUGS.md's entry) | lab |
 | G4 | **The high rung passes the datagram ceiling**: 1440p at 10 ms, clean and behind 80 Mbps, Balanced ≥ 97 % shown | lab + PC |
-| G5 | **Latency stays bounded, and keyframes land, where nothing can carry the stream**: on the cells where Chrome's Cubic collapses (40 ms 0.5 %, 100 ms 1 %), decode-ready p50 under 1.5 s; keyframes acknowledged no fewer than RU9's datagrams on the same cell, less 5 % of those produced; no keyframe ended by a rule other than RU9's 2 s; the notice raises (its table test, on the lab's counters) | lab + unit |
+| G5 | **Latency stays bounded, and keyframes land, where nothing can carry the stream**: on the cells where Chrome's Cubic collapses (40 ms 0.5 %, 100 ms 1 %), decode-ready p50 under 1.5 s; keyframes acknowledged no fewer than RU9's datagrams on the same cell, less 5 % of those produced; no keyframe ended by a rule other than RU9's 2 s (as built, RU9's newest-registration supersede can also end a retired GOP stream's keyframe, §8 BR2; BR4 counts it apart); the notice raises (its table test, on the lab's counters) | lab + unit |
 | G6 | **Compatibility**: on a relay without the bit(s) the browser sends today's datagrams byte for byte; with `-uplink-carriers=false` likewise; an old browser on a new relay is unchanged | integration (real `gawk-server`) + unit |
 | G7 | **Viewers untouched**: no viewer code changes; the relay's records from a browser carrier are byte-identical to the datagrams the same frames would have produced | review + unit |
 | G8 | **The gaming PC confirms the lab**: BR0's cells within table M's spread of §11's (5 points Balanced, 9 Smoother) or the doc records why not | PC |
@@ -749,7 +751,7 @@ pipeline runs (docs/16).
 | **Engage** (D1, D6): capability (both bits under K3) ∧ Reliable ∧ a browser D6 allows ⇒ the carrier for the next GOP; anything else ⇒ RU9's datagrams, byte-identical to today; a change applies at the next keyframe; the first GOP of a session goes as datagrams if `RelayCapabilities` has not arrived when its keyframe is produced, as natively (docs/75 RU5 as built) | unit, test-first |
 | **Records** are byte-identical to the datagrams datagram mode sends for the same frame, parity included, chunked at `maxDatagramSize`; a frame's records go to the stream in one `write()` | unit |
 | **Keyframe first** (D2): under K3 a GOP stream's first message is the keyframe's StreamFrame (prologue 0x1F); under K1 a GOP's records wait for its keyframe stream's acknowledgement; red first with a fake transport that delivers stream bytes in write order | unit, red first |
-| **Lifecycle** (D3), with a fake transport whose writes block, under fake timers: a GOP stream opens only when `KeyframeSender` would start its keyframe; a keyframe that waits leaves its GOP without a stream and its deltas are dropped; at rotation queued records are shed, the stream FINned, a blocked write left to finish and nothing more of that GOP written; a stream is aborted only by RU9's 2 s rule; at most two GOP streams are in Chrome; the encoder never waits | unit (fake clock) |
+| **Lifecycle** (D3), with a fake transport whose writes block, under fake timers: a GOP stream opens only when `KeyframeSender` would start its keyframe; a keyframe that waits leaves its GOP without a stream and its deltas are dropped; at rotation queued records are shed, the stream FINned, a blocked write left to finish and nothing more of that GOP written; a stream is aborted only by RU9's rules (the 2 s age; newest registration, as built), never for its deltas; at most two GOP streams are in Chrome; the encoder never waits | unit (fake clock) |
 | **Resume**: a new session starts with no carrier; nothing queued on the old one is sent on the new; the forced keyframe opens the first GOP stream once the capability is known | unit |
 | **Counted** (D7): carriers opened, aborted; records shed; delivery requested and in use — in `BroadcastStats`, Diagnostics and telemetry with docs/75 D8's names (`uplinkMode`, `uplinkModeRequested`, `uplinkCarriersOpened`, `uplinkCarriersExpired` for aborts, `uplinkRecordsShed`) | unit |
 | **The notice's inputs** (D5) in Reliable mode: a second is bad on any shed record, on two or more keyframe streams superseded or failed, or on sent fps under 75 % of encode fps; table tests that replay the lab's per-second counters | unit |
@@ -760,7 +762,7 @@ modes: a keyframe produced with `carrier` (`KeyframeSender.produce(gop,
 msg, { carrier })`, `keyframe-sender.ts`) opens a GOP stream instead of a
 keyframe stream — it writes `01 1f` and the StreamFrame, counts toward the
 two in Chrome, must be handed over before the next keyframe starts and is
-aborted only by the 2 s rule. Unlike a keyframe stream it is not closed on
+ended early only by RU9's rules. Unlike a keyframe stream it is not closed on
 handover: the carrier lane (`CarrierSender`, `carrier-sender.ts`) is told
 it can take records, and when a newer keyframe is produced (of either mode)
 it is retired — its queued records shed, any write in progress left to
@@ -789,8 +791,10 @@ finish, then FINned; never reset for its deltas.
   reset a GOP stream: when two keyframes open at once (a forced keyframe
   right after a cadence one), the newer one's registration supersedes the
   older, already retired and still writing its keyframe — RU9's "newest
-  registration wins", counted superseded and failed but not as an expiry,
-  and a retired keyframe never waits again (review of #765). Neither is a
+  registration wins", counted superseded and failed but not as an expiry.
+  A retired keyframe never waits again, and one that opens after a newer
+  GOP stream registered releases its own empty stream instead of
+  superseding the newer, live one (review of #765). Neither is a
   reset for the deltas' sake. A GOP must stay well under the 2 s abort age:
   a GOP stream is unacknowledged until its rotation, so at the 500 ms default
   it has about 1.5 s after its FIN (a test pins the default). gawk-telemetry already
