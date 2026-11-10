@@ -2,9 +2,9 @@
   "components": {
     "gawk-admin": {
       "component": "gawk-admin",
-      "covered": 4931,
+      "covered": 4921,
       "label": "admin",
-      "pct": 80.9,
+      "pct": 80.7,
       "total": 6097,
       "unit": "statements"
     },
@@ -18,10 +18,10 @@
     },
     "gawk-app": {
       "component": "gawk-app",
-      "covered": 12459,
+      "covered": 12468,
       "label": "app",
       "pct": 87.6,
-      "total": 14219,
+      "total": 14228,
       "unit": "lines"
     },
     "gawk-broadcast-desktop": {
@@ -66,7 +66,7 @@
     },
     "gawk-whip-gateway": {
       "component": "gawk-whip-gateway",
-      "covered": 2075,
+      "covered": 2076,
       "label": "WHIP gateway",
       "pct": 87.7,
       "total": 2367,
