@@ -196,6 +196,17 @@ export function GridIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+// Tiles of different widths in two rows — Fit mode (R83).
+export function FitIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <rect x="3" y="5" width="18" height="6" rx="1.2" />
+      <rect x="3" y="13" width="10" height="6" rx="1.2" />
+      <rect x="15" y="13" width="6" height="6" rx="1.2" />
+    </svg>
+  );
+}
+
 // One large cell with a small one inset — focus mode.
 export function FocusIcon(props: SVGProps<SVGSVGElement>) {
   return (

@@ -2,11 +2,13 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   loadNickname,
+  loadRoomAllMode,
   loadRoomMode,
   loadRoomPreset,
   loadTileVolume,
   sanitizeNickname,
   saveNickname,
+  saveRoomAllMode,
   saveRoomMode,
   saveRoomPreset,
   saveTileVolume,
@@ -45,6 +47,16 @@ describe('room prefs', () => {
     expect(loadRoomMode()).toBe('hidden');
     localStorage.setItem('gawk:room-mode', 'sideways');
     expect(loadRoomMode()).toBe('grid');
+    saveRoomMode('fit');
+    expect(loadRoomMode()).toBe('fit');
+  });
+
+  it('remembers the last all-POV mode, grid by default (docs/87 D2)', () => {
+    expect(loadRoomAllMode()).toBe('grid');
+    saveRoomAllMode('fit');
+    expect(loadRoomAllMode()).toBe('fit');
+    localStorage.setItem('gawk:room-grid', 'focus');
+    expect(loadRoomAllMode()).toBe('grid');
   });
 
   it('defaults the preset to balanced and refuses unknown ids', () => {
