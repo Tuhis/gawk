@@ -785,7 +785,15 @@ finish, then FINned; never reset for its deltas.
 - **Counters** (`BroadcastStats`, so Diagnostics, *Copy diagnostics* and
   telemetry): `uplinkModeRequested`, `uplinkMode`, `uplinkCarriersOpened`,
   `uplinkCarriersExpired` (GOP streams aborted by the 2 s rule, also counted
-  in `keyframeStreamsFailed`), `uplinkRecordsShed`. gawk-telemetry already
+  in `keyframeStreamsFailed`), `uplinkRecordsShed`. One more RU9 rule can
+  reset a GOP stream: when two keyframes open at once (a forced keyframe
+  right after a cadence one), the newer one's registration supersedes the
+  older, already retired and still writing its keyframe — RU9's "newest
+  registration wins", counted superseded and failed but not as an expiry,
+  and a retired keyframe never waits again (review of #765). Neither is a
+  reset for the deltas' sake. A GOP must stay well under the 2 s abort age:
+  a GOP stream is unacknowledged until its rotation, so at the 500 ms default
+  it has about 1.5 s after its FIN (a test pins the default). gawk-telemetry already
   types them (R73); its catalogue descriptions now say what each means
   from a browser.
 - **The notice** reads `staleFramesDropped + staleAudioDropped +
