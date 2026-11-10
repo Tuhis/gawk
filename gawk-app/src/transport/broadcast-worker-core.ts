@@ -20,6 +20,7 @@ import {
   type BroadcastStats,
   type EncoderSettings,
 } from './broadcaster';
+import type { Delivery } from './carrier-sender';
 import type { ConnectOptions } from './connection';
 import type { LocalRelayEvent } from './local-relay';
 
@@ -36,6 +37,8 @@ export type BroadcastWorkerCommand =
       // The advanced encoder settings ride the start command (and the
       // dedicated command below for live changes).
       encoderSettings?: EncoderSettings;
+      // The Delivery setting (docs/88 D6), likewise.
+      delivery?: Delivery;
     }
   // The capture track (transferred), in response to 'awaitingCapture'. The
   // audio clone transfers alongside the video clone when audio was requested
@@ -52,6 +55,7 @@ export type BroadcastWorkerCommand =
   | { type: 'captureFailed'; message: string }
   | { type: 'setLadder'; selection: ResolutionSelection; framerate: FramerateSelection }
   | { type: 'setEncoderSettings'; settings: EncoderSettings }
+  | { type: 'setDelivery'; delivery: Delivery }
   // end: a deliberate Stop, closing the session with 4014 (docs/79 D9).
   // Absent on every other stop.
   | { type: 'stop'; end?: boolean };
@@ -116,6 +120,7 @@ export type BroadcastPipelineLike = {
   stop(opts?: BroadcastStopOptions): Promise<void>;
   setLadder(selection: ResolutionSelection, framerate: FramerateSelection): void;
   setEncoderSettings(settings: EncoderSettings): void;
+  setDelivery(delivery: Delivery): void;
 };
 export type BroadcastPipelineFactory = (
   config: CaptureConfig,
@@ -162,6 +167,7 @@ export class BroadcastWorkerCore {
     selection: ResolutionSelection;
     framerate: FramerateSelection;
     encoderSettings?: EncoderSettings;
+    delivery?: Delivery;
   }): void {
     const prev = this.pipeline;
     const gen = ++this.generation;
@@ -234,6 +240,7 @@ export class BroadcastWorkerCore {
     );
     pipeline.setLadder(params.selection, params.framerate);
     if (params.encoderSettings) pipeline.setEncoderSettings(params.encoderSettings);
+    if (params.delivery) pipeline.setDelivery(params.delivery);
     this.pipeline = pipeline;
 
     pipeline.start().then(
@@ -277,6 +284,10 @@ export class BroadcastWorkerCore {
 
   setEncoderSettings(settings: EncoderSettings): void {
     this.pipeline?.setEncoderSettings(settings);
+  }
+
+  setDelivery(delivery: Delivery): void {
+    this.pipeline?.setDelivery(delivery);
   }
 
   // Stops the live pipeline and always answers with 'ended' — the pipeline's

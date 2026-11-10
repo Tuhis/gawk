@@ -28,6 +28,7 @@ import type {
   BroadcastWorkerCommand,
   BroadcastWorkerOutbound,
 } from '../../transport/broadcast-worker-core';
+import { DEFAULT_DELIVERY, type Delivery } from '../../transport/carrier-sender';
 import type { ConnectOptions } from '../../transport/connection';
 import { log } from '../../lib/logger';
 
@@ -91,6 +92,7 @@ export class WorkerBroadcastSession implements BroadcastSessionLike {
     framerate: 'native',
   };
   private encoderSettings: EncoderSettings = DEFAULT_ENCODER_SETTINGS;
+  private delivery: Delivery = DEFAULT_DELIVERY;
 
   private localStream: MediaStream | null = null;
   private started = false;
@@ -139,6 +141,11 @@ export class WorkerBroadcastSession implements BroadcastSessionLike {
     if (this.started) this.post({ type: 'setEncoderSettings', settings });
   }
 
+  setDelivery(delivery: Delivery): void {
+    this.delivery = delivery;
+    if (this.started) this.post({ type: 'setDelivery', delivery });
+  }
+
   start(): Promise<void> {
     if (this.started) return Promise.reject(new Error('session already started'));
     this.started = true;
@@ -151,6 +158,7 @@ export class WorkerBroadcastSession implements BroadcastSessionLike {
       selection: this.ladder.selection,
       framerate: this.ladder.framerate,
       encoderSettings: this.encoderSettings,
+      delivery: this.delivery,
     });
     return new Promise((resolve, reject) => {
       this.startResolve = resolve;
