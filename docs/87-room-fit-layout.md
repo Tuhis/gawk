@@ -1,9 +1,11 @@
 # R83 — Fit: a room layout that follows the streams' shapes
 
-**Status**: designed 2026-11-10; FL1–FL3 implemented 2026-11-10 (§13). Open: FL4, the owner pass.
+**Status**: designed 2026-11-10; FL1–FL3 (web) and FL5 (iOS) implemented 2026-11-10 (§13). Open: FL4, the owner pass.
 
-**Scope**: the web app's room view only (`gawk-app/src/features/room`).
-No relay, wire, telemetry, native-broadcaster or iOS change.
+**Scope**: the web app's room view (`gawk-app/src/features/room`) and,
+since 2026-11-10 (OD2), the iOS app's room player
+(`gawk-ios/app/Gawk/Rooms`). No relay, wire, telemetry, Rust-core or
+native-broadcaster change.
 
 The room grid ([docs/44](44-rooms.md) D11) lays out every POV in
 `ceil(√n)` columns of equal cells, and each video letterboxes inside its
@@ -47,6 +49,7 @@ streams on an ultrawide viewer. §12 has the measured figures.
 | # | Question | Decision |
 |---|---|---|
 | OD1 | Replace the grid, or offer the new layout as a choice? | **A choice.** Fit is an alternative layout the viewer picks; Grid stays the default and unchanged. |
+| OD2 | iOS too? (asked after FL1–FL3 shipped) | **Yes, in this milestone** (FL5): the owner saw no reason to wait for FL4. Supersedes §6's first bullet. |
 
 The questions the 2026-11-10 discussion left open take the defaults the
 prototype recommended. They are written down as decisions (§3) so the
@@ -54,7 +57,7 @@ owner pass (FL4) can revise any of them in place:
 
 - Fairness against coverage: D4's score.
 - Phones: Fit degrades to Focus below 720 px, like Grid (D8).
-- iOS: not in this milestone (§6).
+- iOS: in this milestone since OD2 (FL5, D12).
 - The focus-mode strip: unchanged, still 16:9 (§6).
 
 ## 3. Decisions
@@ -72,6 +75,7 @@ owner pass (FL4) can revise any of them in place:
 | D9 | **Rendering.** Fit tiles are absolutely positioned (`left/top/width/height` in px, merged into `TileFrame`'s style beside the strip's `--i`) inside the stage. The stage's size comes from a small `useElementSize` hook: a `ResizeObserver` where there is one, otherwise (jsdom, which has neither one nor layout) the window's inner size, re-read on `resize`; tests that need a given size stub it. The tile list stays one flat list keyed by broadcast ID, so switching Grid ↔ Fit ↔ Focus moves tiles and never remounts one. Within Fit, tiles animate to new boxes over the existing `--dur` (the global reduced-motion rule already collapses it); Grid ↔ Fit snaps, since a CSS grid cell and an absolute box don't transition. Fit tiles use the Grid tile variant (volume pill, all POVs mixed), and every `.stage[data-mode='grid']` rule that isn't about the CSS grid itself applies to Fit too. | docs/44's rule that a mode switch must not re-dial a media session. |
 | D10 | **Edge chrome.** A Fit tile whose top lies inside the header band (`--chrome-top`, 4.5rem) takes `data-edge-top` and `--edge-top: band − tileTop` (never less than the label's usual 0.6rem), so its label sits just below the header; a tile whose bottom lies inside the footer band (`--chrome-bottom`, 4rem) takes `data-edge-bottom` and `--edge-bottom` the same way. The bands are converted with the root font size, not hard-coded px. This is Grid's rule (docs/44, revision 2026-09-05) measured from where the tile actually is. | Fit's tiles don't always start at the stage edge (the block is centred), so "first row" is not the test, and Grid's fixed `top: var(--chrome-top)` would leave a label well below the header on a tile that starts 40 px down. |
 | D11 | **The layout is a pure function**, `fitLayout(aspects, width, height, opts) → { rects, arrangement }` in `gawk-app/src/features/room/fitLayout.ts`, with no DOM, so it is unit-tested directly. | Most of this milestone's risk is in the arithmetic, and pure arithmetic is cheap to test. |
+| D12 | **iOS (FL5, OD2).** `FitLayout.swift` is a line-for-line port of `fitLayout.ts` (same candidates, score, stickiness and floor; D3–D6), held to the same §12 table, so both clients place a room alike. The room player's Layout gains **Fit** between Grid and Focus (Grid · Fit · Focus); like Grid it plays four streams at once and a tap on a paused one swaps it in (docs/70 D19). The shape comes from the decoded video, as on the web (D7): `PlayerEngine` reports the size when it changes, from the H.264 parameter sets the renderer decodes with (`CMVideoFormatDescriptionGetPresentationDimensions`, pixel aspect and clean aperture applied) or from the VP8/VP9 frame; the model keeps shapes by broadcast ID with D7's deadband, 16:9 until seen, so a paused stream keeps its shape. A SwiftUI `Layout` places the tiles and keeps D5's previous result in its cache. The layout isn't persisted, as Grid/Focus never were on iOS; no `0` key (D2) and no chrome bands (D10), as the iOS grid has neither. | OD2. One algorithm in two languages, pinned by one table, is cheaper than two that drift. A web-only Fit would have left the same complaint on iPads and iPhones in landscape. |
 
 ## 4. What changes where
 
@@ -87,6 +91,10 @@ owner pass (FL4) can revise any of them in place:
 | `e2e/run.mjs` | The `--rooms` pass runs its second pubsim on `-fixture large` and gains a Fit step between Grid and Focus. |
 | `gawk-server/internal/pubsim/fixture/README.md`, `gawk-pubsim`'s flag comment | The large fixture's scope note names the rooms pass too (in this design PR, which releases nothing). |
 | `docs/44-rooms.md` | D11 gains a dated pointer to this doc. |
+| `gawk-ios/app/Gawk/Rooms/FitLayout.swift` (new) | D12's port. |
+| `gawk-ios/app/Gawk/Rooms/RoomPlayerModel.swift`, `RoomPlayerScreen.swift` | `Layout.fit`, shapes by broadcast ID, `RoomFitLayout`, the Fit segment. |
+| `gawk-ios/app/Gawk/Player/PlayerEngine.swift` | `PlayerEvent.videoSize`. |
+| `docs/70-ios-ux-redesign.md` | D19 gains a dated pointer to this doc. |
 
 ## 5. Risks and limits
 
@@ -115,9 +123,8 @@ owner pass (FL4) can revise any of them in place:
 
 ## 6. Out of scope
 
-- **iOS.** The native room grid (`RoomPlayerScreen.tileSize`, docs/70
-  D19/D26) assumes 16:9 and has the same problem. Porting `fitLayout` to
-  Swift is a follow-up once the web version has been through FL4.
+- ~~**iOS.**~~ *Revised 2026-11-10 (OD2): in scope as FL5, D12.* The
+  iOS Grid itself still assumes 16:9 and is unchanged, as the web's is.
 - **Phones on the web** (D8).
 - **The focus-mode strip**, still 16:9 thumbnails.
 - **Desktop broadcasters' room card** — it shows no video grid.
@@ -131,7 +138,8 @@ owner pass (FL4) can revise any of them in place:
 | **FL1** ✅ | `fitLayout.ts`: D3–D6, D11. | Vitest first: two 32:9 on 1920×1080 stack and cover ≥ 95 %; each rect has its tile's aspect (2 %); rects stay inside the stage, never overlap, keep reading order; §12's table reproduced with no previous arrangement (above Grid in 32 cells, equal in 8); the score never below Grid's over random inputs, with and without a previous arrangement; 2–4 × 16:9 on 16:9 equal Grid; D5's stability holds the arrangement on a 1 % resize (inputs away from the Grid floor), gives it up on a large one, and resets when a tile joins; a deterministic case where the kept arrangement is within 3 % of the best but below Grid on the new stage, and is replaced by the fresh best; above 10 tiles the even-split path runs; 10 and 40 tiles each finish in < 5 ms uninstrumented, < 25 ms under coverage; zero tiles and zero-size stages return empty; clamped shapes. |
 | **FL2** ✅ | Stream shapes: D7 in `RoomTile.tsx` and `RoomScreen.tsx`, `data-frame-w/h`. | Tests: a remote tile reports its frames' shape from the stats; no report before the first frame; a < 2 % change is not taken, a larger one is; the shape survives the tile's retry; the own preview reports `videoWidth/videoHeight` on `resize`; the clamp. |
 | **FL3** ✅ | The mode: D1, D2, D8–D10, `useElementSize`, the CSS, the icon, the e2e step, the docs/44 pointer. | Component tests: the segment's four radios, Fit persisted and reloaded, `0` back to the last all-POV mode (also after a reload made in Focus), the hide-videos card's button following it, Fit tiles positioned from `fitLayout` with the stage's (stubbed) size, the same tile elements across Grid ↔ Fit ↔ Focus and a resize, edge flags and offsets from the bands, Fit as Focus under 720 px. `e2e/run.mjs --rooms`: a Fit step where each tile's box aspect is within 2 % of its `data-frame-w/h` (4:3 and 16:9), with, for each active broadcast, the non-empty set of primary-session subscriber `key`s on `/statusz` (no `stripeLeg`, no `internal`) unchanged from Grid through Fit to Focus (`sessionId` is telemetry's and absent in this pass); `room-fit.png` written. |
-| **FL4** | **Owner pass** on the reference deployment: two ultrawide broadcasters and a 16:9 viewer (the report), a phone broadcaster in the mix, the people and voice panels opening, a window resize, a broadcaster changing source mid-room. | §1's rows confirmed by eye; findings written into §12; any decision revised in place with a dated note. |
+| **FL5** ✅ | iOS: D12 in `FitLayout.swift`, `RoomPlayerModel`, `RoomPlayerScreen`, `PlayerEngine`, the docs/70 pointer. | `GawkTests/FitLayoutTests`: two 32:9 stack and cover ≥ 95 %; §12's table, the same numbers as FL1 (32 above, 8 equal); never below Grid fresh and kept; the floor case; stickiness; a phone in portrait; degenerate input; 10 and 40 tiles; the model's shape deadband. `GawkUITests/RoomPlayerUITests.testFitFitsTheScreen`: every tile inside the window at its stream's shape in both orientations, four playing. |
+| **FL4** | **Owner pass** on the reference deployment, on the web and on an iPhone and an iPad: two ultrawide broadcasters and a 16:9 viewer (the report), a phone broadcaster in the mix, the people and voice panels opening, a window resize, a broadcaster changing source mid-room. | §1's rows confirmed by eye; findings written into §12; any decision revised in place with a dated note. |
 
 ## 12. Measurements (prototype, 2026-11-10)
 
@@ -206,3 +214,23 @@ findings go below it.
   each tile exactly its shape) over one justified row. The footer has
   faded by the time the Grid step's sampling gap ends, so the step moves
   the pointer before it clicks Fit.
+
+## 14. Implementation notes (FL5, iOS, 2026-11-10)
+
+- **The port was checked on Linux before CI.** `FitLayout.swift` imports
+  only CoreGraphics; compiled with Swift 5.10 on Linux against a small
+  geometry shim, a harness running FitLayoutTests' cases passed: §12's
+  table to the same rounded numbers as the web, the floor case, 400
+  random inputs fresh and kept, and 10 tiles in 0.8 ms (`-O`). The SwiftUI
+  and model changes are compiled and tested only by `ios.yml` on macOS.
+- **H.264 shape from the parameter sets.** The renderer decodes H.264
+  itself, so the engine never holds a decoded frame; the format
+  description it builds from the keyframe's SPS/PPS is what the renderer
+  decodes with, and the presentation dimensions apply the pixel aspect
+  and clean aperture. VP8/VP9 frames arrive decoded and report their own
+  size.
+- **The UI test's shapes.** gawk-devpub's fixtures are 320×240, so in Fit
+  a playing tile is 4:3 (Grid's tiles stay 16:9 and letterbox it); a
+  paused stream that has never played stays 16:9 until its first frame.
+  The first CI run asserted 16:9 for every tile and failed on exactly
+  that: Fit had given the playing tile the stream's 4:3.
