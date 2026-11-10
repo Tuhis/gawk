@@ -2567,11 +2567,19 @@ entries still describe code `gawk-pubsim` runs (now
   letters where 1.5 accepts them. An operator who copies the sample line
   gets the bridge's `_` fallback names (`Alice_[web]`).
   ([docs/80](80-mumble-bridge.md) §11.5)
-- **The `mumblevoip/mumble-server:v1.6.870` image honours
-  `MUMBLE_SUPERUSER_PASSWORD` only on its very first start**; after that the
-  SuperUser password is whatever the database holds. The bridge's test
-  script sets it again with `docker exec … --set-su-pw`; the compose voice
-  lane uses 1.5.939, where the variable works. (`gawk-mumble-bridge/testdata/murmur.sh`)
+- **The `mumblevoip/mumble-server` 1.6 images ignore
+  `MUMBLE_SUPERUSER_PASSWORD` on a fresh volume's first start**: the
+  entrypoint runs `--set-su-pw` before the server has initialised its
+  database, and that password does not survive it, so SuperUser is refused
+  with `WrongUserPW` until the container restarts (the entrypoint sets it
+  again on every start, and then it works). Measured on 1.6.870 and again on
+  1.6.1001 (2026-11-10); 1.5.939 accepts it on the first start. To re-check
+  an image: start it on an empty volume with the variable set, log in as
+  SuperUser, restart, log in again. The bridge's test script sets the
+  password with `docker exec … --set-su-pw`; the compose voice lane stays on
+  1.5.x, and `renovate.json5` holds it there, because its one-shot
+  `murmur-init` runs against the first start and nothing in CI starts that
+  lane. (`gawk-mumble-bridge/testdata/murmur.sh`, `dev/compose.voice.yml`)
 - **A draining bridge pod takes the room's observer with it, so the
   relay answers the 4002 rejoin with `VoiceJoin` Unavailable** for the
   second or so until the home redials the observer onto another pod. A

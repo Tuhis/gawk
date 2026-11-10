@@ -35,9 +35,11 @@ services:
       GAWK_VOICE_BRIDGE_CA_FILE: /certs/cert.pem
 
   murmur:
-    # 1.5: the 1.6.870 image ignores MUMBLE_SUPERUSER_PASSWORD after its first
-    # start (gawk-mumble-bridge/testdata/murmur.sh works around it with
-    # docker exec; a compose lane should not need to).
+    # 1.5: the 1.6 images (1.6.870, 1.6.1001) refuse MUMBLE_SUPERUSER_PASSWORD
+    # on a fresh volume's first start, so murmur-init below fails with
+    # WrongUserPW (gawk-mumble-bridge/testdata/murmur.sh works around it with
+    # docker exec; a compose lane should not need to). renovate.json5 holds
+    # this line on 1.5.x; see docs/gotchas.md.
     image: mumblevoip/mumble-server:v1.5.939
     ports:
       # TCP only: the bridge tunnels voice over the control connection, and
