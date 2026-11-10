@@ -183,9 +183,14 @@ findings go below it.
   the winner is placed: 1.0 ms at 10 tiles and 0.5 ms at 40 (best of
   100 runs in Vitest, Node 24). The timing test takes the best of seven
   runs, so a stall on a shared runner doesn't fail it.
+  Under CI's v8 coverage instrumentation (`npm run test:coverage`) the
+  same search ran past 5 ms (5.46 ms at 10 tiles), so the bound is 25 ms
+  there; it still catches an exhaustive search at 40 tiles. The 2 000-input
+  property test hit Vitest's 5 s timeout there too and runs 600 inputs with
+  a 30 s timeout; the deterministic floor case pins D5's floor regardless.
 - **D5's Grid floor**, added after the design PR's review, was test-first:
-  over 2 000 random inputs the property test with a previous arrangement
-  found one kept arrangement scoring 47.08 against Grid's 47.18 before
+  the property test with a previous arrangement (then 2 000 random
+  inputs) found one kept arrangement scoring 47.08 against Grid's 47.18 before
   the floor went in.
 - **D5 keeps its previous result in React state**, recomputed during render
   when its inputs change, not in a ref read during render.
