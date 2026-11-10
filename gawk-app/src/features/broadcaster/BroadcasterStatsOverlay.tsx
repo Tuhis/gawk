@@ -3,6 +3,7 @@ import { formatHotkey } from '../../lib/useHotkey';
 import { STATS_HOTKEY } from '../../lib/hotkeys';
 import { fmt, fmtBits, fmtInt } from '../../lib/format';
 import type { BroadcastStats } from '../../transport/broadcaster';
+import { DELIVERY_LABELS } from '../../transport/carrier-sender';
 import type { EncoderConfigured } from '../../media/encoder';
 import { OVERLAY_UNSUPPORTED } from './captureGuidance';
 
@@ -72,6 +73,17 @@ export function BroadcasterStatsOverlay({ stats, encoderInfo, bitrateBps, audioS
         ['Keyframe streams', String(stats?.keyframeStreamsSent ?? '—')],
         ['Keyframe fails', String(stats?.keyframeStreamsFailed ?? '—')],
         ['Keyframes superseded', String(stats?.keyframeStreamsSuperseded ?? '—')],
+        // docs/88 §7: the Delivery setting as asked, and what this GOP's
+        // deltas actually ride — a relay without carriers, or a browser OD4
+        // leaves out, keeps them on datagrams whatever was asked.
+        ['Delivery (requested)', stats ? DELIVERY_LABELS[stats.uplinkModeRequested] : '—'],
+        [
+          'Delivery (in use)',
+          stats ? (stats.uplinkMode === 'carrier' ? 'Reliable (carrier)' : 'Lowest latency (datagrams)') : '—',
+        ],
+        ['Carriers opened', String(stats?.uplinkCarriersOpened ?? '—')],
+        ['Carriers aborted', String(stats?.uplinkCarriersExpired ?? '—')],
+        ['Records shed', String(stats?.uplinkRecordsShed ?? '—')],
         ['Video bitrate (sent)', fmtBits(bitrateBps)],
       ],
     },

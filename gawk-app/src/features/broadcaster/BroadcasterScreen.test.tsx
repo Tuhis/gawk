@@ -8,7 +8,7 @@
 // already flipped it to LIVE.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { BroadcastCallbacks } from '../../transport/broadcaster';
 
 const { created, scripts, sessionGate } = vi.hoisted(() => {
@@ -22,6 +22,8 @@ const { created, scripts, sessionGate } = vi.hoisted(() => {
     stopOpts: Array<{ end?: boolean } | undefined>;
     setLadder(): void;
     setEncoderSettings(): void;
+    setDelivery(delivery: string): void;
+    deliveries: string[];
   }
   const created: FakeSession[] = [];
   // One script per createBroadcastSession call, consumed in order; a script
@@ -59,6 +61,10 @@ vi.mock('./workerBroadcastSession', () => ({
       },
       setLadder: () => {},
       setEncoderSettings: () => {},
+      deliveries: [] as string[],
+      setDelivery: (d: string) => {
+        session.deliveries.push(d);
+      },
     };
     created.push(session);
     return session;
@@ -779,5 +785,38 @@ describe('BroadcasterScreen upload notice (RU9)', () => {
     useBroadcastSettingsStore.getState().setResolutionSelection(1080);
     goLiveWith({ encoderPressure: true });
     await waitFor(() => expect(screen.getByText("Encoder can't keep up at 1080p")).toBeTruthy());
+  });
+});
+
+// docs/88 BR3, §7: the Delivery control sits under Stream quality; the
+// pipeline starts with the stored choice and takes a change live.
+describe('BroadcasterScreen Delivery setting (R84)', () => {
+  it('starts with the stored delivery and passes a change to the live session', async () => {
+    useBroadcastSettingsStore.getState().setUplinkDelivery('reliable');
+    scripts.push(async (cbs) => {
+      cbs.onSourceStream(fakeStream);
+      cbs.onStats({ audioState: 'off' } as BroadcastStats);
+    });
+    render(<BroadcasterScreen />);
+    startBroadcast();
+    await waitFor(() => expect(created.length).toBe(1));
+    expect(created[0].deliveries).toEqual(['reliable']);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    const quality = screen.getByText('Stream quality').closest('section')!;
+    const group = within(quality).getByRole('radiogroup', { name: 'Delivery' });
+    fireEvent.click(within(group).getByRole('radio', { name: 'Lowest latency' }));
+    expect(created[0].deliveries).toEqual(['reliable', 'lowest-latency']);
+  });
+
+  it('a blank stored value starts on the default, Lowest latency', async () => {
+    useBroadcastSettingsStore.setState({ uplinkDelivery: null });
+    scripts.push(async (cbs) => {
+      cbs.onSourceStream(fakeStream);
+    });
+    render(<BroadcasterScreen />);
+    startBroadcast();
+    await waitFor(() => expect(created.length).toBe(1));
+    expect(created[0].deliveries).toEqual(['lowest-latency']);
   });
 });

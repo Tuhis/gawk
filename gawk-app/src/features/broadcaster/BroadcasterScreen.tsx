@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import styles from './broadcaster.module.css';
 import { LadderPicker } from '../stream/LadderPicker';
+import { DeliveryPicker } from '../stream/DeliveryPicker';
 import { EncoderSettingsPanel } from '../stream/EncoderSettingsPanel';
 import { useCodecMatrices, useSupportMatrix } from '../stream/useSupportMatrix';
 import { Button } from '../../ui/Button';
@@ -27,7 +28,11 @@ import { acquireDisplayStream, type DisplayStreamGrant } from '../../media/captu
 import type { EncoderConfigured } from '../../media/encoder';
 import type { ResolutionSelection } from '../../media/ladder';
 import { DEFAULT_CAPTURE_CONFIG, type CaptureConfig } from '../../media/types';
-import { encoderSettingsFromStore, useBroadcastSettingsStore } from '../../state/broadcastSettingsStore';
+import {
+  deliveryFromStore,
+  encoderSettingsFromStore,
+  useBroadcastSettingsStore,
+} from '../../state/broadcastSettingsStore';
 import { resolvedUrlIsDefault, selectCertHashList, useTransportStore } from '../../state/transportStore';
 import { allowCustomRelays, requiresPublishSecret, SITE_DOWNLOAD_URL } from '../../config';
 import { ServerIndicator } from '../servers/ServerIndicator';
@@ -536,6 +541,7 @@ export function BroadcasterScreen({
       }
       pipeline.setLadder(res, framerateSelection);
       pipeline.setEncoderSettings(encoderSettingsFromStore());
+      pipeline.setDelivery(deliveryFromStore());
       pipelineRef.current = pipeline;
       try {
         await pipeline.start();
@@ -581,6 +587,7 @@ export function BroadcasterScreen({
     }
     pipeline.setLadder(res, framerateSelection);
     pipeline.setEncoderSettings(encoderSettingsFromStore());
+    pipeline.setDelivery(deliveryFromStore());
     pipelineRef.current = pipeline;
     try {
       await pipeline.start();
@@ -873,6 +880,7 @@ export function BroadcasterScreen({
             matrix={supportMatrix}
             onChange={(res, fps) => pipelineRef.current?.setLadder(res, fps)}
           />
+          <DeliveryPicker onChange={(delivery) => pipelineRef.current?.setDelivery(delivery)} />
         </section>
 
         <section className={styles.group}>
