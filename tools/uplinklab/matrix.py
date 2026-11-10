@@ -5,7 +5,7 @@ and the viewer replay (live edge and adaptive). Results land in
 $UPLINK_OUT/results/<scenario>/<mode>/; a cell with a summary.json is skipped,
 so a set resumes where it stopped.
 
-Usage: matrix.py core|cc|hi|engine|engine-hi|engine-check|jit|win|bigq|seeds|chrome|chrome-kf|chrome-ceiling|chrome-knobs|chrome-seeds|chrome-ceiling-repeat|chrome-kftiming|chrome-kftiming2|ru8-g10|chrome-ru9-p7|chrome-ru9-p9|r84-a|r84-b|r84-c158|pop|all [--jobs 3] [--seconds 100] [--only name-prefix]
+Usage: matrix.py core|cc|hi|engine|engine-hi|engine-check|jit|win|bigq|seeds|chrome|chrome-kf|chrome-ceiling|chrome-knobs|chrome-seeds|chrome-ceiling-repeat|chrome-kftiming|chrome-kftiming2|ru8-g10|chrome-ru9-p7|chrome-ru9-p9|r84-a|r84-b|r84-c158|r84-br4|pop|all [--jobs 3] [--seconds 100] [--only name-prefix]
        matrix.py rescore [substr] [--jobs N]   # analyse and replay every finished run again
 """
 import concurrent.futures as cf
@@ -99,13 +99,16 @@ def chrome_for(major):
     return None
 
 
-for _major in (151, 158):
+for _major in (151, 157, 158):
     _chrome = chrome_for(_major) or f"/nonexistent/chrome-{_major}"
     for _m, _a, _page in (("dgram", ["--mode", "datagram"], None),
                           ("carrier", ["--mode", "carrier"], None),
                           ("kfa", ["--mode", "carrier", "--kforder", "ack"], None),
                           ("inline", ["--mode", "carrier"], "inline"),
-                          ("inline-f12", ["--mode", "carrier", "--retire", "f12"], "inline")):
+                          ("inline-f12", ["--mode", "carrier", "--retire", "f12"], "inline"),
+                          # BR4: the shipping Reliable mode (KeyframeSender's GOP
+                          # streams and CarrierSender) on the shipping page.
+                          ("reliable", ["--mode", "reliable"], None)):
         MODES[f"c{_major}-{_m}"] = _a
         MODE_ENV[f"c{_major}-{_m}"] = dict(MODE_ENV["chrome-dgram"], CHROME=_chrome)
         if _page:
@@ -332,6 +335,11 @@ def sets():
     for name in ("rtt40-loss0.005", "rtt100-loss0.01"):
         b.append(dict(by[name], modes=("c151-dgram", "c151-kfa", "c151-inline", "c151-inline-f12")))
     s["r84-b"] = b
+    # BR4 (docs/88 §8): r84-b's cells on the shipping code — RU9's datagrams
+    # (Lowest latency) against the shipping Reliable mode, on Chrome for
+    # Testing 151 (docs/88's), 157 (stable on 2026-11-10) and 158.
+    s["r84-br4"] = [dict(sc, modes=tuple(f"c{m}-{d}" for m in (151, 157, 158) for d in ("dgram", "reliable")))
+                    for sc in b + [by["hi-rtt10-clean"]]]  # G4's clean 1440p cell is r84-a's
     # Chrome 158 against 151: its controller (the net-log's) and the
     # per-datagram ceiling, on table P6's two clean 10 ms cells, and the
     # inline carrier on a long clean path.
