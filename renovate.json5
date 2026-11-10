@@ -97,6 +97,13 @@
       minimumGroupSize: 2,
     },
     {
+      description: "github.com/pion/rtp/v2 v2.0.0 is a stray 2021 tag (published 2021-07-09, before v1.7.0) that pion never continued: v1 is the live line (v1.10.6, 2026-10), so the 'major' is a downgrade. It also cannot be adopted on its own: pion/webrtc/v4, interceptor and srtp/v3 all require rtp v1, and the gateway hands webrtc's *rtp.Packet (TrackRemote.ReadRTP, TrackLocalStaticRTP.WriteRTP) to its own code, so importing /v2 fails to compile. PR #696 only added an unused require. Drop this rule when pion/webrtc itself moves to a new rtp major, and bump them together.",
+      matchManagers: ["gomod"],
+      matchPackageNames: ["github.com/pion/rtp"],
+      matchUpdateTypes: ["major"],
+      enabled: false,
+    },
+    {
       description: "The Prometheus client libraries (client_golang + client_model) share a release cadence and transitive graph — land them together.",
       matchManagers: ["gomod"],
       matchPackageNames: ["github.com/prometheus/**"],
