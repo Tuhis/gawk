@@ -278,7 +278,9 @@ export class KeyframeSender {
 
   // Every GOP stream still open is retired: its lane stops writing to it and
   // it is FINned behind any write in progress (one still opening is FINned
-  // right after its keyframe). Never reset here — only the 2 s rule aborts.
+  // right after its keyframe). Never reset here, nor for its deltas: only
+  // RU9's rules end it early (the 2 s age; a newer registration superseding
+  // it while its keyframe is still being written).
   private retireCarriers(): void {
     for (const kf of this.byGop.values()) {
       if (!kf.carrier || kf.retired) continue;
@@ -340,6 +342,16 @@ export class KeyframeSender {
     }
     kf.writer = writer;
     kf.openedAt = this.now();
+    // A retired GOP keyframe that opens after a newer one registered is
+    // stale (a carrier is retired only by a later keyframe): it releases its
+    // own empty stream rather than supersede the newer, live one (review of
+    // #765).
+    if (kf.carrier && kf.retired && this.writing) {
+      void writer.abort().catch(() => {});
+      kf.writer = null;
+      this.end(kf, 'replaced', true);
+      return;
+    }
     // Newest registration wins: a stream that opens becomes the one being
     // written, aborting any other still being written (the engine's
     // supersede-at-register).

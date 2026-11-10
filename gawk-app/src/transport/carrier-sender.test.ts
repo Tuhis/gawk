@@ -398,6 +398,35 @@ describe('CarrierSender — overlapping opens (review of #765)', () => {
   });
 });
 
+describe('CarrierSender — a late retired open (review round 2 of #765)', () => {
+  it('a retired keyframe that opens while a newer GOP stream is being written releases itself, never the newer one', async () => {
+    const { streams, produce, send, events, results } = harness();
+    produce(1); // 1 draining
+    await settle();
+    streams[0].open();
+    await settle();
+    streams[0].handOver(0);
+    await settle();
+    produce(2); // retires 1; 2 opening
+    await settle();
+    produce(3); // retires 2 while opening; 3 opening too
+    send(3, 1);
+    await settle();
+    streams[2].open(); // 3 registers and is being written (not handed over)
+    await settle();
+    streams[1].open(); // 2 opens late
+    await settle();
+    expect(streams[2].aborted).toBe(false);
+    expect(events).toContain('replaced 2');
+    expect(events).not.toContain('aborted 3');
+    expect(streams[1].writes.length).toBe(0);
+    streams[2].handOver(0);
+    await settle();
+    expect(results).not.toContain('3.1 dropped'); // the live GOP keeps its deltas
+    expect(streams[2].writes.length).toBe(2);
+  });
+});
+
 describe('CarrierSender — resume', () => {
   it('a new session starts with no stream, sends nothing queued on the old one, and its first keyframe opens the first GOP stream', async () => {
     const { kf, streams, produce, send, results } = harness();
