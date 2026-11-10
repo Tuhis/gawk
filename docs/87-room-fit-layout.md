@@ -37,7 +37,7 @@ streams on an ultrawide viewer. §12 has the measured figures.
 | Over §12's 40 cells (ten mixes × four stages) Fit's coverage is **above Grid's in 32 and equal in the other 8** | FL1 table test reproducing §12 |
 | A plain room (every stream 16:9) on a 16:9 stage gives the same coverage as Grid for 2–4 streams | FL1 unit test |
 | A stream's shape comes from its **decoded frames**, not metadata; before the first frame a tile counts as 16:9; a change under 2 % does not move the layout | FL2 tests |
-| Resizing the window or opening the people/voice panel re-lays out, and switching Grid ↔ Fit ↔ Focus moves tiles, without remounting any (no media session re-dials) | FL3 component test with a stubbed `ResizeObserver` (same tile elements before and after); `e2e/run.mjs --rooms` (the set of subscriber `key`s on `/statusz` of the tiles' primary sessions — entries without `stripeLeg` or `internal`, since stripe legs come and go on their own — random per session and always set, non-empty and unchanged across Grid → Fit → Focus) |
+| Resizing the window or opening the people/voice panel re-lays out, and switching Grid ↔ Fit ↔ Focus moves tiles, without remounting any (no media session re-dials) | FL3 component test with a stubbed `ResizeObserver` (same tile elements before and after); `e2e/run.mjs --rooms` (for each active broadcast, the set of subscriber `key`s on `/statusz` of the tiles' primary sessions — entries without `stripeLeg` or `internal`, since stripe legs come and go on their own — random per session and always set, non-empty and unchanged across Grid → Fit → Focus) |
 | The layout doesn't flap: when only the stage size changes, the current arrangement is kept unless the new best beats it by more than 3 %, or it falls below Grid (D5) | FL1 unit test |
 | The worst cases lay out fast: 10 tiles (the exhaustive search, ~2 000 candidates) and a 40-stream wall each in **< 5 ms** | FL1 timing test (generous bound, CI-safe) |
 | Under 720 px Fit degrades to Focus, as Grid does | FL3 component test |
@@ -85,6 +85,7 @@ owner pass (FL4) can revise any of them in place:
 | `features/room/room.module.css` | `.stage[data-mode='fit']` positioning and transition, the Grid edge rules extended to Fit with D10's offsets. |
 | `ui/Icons.tsx` | `FitIcon`. |
 | `e2e/run.mjs` | The `--rooms` pass runs its second pubsim on `-fixture large` and gains a Fit step between Grid and Focus. |
+| `gawk-server/internal/pubsim/fixture/README.md`, `gawk-pubsim`'s flag comment | The large fixture's scope note names the rooms pass too (in this design PR, which releases nothing). |
 | `docs/44-rooms.md` | D11 gains a dated pointer to this doc. |
 
 ## 5. Risks and limits
@@ -105,9 +106,7 @@ owner pass (FL4) can revise any of them in place:
   costs a 5 Mbps noise stream in a pass whose "tile advanced" polls are
   3–5 s, and striping engages on it (hence the primary-only key check).
   A small 16:9 fixture would keep the pass cheap but is a pubsim change;
-  taken only if the pass proves flaky. The fixture's README still calls it
-  the striped pass's alone: a commit touching `gawk-server/` would release
-  the relay for a comment, so this section is the record of the wider use.
+  taken only if the pass proves flaky.
 - **Tile chrome on small tiles.** A thin 32:9 tile at the top of a busy
   room has little height for the label and the volume pill, and a tile
   shorter than both chrome bands together (~136 px) touches both, so its
@@ -131,7 +130,7 @@ owner pass (FL4) can revise any of them in place:
 |---|---|---|
 | **FL1** | `fitLayout.ts`: D3–D6, D11. | Vitest first: two 32:9 on 1920×1080 stack and cover ≥ 95 %; each rect has its tile's aspect (2 %); rects stay inside the stage, never overlap, keep reading order; §12's table reproduced with no previous arrangement (above Grid in 32 cells, equal in 8); the score never below Grid's over random inputs, with and without a previous arrangement; 2–4 × 16:9 on 16:9 equal Grid; D5's stability holds the arrangement on a 1 % resize (inputs away from the Grid floor), gives it up on a large one, and resets when a tile joins; a deterministic case where the kept arrangement is within 3 % of the best but below Grid on the new stage, and is replaced by the fresh best; above 10 tiles the even-split path runs; 10 and 40 tiles each finish in < 5 ms; zero tiles and zero-size stages return empty; clamped shapes. |
 | **FL2** | Stream shapes: D7 in `RoomTile.tsx` and `RoomScreen.tsx`, `data-frame-w/h`. | Tests: a remote tile reports its frames' shape from the stats; no report before the first frame; a < 2 % change is not taken, a larger one is; the shape survives the tile's retry; the own preview reports `videoWidth/videoHeight` on `resize`; the clamp. |
-| **FL3** | The mode: D1, D2, D8–D10, `useElementSize`, the CSS, the icon, the e2e step, the docs/44 pointer. | Component tests: the segment's four radios, Fit persisted and reloaded, `0` back to the last all-POV mode (also after a reload made in Focus), the hide-videos card's button following it, Fit tiles positioned from `fitLayout` with the stage's (stubbed) size, the same tile elements across Grid ↔ Fit ↔ Focus and a resize, edge flags and offsets from the bands, Fit as Focus under 720 px. `e2e/run.mjs --rooms`: a Fit step where each tile's box aspect is within 2 % of its `data-frame-w/h` (4:3 and 16:9), with the non-empty set of primary-session subscriber `key`s on `/statusz` (no `stripeLeg`, no `internal`) unchanged from Grid through Fit to Focus (`sessionId` is telemetry's and absent in this pass); `room-fit.png` written. |
+| **FL3** | The mode: D1, D2, D8–D10, `useElementSize`, the CSS, the icon, the e2e step, the docs/44 pointer. | Component tests: the segment's four radios, Fit persisted and reloaded, `0` back to the last all-POV mode (also after a reload made in Focus), the hide-videos card's button following it, Fit tiles positioned from `fitLayout` with the stage's (stubbed) size, the same tile elements across Grid ↔ Fit ↔ Focus and a resize, edge flags and offsets from the bands, Fit as Focus under 720 px. `e2e/run.mjs --rooms`: a Fit step where each tile's box aspect is within 2 % of its `data-frame-w/h` (4:3 and 16:9), with, for each active broadcast, the non-empty set of primary-session subscriber `key`s on `/statusz` (no `stripeLeg`, no `internal`) unchanged from Grid through Fit to Focus (`sessionId` is telemetry's and absent in this pass); `room-fit.png` written. |
 | **FL4** | **Owner pass** on the reference deployment: two ultrawide broadcasters and a 16:9 viewer (the report), a phone broadcaster in the mix, the people and voice panels opening, a window resize, a broadcaster changing source mid-room. | §1's rows confirmed by eye; findings written into §12; any decision revised in place with a dated note. |
 
 ## 12. Measurements (prototype, 2026-11-10)
