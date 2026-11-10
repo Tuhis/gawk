@@ -36,10 +36,10 @@ pub use error::WireError;
 pub use localrelay::*;
 pub use messages::*;
 pub use parity::{
-    CAP_PARITY_CHUNKS, CAP_STRIPED_DELIVERY, CAP_UPLINK_CARRIERS, MAX_PARITY_DATA_CHUNKS,
-    MAX_PARITY_SYMBOLS, PARITY_CHUNK_HEADER_SIZE, ParityChunkHeader, RELAY_CAPABILITIES_SIZE,
-    RelayCapabilities, append_parity_chunk, append_relay_capabilities, compute_parity,
-    parse_parity_chunk, parse_relay_capabilities, recover_chunks,
+    CAP_KEYFRAME_CARRIERS, CAP_PARITY_CHUNKS, CAP_STRIPED_DELIVERY, CAP_UPLINK_CARRIERS,
+    MAX_PARITY_DATA_CHUNKS, MAX_PARITY_SYMBOLS, PARITY_CHUNK_HEADER_SIZE, ParityChunkHeader,
+    RELAY_CAPABILITIES_SIZE, RelayCapabilities, append_parity_chunk, append_relay_capabilities,
+    compute_parity, parse_parity_chunk, parse_relay_capabilities, recover_chunks,
 };
 pub use room::*;
 pub use stripe::{
@@ -103,6 +103,12 @@ pub const TYPE_VOICE_CONTROL: u8 = 0x1D;
 // viewer acts on it (gawk-ios viewer crate). Layout lives in messages.rs.
 pub const TYPE_VIDEO_UNDELIVERABLE: u8 = 0x1E;
 pub const VIDEO_UNDELIVERABLE_SIZE: usize = 10;
+// KeyframeCarrier (R84, docs/88 D2): the browser broadcaster's GOP stream,
+// prologue `0x01 0x1F`, the keyframe's StreamFrame at its head, then carrier
+// records. The native engine keeps its keyframe stream at priority 1 and does
+// not open one (docs/88 §10); the constant and vectors are here because every
+// mirror carries every message.
+pub const TYPE_KEYFRAME_CARRIER: u8 = 0x1F;
 
 // Size constants. A change to any of these is a protocol change, not a
 // tuning knob — the constants test pins every one.
