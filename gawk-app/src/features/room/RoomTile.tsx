@@ -11,6 +11,7 @@ import type { RoomAttachment } from '../../transport/wire';
 import { buildViewLink } from '../../lib/shareLink';
 import { loadTileVolume, saveTileVolume } from './roomPrefs';
 import { TILE_AUTO_RETRIES, TILE_RETRY_DELAYS_MS } from './tileRetry';
+import type { Rect } from './fitLayout';
 
 export type TileVariant = 'grid' | 'focus' | 'small';
 
@@ -21,7 +22,14 @@ export type TileVariant = 'grid' | 'focus' | 'small';
 export interface TileEdges {
   top: boolean;
   bottom: boolean;
+  // Fit only (docs/87 D10): how far, in px, the label and the controls step
+  // in from the tile's own top and bottom to clear the room's chrome bands.
+  topOffset?: number;
+  bottomOffset?: number;
 }
+
+// Reports the stream's decoded size (docs/87 D7); the room keeps the shape.
+export type AspectReport = (broadcastId: string, width: number, height: number) => void;
 
 interface FrameProps {
   attachment: RoomAttachment;
@@ -31,6 +39,10 @@ interface FrameProps {
   stripIndex?: number;
   variant: TileVariant;
   edges?: TileEdges;
+  // Fit only: the tile's box on the stage, in px.
+  box?: Rect;
+  // The decoded frame size, for the e2e (data-frame-w/h).
+  frameSize?: { width: number; height: number } | null;
   own: boolean;
   ownControls?: ReactNode;
   showChrome: boolean;
@@ -55,6 +67,8 @@ function TileFrame({
   stripIndex,
   variant,
   edges,
+  box,
+  frameSize,
   own,
   ownControls,
   showChrome,
@@ -69,15 +83,27 @@ function TileFrame({
   const away = !attachment.live;
   const chromeCls = showChrome ? '' : styles.chromeHidden;
   const small = variant === 'small';
+  const style: Record<string, string | number> = {};
+  if (stripIndex !== undefined) style['--i'] = stripIndex;
+  if (box) {
+    style.left = `${box.x}px`;
+    style.top = `${box.y}px`;
+    style.width = `${box.w}px`;
+    style.height = `${box.h}px`;
+  }
+  if (edges?.topOffset !== undefined) style['--edge-top'] = `${edges.topOffset}px`;
+  if (edges?.bottomOffset !== undefined) style['--edge-bottom'] = `${edges.bottomOffset}px`;
   return (
     <div
       className={styles.tile}
-      style={stripIndex === undefined ? undefined : ({ '--i': stripIndex } as CSSProperties)}
+      style={Object.keys(style).length > 0 ? (style as CSSProperties) : undefined}
       data-testid="room-tile"
       data-broadcast-index={index}
       data-variant={variant}
       data-edge-top={edges?.top ? 'true' : undefined}
       data-edge-bottom={edges?.bottom ? 'true' : undefined}
+      data-frame-w={frameSize ? frameSize.width : undefined}
+      data-frame-h={frameSize ? frameSize.height : undefined}
       data-own={own ? 'true' : undefined}
       data-focused={variant === 'focus' ? 'true' : undefined}
       data-status={status}
@@ -156,6 +182,8 @@ interface Props {
   showChrome: boolean;
   roomKey: string | null;
   onFocus: (broadcastId: string) => void;
+  box?: Rect;
+  onAspect?: AspectReport;
 }
 
 // What the current attempt's session is doing, as far as retrying goes.
@@ -235,6 +263,8 @@ function RoomTileSession({
   showChrome,
   roomKey,
   onFocus,
+  box,
+  onAspect,
   onPhase,
   onRetry,
 }: SessionProps) {
@@ -260,6 +290,13 @@ function RoomTileSession({
       roomKey,
     },
   );
+
+  // docs/87 D7: the stream's shape, from the decoded frames themselves.
+  const frameW = stats?.frameWidth ?? 0;
+  const frameH = stats?.frameHeight ?? 0;
+  useEffect(() => {
+    if (frameW > 0 && frameH > 0) onAspect?.(broadcastId, frameW, frameH);
+  }, [onAspect, broadcastId, frameW, frameH]);
 
   const { setSuppressed } = audio;
   useEffect(() => {
@@ -355,6 +392,8 @@ function RoomTileSession({
       stripIndex={stripIndex}
       variant={variant}
       edges={edges}
+      box={box}
+      frameSize={frameW > 0 && frameH > 0 ? { width: frameW, height: frameH } : null}
       own={own}
       ownControls={ownControls}
       showChrome={showChrome}
@@ -374,10 +413,12 @@ interface OwnProps {
   stripIndex?: number;
   variant: TileVariant;
   edges?: TileEdges;
+  box?: Rect;
   preview: MediaStream;
   ownControls?: ReactNode;
   showChrome: boolean;
   onFocus: (broadcastId: string) => void;
+  onAspect?: AspectReport;
 }
 
 // The web broadcaster's own tile paints the LOCAL
@@ -390,12 +431,35 @@ export function OwnPreviewTile({
   stripIndex,
   variant,
   edges,
+  box,
   preview,
   ownControls,
   showChrome,
   onFocus,
+  onAspect,
 }: OwnProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [frameSize, setFrameSize] = useState<{ width: number; height: number } | null>(null);
+  // docs/87 D7: the local preview's shape is the video's own size.
+  const { broadcastId } = attachment;
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el) return;
+    const read = () => {
+      const width = el.videoWidth;
+      const height = el.videoHeight;
+      if (!(width > 0 && height > 0)) return;
+      setFrameSize((prev) => (prev && prev.width === width && prev.height === height ? prev : { width, height }));
+      onAspect?.(broadcastId, width, height);
+    };
+    read();
+    el.addEventListener('loadedmetadata', read);
+    el.addEventListener('resize', read);
+    return () => {
+      el.removeEventListener('loadedmetadata', read);
+      el.removeEventListener('resize', read);
+    };
+  }, [onAspect, broadcastId]);
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
@@ -414,6 +478,8 @@ export function OwnPreviewTile({
       stripIndex={stripIndex}
       variant={variant}
       edges={edges}
+      box={box}
+      frameSize={frameSize}
       own
       ownControls={ownControls}
       showChrome={showChrome}

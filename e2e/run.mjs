@@ -1780,9 +1780,35 @@ async function readTiles(page) {
       frames: Number(el.getAttribute('data-frames')),
       variant: el.getAttribute('data-variant'),
       status: el.getAttribute('data-status'),
+      // R83 Fit: the decoded frame size and the tile's box on the page.
+      frameW: Number(el.getAttribute('data-frame-w') ?? 0),
+      frameH: Number(el.getAttribute('data-frame-h') ?? 0),
+      boxW: el.getBoundingClientRect().width,
+      boxH: el.getBoundingClientRect().height,
     })),
   );
 }
+
+// The tiles' primary sessions' subscriber keys (random per session, stable
+// for its life): unchanged keys across a layout switch mean no tile
+// re-dialed. Stripe legs (striped delivery is on by default, and the large
+// fixture engages it) are left out: the stripe controller adds and replaces
+// them on its own, with no tile remount.
+// One sorted key list per active broadcast, in a stable order.
+async function relaySubscriberKeys(opsUrl) {
+  const { active } = await relayRooms(opsUrl);
+  return active
+    .map((b) =>
+      (b.subscriberDetails ?? [])
+        .filter((d) => !d.internal && !d.stripeLeg)
+        .map((d) => d.key)
+        .filter(Boolean)
+        .sort(),
+    )
+    .sort((a, b) => (a[0] ?? '').localeCompare(b[0] ?? ''));
+}
+
+const sameKeys = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 async function relayRooms(opsUrl) {
   const st = await (await fetch(`${opsUrl}/statusz`)).json();
@@ -1802,7 +1828,10 @@ async function roomsPass({ relayUrl, certHash, opsUrl }) {
   const code = await waitForLine(pubA, /^ROOM ([A-Z0-9]{6}) [0-9a-f]{32}$/m, 20_000, 'the minted room code');
   log(`pubsim A publishing as ${idA}, minted a room`);
   const pubB = launch('pubsim-room-b', PUBSIM_BIN, [
+    // The large (1280×720, 16:9) fixture beside A's 320×240 (4:3): two
+    // shapes for the Fit step (R83, docs/87).
     '-url', relayUrl, '-insecure', '-duration', '300s', '-room', code, '-label', 'bravo', '-nick', 'bravo',
+    '-fixture', 'large',
   ]);
   const idB = await waitForLine(pubB, /GAWK_PUBSIM_ID=([A-Z0-9]{6})/, 20_000, 'publisher B\'s broadcast code');
   log(`pubsim B publishing as ${idB}, attached to the room`);
@@ -1854,6 +1883,38 @@ async function roomsPass({ relayUrl, certHash, opsUrl }) {
       if (b.subscribers < 1) fail(`relay shows ${b.subscribers} subscribers on an active broadcast while the grid shows it`);
     }
     writeFileSync(join(OUT, 'room-grid.png'), await page.screenshot());
+    const gridKeys = await relaySubscriberKeys(opsUrl);
+    if (gridKeys.length !== 2 || gridKeys.some((k) => k.length === 0)) {
+      fail(`grid: expected primary subscriber keys on both broadcasts, got ${JSON.stringify(gridKeys)}`);
+    }
+
+    // R83 Fit (docs/87): each tile's box takes its decoded frame's shape
+    // (4:3 and 16:9 here), and the switch moves tiles without a re-dial.
+    // The footer has faded over the grid's sampling gap; any pointer
+    // activity brings it back.
+    await page.mouse.move(40, 40);
+    await page.mouse.move(60, 60);
+    await page.getByRole('radio', { name: 'Fit' }).click();
+    await pollFor(
+      async () => {
+        const tiles = await readTiles(page);
+        return (
+          tiles.length === 2 &&
+          tiles.every(
+            (t) => t.variant === 'grid' && t.frameW > 0 && t.frameH > 0 && Math.abs(t.boxW / t.boxH / (t.frameW / t.frameH) - 1) < 0.02,
+          )
+        );
+      },
+      5_000,
+      200,
+      'every Fit tile to take its stream\'s shape',
+    );
+    const fitTiles = await readTiles(page);
+    const shapesSeen = new Set(fitTiles.map((t) => (t.frameW / t.frameH).toFixed(2)));
+    if (shapesSeen.size !== 2) fail(`Fit step expected two stream shapes, saw ${[...shapesSeen].join(', ')}`);
+    if (!sameKeys(await relaySubscriberKeys(opsUrl), gridKeys)) fail('Fit re-dialed: a subscriber session changed on the switch');
+    log(`fit ok: ${fitTiles.map((t) => `${t.frameW}×${t.frameH} in ${Math.round(t.boxW)}×${Math.round(t.boxH)}`).join(', ')}`);
+    writeFileSync(join(OUT, 'room-fit.png'), await page.screenshot());
 
     // Focus by number key. The sessions persist across the switch (docs/44
     // §4.7: audio follows the mode, media does not re-dial), so the newly
@@ -1884,6 +1945,7 @@ async function roomsPass({ relayUrl, certHash, opsUrl }) {
     for (const b of relayFocus.active) {
       if (b.subscribers < 1) fail('focus re-dialed: an active broadcast lost its subscriber on the switch');
     }
+    if (!sameKeys(await relaySubscriberKeys(opsUrl), gridKeys)) fail('focus re-dialed: a subscriber session changed on the switch');
     log('focus ok: key 2 focused tile 2 and it kept advancing');
     writeFileSync(join(OUT, 'room-focus.png'), await page.screenshot());
 

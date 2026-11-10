@@ -353,6 +353,217 @@ describe('RoomScreen modes', () => {
   });
 });
 
+// R83 (docs/87): Fit, the layout that sizes each tile from its stream's
+// decoded shape. jsdom has no ResizeObserver and no layout, so the stage's
+// size is the window's (1024×768) through useElementSize's fallback.
+describe('RoomScreen Fit layout', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const tiles = () => screen.getAllByTestId('room-tile');
+  const tileOf = (label: string) => tiles().find((t) => t.textContent?.includes(label))!;
+  const box = (t: HTMLElement) => ({
+    x: parseFloat(t.style.left),
+    y: parseFloat(t.style.top),
+    w: parseFloat(t.style.width),
+    h: parseFloat(t.style.height),
+  });
+  const frames = (id: string, width: number, height: number) => {
+    const s = viewerSessions.filter((v) => v.id === id && !v.stopped).at(-1)!;
+    act(() => s.cbs.onStats({ viewerCount: 1, framesCompleted: 5, frameWidth: width, frameHeight: height }));
+  };
+
+  it('the layout segment offers Grid, Fit, Focus and Hide videos, in that order', async () => {
+    await joinAs();
+    const seg = screen.getByRole('radiogroup', { name: 'Layout' });
+    expect(within(seg).getAllByRole('radio').map((r) => r.textContent?.trim())).toEqual(['Grid', 'Fit', 'Focus', 'Hide videos']);
+  });
+
+  it('Fit places every tile at its stream shape, persisted, without re-dialing', async () => {
+    await joinAs();
+    await waitFor(() => expect(activeViewerIds()).toEqual(['AAAAAA', 'BBBBBB', 'CCCCCC']));
+    const created = viewerSessions.length;
+    const before = tiles();
+    fireEvent.click(screen.getByRole('radio', { name: 'Fit' }));
+    expect(localStorage.getItem('gawk:room-mode')).toBe('fit');
+    expect(localStorage.getItem('gawk:room-grid')).toBe('fit');
+    // The same elements, moved: no tile remounted, no session re-dialed.
+    expect(tiles()).toEqual(before);
+    expect(tiles().map((t) => t.getAttribute('data-variant'))).toEqual(['grid', 'grid', 'grid']);
+    // Before any frame every tile counts as 16:9.
+    for (const t of tiles()) expect(box(t).w / box(t).h).toBeCloseTo(16 / 9, 2);
+
+    frames('AAAAAA', 3840, 1080);
+    const a = tileOf('alpha');
+    expect(a.getAttribute('data-frame-w')).toBe('3840');
+    expect(a.getAttribute('data-frame-h')).toBe('1080');
+    expect(box(a).w / box(a).h).toBeCloseTo(32 / 9, 2);
+    for (const t of tiles()) {
+      const b = box(t);
+      expect(b.x).toBeGreaterThanOrEqual(-0.01);
+      expect(b.y).toBeGreaterThanOrEqual(-0.01);
+      expect(b.x + b.w).toBeLessThanOrEqual(1024.01);
+      expect(b.y + b.h).toBeLessThanOrEqual(768.01);
+    }
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Focus' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Grid' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Fit' }));
+    expect(tiles()).toEqual(before);
+    await act(async () => {});
+    expect(viewerSessions).toHaveLength(created);
+    // Grid's tiles carry no Fit box.
+    fireEvent.click(screen.getByRole('radio', { name: 'Grid' }));
+    expect(tiles()[0].style.left).toBe('');
+  });
+
+  it('ignores a shape change under 2 % and follows a larger one', async () => {
+    localStorage.setItem('gawk:room-mode', 'fit');
+    await joinAs();
+    await waitFor(() => expect(activeViewerIds()).toHaveLength(3));
+    frames('AAAAAA', 1920, 1080);
+    const first = box(tileOf('alpha'));
+    frames('AAAAAA', 1940, 1080); // +1 %
+    expect(box(tileOf('alpha'))).toEqual(first);
+    frames('AAAAAA', 2560, 1080);
+    expect(box(tileOf('alpha')).w / box(tileOf('alpha')).h).toBeCloseTo(2560 / 1080, 2);
+  });
+
+  it('keeps a stream shape across the tile retry that remounts its session', async () => {
+    localStorage.setItem('gawk:room-mode', 'fit');
+    await joinAs();
+    await waitFor(() => expect(activeViewerIds()).toHaveLength(3));
+    frames('AAAAAA', 3840, 1080);
+    const s = viewerSessions.find((v) => v.id === 'AAAAAA')!;
+    act(() => s.cbs.onError(new Error('gone')));
+    fireEvent.click(within(tileOf('alpha')).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(viewerSessions.filter((v) => v.id === 'AAAAAA')).toHaveLength(2));
+    // The new session has no frames yet; the room still knows the shape.
+    expect(tileOf('alpha').getAttribute('data-frame-w')).toBeNull();
+    expect(box(tileOf('alpha')).w / box(tileOf('alpha')).h).toBeCloseTo(32 / 9, 2);
+  });
+
+  it('steps the chrome of a tile inside a band clear of it, by how far it reaches in', async () => {
+    localStorage.setItem('gawk:room-mode', 'fit');
+    await joinAs();
+    // Three 32:9 streams on 1024×768 stack in one column and fill its width.
+    await waitFor(() => expect(activeViewerIds()).toHaveLength(3));
+    for (const id of ['AAAAAA', 'BBBBBB', 'CCCCCC']) frames(id, 3840, 1080);
+    const [t1, t2, t3] = tiles();
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    expect(t1.getAttribute('data-edge-top')).toBe('true');
+    expect(parseFloat(t1.style.getPropertyValue('--edge-top'))).toBeCloseTo(Math.max(0.6 * rem, 4.5 * rem - box(t1).y), 3);
+    expect(t2.getAttribute('data-edge-top')).toBeNull();
+    expect(t2.getAttribute('data-edge-bottom')).toBeNull();
+    expect(t3.getAttribute('data-edge-bottom')).toBe('true');
+    const below = 768 - (box(t3).y + box(t3).h);
+    expect(parseFloat(t3.style.getPropertyValue('--edge-bottom'))).toBeCloseTo(Math.max(0.6 * rem, 4 * rem - below), 3);
+  });
+
+  it('re-lays out on a resize without remounting a tile', async () => {
+    localStorage.setItem('gawk:room-mode', 'fit');
+    await joinAs();
+    await waitFor(() => expect(activeViewerIds()).toHaveLength(3));
+    const before = tiles();
+    const wide = box(before[0]);
+    const { innerWidth, innerHeight } = window;
+    try {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 600 });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: 1000 });
+      act(() => void window.dispatchEvent(new Event('resize')));
+      expect(tiles()).toEqual(before);
+      expect(box(tiles()[0])).not.toEqual(wide);
+      for (const t of tiles()) expect(box(t).x + box(t).w).toBeLessThanOrEqual(600.01);
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: innerWidth });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: innerHeight });
+    }
+  });
+
+  it('measures the stage with a ResizeObserver where there is one', async () => {
+    const observers: { cb: ResizeObserverCallback; el?: Element }[] = [];
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        cb: ResizeObserverCallback;
+        constructor(cb: ResizeObserverCallback) {
+          this.cb = cb;
+          observers.push({ cb });
+        }
+        observe(el: Element) {
+          observers[observers.length - 1].el = el;
+        }
+        disconnect() {}
+      },
+    );
+    localStorage.setItem('gawk:room-mode', 'fit');
+    await joinAs();
+    await waitFor(() => expect(observers.length).toBeGreaterThan(0));
+    const o = observers.at(-1)!;
+    act(() => o.cb([{ contentRect: { width: 1920, height: 1080 } } as ResizeObserverEntry], {} as ResizeObserver));
+    // Three 16:9 tiles on 1920×1080: the best layout reaches past 1024.
+    expect(Math.max(...tiles().map((t) => box(t).x + box(t).w))).toBeGreaterThan(1024);
+  });
+
+  it('0 returns to the last all-POV mode, also after a reload made in focus', async () => {
+    await joinAs();
+    fireEvent.click(screen.getByRole('radio', { name: 'Fit' }));
+    fireEvent.keyDown(window, { key: '2' });
+    expect(localStorage.getItem('gawk:room-mode')).toBe('focus');
+    fireEvent.keyDown(window, { key: '0' });
+    expect(screen.getByRole('radio', { name: 'Fit' }).getAttribute('aria-checked')).toBe('true');
+
+    cleanup();
+    roomSessions.length = 0;
+    localStorage.setItem('gawk:room-mode', 'focus');
+    await joinAs();
+    fireEvent.keyDown(window, { key: '0' });
+    expect(screen.getByRole('radio', { name: 'Fit' }).getAttribute('aria-checked')).toBe('true');
+  });
+
+  it("the hide-videos card's way back follows the last all-POV mode", async () => {
+    localStorage.setItem('gawk:room-grid', 'fit');
+    localStorage.setItem('gawk:room-mode', 'hidden');
+    await joinAs();
+    const back = screen.getByRole('button', { name: 'Fit' });
+    fireEvent.click(back);
+    expect(screen.getByRole('radio', { name: 'Fit' }).getAttribute('aria-checked')).toBe('true');
+  });
+
+  it("the broadcaster's own preview tile takes the shape of its local video", async () => {
+    localStorage.setItem('gawk:room-mode', 'fit');
+    const preview = { getTracks: () => [] } as unknown as MediaStream;
+    render(
+      <RoomView
+        target={{ kind: 'mint', broadcastId: 'AAAAAA', resumeTokenHex: 'b'.repeat(32), label: 'mine' }}
+        presetNickname="me"
+        own={{ broadcastId: 'AAAAAA', resumeTokenHex: 'b'.repeat(32), attachEpoch: 0, preview, controls: null, onDetach: () => {} }}
+        onLeave={() => {}}
+      />,
+    );
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    act(() => roomSessions[0].cbs.onState(state({ flags: ROOM_STATE_FLAG_DYNAMIC | ROOM_STATE_FLAG_CREATOR | ROOM_STATE_FLAG_ATTACH_OK })));
+    const video = screen.getByTestId('own-preview') as HTMLVideoElement;
+    Object.defineProperty(video, 'videoWidth', { configurable: true, value: 5120 });
+    Object.defineProperty(video, 'videoHeight', { configurable: true, value: 1440 });
+    act(() => void video.dispatchEvent(new Event('resize')));
+    const own = tiles().find((t) => t.getAttribute('data-own') === 'true')!;
+    expect(own.getAttribute('data-frame-w')).toBe('5120');
+    expect(box(own).w / box(own).h).toBeCloseTo(32 / 9, 2);
+  });
+
+  it('shows as focus on a narrow screen, as Grid does', async () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query === NARROW_QUERY,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+    localStorage.setItem('gawk:room-mode', 'fit');
+    await joinAs();
+    expect(tiles().map((t) => t.getAttribute('data-variant'))).toEqual(['focus', 'small', 'small']);
+    expect(screen.getByRole('radio', { name: 'Fit' }).getAttribute('title')).toBe('Fit shows as focus on a narrow screen');
+  });
+});
+
 // BUGS.md "Room tile stays offline after its viewer session gives up": a
 // ViewerSession never re-dials once it has given up, so the tile re-creates
 // it — with a new canvas, since a canvas transfers to the worker only once —

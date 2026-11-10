@@ -1,6 +1,6 @@
 # R83 — Fit: a room layout that follows the streams' shapes
 
-**Status**: designed 2026-11-10. FL1–FL3 to build, FL4 the owner pass.
+**Status**: designed 2026-11-10; FL1–FL3 implemented 2026-11-10 (§13). Open: FL4, the owner pass.
 
 **Scope**: the web app's room view only (`gawk-app/src/features/room`).
 No relay, wire, telemetry, native-broadcaster or iOS change.
@@ -128,9 +128,9 @@ owner pass (FL4) can revise any of them in place:
 
 | Chunk | What | Acceptance |
 |---|---|---|
-| **FL1** | `fitLayout.ts`: D3–D6, D11. | Vitest first: two 32:9 on 1920×1080 stack and cover ≥ 95 %; each rect has its tile's aspect (2 %); rects stay inside the stage, never overlap, keep reading order; §12's table reproduced with no previous arrangement (above Grid in 32 cells, equal in 8); the score never below Grid's over random inputs, with and without a previous arrangement; 2–4 × 16:9 on 16:9 equal Grid; D5's stability holds the arrangement on a 1 % resize (inputs away from the Grid floor), gives it up on a large one, and resets when a tile joins; a deterministic case where the kept arrangement is within 3 % of the best but below Grid on the new stage, and is replaced by the fresh best; above 10 tiles the even-split path runs; 10 and 40 tiles each finish in < 5 ms; zero tiles and zero-size stages return empty; clamped shapes. |
-| **FL2** | Stream shapes: D7 in `RoomTile.tsx` and `RoomScreen.tsx`, `data-frame-w/h`. | Tests: a remote tile reports its frames' shape from the stats; no report before the first frame; a < 2 % change is not taken, a larger one is; the shape survives the tile's retry; the own preview reports `videoWidth/videoHeight` on `resize`; the clamp. |
-| **FL3** | The mode: D1, D2, D8–D10, `useElementSize`, the CSS, the icon, the e2e step, the docs/44 pointer. | Component tests: the segment's four radios, Fit persisted and reloaded, `0` back to the last all-POV mode (also after a reload made in Focus), the hide-videos card's button following it, Fit tiles positioned from `fitLayout` with the stage's (stubbed) size, the same tile elements across Grid ↔ Fit ↔ Focus and a resize, edge flags and offsets from the bands, Fit as Focus under 720 px. `e2e/run.mjs --rooms`: a Fit step where each tile's box aspect is within 2 % of its `data-frame-w/h` (4:3 and 16:9), with, for each active broadcast, the non-empty set of primary-session subscriber `key`s on `/statusz` (no `stripeLeg`, no `internal`) unchanged from Grid through Fit to Focus (`sessionId` is telemetry's and absent in this pass); `room-fit.png` written. |
+| **FL1** ✅ | `fitLayout.ts`: D3–D6, D11. | Vitest first: two 32:9 on 1920×1080 stack and cover ≥ 95 %; each rect has its tile's aspect (2 %); rects stay inside the stage, never overlap, keep reading order; §12's table reproduced with no previous arrangement (above Grid in 32 cells, equal in 8); the score never below Grid's over random inputs, with and without a previous arrangement; 2–4 × 16:9 on 16:9 equal Grid; D5's stability holds the arrangement on a 1 % resize (inputs away from the Grid floor), gives it up on a large one, and resets when a tile joins; a deterministic case where the kept arrangement is within 3 % of the best but below Grid on the new stage, and is replaced by the fresh best; above 10 tiles the even-split path runs; 10 and 40 tiles each finish in < 5 ms; zero tiles and zero-size stages return empty; clamped shapes. |
+| **FL2** ✅ | Stream shapes: D7 in `RoomTile.tsx` and `RoomScreen.tsx`, `data-frame-w/h`. | Tests: a remote tile reports its frames' shape from the stats; no report before the first frame; a < 2 % change is not taken, a larger one is; the shape survives the tile's retry; the own preview reports `videoWidth/videoHeight` on `resize`; the clamp. |
+| **FL3** ✅ | The mode: D1, D2, D8–D10, `useElementSize`, the CSS, the icon, the e2e step, the docs/44 pointer. | Component tests: the segment's four radios, Fit persisted and reloaded, `0` back to the last all-POV mode (also after a reload made in Focus), the hide-videos card's button following it, Fit tiles positioned from `fitLayout` with the stage's (stubbed) size, the same tile elements across Grid ↔ Fit ↔ Focus and a resize, edge flags and offsets from the bands, Fit as Focus under 720 px. `e2e/run.mjs --rooms`: a Fit step where each tile's box aspect is within 2 % of its `data-frame-w/h` (4:3 and 16:9), with, for each active broadcast, the non-empty set of primary-session subscriber `key`s on `/statusz` (no `stripeLeg`, no `internal`) unchanged from Grid through Fit to Focus (`sessionId` is telemetry's and absent in this pass); `room-fit.png` written. |
 | **FL4** | **Owner pass** on the reference deployment: two ultrawide broadcasters and a 16:9 viewer (the report), a phone broadcaster in the mix, the people and voice panels opening, a window resize, a broadcaster changing source mid-room. | §1's rows confirmed by eye; findings written into §12; any decision revised in place with a dated note. |
 
 ## 12. Measurements (prototype, 2026-11-10)
@@ -173,3 +173,26 @@ Two findings shaped the decisions:
 
 FL1's table test reproduces this table from the shipped function; FL4's
 findings go below it.
+
+## 13. Implementation notes (FL1–FL3, 2026-11-10)
+
+- **Scoring without rectangles.** The first cut built every candidate's
+  rectangles and took 3.4 ms at 10 tiles, too close to §1's bound on a
+  busy CI worker and run on renders. A tile's area is A·h² in either
+  frame, so the rows family is scored from its row heights alone and only
+  the winner is placed: 1.0 ms at 10 tiles and 0.5 ms at 40 (best of
+  100 runs in Vitest, Node 24). The timing test takes the best of seven
+  runs, so a stall on a shared runner doesn't fail it.
+- **D5's Grid floor**, added after the design PR's review, was test-first:
+  over 2 000 random inputs the property test with a previous arrangement
+  found one kept arrangement scoring 47.08 against Grid's 47.18 before
+  the floor went in.
+- **D5 keeps its previous result in React state**, recomputed during render
+  when its inputs change, not in a ref read during render.
+- **The e2e** (`e2e/run.mjs --rooms`, run locally against Playwright's
+  Chromium 1254): `fit ok: 320×240 in 639×479, 1280×720 in 639×359` on
+  the harness's 1280×720 page. For a 4:3 and a 16:9 stream side by side
+  Grid's own geometry (D3 b) narrowly wins on score (two equal columns,
+  each tile exactly its shape) over one justified row. The footer has
+  faded by the time the Grid step's sampling gap ends, so the step moves
+  the pointer before it clicks Fit.

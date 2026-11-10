@@ -1,7 +1,9 @@
 // The per-browser room preferences:
 //
 //   gawk:nickname                 the participant's remembered nickname
-//   gawk:room-mode                grid | focus | hidden — the layout mode
+//   gawk:room-mode                grid | fit | focus | hidden — the layout mode
+//   gawk:room-grid                grid | fit — the last all-POV mode chosen,
+//                                 where `0` returns to (R83, docs/87 D2)
 //   gawk:room-preset              the playback preset the focused / grid
 //                                 tiles use (small tiles drop its pacing)
 //   gawk:room-volume:<broadcast>  a tile's own level, 0..1
@@ -10,10 +12,13 @@ import { readStored, writeStored } from '../../lib/storage';
 import { MAX_ROOM_NICKNAME_LEN } from '../../transport/wire';
 import { DEFAULT_PRESET, PRESETS, type PresetId } from '../viewer/playbackPresets';
 
-export type RoomMode = 'grid' | 'focus' | 'hidden';
+export type RoomMode = 'grid' | 'fit' | 'focus' | 'hidden';
+// The modes that show every POV at once.
+export type RoomAllMode = 'grid' | 'fit';
 
 const NICKNAME_KEY = 'gawk:nickname';
 const MODE_KEY = 'gawk:room-mode';
+const GRID_KEY = 'gawk:room-grid';
 const PRESET_KEY = 'gawk:room-preset';
 const VOLUME_PREFIX = 'gawk:room-volume:';
 
@@ -45,11 +50,19 @@ export function saveNickname(nickname: string): void {
 
 export function loadRoomMode(): RoomMode {
   const v = readStored(MODE_KEY);
-  return v === 'focus' || v === 'hidden' ? v : 'grid';
+  return v === 'fit' || v === 'focus' || v === 'hidden' ? v : 'grid';
 }
 
 export function saveRoomMode(mode: RoomMode): void {
   writeStored(MODE_KEY, mode);
+}
+
+export function loadRoomAllMode(): RoomAllMode {
+  return readStored(GRID_KEY) === 'fit' ? 'fit' : 'grid';
+}
+
+export function saveRoomAllMode(mode: RoomAllMode): void {
+  writeStored(GRID_KEY, mode);
 }
 
 export function loadRoomPreset(): PresetId {

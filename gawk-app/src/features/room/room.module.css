@@ -58,6 +58,31 @@
   bottom: calc(var(--chrome-bottom) + 0.25rem);
 }
 
+/* R83 Fit (docs/87): every tile at its stream's own shape, placed by
+   fitLayout in px. Fit tiles are the grid variant; their label and controls
+   step clear of the chrome bands by the offsets RoomScreen measured from
+   where the tile actually is (D10). */
+.stage[data-mode='fit'] .tile {
+  position: absolute;
+  transition:
+    left var(--dur) var(--ease),
+    top var(--dur) var(--ease),
+    width var(--dur) var(--ease),
+    height var(--dur) var(--ease);
+}
+
+.stage[data-mode='fit'] .tile[data-edge-top='true'] .tileHead {
+  top: var(--edge-top, var(--chrome-top));
+}
+
+.stage[data-mode='fit'] .tile[data-edge-bottom='true'] .tileFoot {
+  bottom: var(--edge-bottom, var(--chrome-bottom));
+}
+
+.stage[data-mode='fit'] .tile[data-edge-bottom='true'] .ownBar {
+  bottom: calc(var(--edge-bottom, var(--chrome-bottom)) + 0.25rem);
+}
+
 .stage[data-panel='true'] {
   right: var(--panel-w, 340px);
 }
@@ -397,7 +422,7 @@
   min-width: 0;
 }
 
-/* The Grid / Focus / Hide videos segmented control. */
+/* The Grid / Fit / Focus / Hide videos segmented control. */
 .segment {
   display: inline-flex;
   align-items: center;

@@ -142,14 +142,15 @@ cd e2e && node run.mjs --rooms
 Its own mode, like `--telemetry`: the relay starts with `-rooms`, and two
 `gawk-pubsim` publishers stand in for two broadcasters — the first with
 `-room-new -label alpha` (it prints `ROOM <CODE> <creatorTokenHex>` on stdout,
-which the harness scrapes), the second with `-room <CODE> -label bravo`. A
-headless viewer then opens `#/room/<CODE>` with a seeded nickname and walks
-the three modes:
+which the harness scrapes), the second with `-room <CODE> -label bravo
+-fixture large` (16:9 beside A's 4:3, for Fit). A headless viewer then opens
+`#/room/<CODE>` with a seeded nickname and walks the modes:
 
 | Step | Assertion (flow-shaped, docs/25 Decision 6) |
 |---|---|
 | Grid | two tiles, each tile's `data-frames` advancing across a ~5 s gap; every active broadcast on `/statusz` has ≥ 1 subscriber |
-| Key `2` | tile 2 becomes `data-variant="focus"`, tile 1 `small`, within 3 s; the focused tile keeps advancing and neither broadcast loses its subscriber — focus is a gain change, never a re-dial (docs/44 §4.7) |
+| Fit | each tile's box has its decoded frame's shape (`data-frame-w/h`, within 2 %), two different shapes seen; every primary session's `/statusz` `key` (stripe legs excluded) unchanged from Grid — the switch moved tiles, never re-dialed (docs/87) |
+| Key `2` | tile 2 becomes `data-variant="focus"`, tile 1 `small`, within 3 s; the focused tile keeps advancing and the subscriber keys are still Grid's — focus is a gain change, never a re-dial (docs/44 §4.7) |
 | Hide videos | no tiles; **both broadcasts read `subscribers: 0` on `/statusz`** while the `rooms` row still counts the same participants (the browser's control session stayed) |
 | Leave | the room's participant count drops by exactly one |
 
@@ -162,7 +163,7 @@ their room control session for the process lifetime), so the pass asserts
 
 Skips cleanly (prints `SKIP` and passes) when `gawk-pubsim -h` lists no
 `-room-new` — rebuild it from `gawk-server/` first. Artifacts:
-`room-grid.png`, `room-focus.png`, `room-hidden.png`, `console-rooms.log`,
+`room-grid.png`, `room-fit.png`, `room-focus.png`, `room-hidden.png`, `console-rooms.log`,
 `pubsim-room-{a,b}.log`.
 
 ## Gated static room (R42 D8)

@@ -8,6 +8,7 @@ import { Toast } from '../../ui/Toast';
 import { VolumeControl } from '../../ui/VolumeControl';
 import {
   CopyIcon,
+  FitIcon,
   FocusIcon,
   FullscreenExitIcon,
   FullscreenIcon,
@@ -23,6 +24,7 @@ import {
 import { PRESETS, presetConfig, presetLabel, type PresetId } from '../viewer/playbackPresets';
 import { useAutoHide } from '../../lib/useAutoHide';
 import { NARROW_QUERY, useMediaMatch } from '../../lib/useMediaMatch';
+import { useElementSize } from '../../lib/useElementSize';
 import { useFullscreen } from '../../lib/useFullscreen';
 import { useHotkey } from '../../lib/useHotkey';
 import { useWakeLock } from '../../lib/useWakeLock';
@@ -69,15 +71,20 @@ import {
 } from './roomCopy';
 import {
   loadNickname,
+  loadRoomAllMode,
   loadRoomMode,
   loadRoomPreset,
   sanitizeNickname,
   sanitizeRoomText,
   saveNickname,
+  saveRoomAllMode,
   saveRoomMode,
   saveRoomPreset,
+  type RoomAllMode,
   type RoomMode,
 } from './roomPrefs';
+import { DEFAULT_ASPECT, aspectChanged, clampAspect, fitLayout, type FitResult } from './fitLayout';
+import type { TileEdges } from './RoomTile';
 import { readGrant, stashGrant, type RoomGrant } from './grantHandoff';
 import { AttachSecretPrompt } from './AttachSecretPrompt';
 import { stashRoomReturn } from './roomReturn';
@@ -162,6 +169,13 @@ export interface RoomViewProps {
   // the stage's coordinate space; the panel offset and the fade are the
   // caller's to apply from the context.
   header?: (ctx: RoomHeaderContext) => ReactNode;
+}
+
+// The root font size in px: the chrome bands are in rem (docs/87 D10).
+function rootFontPx(): number {
+  if (typeof document === 'undefined') return 16;
+  const px = parseFloat(getComputedStyle(document.documentElement).fontSize);
+  return Number.isFinite(px) && px > 0 ? px : 16;
 }
 
 // The cinematic dock. Video edge to edge, a header and a footer overlay that
@@ -280,13 +294,23 @@ export function RoomView({
   const secretRefused =
     status === 'error' && attachSecret !== null && (errorKind === 'refused' || errorKind === 'forbidden');
 
-  // Layout mode, persisted; the grid degrades to focus on a narrow screen.
+  // Layout mode, persisted; grid and fit degrade to focus on a narrow screen.
+  // allMode is the last all-POV mode chosen (grid or fit), where 0 and the
+  // hide-videos card return to (docs/87 D2).
   const [mode, setModeState] = useState<RoomMode>(loadRoomMode);
+  const [allMode, setAllMode] = useState<RoomAllMode>(() => {
+    const m = loadRoomMode();
+    return m === 'grid' || m === 'fit' ? m : loadRoomAllMode();
+  });
   const narrow = useMediaMatch(NARROW_QUERY);
-  const effectiveMode: RoomMode = mode === 'grid' && narrow ? 'focus' : mode;
+  const effectiveMode: RoomMode = (mode === 'grid' || mode === 'fit') && narrow ? 'focus' : mode;
   const setMode = useCallback((next: RoomMode) => {
     setModeState(next);
     saveRoomMode(next);
+    if (next === 'grid' || next === 'fit') {
+      setAllMode(next);
+      saveRoomAllMode(next);
+    }
   }, []);
 
   const attachments: RoomAttachment[] = snapshot?.attachments ?? NO_ATTACHMENTS;
@@ -310,7 +334,7 @@ export function RoomView({
   useHotkey({ key: '2' }, () => focusIndex(1));
   useHotkey({ key: '3' }, () => focusIndex(2));
   useHotkey({ key: '4' }, () => focusIndex(3));
-  useHotkey({ key: '0' }, () => setMode('grid'));
+  useHotkey({ key: '0' }, () => setMode(allMode));
 
   // Presets per tile: the focused / grid tiles on the user's choice, the
   // small tiles as cheap as they can be without a re-dial. Delivery and parity
@@ -329,6 +353,16 @@ export function RoomView({
 
   // A control-session reconnect keeps the stage: media sessions are independent of it.
   const tilesShown = (joined || status === 'reconnecting') && effectiveMode !== 'hidden' && attachments.length > 0;
+
+  // R83 Fit (docs/87): each stream's shape by broadcast ID, from its decoded
+  // frames (D7). Kept here, not in the tile, so a tile's retry (a remount) or
+  // a mode switch never forgets it; a move under the deadband is ignored.
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const [shapes, setShapes] = useState<Record<string, number>>({});
+  const onAspect = useCallback((id: string, width: number, height: number) => {
+    const next = clampAspect(width / height);
+    setShapes((prev) => (aspectChanged(prev[id], next) ? { ...prev, [id]: next } : prev));
+  }, []);
   // A broadcaster's "hide videos" is "preview only": their own screen full
   // bleed, no /subscribe to anyone (the bandwidth saver), the control
   // session kept. Same persisted mode as a viewer's hide-videos.
@@ -686,22 +720,55 @@ export function RoomView({
   // tiles instead of remounting their media sessions. Hidden ⇒ no tiles.
   const cols = Math.max(1, Math.ceil(Math.sqrt(attachments.length)));
   const rows = Math.max(1, Math.ceil(attachments.length / cols));
+  const fitOn = effectiveMode === 'fit' && tilesShown;
+  const stageSize = useElementSize(stageRef, fitOn);
+  const aspects = attachments.map((a) => shapes[a.broadcastId] ?? DEFAULT_ASPECT);
+  const aspectsKey = aspects.join(',');
+  // D5 needs the previous result: kept in state and recomputed during render
+  // when its inputs change (React's "information from previous renders").
+  const fitKey = fitOn ? `${aspectsKey}|${stageSize.width}|${stageSize.height}` : '';
+  const [fitState, setFitState] = useState<{ key: string; result: FitResult | null }>({ key: '', result: null });
+  let fit = fitState.result;
+  if (fitState.key !== fitKey) {
+    fit = fitOn ? fitLayout(aspects, stageSize.width, stageSize.height, { previous: fitState.result }) : null;
+    setFitState({ key: fitKey, result: fit });
+  }
+  const fitEdges = (i: number): TileEdges | undefined => {
+    const r = fit?.rects[i];
+    if (!r) return undefined;
+    // docs/87 D10: the chrome bands (--chrome-top 4.5rem, --chrome-bottom
+    // 4rem) and the label's own inset (0.6rem), in px at the root font size.
+    const rem = rootFontPx();
+    const topBand = 4.5 * rem;
+    const bottomBand = 4 * rem;
+    const inset = 0.6 * rem;
+    const below = stageSize.height - (r.y + r.h);
+    return {
+      top: r.y < topBand,
+      bottom: below < bottomBand,
+      topOffset: Math.max(inset, topBand - r.y),
+      bottomOffset: Math.max(inset, bottomBand - below),
+    };
+  };
   let strip = 0;
   const tiles =
     !tilesShown
       ? null
       : attachments.map((a, i) => {
           const isFocused = effectiveMode === 'focus' && focused?.broadcastId === a.broadcastId;
-          const variant = effectiveMode === 'grid' ? 'grid' : isFocused ? 'focus' : 'small';
+          const variant = effectiveMode === 'grid' || effectiveMode === 'fit' ? 'grid' : isFocused ? 'focus' : 'small';
           const stripIndex = variant === 'small' ? strip++ : undefined;
           // Which stage edges this grid tile touches: its label (top) and
           // controls (bottom) step inside the header / footer bands there,
           // so the video stays edge to edge and nothing sits under the
           // room's own chrome.
           const edges =
-            variant === 'grid'
-              ? { top: Math.floor(i / cols) === 0, bottom: Math.floor(i / cols) === rows - 1 }
-              : undefined;
+            effectiveMode === 'fit'
+              ? fitEdges(i)
+              : variant === 'grid'
+                ? { top: Math.floor(i / cols) === 0, bottom: Math.floor(i / cols) === rows - 1 }
+                : undefined;
+          const box = effectiveMode === 'fit' ? fit?.rects[i] : undefined;
           if (own && own.preview && a.broadcastId === own.broadcastId) {
             return (
               <OwnPreviewTile
@@ -711,10 +778,12 @@ export function RoomView({
                 stripIndex={stripIndex}
                 variant={variant}
                 edges={edges}
+                box={box}
                 preview={own.preview}
                 ownControls={ownControls}
                 showChrome={showChrome}
                 onFocus={focus}
+                onAspect={onAspect}
               />
             );
           }
@@ -734,6 +803,8 @@ export function RoomView({
               showChrome={showChrome}
               roomKey={roomKey}
               onFocus={focus}
+              box={box}
+              onAspect={onAspect}
             />
           );
         });
@@ -820,6 +891,7 @@ export function RoomView({
       }}
     >
       <div
+        ref={stageRef}
         className={styles.stage}
         data-mode={effectiveMode}
         data-panel={sideOpen ? 'true' : 'false'}
@@ -877,8 +949,16 @@ export function RoomView({
           HIDDEN_CARD.title,
           HIDDEN_CARD.body,
           <>
-            <Button variant="secondary" onClick={() => setMode('grid')}>
-              <GridIcon /> Grid
+            <Button variant="secondary" onClick={() => setMode(allMode)}>
+              {allMode === 'fit' ? (
+                <>
+                  <FitIcon /> Fit
+                </>
+              ) : (
+                <>
+                  <GridIcon /> Grid
+                </>
+              )}
             </Button>
             <Button variant="secondary" onClick={() => setMode('focus')}>
               <FocusIcon /> Focus
@@ -1043,6 +1123,16 @@ export function RoomView({
               title={narrow ? 'Grid shows as focus on a narrow screen' : undefined}
             >
               <GridIcon /> <span className={styles.segmentLabel}>Grid</span>
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={mode === 'fit'}
+              className={styles.segmentBtn}
+              onClick={() => setMode('fit')}
+              title={narrow ? 'Fit shows as focus on a narrow screen' : 'Size each stream to its own shape'}
+            >
+              <FitIcon /> <span className={styles.segmentLabel}>Fit</span>
             </button>
             <button
               type="button"
