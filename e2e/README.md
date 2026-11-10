@@ -133,6 +133,17 @@ worker offload path doesn't engage headlessly (no worker MSTP, no track
 transfer — finding 12), so the broadcaster runs the main-thread pipeline;
 the placement is recorded, not asserted.
 
+Then R84's uplink-outage passes (docs/88 BR4): two more browser broadcasters,
+each publishing through a forwarder that drops every uplink packet for
+150 ms of each 1.5 s, one on *Lowest latency* and one on *Reliable* (seeded
+through the Delivery setting's storage key), each watched by a *Smoother*
+viewer. The *Lowest latency* pass is the control: its viewer must freeze.
+On *Reliable* the broadcaster must run its carrier and shed nothing, and
+its viewer must resync less often than the control's, and only where the
+relay dropped a GOP's stale tail behind the next keyframe (docs/75 D2). The
+relay's ingress-loss window finalizes ~34 s later, too late for a 12 s pass,
+so it is not read.
+
 ## Rooms (R42)
 
 ```sh

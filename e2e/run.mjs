@@ -236,7 +236,9 @@ const MAX_RESILIENT_RETRIES = 1;
 // leaves room for the retries to run before it aborts (still well under the
 // CI job's own timeout-minutes). The plain tier-1 mode gets the same headroom
 // as browser-broadcast because of its second (resilient) viewer pass.
-const WATCHDOG_MS = EXTERNAL ? 300_000 : 360_000;
+// The browser-broadcast mode also runs R84's two uplink-outage passes (two
+// more broadcasters and viewers, ~40 s each), hence its extra two minutes.
+const WATCHDOG_MS = EXTERNAL ? 300_000 : BROWSER_BROADCAST ? 480_000 : 360_000;
 
 // Z5: the tab the headless broadcaster captures. The flag matches by title
 // substring, so the value must never be a substring of the app's own title
@@ -527,7 +529,16 @@ function launchBrowser(extraArgs = []) {
 // client → relay is the lossy direction, which is where a broadcaster's
 // uplink loses chunks — and setLoss() lets the pass arm it after the
 // handshake and disarm it before the publisher says goodbye.
+//
+// R84 BR4: setOutage({ everyMs, forMs }) drops EVERY packet in the lossy
+// direction for forMs out of each everyMs — a radio going away, the burst a
+// Smoother viewer cannot ride out on datagrams (docs/88 F4) — and null
+// disarms it.
 function startLossyLink(relayPort, lossPercent, { uplink = false } = {}) {
+  let outage = null;
+  const t0 = Date.now();
+  const inOutage = () => outage !== null && (Date.now() - t0) % outage.everyMs < outage.forMs;
+  const drops = () => inOutage() || rnd() * 100 < lossPercent;
   const front = dgram.createSocket('udp4');
   const peers = new Map(); // "ip:port" of the client → its upstream socket
   let seed = 0x2545f491;
@@ -548,12 +559,12 @@ function startLossyLink(relayPort, lossPercent, { uplink = false } = {}) {
       // The lossy direction. Dropping here rather than on the uplink is what
       // makes every absence at the viewer attributable to this link.
       up.on('message', (reply) => {
-        if (!uplink && rnd() * 100 < lossPercent) return;
+        if (!uplink && drops()) return;
         front.send(reply, rinfo.port, rinfo.address);
       });
       peers.set(key, up);
     }
-    if (uplink && rnd() * 100 < lossPercent) return;
+    if (uplink && drops()) return;
     up.send(msg, relayPort, '127.0.0.1');
   });
 
@@ -563,6 +574,9 @@ function startLossyLink(relayPort, lossPercent, { uplink = false } = {}) {
         port: front.address().port,
         setLoss: (percent) => {
           lossPercent = percent;
+        },
+        setOutage: (spec) => {
+          outage = spec;
         },
         close: () => {
           for (const up of peers.values()) up.close();
@@ -1336,12 +1350,17 @@ function assertBroadcastFlow(d1, d2) {
 // Z5's front half: a browser on the production broadcaster surface, LIVE with
 // a minted ID. Shared with the gated-rooms pass, which then keeps driving the
 // same page — so this returns it rather than closing over it.
-async function startBrowserBroadcast({ relayUrl, certHash, attempt }) {
+async function startBrowserBroadcast({ relayUrl, certHash, attempt, delivery = null }) {
   const browser = await launchBrowser([
     `--auto-select-tab-capture-source-by-title=${ANIM_TITLE}`,
   ]);
   try {
     const context = await newAppContext(browser, { relayUrl, certHash });
+    // R84 (docs/88 D6): the Delivery setting, as the Settings control stores
+    // it. Unset leaves the default (Lowest latency).
+    if (delivery) {
+      await context.addInitScript((d) => localStorage.setItem('gawk.uplinkDelivery', d), delivery);
+    }
 
     // The capture source. Tab capture keeps a captured background tab
     // painting (spike-verified: full 30 fps with the tab unfocused).
@@ -1368,6 +1387,130 @@ async function startBrowserBroadcast({ relayUrl, certHash, attempt }) {
   } catch (err) {
     await browser.close();
     throw err;
+  }
+}
+
+// R84 BR4 (docs/88 §8): the browser broadcaster's uplink loses whole bursts —
+// every packet for UPLINK_OUTAGE.forMs of each everyMs, a radio going away —
+// on a link between it and the relay, and a Smoother viewer (reliable
+// delivery, no loss allowance) watches. On Lowest latency the chunks lost in
+// an outage are gone before the relay (BUGS.md's cause: frames reach it with
+// holes) and the viewer freezes to the next keyframe; on Reliable the GOP
+// rides one stream behind its keyframe and QUIC retransmits, so no frame
+// reaches the relay with a hole. What remains on Reliable is docs/75 D2's
+// trade: when an outage straddles a rotation, the next GOP's keyframe can land
+// before the old GOP's retransmitted tail, which the relay then drops as stale
+// and the viewer skips (a jump to that keyframe, not a wait for one) — the
+// share of docs/88 table S5's 98–99 % that is not 100. So Reliable must show
+// fewer gap resyncs than Lowest latency under the same outages, and any it
+// shows must come with the relay dropping a stale GOP tail. (The relay's
+// ingress-loss window finalizes a frame only 1024 frames later, ~34 s, so it
+// cannot judge a 12 s pass; its stale-record counter is immediate.)
+// Flow-shaped (docs/25 Decision 6): counters that move or stay put, never a
+// rate.
+const UPLINK_OUTAGE = { everyMs: 1500, forMs: 150 };
+const UPLINK_OUTAGE_WATCH_MS = 12_000;
+
+// This pass's broadcast on /statusz: the one key that was not there before it
+// started (the relay keys broadcasts by an HMAC of their ID).
+async function statuszBroadcasts(opsUrl) {
+  return (await (await fetch(`${opsUrl}/statusz`)).json()).broadcasts ?? {};
+}
+
+async function uplinkOutagePass({ certHash, opsUrl, delivery }) {
+  const before = new Set(Object.keys(await statuszBroadcasts(opsUrl)));
+  const link = await startLossyLink(RELAY_PORT, 0, { uplink: true });
+  const lossyUrl = `https://127.0.0.1:${link.port}`;
+  const { browser: pubBrowser, page: pubPage, id } = await startBrowserBroadcast({
+    relayUrl: lossyUrl, certHash, attempt: `uplink-${delivery}`, delivery,
+  });
+  let viewerBrowser = null;
+  try {
+    await pubPage.getByRole('button', { name: 'Show stats' }).click();
+    await pollFor(
+      async () => {
+        const v = (await rowValue(pubPage, 'Encoded'))?.trim();
+        return /^\d+$/.test(v) && Number(v) >= WARMUP_FRAMES;
+      },
+      30_000,
+      500,
+      `${WARMUP_FRAMES} encoded frames (uplink-${delivery})`,
+    );
+
+    viewerBrowser = await launchBrowser();
+    const context = await newAppContext(viewerBrowser, { relayUrl: `https://127.0.0.1:${RELAY_PORT}`, certHash, delivery: 'resilient' });
+    const page = await context.newPage();
+    wirePageLogs(page, `console-uplink-${delivery}-viewer`);
+    await page.goto(`${APP_URL}/#/view/${id}`);
+    const overlay = page.locator('[role="dialog"][aria-label="Stream stats"]');
+    await pollFor(
+      async () => {
+        if (await overlay.isVisible()) return true;
+        await page.keyboard.press('Control+Alt+Shift+D');
+        await sleep(300);
+        return overlay.isVisible();
+      },
+      15_000,
+      500,
+      'the stats overlay',
+    );
+    await pollFor(
+      async () => {
+        const v = (await rowValue(page, 'Completed'))?.trim();
+        return /^\d+$/.test(v) && Number(v) > 0;
+      },
+      30_000,
+      1000,
+      'the first completed frame',
+    );
+    await sleep(2000);
+
+    // Armed once both ends run, so the handshakes and the priming keyframe
+    // are not what gets lost.
+    const all = await statuszBroadcasts(opsUrl);
+    const key = Object.keys(all).find((k) => !before.has(k) && all[k].publisherActive);
+    if (!key) fail(`uplink-${delivery}: its broadcast is not on /statusz`);
+    const ingress = async () => (await statuszBroadcasts(opsUrl))[key] ?? {};
+
+    link.setOutage(UPLINK_OUTAGE);
+    const r1 = await ingress();
+    const v1 = latest(await captureDiagnostics(page, `diagnostics-uplink-${delivery}-1`));
+    await sleep(UPLINK_OUTAGE_WATCH_MS);
+    const v2 = latest(await captureDiagnostics(page, `diagnostics-uplink-${delivery}-2`));
+    const r2 = await ingress();
+    const pub = latest(await captureDiagnostics(pubPage, `broadcast-diagnostics-uplink-${delivery}`));
+    link.setOutage(null);
+
+    const d = (o1, o2, k) => (o2[k] ?? 0) - (o1[k] ?? 0);
+    const result = {
+      pub,
+      resyncs: d(v1, v2, 'reorderGapResyncs'),
+      completed: d(v1, v2, 'framesCompleted'),
+      stale: d(r1, r2, 'uplinkRecordsStale'),
+    };
+    log(
+      `uplink outages (${UPLINK_OUTAGE.forMs} ms every ${UPLINK_OUTAGE.everyMs} ms), ${delivery}: ` +
+        `broadcaster ${pub.uplinkMode} (${pub.uplinkCarriersOpened} carriers, ${pub.uplinkRecordsShed} records shed); ` +
+        `relay ${result.stale} stale records dropped; ` +
+        `Smoother viewer ${result.completed} frames completed, ${result.resyncs} gap resyncs`,
+    );
+    return result;
+  } finally {
+    link.setOutage(null);
+    await viewerBrowser?.close();
+    await pubBrowser.close();
+    // The broadcast must read inactive before assertRelaySide, which counts
+    // the active publishers and holds each to zero ingress loss.
+    await pollFor(
+      async () => {
+        const st = await (await fetch(`${opsUrl}/statusz`)).json();
+        return Object.values(st.broadcasts ?? {}).filter((b) => b.publisherActive).length === 1;
+      },
+      40_000,
+      250,
+      `the uplink-${delivery} broadcaster to leave`,
+    );
+    link.close();
   }
 }
 
@@ -2362,6 +2505,35 @@ async function main() {
         ? { stripe: STRIPE_SEED, expectStripe: STRIPE_SEED === 'on', expectedCodec: 'avc1.42C01F' }
         : {},
     );
+
+    // R84 BR4 (docs/88 §8): the browser broadcaster behind uplink outages, in
+    // each delivery mode, each watched by a Smoother viewer. Lowest latency is
+    // the control: the outages must bite there (gap resyncs), or the Reliable
+    // half proves nothing. Tier 1 only: it needs the forwarder in front of the
+    // relay this harness owns.
+    if (BROWSER_BROADCAST && !EXTERNAL) {
+      log('running the uplink-outage passes: Lowest latency (control), then Reliable (R84)');
+      const control = await uplinkOutagePass({ certHash, opsUrl, delivery: 'lowest-latency' });
+      const reliable = await uplinkOutagePass({ certHash, opsUrl, delivery: 'reliable' });
+      const problems = [];
+      if (control.pub.uplinkMode !== 'datagram') problems.push(`Lowest latency sent as ${control.pub.uplinkMode}`);
+      // The control must bite: the outages froze the Smoother viewer.
+      if (control.resyncs <= 0) problems.push('the Smoother viewer never froze on Lowest latency — the control did not bite');
+      if (reliable.pub.uplinkMode !== 'carrier' || !(reliable.pub.uplinkCarriersOpened > 0)) {
+        problems.push(`Reliable did not engage: uplinkMode ${reliable.pub.uplinkMode}, ${reliable.pub.uplinkCarriersOpened} carriers`);
+      }
+      if (reliable.completed <= 0) problems.push('no frames completed for the Smoother viewer on Reliable');
+      // BUGS.md's cause, gone: QUIC repairs what the outages took, so the
+      // viewer only jumps where the relay skipped a GOP's stale tail.
+      if (reliable.resyncs >= control.resyncs) {
+        problems.push(`the Smoother viewer resynced ${reliable.resyncs} times on Reliable, not fewer than Lowest latency's ${control.resyncs}`);
+      }
+      if (reliable.resyncs > 0 && reliable.stale === 0) {
+        problems.push(`the Smoother viewer resynced ${reliable.resyncs} times on Reliable with no stale GOP tail at the relay to explain it`);
+      }
+      if (reliable.pub.uplinkRecordsShed !== 0) problems.push(`Reliable shed ${reliable.pub.uplinkRecordsShed} records on a link that keeps up`);
+      if (problems.length > 0) fail(`uplink-outage assertions failed:\n  - ${problems.join('\n  - ')}`);
+    }
 
     // R19 resilient mode, on the same live broadcast (PRODUCT-1): the only
     // automated exercise of the browser's carrier reader and of the
