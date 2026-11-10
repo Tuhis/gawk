@@ -85,7 +85,6 @@ owner pass (FL4) can revise any of them in place:
 | `features/room/room.module.css` | `.stage[data-mode='fit']` positioning and transition, the Grid edge rules extended to Fit with D10's offsets. |
 | `ui/Icons.tsx` | `FitIcon`. |
 | `e2e/run.mjs` | The `--rooms` pass runs its second pubsim on `-fixture large` and gains a Fit step between Grid and Focus. |
-| `gawk-server/internal/pubsim/fixture/README.md`, `cmd/gawk-pubsim` flag help | The large fixture's "striped pass only" scope gains the rooms pass (§5); comments only, no pubsim behaviour change. |
 | `docs/44-rooms.md` | D11 gains a dated pointer to this doc. |
 
 ## 5. Risks and limits
@@ -106,7 +105,9 @@ owner pass (FL4) can revise any of them in place:
   costs a 5 Mbps noise stream in a pass whose "tile advanced" polls are
   3–5 s, and striping engages on it (hence the primary-only key check).
   A small 16:9 fixture would keep the pass cheap but is a pubsim change;
-  taken only if the pass proves flaky.
+  taken only if the pass proves flaky. The fixture's README still calls it
+  the striped pass's alone: a commit touching `gawk-server/` would release
+  the relay for a comment, so this section is the record of the wider use.
 - **Tile chrome on small tiles.** A thin 32:9 tile at the top of a busy
   room has little height for the label and the volume pill, and a tile
   shorter than both chrome bands together (~136 px) touches both, so its
