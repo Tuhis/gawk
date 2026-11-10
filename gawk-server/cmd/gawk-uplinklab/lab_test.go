@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -561,4 +562,50 @@ func subRelayQuiet(t *testing.T) string {
 	go func() { _ = srv.Serve(conn) }()
 	t.Cleanup(func() { _ = srv.Close() })
 	return fmt.Sprintf("https://127.0.0.1:%d", port)
+}
+
+// R84 BR4 (docs/88 D2): the browser's Reliable mode sends a keyframe carrier,
+// 0x1F: the receiver logs it opened (O), the keyframe complete as soon as its
+// declared length is in (K, as the relay hands it on), the records after it
+// (R, Q) and how the stream ended (F at a record boundary, X otherwise).
+func TestReadUniKeyframeCarrier(t *testing.T) {
+	hdr, _ := wire.AppendStreamFrameHeader(nil, wire.StreamFrameHeader{Keyframe: true, FrameID: 30, ConfigLen: 2, PayloadLen: 4})
+	kf := append(hdr, 0xc0, 0xc1, 1, 2, 3, 4)
+	chunk, _ := wire.AppendVideoChunk(nil, wire.VideoChunkHeader{FrameID: 31, ChunkIndex: 0, ChunkCount: 1}, []byte{9})
+	par, _ := wire.AppendParityChunk(nil, wire.ParityChunkHeader{FrameID: 31, ChunkCount: 1, FrameBytes: 1}, []byte{9})
+	stream := append(wire.AppendKeyframeCarrierPrologue(nil), kf...)
+	stream, _ = wire.AppendCarrierRecord(stream, chunk)
+	stream, _ = wire.AppendCarrierRecord(stream, par)
+
+	for _, tc := range []struct {
+		name  string
+		bytes []byte
+		end   string
+		recs  int
+	}{
+		{"clean FIN", stream, "F", 2},
+		{"cut mid-record", stream[:len(stream)-3], "X", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "recv.csv")
+			f, err := os.Create(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			log := &eventLog{w: bufio.NewWriter(f)}
+			readUni(bytes.NewReader(tc.bytes), log)
+			log.flush()
+			f.Close()
+			got := readLog(t, path)
+			if len(got["O"]) != 1 || len(got["K"]) != 1 || len(got[tc.end]) != 1 {
+				t.Fatalf("log %v: want one O, one K and one %s", got, tc.end)
+			}
+			if k := got["K"][0]; k[2] != "30" || k[4] != "1" || k[5] != "6" {
+				t.Fatalf("K line %v: want frame 30, count 1, 6 body bytes", k)
+			}
+			if n := len(got["R"]) + len(got["Q"]); n != tc.recs {
+				t.Fatalf("%d records logged, want %d", n, tc.recs)
+			}
+		})
+	}
 }
