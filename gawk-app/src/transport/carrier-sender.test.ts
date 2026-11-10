@@ -427,6 +427,25 @@ describe('CarrierSender — a late retired open (review round 2 of #765)', () =>
   });
 });
 
+describe('CarrierSender — a retired open after the newer one was handed over (review round 3 of #765)', () => {
+  it('the older keyframe is released, never written behind the newer one', async () => {
+    const { streams, produce, events } = harness();
+    produce(1); // opening
+    await settle();
+    produce(2); // retires 1; 2 opening too
+    await settle();
+    streams[1].open(); // 2 registers, is written and handed over: draining, live
+    await settle();
+    streams[1].handOver(0);
+    await settle();
+    streams[0].open(); // 1 opens late, with nothing being written
+    await settle();
+    expect(streams[0].writes.length).toBe(0);
+    expect(events).toContain('replaced 1');
+    expect(streams[1].aborted).toBe(false);
+  });
+});
+
 describe('CarrierSender — resume', () => {
   it('a new session starts with no stream, sends nothing queued on the old one, and its first keyframe opens the first GOP stream', async () => {
     const { kf, streams, produce, send, results } = harness();

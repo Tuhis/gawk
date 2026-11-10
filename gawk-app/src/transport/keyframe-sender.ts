@@ -31,8 +31,9 @@
 // the GOP's records, which the CarrierLane writes once the keyframe has been
 // handed over. It is the same stream under the same rules — it counts toward
 // the two in Chrome, its keyframe must be handed over before the next starts,
-// and it is aborted only by the 2 s rule. What differs is its end: it is not
-// closed on handover but kept open for its GOP, and FINned ("retired") when a
+// and only RU9's rules end it early (the 2 s age, a newer registration). What
+// differs is its end: it is not closed on handover but kept open for its GOP,
+// and FINned ("retired") when a
 // newer keyframe is produced, its queued records shed, any write in progress
 // left to finish. It is never reset for its deltas' sake.
 
@@ -342,11 +343,13 @@ export class KeyframeSender {
     }
     kf.writer = writer;
     kf.openedAt = this.now();
-    // A retired GOP keyframe that opens after a newer one registered is
-    // stale (a carrier is retired only by a later keyframe): it releases its
-    // own empty stream rather than supersede the newer, live one (review of
-    // #765).
-    if (kf.carrier && kf.retired && this.writing) {
+    // A retired GOP keyframe that opens once a newer keyframe is in Chrome
+    // (being written or draining) is stale: it releases its own empty stream
+    // rather than supersede the newer one or be written behind it, which
+    // would move the relay's cached keyframe backwards (review of #765). GOPs
+    // are numbered in production order.
+    const newerInChrome = [this.writing, ...this.draining].some((o) => o !== null && o.gop > kf.gop);
+    if (kf.carrier && kf.retired && newerInChrome) {
       void writer.abort().catch(() => {});
       kf.writer = null;
       this.end(kf, 'replaced', true);
