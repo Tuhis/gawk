@@ -410,10 +410,12 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 - **Fix would start**: docs/75 RU3 (the carrier uplink) shipped in the
   native broadcasters on 2026-10-21 and has been their default delivery
   since 2026-11-05 (docs/75 D4), so their viewers are covered unless the
-  broadcaster picks *Lowest latency*. Still open for the browser
-  broadcaster, which has no carrier until its own Reliable milestone
-  (docs/75 OD5), and for native broadcasters on *Lowest latency* or on a
-  relay without carriers.
+  broadcaster picks *Lowest latency*. For the browser broadcaster the fix
+  is R84, [docs/88](docs/88-browser-reliable-uplink.md) (designed
+  2026-11-10, owner decisions pending): its lab pass shows *Smoother* at
+  99.0–99.9 % under bursts and outages at 10 ms on a browser carrier,
+  against 71.6–79.0 % on today's datagrams. Still open for native
+  broadcasters on *Lowest latency* or on a relay without carriers.
 
 ## Desktop broadcaster: every stream reset mid-`finish()` leaks a quinn waiter
 

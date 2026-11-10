@@ -1883,7 +1883,24 @@ entries still describe code `gawk-pubsim` runs (now
   `CUBIC_BYTES` for `low-latency`, `default` and `throughput` alike; a page
   cannot choose BBR. It also caps `maxDatagramSize` at 1024, sends one
   datagram per packet, and exposes neither `getStats()` nor stream
-  `sendOrder` ([docs/75](75-reliable-uplink.md) F18).
+  `sendOrder` ([docs/75](75-reliable-uplink.md) F18). All of it still held
+  on Chrome 158 (docs/88 F6): a browser sender orders a keyframe ahead of
+  its deltas only by putting them on one stream.
+- **The uplink lab's viewer replay can lock onto a bad presentation
+  phase.** It shows a 60 fps source on an exact 60 Hz vsync with a 0.25 ms
+  clock and nothing drifts, so when frame targets land within about a
+  millisecond of the sink's half-vsync due boundary, one vsync in three
+  finds two frames due: 40 of 60 shown every second, without a stall, for
+  the whole run. Which runs land there is luck — it was docs/75 F18's
+  "intermittent Smoother dip behind the gate", and it hit an unrelated
+  sender's Balanced viewer in docs/88 (72.7 % shown; the same trace shifted
+  by 1 ms read 98.0 %). A single replay's "shown" with little stall is not
+  a finding; re-score with `tools/uplinklab/phase.py` and read the median
+  ([docs/88](88-browser-reliable-uplink.md) F1).
+- **The lab's browser sender takes the newest Chrome for Testing it finds**
+  in playwright's cache, so installing a newer one silently changes what a
+  `chrome-*` set measures. Pin one: `CHROME=…`, or `matrix.py`'s
+  `c<major>-*` modes ([docs/88](88-browser-reliable-uplink.md) §4).
 - **Chrome pays per datagram.** On the lab host its datagram packets left
   375–480 µs apart (p50) at 0, 10 and 100 ms RTT alike, so a frame's chunks
   spread out and Chrome topped out near 1 800 datagrams a second with no
