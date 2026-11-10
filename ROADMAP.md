@@ -101,6 +101,7 @@ feature set exists).
 | R81 | [Room voice UX and a learned talk gate](#r81--room-voice-ux-and-a-learned-talk-gate) | 🔧 **implemented 2026-10-28** (VX0–VX3, owner decisions OD1–OD5 the same day); open: VX4, the owner's pass with real microphones — voice gets its own panel (a header Voice button with the count, a flyout that pins beside the stage, People and Voice as tabs on a phone), an invite chip or a one-time hint so new users find it, a first-join talk-mode card, a Microphone popover on the dock, and per-person volume to 200 % behind a limiter; RNNoise's gate floor follows the speaker's learned level, auto gain is off under RNNoise with our own gain after the gate. Measured first: Chromium's auto gain lifts a hum in a pause to the speaker's own level, so no floor worked with it on; with it off, a person humming 15 dB below the speaker went from 91 % sent to 40 %, a background voice from 90 % to 20 % ([docs/82](docs/82-voice-ux-and-learned-gate.md) §12) |
 | R82 | [Ask in English in the telemetry SQL console](#r82--ask-in-english-in-the-telemetry-sql-console) | 🔧 **implemented 2026-11-05** (NQ1–NQ4, after the NQ0 spike, NQ0b's NaN fix and owner decisions OD1–OD5 on 2026-11-01/02); open: NQ5, the owner pass on the reference deployment and an Ollama on a GPU — an optional question box above `#/sql`: a model drafts DuckDB SQL from English, checks it with `EXPLAIN` in a shadow catalogue of empty tables built from the learned schema, and puts it in the editor with one line on how it read the question; the operator runs it. The model never sees a row. Anthropic (official SDK) or any OpenAI-compatible server (Ollama, llama.cpp, vLLM), server-side on the read listener, default off. Measured: with a curated glossary, Claude Opus 5.5, Sonnet 5.5 and Haiku 5.5 each drafted 19 of 20 questions right (the owner's four included) at about $0.028, $0.013 and $0.001 a question; without it, Sonnet got 14, every miss from not knowing what the values mean; a 7B local model on CPU gave no answer to the full prompt in 30 min and 3 of 5 right on a slim one; the spike also found that a NaN or ±Inf result killed the SQL worker (fixed in NQ0b) ([docs/84](docs/84-telemetry-ask-in-english.md) §12) |
 | R83 | [Fit: a room layout that follows the streams' shapes](#r83--fit-a-room-layout-that-follows-the-streams-shapes) | 🔧 **implemented 2026-11-10** (FL1–FL3; owner decision OD1: a choice, not a replacement), open: FL4, the owner pass — a fourth room layout mode, **Fit**, beside Grid: tiles take each stream's decoded aspect ratio and are arranged in order-preserving rows or columns, scored by Σ ln(tile area), so two 32:9 broadcasters stack on a 16:9 viewer instead of sitting side by side. Prototype: 25 % → 100 % of a 1080p stage is video for that case; over ten mixes at four stage sizes, more of the screen is video in 32 of 40 and the same in the rest, and Grid's own geometry is a candidate, so Fit never scores below it. Web app only: no wire, relay or iOS change ([docs/87](docs/87-room-fit-layout.md)) |
+| R84 | [Browser Reliable uplink](#r84--browser-reliable-uplink) | 🔧 **designed 2026-11-10** from a lab pass on Chrome's own QUIC stack (Chrome for Testing 151 and 158, the shipping viewer replayed at four presentation phases); **owner decisions OD1–OD6 pending**; BR0, the gaming-PC measurement, gates every other chunk — the browser broadcaster gets docs/75's per-GOP carrier on RU1's relay ingest, so its *Smoother* and *Most stable* viewers stop freezing on uplink bursts and outages (99.0–100 % shown at 10 ms where today's datagrams give 71.6–80.1 %); Chrome 151–158 expose no stream priority, so docs/75's keyframe gate cost a round trip per GOP (83 against 67 ms on screen at 40 ms, 167 against 100 ms at 100 ms), and putting the keyframe at the head of the GOP's own stream removes it (67 and 100 ms) at the price of one stream type and one capability bit on the relay; that stream follows RU9's keyframe rules, because docs/75's 150 ms reset left 136 of 199 keyframes unacknowledged where Chrome's Cubic collapses; docs/75's intermittent *Smoother* dip behind the gate is the lab replay locking onto a bad presentation phase, not the uplink ([docs/88](docs/88-browser-reliable-uplink.md)) |
 
 ---
 
@@ -5758,6 +5759,43 @@ one, a 2 % deadband). Web app only.
 
 **Status**: 🔧 implemented 2026-11-10 (FL1–FL3; notes in docs/87 §13).
 Open: FL4, the owner pass.
+
+## R84 — Browser Reliable uplink
+
+**Goal**: a broadcast from the browser survives bursts and outages on the
+broadcaster's uplink as a native one does since R73, at no latency cost on
+a clean path, so its *Smoother* and *Most stable* viewers stop freezing to
+the next keyframe.
+
+**Why**: docs/75 OD5 (owner, 2026-10-19) fixed the browser's send queue in
+R73 (RU9) and left "a browser Reliable mode on RU1's relay ingest" to a
+milestone of its own, measured on the gaming PC first, with two things to
+settle: an intermittent *Smoother* dip behind docs/75's keyframe gate, and
+the gate's round trip per GOP on long clean paths. `BUGS.md` "Smoother and
+Most stable viewers freeze on uplink loss that Balanced viewers never see"
+is still open for the browser broadcaster.
+
+**Design**: [docs/88](docs/88-browser-reliable-uplink.md). A per-GOP carrier
+whose records are the browser's datagrams byte for byte (RU1, unchanged);
+the keyframe at the head of the GOP's stream instead of a gate, as a new
+stream type behind a new capability bit (OD1); that stream under RU9's
+keyframe rules (OD5); the native Delivery control and copy (OD3), Reliable
+the default after the lab and field passes (OD2), Chromium first (OD4).
+
+**Scope** (chunks BR0–BR5): **BR0** the gaming-PC measurement (gate);
+**BR1** relay and wire, the keyframe carrier (only if OD1 picks it);
+**BR2** the browser's carrier lane; **BR3** the setting, Diagnostics and
+telemetry; **BR4** the lab and CI on the shipping code; **BR5** the field
+pass and the default.
+
+**Non-goals**: a viewer change; a browser congestion controller; changing
+*Lowest latency*; the native engine adopting the inline keyframe; a
+keyframe request; changing the rung on loss.
+
+**Acceptance**: docs/88 §8 (goals G1–G8 and the per-chunk tables).
+
+**Status**: 🔧 designed 2026-11-10; owner decisions OD1–OD6 pending; no
+chunk started.
 
 ## Explicitly out of scope (unchanged from CLAUDE.md)
 

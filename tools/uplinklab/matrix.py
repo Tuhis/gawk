@@ -5,7 +5,7 @@ and the viewer replay (live edge and adaptive). Results land in
 $UPLINK_OUT/results/<scenario>/<mode>/; a cell with a summary.json is skipped,
 so a set resumes where it stopped.
 
-Usage: matrix.py core|cc|hi|engine|engine-hi|engine-check|jit|win|bigq|seeds|chrome|chrome-kf|chrome-ceiling|chrome-knobs|chrome-seeds|chrome-ceiling-repeat|chrome-kftiming|chrome-kftiming2|ru8-g10|chrome-ru9-p7|chrome-ru9-p9|pop|all [--jobs 3] [--seconds 100] [--only name-prefix]
+Usage: matrix.py core|cc|hi|engine|engine-hi|engine-check|jit|win|bigq|seeds|chrome|chrome-kf|chrome-ceiling|chrome-knobs|chrome-seeds|chrome-ceiling-repeat|chrome-kftiming|chrome-kftiming2|ru8-g10|chrome-ru9-p7|chrome-ru9-p9|r84-a|r84-b|r84-c158|pop|all [--jobs 3] [--seconds 100] [--only name-prefix]
        matrix.py rescore [substr] [--jobs N]   # analyse and replay every finished run again
 """
 import concurrent.futures as cf
@@ -77,6 +77,40 @@ MODE_ENV = {
 for _m in ("chrome-dgram-ceil", "chrome-dgram-nowait-ceil", "chrome-carrier-ceil", "chrome-dgram-kt", "chrome-dgram-maxage100",
            "chrome-dgram-maxage100-hwm1000", "chrome-ru9", "chrome-ru9-maxage100", "chrome-ru9-maxage100-hwm1000"):
     MODE_ENV[_m] = MODE_ENV["chrome-dgram"]
+# R84 (docs/88): the browser carrier's keyframe gate and the variant with the
+# keyframe at the head of its GOP's stream (browser/carrier-inline.lab.ts),
+# each against a pinned Chrome for Testing: sender.mjs alone takes the newest
+# one installed, and docs/75 F18 measured 151.
+
+
+def chrome_for(major):
+    """The Chrome for Testing binary of a major version, from playwright's
+    cache (CHROME_<major> overrides); None if there is none."""
+    if os.environ.get(f"CHROME_{major}"):
+        return os.environ[f"CHROME_{major}"]
+    import glob
+    for c in sorted(glob.glob(os.path.expanduser("~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome"))):
+        try:
+            v = subprocess.run([c, "--version"], capture_output=True, text=True, timeout=30).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if f" {major}." in v:
+            return c
+    return None
+
+
+for _major in (151, 158):
+    _chrome = chrome_for(_major) or f"/nonexistent/chrome-{_major}"
+    for _m, _a, _page in (("dgram", ["--mode", "datagram"], None),
+                          ("carrier", ["--mode", "carrier"], None),
+                          ("kfa", ["--mode", "carrier", "--kforder", "ack"], None),
+                          ("inline", ["--mode", "carrier"], "inline"),
+                          ("inline-f12", ["--mode", "carrier", "--retire", "f12"], "inline")):
+        MODES[f"c{_major}-{_m}"] = _a
+        MODE_ENV[f"c{_major}-{_m}"] = dict(MODE_ENV["chrome-dgram"], CHROME=_chrome)
+        if _page:
+            MODE_ENV[f"c{_major}-{_m}"].update(UPLINK_SENDER_DIR=f"{OUT}/chrome-sender-inline",
+                                              UPLINK_SENDER_PAGE="carrier-inline.html")
 # RU6: the shipped engine (bin/sender-engine: gawk-engine's transport, Sender
 # and upload monitor) in each delivery mode and controller, against the
 # receiver at the depth the relay ships (D7's 512).
@@ -276,6 +310,34 @@ def sets():
                           dict(by["hi-rtt10-clean"], modes=("chrome-ru9", "chrome-ru9-maxage100"))]
     s["chrome-ru9-p9"] = [dict(sc, modes=("chrome-ru9",)) for sc in s["chrome-kftiming"] + s["chrome-kftiming2"]]
     s["all"] = core + cc + hi + jit + win + bigq + seeds
+    # R84 (docs/88 §4). (a) docs/75 F18's intermittent Smoother dip behind the
+    # keyframe gate at 1440p on a clean path: the gate eight times, the
+    # ungated carrier and the inline keyframe four times each (the path is
+    # clean, so the runs differ only by the host and Chrome).
+    s["r84-a"] = [scen(f"hi-rtt10-clean-r{i}", ["-rtt", "10ms"], trace="1440",
+                       modes=("c151-kfa",) + (("c151-carrier", "c151-inline") if i <= 4 else ()))
+                  for i in range(1, 9)]
+    # (b) the gate's round trip on long clean paths, and what replaces it:
+    # RU9's datagrams (today's browser), the gate, the inline keyframe, on
+    # the cells where docs/75 table P1 separated them, and the 1440p ones.
+    b = []
+    for name in ("rtt10-clean", "rtt40-clean", "rtt100-clean", "rtt10-loss0.001", "rtt10-loss0.005",
+                 "rtt10-ge1pct", "rtt10-out80drop", "rtt40-loss0.001", "rtt40-ge1pct", "rtt40-out80drop",
+                 "rtt100-loss0.001"):
+        b.append(dict(by[name], modes=("c151-dgram", "c151-kfa", "c151-inline-f12")))
+    for name in ("hi-rtt10-loss0.001", "hi-rtt10-ge1pct", "hi-rtt10-rate80M", "hi-rtt10-rate80M-out80drop"):
+        b.append(dict(by[name], modes=("c151-kfa", "c151-inline-f12")))
+    # Where Chrome's Cubic cannot carry the stream (docs/75 F18): does the
+    # inline carrier still bound latency, under each retire rule (§5.3)?
+    for name in ("rtt40-loss0.005", "rtt100-loss0.01"):
+        b.append(dict(by[name], modes=("c151-dgram", "c151-kfa", "c151-inline", "c151-inline-f12")))
+    s["r84-b"] = b
+    # Chrome 158 against 151: its controller (the net-log's) and the
+    # per-datagram ceiling, on table P6's two clean 10 ms cells, and the
+    # inline carrier on a long clean path.
+    s["r84-c158"] = [dict(by["rtt10-clean"], modes=("c158-dgram",)),
+                     dict(by["hi-rtt10-clean"], modes=("c158-dgram", "c158-inline-f12")),
+                     dict(by["rtt40-clean"], modes=("c158-inline-f12",))]
     # RU6: the engine as shipped (#541) on the cells G1, G2, G3 and G5 are
     # judged on — "cc"'s at 10/40/100 ms (clean, random loss, bursts,
     # outages), then the 1440p ones alone on the host (--jobs 1).

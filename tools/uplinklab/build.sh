@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds the uplink lab (docs/75 §4) into $UPLINK_OUT/bin: the Go receiver and
 # proxy, the real relay and gawk-loadgen (for F7's runs) and the Rust sender;
-# and the browser sender's page into $UPLINK_OUT/chrome-sender.
+# and the browser sender's page into $UPLINK_OUT/chrome-sender (docs/88's
+# lab-only variant into $UPLINK_OUT/chrome-sender-inline).
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 OUT=${UPLINK_OUT:-$ROOT/tools/uplinklab/out}
@@ -39,7 +40,15 @@ done)
 # headless Chrome), built from gawk-app's shipping transport modules.
 (cd "$ROOT/gawk-app"
  [ -d node_modules ] || npm ci --no-audit --no-fund
- UPLINK_SENDER_OUT="$OUT/chrome-sender" npx vite build --config lab/uplink-sender.vite.config.ts --logLevel warn)
+ UPLINK_SENDER_OUT="$OUT/chrome-sender" npx vite build --config lab/uplink-sender.vite.config.ts --logLevel warn
+ # docs/88: the lab-only carrier variant with the keyframe at the head of its
+ # GOP's stream (browser/carrier-inline.lab.ts), built with gawk-app's vite
+ # from gawk-app's shipping modules into its own directory.
+ HERE="$ROOT/tools/uplinklab/browser" OUTD="$OUT/chrome-sender-inline" node --input-type=module -e "
+   const { build } = await import('vite');
+   await build({ root: process.env.HERE, base: './', publicDir: false, configFile: false, logLevel: 'warn',
+     build: { outDir: process.env.OUTD, emptyOutDir: true,
+              rollupOptions: { input: process.env.HERE + '/carrier-inline.html' } } });")
 # The sender is only faithful while it runs the engine's exact QUIC stack, so
 # it has no lockfile of its own: it builds from a copy of the desktop
 # workspace's (git-ignored), which cargo only trims and extends; then the stack

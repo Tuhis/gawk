@@ -105,6 +105,7 @@ Reading all of them is not the point. Three give you the shape of the system:
 | [`73`](73-desktop-room-name.md) | R71 — your name in a room on the desktop broadcaster: asked on a blank-name join, a top-level row under the chosen room, renamed in place from your roster row while live |
 | [`74`](74-open-source-licences-in-app.md) | R72 — open-source licences inside the native apps: each app embeds its generated notices and shows them in Settings; the generator adds iOS and the bundled C libraries; the iOS Rust graph gets its own licence gate |
 | [`75`](75-reliable-uplink.md) | R73 — Reliable broadcaster uplink, measured first: the per-GOP carrier on leg A, quinn's congestion controller, the Reliable · Lowest latency choice; the browser broadcaster on Chrome's own stack; the lab (shipping QUIC stacks, real-encoder traces, the shipping viewer replayed) and its tables |
+| [`88`](88-browser-reliable-uplink.md) | R84 — Browser Reliable uplink, measured first: the browser broadcaster's per-GOP carrier on R73's relay ingest with its keyframe at the head of the GOP's stream (Chrome has no stream priority), RU9's keyframe rules on that stream, the docs/75 Smoother dip traced to the lab replay's presentation phase, and a gaming-PC measurement gate first |
 
 ## Audio
 
