@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.19.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.18.0...gawk-telemetry/v1.19.0) (2026-11-10)
+
+
+### Features
+
+* **app:** send a browser broadcast's GOPs behind their keyframes, opt-in (R84 BR2, BR3) ([#765](https://github.com/Tuhis/gawk/issues/765)) ([e2daea0](https://github.com/Tuhis/gawk/commit/e2daea00ad32e31dedb8fdf51611fd58cc714e08))
+
+
+### Bug Fixes
+
+* **telemetry:** stop counting a pod that no longer carries the broadcast ([#716](https://github.com/Tuhis/gawk/issues/716)) ([a8b9c76](https://github.com/Tuhis/gawk/commit/a8b9c76ac583fd0342e8f5eaee8ce44b9d73ca91))
+* **telemetry:** type the broadcaster's pipelineFallbackReason ([#743](https://github.com/Tuhis/gawk/issues/743)) ([94cf051](https://github.com/Tuhis/gawk/commit/94cf05157f4e9d745e3a17292b251e4331dcbcc4))
+
 ## [1.18.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.17.0...gawk-telemetry/v1.18.0) (2026-11-05)
 
 
