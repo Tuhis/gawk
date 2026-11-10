@@ -755,6 +755,59 @@ pipeline runs (docs/16).
 | **The notice's inputs** (D5) in Reliable mode: a second is bad on any shed record, on two or more keyframe streams superseded or failed, or on sent fps under 75 % of encode fps; table tests that replay the lab's per-second counters | unit |
 | No `postMessage` per frame added on the worker path; the main-thread path's per-frame work is one `write()` | review |
 
+**As built (2026-11-10).** One F-12 state machine for keyframes in both
+modes: a keyframe produced with `carrier` (`KeyframeSender.produce(gop,
+msg, { carrier })`, `keyframe-sender.ts`) opens a GOP stream instead of a
+keyframe stream — it writes `01 1f` and the StreamFrame, counts toward the
+two in Chrome, must be handed over before the next keyframe starts and is
+aborted only by the 2 s rule. Unlike a keyframe stream it is not closed on
+handover: the carrier lane (`CarrierSender`, `carrier-sender.ts`) is told
+it can take records, and when a newer keyframe is produced (of either mode)
+it is retired — its queued records shed, any write in progress left to
+finish, then FINned; never reset for its deltas.
+
+- **Records.** A delta's `packetizeFrameWithParity` output at
+  `wt.datagrams.maxDatagramSize`, framed as records and written as **one**
+  `write()`; the same datagrams datagram mode sends, byte for byte (a
+  pipeline test runs both modes over the same frames). One write in flight
+  per GOP stream, so a retired GOP's queue can still be shed; a GOP's
+  deltas queue while its stream opens and its keyframe is written.
+- **Engage** (`engageCarrier`): both relay bits on this session ∧
+  *Reliable* ∧ `isChromium(navigator.userAgent)`, decided when each keyframe
+  is produced. The capability flags are per session (cleared on every
+  resume), so a GOP whose keyframe beats them goes as datagrams. A change
+  of setting applies at the next keyframe.
+- **Shed.** A delta whose GOP has no stream (its keyframe waits in the slot,
+  or was replaced, discarded, aborted or failed) or whose stream was retired
+  is shed, and the rest of that GOP with it. Counted as records
+  (`uplinkRecordsShed`, docs/75 D8's unit), not in RU9's
+  `staleFramesDropped`, which stays the datagram queue's.
+- **Counters** (`BroadcastStats`, so Diagnostics, *Copy diagnostics* and
+  telemetry): `uplinkModeRequested`, `uplinkMode`, `uplinkCarriersOpened`,
+  `uplinkCarriersExpired` (GOP streams aborted by the 2 s rule, also counted
+  in `keyframeStreamsFailed`), `uplinkRecordsShed`. gawk-telemetry already
+  types them (R73); its catalogue descriptions now say what each means
+  from a browser.
+- **The notice** reads `staleFramesDropped + staleAudioDropped +
+  uplinkRecordsShed` as its drop input, so in Reliable mode a second is bad
+  on any shed record. Replayed second by second over this doc's lab runs
+  (`c151-inline-f12`, reduced by `tools/uplinklab/r84persec.py` into
+  `uplink-monitor.r84-fixture.ts`): quiet on every clean path at 10–100 ms,
+  0.5 % loss and bursts at 10 ms, and outages at 10 and 40 ms; raised at
+  40 ms with 0.5 % loss (from second 13), 100 ms with 1 % (second 9), and
+  under 40 ms bursts (second 32, up 58 of 100 s, where records were shed).
+- **Worker path.** `setDelivery` is a command beside `setEncoderSettings`
+  and rides the start command; the lane runs inside `BroadcastPipeline`, so
+  nothing is posted per frame.
+- **Tests.** `carrier-sender.test.ts` (red first: K3's stream head, records
+  byte-identical in one write, the lifecycle under fake timers with a
+  transport whose writes block, resume, engage, Chromium detection);
+  `broadcaster-carrier.test.ts` (the real pipeline: Reliable end to end,
+  byte-identical records against Lowest latency, today's bytes on every
+  non-engaging relay, setting and browser, late capabilities, a live change,
+  shed and aborted GOPs, the notice, resume); `uplink-monitor.test.ts`
+  (the lab table).
+
 ### BR3 — What users see (§7)
 
 | Acceptance criterion | Verified by |
@@ -763,6 +816,20 @@ pipeline runs (docs/16).
 | No docs/57 principle-3 term in a main-flow string (the existing string test, extended to the new strings) | unit |
 | Diagnostics and *Copy diagnostics* show §7's rows | unit |
 | The notice reads as RU9's, reachable by keyboard and screen reader as RU9 requires | unit |
+
+**As built (2026-11-10).** `DeliveryPicker` (`features/stream`) under
+*Stream quality*, after the ladder: a two-choice radio group labelled
+**Delivery**, *Reliable* · *Lowest latency*, the selected choice's hint under
+it (and describing the group for screen readers), §7's words, tested
+against the native strings. Stored as `gawk.uplinkDelivery`; blank follows
+`DEFAULT_DELIVERY` (*Lowest latency*), and a word is stored only once the
+broadcaster picks something other than what blank shows, as the native
+Quality page does. The screen passes it to the pipeline before start and
+live on change. Diagnostics: *Delivery (requested)*, *Delivery (in use)*,
+*Carriers opened*, *Carriers aborted*, *Records shed*; *Copy diagnostics*
+carries the stats fields. The string test is the native one
+(`lossnotice.rs`'s list, plus "datagram") over the new strings; the notice's
+copy and its accessibility are RU9's, unchanged and still tested there.
 
 ### BR4 — Lab and CI on the shipping code
 
