@@ -118,5 +118,11 @@
       matchFileNames: ["gawk-broadcast-desktop/vendor/**"],
       enabled: false,
     },
+    {
+      description: "The compose voice lane (dev/compose.voice.yml) stays on murmur 1.5.x. Every 1.6 image measured so far (1.6.870, and 1.6.1001 on 2026-11-10) refuses SuperUser's MUMBLE_SUPERUSER_PASSWORD on a fresh data volume's first start, so the lane's murmur-init exhausts its retries with WrongUserPW and the bridge never starts; murmur.sh works around it with docker exec, which the lane should not need (docs/gotchas.md). Nothing in CI starts this file, so a green Renovate PR here proves nothing (PR #739). Lift the cap once a 1.6 image passes the first-start check in the gotcha.",
+      matchFileNames: ["dev/compose.voice.yml"],
+      matchPackageNames: ["mumblevoip/mumble-server"],
+      allowedVersions: "/^v?1\\.5\\./",
+    },
   ],
 }
