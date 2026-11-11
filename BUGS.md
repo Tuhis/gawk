@@ -412,13 +412,14 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   since 2026-11-05 (docs/75 D4), so their viewers are covered unless the
   broadcaster picks *Lowest latency*. For the browser broadcaster the fix
   is R84, [docs/88](docs/88-browser-reliable-uplink.md): its browser half
-  is built (2026-11-10), opt-in — *Settings → Stream quality → Delivery →
-  Reliable*, Chromium only, *Lowest latency* still the default — pending
-  the gaming-PC (BR0) and field (BR5) passes that decide the default. Its
+  is built (2026-11-10), Chromium only, and *Reliable* is the default since
+  2026-11-11 (owner, ahead of the gaming-PC pass BR0); the field data
+  decides after a few weeks whether it stays (BR5). Remove this entry's
+  browser half once that review holds. Its
   lab pass shows *Smoother* at 99.0–99.9 % under bursts and outages at
   10 ms on a browser carrier, against 71.6–79.0 % on today's datagrams.
-  Still open for every browser broadcaster who has not picked *Reliable*,
-  for Firefox and Safari, and for native broadcasters on *Lowest latency*
+  Still open for browser broadcasters who pick *Lowest latency*, for
+  Firefox and Safari, and for native broadcasters on *Lowest latency*
   or on a relay without carriers.
 
 ## Desktop broadcaster: every stream reset mid-`finish()` leaks a quinn waiter
