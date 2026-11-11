@@ -67,7 +67,7 @@ script for what counts as a dependency here and why.
 | `go.yaml.in/yaml/v2` | v2.4.4 | `Apache-2.0 OR MIT` | Copyright (c) 2006 Kirill Simonov<br>Copyright 2011-2016 Canonical Ltd |
 | `golang.org/x/crypto` | v0.58.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/net` | v0.62.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
-| `golang.org/x/sys` | v0.49.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
+| `golang.org/x/sys` | v0.50.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/text` | v0.43.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/time` | v0.16.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `google.golang.org/protobuf` | v1.36.12 | `BSD-3-Clause` | Copyright (c) 2018 The Go Authors. All rights reserved |

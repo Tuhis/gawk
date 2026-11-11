@@ -76,7 +76,7 @@ script for what counts as a dependency here and why.
 | `golang.org/x/crypto` | v0.58.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/net` | v0.62.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/oauth2` | v0.37.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
-| `golang.org/x/sys` | v0.49.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
+| `golang.org/x/sys` | v0.50.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/term` | v0.47.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/text` | v0.43.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/time` | v0.16.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
