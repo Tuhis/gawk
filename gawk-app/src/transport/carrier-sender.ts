@@ -30,9 +30,11 @@ import { CARRIER_RECORD_HEADER_SIZE, encodeCarrierRecord } from './wire';
 export type Delivery = 'reliable' | 'lowest-latency';
 export const DELIVERIES: readonly Delivery[] = ['reliable', 'lowest-latency'];
 
-// The browser's default until BR0 and BR5 hold (docs/88 OD2, owner
-// 2026-11-10). The one place it lives: a blank stored value follows it.
-export const DEFAULT_DELIVERY: Delivery = 'lowest-latency';
+// The browser's default: Reliable since 2026-11-11 (docs/88 OD2, owner),
+// ahead of BR0 and BR5, as the native apps' was (docs/75 D4); the field data
+// is reviewed after a few weeks. The one place it lives: a blank stored value
+// follows it, so a revert reaches everyone who never picked.
+export const DEFAULT_DELIVERY: Delivery = 'reliable';
 
 export const DELIVERY_LABEL = 'Delivery';
 export const DELIVERY_LABELS: Record<Delivery, string> = {

@@ -130,7 +130,7 @@ describe('WorkerBroadcastSession start + ladder', () => {
         selection: 720,
         framerate: 30,
         encoderSettings: DEFAULT_ENCODER_SETTINGS,
-        delivery: 'lowest-latency',
+        delivery: 'reliable',
       },
     ]);
   });

@@ -23,33 +23,33 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('DeliveryPicker', () => {
-  it('reads "Delivery" with Reliable · Lowest latency, Lowest latency selected by default, its hint shown', () => {
+  it('reads "Delivery" with Reliable · Lowest latency, Reliable selected by default, its hint shown', () => {
     render(<DeliveryPicker />);
     const group = screen.getByRole('radiogroup', { name: 'Delivery' });
     expect(group).toBeTruthy();
     const radios = screen.getAllByRole('radio');
     expect(radios.map((r) => r.textContent)).toEqual(['Reliable', 'Lowest latency']);
-    expect(screen.getByRole('radio', { name: 'Lowest latency' }).getAttribute('aria-checked')).toBe('true');
-    expect(screen.getByRole('radio', { name: 'Reliable' }).getAttribute('aria-checked')).toBe('false');
-    expect(screen.getByText(LOWEST_HINT)).toBeTruthy();
-    expect(screen.queryByText(RELIABLE_HINT)).toBeNull();
+    expect(screen.getByRole('radio', { name: 'Reliable' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByRole('radio', { name: 'Lowest latency' }).getAttribute('aria-checked')).toBe('false');
+    expect(screen.getByText(RELIABLE_HINT)).toBeTruthy();
+    expect(screen.queryByText(LOWEST_HINT)).toBeNull();
   });
 
-  it('picking Reliable persists it, shows its hint and tells the live pipeline', () => {
+  it('picking Lowest latency persists it, shows its hint and tells the live pipeline', () => {
     const onChange = vi.fn();
     render(<DeliveryPicker onChange={onChange} />);
-    fireEvent.click(screen.getByRole('radio', { name: 'Reliable' }));
-    expect(onChange).toHaveBeenCalledWith('reliable');
-    expect(localStorage.getItem('gawk.uplinkDelivery')).toBe('reliable');
-    expect(screen.getByRole('radio', { name: 'Reliable' }).getAttribute('aria-checked')).toBe('true');
-    expect(screen.getByText(RELIABLE_HINT)).toBeTruthy();
+    fireEvent.click(screen.getByRole('radio', { name: 'Lowest latency' }));
+    expect(onChange).toHaveBeenCalledWith('lowest-latency');
+    expect(localStorage.getItem('gawk.uplinkDelivery')).toBe('lowest-latency');
+    expect(screen.getByRole('radio', { name: 'Lowest latency' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByText(LOWEST_HINT)).toBeTruthy();
   });
 
   it('the selected hint describes the group for screen readers', () => {
     render(<DeliveryPicker />);
     const group = screen.getByRole('radiogroup', { name: 'Delivery' });
     const id = group.getAttribute('aria-describedby');
-    expect(id && document.getElementById(id)?.textContent).toBe(LOWEST_HINT);
+    expect(id && document.getElementById(id)?.textContent).toBe(RELIABLE_HINT);
   });
 });
 

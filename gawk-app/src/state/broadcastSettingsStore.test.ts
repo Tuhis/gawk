@@ -195,34 +195,41 @@ describe('broadcastSettingsStore delivery (R84)', () => {
     return import('./broadcastSettingsStore');
   }
 
-  it('a blank value follows the default, Lowest latency', async () => {
+  // The default flipped to Reliable on 2026-11-11 (docs/88 OD2, owner).
+  it('a blank value follows the default, Reliable', async () => {
     const mod = await loadModule();
     expect(mod.useBroadcastSettingsStore.getState().uplinkDelivery).toBeNull();
-    expect(mod.deliveryFromStore()).toBe('lowest-latency');
+    expect(mod.deliveryFromStore()).toBe('reliable');
   });
 
   it('a garbage stored value reads as blank', async () => {
     localStorage.setItem(LS_DELIVERY, 'turbo');
     const mod = await loadModule();
     expect(mod.useBroadcastSettingsStore.getState().uplinkDelivery).toBeNull();
+    expect(mod.deliveryFromStore()).toBe('reliable');
+  });
+
+  it('picking Lowest latency stores it, and it survives a reload', async () => {
+    let mod = await loadModule();
+    mod.useBroadcastSettingsStore.getState().setUplinkDelivery('lowest-latency');
+    expect(localStorage.getItem(LS_DELIVERY)).toBe('lowest-latency');
+    mod = await loadModule();
     expect(mod.deliveryFromStore()).toBe('lowest-latency');
   });
 
-  it('picking Reliable stores it, and it survives a reload', async () => {
-    let mod = await loadModule();
-    mod.useBroadcastSettingsStore.getState().setUplinkDelivery('reliable');
-    expect(localStorage.getItem(LS_DELIVERY)).toBe('reliable');
-    mod = await loadModule();
+  it('a stored Reliable from the opt-in days still reads as Reliable', async () => {
+    localStorage.setItem(LS_DELIVERY, 'reliable');
+    const mod = await loadModule();
     expect(mod.deliveryFromStore()).toBe('reliable');
   });
 
   it('picking what a blank already shows leaves it blank, so a later default flip reaches it', async () => {
     const mod = await loadModule();
-    mod.useBroadcastSettingsStore.getState().setUplinkDelivery('lowest-latency');
-    expect(localStorage.getItem(LS_DELIVERY)).toBeNull();
     mod.useBroadcastSettingsStore.getState().setUplinkDelivery('reliable');
+    expect(localStorage.getItem(LS_DELIVERY)).toBeNull();
     mod.useBroadcastSettingsStore.getState().setUplinkDelivery('lowest-latency');
-    expect(localStorage.getItem(LS_DELIVERY)).toBe('lowest-latency');
-    expect(mod.deliveryFromStore()).toBe('lowest-latency');
+    mod.useBroadcastSettingsStore.getState().setUplinkDelivery('reliable');
+    expect(localStorage.getItem(LS_DELIVERY)).toBe('reliable');
+    expect(mod.deliveryFromStore()).toBe('reliable');
   });
 });
