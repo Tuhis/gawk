@@ -18,7 +18,7 @@ import { selectCertHashList, useTransportStore } from '../../state/transportStor
 import { useRoomStore } from '../../state/roomStore';
 import { log } from '../../lib/logger';
 import { DRAINING_NOTE, RECONNECTING_NOTE } from './roomCopy';
-import { leaveUnreachableLocalRelay, noteLocalRelay, willFollowOffers } from '../pop/switch';
+import { enterStream, leaveUnreachableLocalRelay, roomStreamKey, noteLocalRelay, willFollowOffers } from '../pop/switch';
 
 // R74 (docs/76 item 43.5): a PoP a followed offer chose that cannot serve
 // the room (unreachable, refused, lost, or not holding it) sends the tab
@@ -98,6 +98,8 @@ export function useRoomSession({
     store.reset();
     const t = targetRef.current;
     if (t === null) return;
+    // R74 (docs/76 item 43.6): an opt-out holds for this room only.
+    enterStream(roomStreamKey(t));
     store.setStatus('connecting');
     // Dial a macrotask later: StrictMode's development mount → cleanup →
     // mount would otherwise reach the relay twice, and a room mint that

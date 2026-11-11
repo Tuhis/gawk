@@ -6,7 +6,7 @@ import { ROOM_CLIENT_WEB_VIEWER } from '../../transport/wire';
 import { selectCertHashList, useTransportStore } from '../../state/transportStore';
 import { relayQuerySuffix } from '../../lib/shareLink';
 import { log } from '../../lib/logger';
-import { willFollowOffers } from '../pop/switch';
+import { enterStream, roomStreamKey, willFollowOffers } from '../pop/switch';
 
 // `#/join/<code>` — a typed six-character code that is
 // either a room or a broadcast. The relay is HTTP/3-only, so there is no
@@ -32,6 +32,8 @@ export function JoinResolver({ code }: { code: string }) {
       // replace(), not assignment: Back must not land on the resolver.
       window.location.replace(`${window.location.pathname}${window.location.search}${hash}${suffix}`);
     };
+    // R74 (docs/76 item 43.6): the room this resolves to is the same stream.
+    enterStream(roomStreamKey({ kind: 'join', code }));
     const session = new RoomSession(
       {
         serverUrl,
