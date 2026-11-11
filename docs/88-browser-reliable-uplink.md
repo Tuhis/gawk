@@ -930,7 +930,12 @@ a keyframe it holds, not a wait for one). That is the share of table S5's
 one a freeze to the next keyframe; *Reliable* 0–6, in every run that logged it with stale records
 dropped at the relay, nothing shed, the carrier engaged. The pass asserts
 exactly that (the control froze; Reliable engaged, shed nothing, resynced
-less than the control, and only where the relay dropped a stale tail). The
+less than the control, and only where the relay dropped a stale tail).
+**Corrected 2026-11-11:** the last half does not hold. Seven later local
+runs (four on the default-flip branch, three on main at efb7c5ed) had
+*Reliable* resync 1–3 times with **no** stale records dropped in four of
+them, so a second cause exists; the pass now records that case instead of
+asserting it, and keeps "fewer than the control" (`BUGS.md`). The
 relay's ingress-loss window, which would show the uplink losing nothing,
 finalizes a frame ~34 s later and cannot judge a 12 s pass. Forwarding a
 GOP's stale tail to reliable viewers instead of dropping it is a relay
