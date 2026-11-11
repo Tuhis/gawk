@@ -10,7 +10,7 @@ replace github.com/Tuhis/gawk/gawk-server => ../gawk-server
 
 require (
 	github.com/Tuhis/gawk/gawk-server v0.0.0-00010101000000-000000000000
-	github.com/anthropics/anthropic-sdk-go/v2 v2.8.0
+	github.com/anthropics/anthropic-sdk-go/v2 v2.9.0
 	github.com/marcboeker/go-duckdb/v2 v2.4.3
 )
 
