@@ -8,7 +8,10 @@ BR5 hold. The owner chose to build BR1–BR4 before BR0 (§8 *Order*); BR0
 and BR5 gate the default, not the code. BR1–BR4 built 2026-11-10, opt-in;
 on the shipping code G1, G2, G4 and G5 are met on Chrome 151, 157 (stable)
 and 158, G3 on 157 and 158 and missed by 0.02 point on 151 (§8 BR4, §11
-tables S5–S6). BR0 and BR5 not run. `BR` = Browser Reliable.
+tables S5–S6). **Reliable the default since 2026-11-11** by the owner's
+decision, ahead of BR0 and BR5 as the native apps' was (OD2, §8 *Order*):
+the field data decides whether it stays, reviewed after a few weeks of
+broadcasts (BR5). BR0 and BR5 not run. `BR` = Browser Reliable.
 
 Touches `gawk-app` (the browser broadcaster's send path, one setting,
 Diagnostics, telemetry fields), and, because OD1 took the inline keyframe
@@ -163,13 +166,17 @@ stream (D2), not the K1 gate that waits for the keyframe stream's
 acknowledgement. The same day the owner took the recommendation below for
 OD3–OD6, and for OD2 the half that can be decided before the PC and field
 passes: *Lowest latency* stays the default, *Reliable* opt-in, because BR0
-and BR5 have not run. Each row keeps the options, what the lab said and
-the recommendation that was taken.
+and BR5 have not run. On 2026-11-11 the owner took OD2 in full ahead of
+both: **"Why not make it default right away and then check how the data
+looks like after few weeks?"** — *Reliable* the default now, the field
+data in its place as BR5, as for the native apps (docs/75 D4, flipped
+ahead of RU7). Each row keeps the options, what the lab said and the
+recommendation that was taken.
 
 | # | Question | Options | What the lab says | Recommendation | Decided (2026-11-10) |
 |---|---|---|---|---|---|
 | OD1 | How does a GOP's keyframe get ahead of its deltas (§5.2)? | **K1** the gate on acknowledgement, relay unchanged; **K3** the keyframe inline at the head of the GOP's stream, one stream type and one capability bit on the relay (BR1); **K1 now, K3 later** | K1 costs about a round trip on long clean paths (F2: 83 vs 67 ms at 40 ms, 167 vs 100 ms at 100 ms) and falls below today's datagrams under bursts at 40 ms (F3: 83.0 vs 84.4 %). K3 costs nothing on a clean path and matches or beats K1 on every lossy cell measured (F3, F4) | **K3**. It is the only option that meets OD5's "design away" without a heuristic, and the relay change is small, contained in RU1's own carrier reader. On a relay that advertises `CapUplinkCarriers` but not the new bit, the browser sends datagrams (one carrier path to maintain, not two); fleet relays upgrade with the release. K1 first would ship a mode with a known per-GOP cost and then change its wire form. | **K3** (owner: "Get rid of the extra round trip.") |
-| OD2 | What does a browser broadcaster get by default? | **Reliable** once BR4 and BR5 hold, as the native apps since 2026-11-05 (docs/75 D4); **Lowest latency**, Reliable opt-in; **Reliable from the first release** | With K3, no cost on a clean path at 10–100 ms (F2), better for every preset under light loss, bursts and outages (F3, F4), no worse where Cubic collapses (F5). Unmeasured: the gaming PC and Chrome on Windows (BR0), a real capture and encode beside it | **Reliable, after BR4's lab criteria and BR5's field pass**, shipping opt-in until then — the order docs/75 D4 first set for the native apps. *Lowest latency* stays a real choice (docs/75 F3's live-edge trade). | **Lowest latency by default, Reliable opt-in**, until BR0 and BR5 hold; the flip to Reliable is decided then (BR5) |
+| OD2 | What does a browser broadcaster get by default? | **Reliable** once BR4 and BR5 hold, as the native apps since 2026-11-05 (docs/75 D4); **Lowest latency**, Reliable opt-in; **Reliable from the first release** | With K3, no cost on a clean path at 10–100 ms (F2), better for every preset under light loss, bursts and outages (F3, F4), no worse where Cubic collapses (F5). Unmeasured: the gaming PC and Chrome on Windows (BR0), a real capture and encode beside it | **Reliable, after BR4's lab criteria and BR5's field pass**, shipping opt-in until then — the order docs/75 D4 first set for the native apps. *Lowest latency* stays a real choice (docs/75 F3's live-edge trade). | 2026-11-10: **Lowest latency by default, Reliable opt-in**, until BR0 and BR5 hold. **2026-11-11: Reliable the default now** (owner), reviewed on the field data after a few weeks (BR5); a revert reaches every broadcaster who never picked, since a blank stored value follows the default |
 | OD3 | Does the browser get a Delivery setting? | **A** the native control and copy under *Stream quality*; **B** none, Reliable whenever the relay can | The modes differ only for a live-edge viewer on a long lossy path (docs/75 F3); that is the case for a choice, and the native apps offer it | **A**: one control in both apps, the same words (§7). | **A**, as recommended |
 | OD4 | Which browsers engage it? | **Chromium only**, Firefox and Safari each after its own BR0-B pass; **every browser with WebTransport streams** | Only Chrome measured (§5.8). Firefox's and Safari's `close()`, schedulers and congestion control are unknown here | **Chromium first** (Chrome, Edge, and other Chromium browsers), Firefox and Safari each when its measurement holds; datagrams until then. | **Chromium only**, as recommended |
 | OD5 | Under K3, how is a retired GOP stream ended (§5.3)? | **RU9's rule**: FIN at rotation, queued records shed, aborted only if unacknowledged 2 s after it opened; **docs/75 D3's**: reset 150 ms after the FIN | Under D3's reset, 136 of 199 and 194 of 200 keyframes were never acknowledged where Cubic collapses (F5) — F-12's livelock. RU9's rule landed as many as today's datagrams, at a bounded latency (384 ms and 1.2 s on screen) | **RU9's rule**. It keeps the browser's one keyframe guarantee, and the stale records it lets drain are bounded by what was written before the rotation. | **RU9's rule**, as recommended |
@@ -528,9 +535,10 @@ says why it would mislead), not carrier expiry (there is none under D3).
 ### D6 — Setting and default (OD2, OD3, OD4)
 
 The Delivery control (§7) under *Stream quality*, persisted with the other
-broadcast settings, applied at the next keyframe. Ships with *Lowest
-latency* as its default; the default becomes *Reliable* once BR4 and BR5
-hold, with a blank stored value following it. Engaged on Chromium only
+broadcast settings, applied at the next keyframe. Shipped opt-in with
+*Lowest latency* as its default (2026-11-10); *Reliable* the default since
+2026-11-11 (OD2), with a blank stored value following it, so a broadcaster
+who never picked moves with the default either way. Engaged on Chromium only
 until Firefox and Safari each pass BR0-B. `-uplink-carriers=false` keeps
 every browser on datagrams.
 
@@ -612,10 +620,15 @@ browser broadcaster's viewers get, by preset, from the lab (§2, §11; Chrome
    and G8, not the code; if it contradicts OD1, OD1 is revisited with its
    numbers.
 2. **BR1 and BR2 together** (BR1 because OD1 took K3), behind the
-   setting, with *Lowest latency* the default until BR5.
+   setting, with *Lowest latency* the default until the owner flipped it
+   (step 4).
 3. **BR3 and BR4** with them: the UI, Diagnostics, telemetry, and the lab
    and CI criteria on the shipping code.
-4. **BR5**, the field pass; then the default, per OD2.
+4. **BR5**, the field pass; then the default, per OD2. **The owner flipped
+   the default on 2026-11-11, before BR0 and BR5**, to read the field data
+   on real broadcasts instead (OD2). BR5 becomes that review: after a few
+   weeks, the telemetry rows in BR5's table, Reliable against Lowest
+   latency, decide whether it stays; BR0 is still owed for G8.
 
 ### Milestone goals
 
@@ -917,7 +930,12 @@ a keyframe it holds, not a wait for one). That is the share of table S5's
 one a freeze to the next keyframe; *Reliable* 0–6, in every run that logged it with stale records
 dropped at the relay, nothing shed, the carrier engaged. The pass asserts
 exactly that (the control froze; Reliable engaged, shed nothing, resynced
-less than the control, and only where the relay dropped a stale tail). The
+less than the control, and only where the relay dropped a stale tail).
+**Corrected 2026-11-11:** the last half does not hold. Of seven later
+local runs (four on the default-flip branch, three on main at efb7c5ed),
+in four *Reliable* resynced 1–3 times with **no** stale records dropped,
+so a second cause exists; the pass now records that case instead of
+asserting it, and keeps "fewer than the control" (`BUGS.md`). The
 relay's ingress-loss window, which would show the uplink losing nothing,
 finalizes a frame ~34 s later and cannot judge a 12 s pass. Forwarding a
 GOP's stale tail to reliable viewers instead of dropping it is a relay
@@ -928,7 +946,7 @@ question for BR5's telemetry, not this milestone's.
 | Acceptance criterion | Verified by |
 |---|---|
 | The owner broadcasts from Chrome on the gaming PC to the official fleet for 10 min in each mode, over the home uplink and over one real path ≥ 40 ms to the fleet; telemetry compares leg-A damaged frames (`ingressFrameLossRatio`), the viewers' gap resyncs per preset and the notice | manual, telemetry |
-| The default (OD2) flips only after BR4's G1–G5 and this pass hold; the reason for anything that does not flip is recorded in §2 | review |
+| ~~The default (OD2) flips only after BR4's G1–G5 and this pass hold~~ — flipped by the owner on 2026-11-11 ahead of it; this pass instead decides whether *Reliable* stays the default, and the reason is recorded in §2 | review, telemetry |
 | `BUGS.md`'s entry updated in the same PR: the browser half fixed, the entry removed if nothing else is left open | review |
 
 ## 9. Risks
@@ -936,8 +954,11 @@ question for BR5's telemetry, not this milestone's.
 - **The lab is one host and headless Chrome on Linux.** Chrome's
   per-datagram step and its scheduler between streams may differ on
   Windows and macOS; the renderer here does nothing but send. BR0 exists
-  for this. The code ships before it, opt-in (§8 *Order*); the default
-  does not change before it.
+  for this. The code shipped before it, and since 2026-11-11 the default
+  too (OD2): a Windows-only cost shows up in the field data first, as
+  sent fps under encode fps, stale drops and shed records per session
+  (§7's Diagnostics rows, D7's telemetry); a release that flips the
+  constant back reverts every broadcaster who never picked.
 - **Chrome can change underneath.** No priority API, no stats, Cubic
   regardless (§5.5): a future Chrome that adds `sendOrder` or BBR changes
   the trade-offs (K4 becomes possible, F4's collapse moves). Table S4 is the

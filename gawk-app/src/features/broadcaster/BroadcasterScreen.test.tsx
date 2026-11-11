@@ -809,7 +809,7 @@ describe('BroadcasterScreen Delivery setting (R84)', () => {
     expect(created[0].deliveries).toEqual(['reliable', 'lowest-latency']);
   });
 
-  it('a blank stored value starts on the default, Lowest latency', async () => {
+  it('a blank stored value starts on the default, Reliable', async () => {
     useBroadcastSettingsStore.setState({ uplinkDelivery: null });
     scripts.push(async (cbs) => {
       cbs.onSourceStream(fakeStream);
@@ -817,6 +817,6 @@ describe('BroadcasterScreen Delivery setting (R84)', () => {
     render(<BroadcasterScreen />);
     startBroadcast();
     await waitFor(() => expect(created.length).toBe(1));
-    expect(created[0].deliveries).toEqual(['lowest-latency']);
+    expect(created[0].deliveries).toEqual(['reliable']);
   });
 });

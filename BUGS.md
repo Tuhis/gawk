@@ -412,14 +412,40 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   since 2026-11-05 (docs/75 D4), so their viewers are covered unless the
   broadcaster picks *Lowest latency*. For the browser broadcaster the fix
   is R84, [docs/88](docs/88-browser-reliable-uplink.md): its browser half
-  is built (2026-11-10), opt-in — *Settings → Stream quality → Delivery →
-  Reliable*, Chromium only, *Lowest latency* still the default — pending
-  the gaming-PC (BR0) and field (BR5) passes that decide the default. Its
+  is built (2026-11-10), Chromium only, and *Reliable* is the default since
+  2026-11-11 (owner, ahead of the gaming-PC pass BR0); the field data
+  decides after a few weeks whether it stays (BR5). Remove this entry's
+  browser half once that review holds. Its
   lab pass shows *Smoother* at 99.0–99.9 % under bursts and outages at
   10 ms on a browser carrier, against 71.6–79.0 % on today's datagrams.
-  Still open for every browser broadcaster who has not picked *Reliable*,
-  for Firefox and Safari, and for native broadcasters on *Lowest latency*
+  Still open for browser broadcasters who pick *Lowest latency*, for
+  Firefox and Safari, and for native broadcasters on *Lowest latency*
   or on a relay without carriers.
+
+## Reliable browser broadcast: Smoother viewers resync on uplink outages with no stale tail at the relay
+
+- **Found**: 2026-11-11, running `e2e/run.mjs --browser-broadcast`'s R84
+  uplink-outage pass (150 ms uplink outage every 1.5 s, a *Smoother* viewer)
+  while flipping the browser's default to *Reliable* (#774). It isn't caused
+  by the flip: main at efb7c5ed shows it too.
+- **What**: docs/88 BR4 expected *Reliable*'s viewer to resync only where the
+  relay drops an old GOP's tail as stale (docs/75 D2). In 4 of 7 local runs
+  the viewer resynced 1–3 times with **zero** stale records dropped at the
+  relay (*Lowest latency* in the same runs: 7–10 resyncs). The relay shed
+  nothing and the carrier was engaged throughout.
+- **Impact**: fewer freezes than *Lowest latency*, but not the near-zero the
+  lab predicted. The pass's "only where the relay dropped a stale tail"
+  assertion was flaky for this reason, so it now logs the case instead. It
+  still asserts fewer resyncs than the control.
+- **Hypothesis (unconfirmed)**: the outage plus QUIC's retransmit delay
+  outlasts what the *Smoother* viewer's reorder buffer waits for, so the
+  repaired data arrives after the viewer has given up on that frame. If so,
+  it's a viewer-buffer budget question, not an uplink one.
+- **Fix would start**: log the viewer's reason per resync (reorder deadline
+  vs a missing keyframe) and the relay's per-GOP arrival times in that pass.
+  Compare the outage-plus-PTO time against *Smoother*'s playout budget
+  (docs/24, docs/26). Then either widen what *Smoother* waits for on a
+  carrier-fed broadcast or accept it, and restore the assertion.
 
 ## Desktop broadcaster: every stream reset mid-`finish()` leaks a quinn waiter
 
