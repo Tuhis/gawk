@@ -42,7 +42,7 @@ import {
 } from '../../transport/audio-buffer';
 import { resolvedUrlIsDefault, selectCertHashList, useTransportStore } from '../../state/transportStore';
 import { useTelemetryCollector } from '../../lib/useTelemetry';
-import { enterStream, leaveUnreachableLocalRelay, noteLocalRelay, willFollowOffers } from '../pop/switch';
+import { leaveUnreachableLocalRelay, noteLocalRelay, willFollowOffers } from '../pop/switch';
 import { readVisibility } from '../../lib/visibility';
 import { log } from '../../lib/logger';
 import { readStored, writeStored } from '../../lib/storage';
@@ -732,8 +732,6 @@ export function useViewerConnection(
   useEffect(() => {
     if (!useWorker) return;
     resetState();
-    // R74 (docs/76 item 43.6): an opt-out holds for this stream only.
-    enterStream(`viewer:${broadcastId}`);
     controllerRef.current?.setViewerDeliveryMode(deliveryMode);
     controllerRef.current?.start({
       serverUrl,
@@ -793,7 +791,6 @@ export function useViewerConnection(
     // The profile lives in this (main-thread) context here; set it
     // before the session starts so it is live from the first frame.
     setLocalViewerDeliveryMode(deliveryMode);
-    enterStream(`viewer:${broadcastId}`);
 
     const session = new ViewerSession(
       serverUrl,

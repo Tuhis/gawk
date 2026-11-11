@@ -108,7 +108,8 @@ import { TILE_AUTO_RETRIES, TILE_RETRY_DELAYS_MS } from './tileRetry';
 import { NARROW_QUERY } from '../../lib/useMediaMatch';
 import { useRoomStore } from '../../state/roomStore';
 import { useTransportStore } from '../../state/transportStore';
-import { resetSwitchForTest, setSwitchDepsForTest } from '../pop/switch';
+import { optOut, resetSwitchForTest, setSwitchDepsForTest } from '../pop/switch';
+import { usePopStore } from '../pop/popStore';
 import {
   ROOM_CLIENT_WEB_VIEWER,
   ROOM_COMMAND_ATTACH,
@@ -1488,6 +1489,27 @@ describe('RoomScreen and local relays (R74)', () => {
     expect((roomSessions[1].opts as PopOpts).serverUrl).toBe(LAN);
     expect(roomSessions[1].code).toBe('AB2CD3');
     expect((roomSessions[1].opts as PopOpts).followOffers).toBeFalsy();
+  });
+
+  // OD18: "Use … instead" holds for this room. Its tiles are part of the
+  // room, so their sessions must not end the opt-out on the redial it causes.
+  it('"Use … instead" in a room with tiles redials home and stays there', async () => {
+    const first = await joinAs();
+    await act(async () => (first.cbs as PopCbs).onLocalRelay?.({ kind: 'offer', offer: OFFER }));
+    await waitFor(() => expect(roomSessions).toHaveLength(2));
+    act(() => roomSessions[1].cbs.onState(state()));
+    await waitFor(() => expect(activeViewerIds()).toEqual(['AAAAAA', 'BBBBBB', 'CCCCCC']));
+    act(() => optOut());
+    await waitFor(() => expect(roomSessions).toHaveLength(3));
+    const home = roomSessions[2];
+    expect((home.opts as PopOpts).serverUrl).not.toBe(LAN);
+    expect((home.opts as PopOpts).followOffers).toBe(false);
+    act(() => home.cbs.onState(state()));
+    await act(async () => (home.cbs as PopCbs).onLocalRelay?.({ kind: 'offer', offer: OFFER }));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(roomSessions).toHaveLength(3);
+    expect(useTransportStore.getState().resolvedSource).not.toBe('pop');
+    expect(usePopStore.getState().declined).toEqual({ handle: 'pop-uid-1', name: 'Assembly 2026' });
   });
 
   it('a room session the PoP cannot serve sends the tab back home', async () => {
