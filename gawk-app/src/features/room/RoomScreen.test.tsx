@@ -1500,3 +1500,70 @@ describe('RoomScreen and local relays (R74)', () => {
     expect(useTransportStore.getState().resolvedSource).not.toBe('pop');
   });
 });
+
+// A remote tile's own viewer stats, opened from a right-click on the tile
+// (the standalone viewer's menu entry). The panel names the tile it belongs
+// to and lives in the room root, not inside the tile that clips its content.
+describe('RoomScreen tile stats', () => {
+  const statsDialog = () => screen.queryByRole('dialog', { name: /^Stream stats/ });
+
+  it('a right-click on a tile offers Stats, which opens that tile’s stats titled with its name', async () => {
+    await joinAs();
+    await waitFor(() => expect(activeViewerIds()).toEqual(['AAAAAA', 'BBBBBB', 'CCCCCC']));
+    const charlie = viewerSessions.find((v) => v.id === 'CCCCCC')!;
+    act(() => charlie.cbs.onStats({ framesCompleted: 4, frameWidth: 1920, frameHeight: 1080, receivedFps: 60 }));
+    const tile = screen.getAllByTestId('room-tile')[2];
+    fireEvent.contextMenu(tile);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Stats' }));
+    const dialog = statsDialog()!;
+    expect(dialog).toBeTruthy();
+    expect(dialog.getAttribute('aria-label')).toBe('Stream stats — charlie');
+    expect(within(dialog).getByText('charlie')).toBeTruthy();
+    expect(within(dialog).getByText('1920×1080 @ 60')).toBeTruthy();
+    expect(tile.contains(dialog)).toBe(false);
+    // The room's hotkey is not wired, so the footer must not offer it.
+    expect(dialog.textContent).toContain('Right-click the tile to toggle');
+  });
+
+  it('the menu toggles the open tile’s stats and switches to another tile’s', async () => {
+    await joinAs();
+    const tiles = screen.getAllByTestId('room-tile');
+    fireEvent.contextMenu(tiles[0]);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Stats' }));
+    expect(statsDialog()!.getAttribute('aria-label')).toBe('Stream stats — alpha');
+    fireEvent.contextMenu(tiles[2]);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Stats' }));
+    expect(screen.getAllByRole('dialog', { name: /^Stream stats/ })).toHaveLength(1);
+    expect(statsDialog()!.getAttribute('aria-label')).toBe('Stream stats — charlie');
+    fireEvent.contextMenu(tiles[2]);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Hide stats' }));
+    expect(statsDialog()).toBeNull();
+  });
+
+  it('the close button closes it, and the room menu off a tile offers no Stats', async () => {
+    await joinAs();
+    fireEvent.contextMenu(screen.getAllByTestId('room-tile')[0]);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Stats' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close stats' }));
+    expect(statsDialog()).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'More options' }));
+    expect(screen.queryByRole('menuitem', { name: 'Stats' })).toBeNull();
+    expect(screen.getByRole('menuitem', { name: 'Leave room' })).toBeTruthy();
+  });
+
+  it('closes when its tile’s attachment is removed', async () => {
+    const room = await joinAs();
+    fireEvent.contextMenu(screen.getAllByTestId('room-tile')[1]);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Stats' }));
+    expect(statsDialog()).toBeTruthy();
+    act(() =>
+      room.cbs.onEvent({
+        seq: 4,
+        kind: ROOM_EVENT_ATTACHMENT_REMOVED,
+        attachment: { broadcastId: 'BBBBBB' },
+        reason: ROOM_DETACH_REASON_CREATOR,
+      }),
+    );
+    expect(statsDialog()).toBeNull();
+  });
+});
