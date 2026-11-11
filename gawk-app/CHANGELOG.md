@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.61.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.60.2...gawk-app/v0.61.0) (2026-11-10)
+
+
+### Features
+
+* **app:** Fit, a room layout that follows the streams' shapes (R83) ([#761](https://github.com/Tuhis/gawk/issues/761)) ([b1e3daf](https://github.com/Tuhis/gawk/commit/b1e3daf59f1386d062e68cb624e6b74a18c4bb07))
+* **app:** send a browser broadcast's GOPs behind their keyframes, opt-in (R84 BR2, BR3) ([#765](https://github.com/Tuhis/gawk/issues/765)) ([e2daea0](https://github.com/Tuhis/gawk/commit/e2daea00ad32e31dedb8fdf51611fd58cc714e08))
+* **relay:** ingest the browser's keyframe carriers (R84 BR1) ([#764](https://github.com/Tuhis/gawk/issues/764)) ([86cddb9](https://github.com/Tuhis/gawk/commit/86cddb9f4322a89bf59e3f0aa49a4d912c348eab))
+
+
+### Bug Fixes
+
+* **app:** end a worker broadcast whose worker dies silently ([#720](https://github.com/Tuhis/gawk/issues/720)) ([fbf2731](https://github.com/Tuhis/gawk/commit/fbf2731eaf9fd543d46aa99a52a11116eb738ca7))
+* **app:** give the iPhone fullscreen playhead a per-mode live-edge cushion ([#721](https://github.com/Tuhis/gawk/issues/721)) ([6e97247](https://github.com/Tuhis/gawk/commit/6e972476732d56d557b1796c17965167b395323c))
+* **app:** give the room header the full width over the phone sheet ([#742](https://github.com/Tuhis/gawk/issues/742)) ([5d28239](https://github.com/Tuhis/gawk/commit/5d282390c4a419ca9a3572569c0ff95185f49914))
+* **app:** keep the room footer's controls apart on phones ([#725](https://github.com/Tuhis/gawk/issues/725)) ([7fa278b](https://github.com/Tuhis/gawk/commit/7fa278bdcf6db967101f23a0766045fea6871d78))
+* **app:** prune the MSE presentation to a byte budget, cut at a keyframe ([#726](https://github.com/Tuhis/gawk/issues/726)) ([456599f](https://github.com/Tuhis/gawk/commit/456599f17b90ce95f5db2ed765addef7ddca2e17))
+* **app:** re-dial a room tile whose viewer session gave up ([#723](https://github.com/Tuhis/gawk/issues/723)) ([592659d](https://github.com/Tuhis/gawk/commit/592659dbaa3b8c325a0999b86719079d35ac6708))
+* **app:** recover a stalled iPhone native-fullscreen presentation ([#724](https://github.com/Tuhis/gawk/issues/724)) ([a6e9f1f](https://github.com/Tuhis/gawk/commit/a6e9f1f212d00e4fe313b292a7c30e508615abf8))
+* **app:** say why the broadcaster fell back to the main-thread pipeline ([#722](https://github.com/Tuhis/gawk/issues/722)) ([c96353a](https://github.com/Tuhis/gawk/commit/c96353a216a7991d2ae0d987b85842eeaa6ea946))
+* **r22:** heal resume-after-park as a discontinuity in the MSE surface ([#727](https://github.com/Tuhis/gawk/issues/727)) ([4f9ed4d](https://github.com/Tuhis/gawk/commit/4f9ed4da84c9d5a5869823b4e5caf3e7b44d186e))
+* **relay:** tell a viewer refused for capacity that the stream is full (4018/4019) ([#728](https://github.com/Tuhis/gawk/issues/728)) ([139555c](https://github.com/Tuhis/gawk/commit/139555c6ab8b34879431c08b36a6099abd2075f6))
+* **relay:** tell a wedged viewer its video cannot be delivered ([#729](https://github.com/Tuhis/gawk/issues/729)) ([2c91622](https://github.com/Tuhis/gawk/commit/2c916223eebc76f67c706c1d36ae6a778344d55a))
+
 ## [0.60.2](https://github.com/Tuhis/gawk/compare/gawk-app/v0.60.1...gawk-app/v0.60.2) (2026-11-04)
 
 
