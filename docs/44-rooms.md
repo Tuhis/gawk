@@ -571,6 +571,11 @@ viewer uses today. Concretely:
   bottom sheet.
 - **Own tile**: an accent ring and a glass bar inside the tile with
   Stop, Source, Quality, Stats and Detach; it fades with the chrome.
+- **Tile stats** (added 2026-11-11): right-clicking a remote tile adds
+  Stats / Hide stats to the room menu. It opens the standalone viewer's
+  stats overlay for that tile's own session, titled with the tile's label,
+  one tile at a time; detaching the tile closes it. The broadcaster's own
+  preview tile has no entry (their stats are in the topbar).
 - **Keys**: 1–4 focus that POV, 0 returns to grid; the number sits on
   each tile while the chrome is shown. Focus shows the other POVs as
   small tiles in a glass strip at the top right, on the lowest-cost

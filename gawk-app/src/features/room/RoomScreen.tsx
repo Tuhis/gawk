@@ -194,6 +194,12 @@ export function RoomView({
   header,
 }: RoomViewProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
+  // The root as state too: a tile portals its stats panel into it.
+  const [rootEl, setRootEl] = useState<HTMLDivElement | null>(null);
+  const setRoot = useCallback((el: HTMLDivElement | null) => {
+    rootRef.current = el;
+    setRootEl(el);
+  }, []);
   const status = useRoomStore((s) => s.status);
   const snapshot = useRoomStore((s) => s.snapshot);
   const retryNote = useRoomStore((s) => s.retryNote);
@@ -446,7 +452,16 @@ export function RoomView({
     if (!panelOpen) setConfirmingEnd(false);
   }, [panelOpen]);
 
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  // `tile`: the remote tile the menu was opened on, which adds its Stats.
+  const [menu, setMenu] = useState<{ x: number; y: number; tile?: string } | null>(null);
+  // The one tile whose stats panel is open, by broadcast ID.
+  const [statsTile, setStatsTile] = useState<string | null>(null);
+  const openTileMenu = useCallback((tile: string, x: number, y: number) => setMenu({ x, y, tile }), []);
+  const closeStats = useCallback(() => setStatsTile(null), []);
+  // A detached tile's panel closes for good, so its stats never reappear
+  // on their own when the same broadcast is attached again. Adjusted during
+  // render, like the fit result below.
+  if (statsTile !== null && !attachments.some((a) => a.broadcastId === statsTile)) setStatsTile(null);
   const [presetMenu, setPresetMenu] = useState<{ x: number; y: number } | null>(null);
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
   const presetButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -658,7 +673,16 @@ export function RoomView({
     checked: preset === p.id,
     onSelect: () => setPreset(p.id),
   }));
+  const menuTile = menu?.tile;
   const menuItems: MenuItem[] = [
+    ...(menuTile
+      ? [
+          {
+            label: statsTile === menuTile ? 'Hide stats' : 'Stats',
+            onSelect: () => setStatsTile((t) => (t === menuTile ? null : menuTile)),
+          },
+        ]
+      : []),
     { label: 'Copy room link', onSelect: copyLink },
     ...(dynamic ? [{ label: 'Copy room code', onSelect: copyCode }] : []),
     { label: 'Change nickname…', onSelect: () => setEditingNick(true) },
@@ -805,6 +829,10 @@ export function RoomView({
               onFocus={focus}
               box={box}
               onAspect={onAspect}
+              statsOpen={statsTile === a.broadcastId}
+              statsHost={rootEl}
+              onTileMenu={openTileMenu}
+              onCloseStats={closeStats}
             />
           );
         });
@@ -880,7 +908,7 @@ export function RoomView({
 
   return (
     <div
-      ref={rootRef}
+      ref={setRoot}
       className={[styles.root, isFullscreen && tier === 'pseudo' ? styles.pseudoFullscreen : ''].join(' ')}
       data-mode={effectiveMode}
       data-status={status}

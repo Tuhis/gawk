@@ -1,10 +1,14 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import styles from './room.module.css';
 import { Button } from '../../ui/Button';
 import { IconButton } from '../../ui/IconButton';
 import { OpenIcon, SpeakerIcon, SpeakerMutedIcon } from '../../ui/Icons';
 import { useViewerConnection } from '../viewer/useViewerConnection';
 import { isFullErrorKind } from '../viewer/fullRefusal';
+import { StatsOverlay } from '../viewer/StatsOverlay';
+import { DiagnosticsBuffer } from '../../lib/diagnostics';
+import type { ViewerStats } from '../../transport/viewer';
 import type { AudioOutput } from '../viewer/audioSink';
 import type { PlaybackConfig } from '../viewer/playbackPresets';
 import type { RoomAttachment } from '../../transport/wire';
@@ -56,6 +60,8 @@ interface FrameProps {
   surface: ReactNode;
   // Centred state text, if any.
   state?: ReactNode;
+  // A right-click on the tile; absent ⇒ the room's own menu handles it.
+  onContextMenu?: (e: MouseEvent<HTMLDivElement>) => void;
 }
 
 // The tile shell shared by a remote POV and the broadcaster's own preview:
@@ -78,6 +84,7 @@ function TileFrame({
   audioControls,
   surface,
   state,
+  onContextMenu,
 }: FrameProps) {
   const { broadcastId } = attachment;
   const away = !attachment.live;
@@ -112,6 +119,7 @@ function TileFrame({
       tabIndex={small ? 0 : undefined}
       aria-label={small ? `Focus ${attachment.label || `stream ${index}`}` : undefined}
       onClick={small ? () => onFocus(broadcastId) : undefined}
+      onContextMenu={onContextMenu}
       onKeyDown={
         small
           ? (e) => {
@@ -184,6 +192,13 @@ interface Props {
   onFocus: (broadcastId: string) => void;
   box?: Rect;
   onAspect?: AspectReport;
+  // The tile's stats: the room owns which tile's panel is open (one at a
+  // time); the tile owns the stats and draws the panel into `statsHost`,
+  // the room root, because a tile clips its content.
+  statsOpen?: boolean;
+  statsHost?: HTMLElement | null;
+  onTileMenu?: (broadcastId: string, x: number, y: number) => void;
+  onCloseStats?: () => void;
 }
 
 // What the current attempt's session is doing, as far as retrying goes.
@@ -267,12 +282,16 @@ function RoomTileSession({
   onAspect,
   onPhase,
   onRetry,
+  statsOpen = false,
+  statsHost = null,
+  onTileMenu,
+  onCloseStats,
 }: SessionProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const { broadcastId } = attachment;
   // Read once per mount: the tile's level is its own persisted preference.
   const [initialVolume] = useState(() => loadTileVolume(broadcastId));
-  const { status, stats, audio, popFull, endReason, errorFatal, errorKind } = useViewerConnection(
+  const { status, stats, audio, popFull, endReason, errorFatal, errorKind, codec, telemetrySessionId } = useViewerConnection(
     broadcastId,
     canvasRef,
     config.playout,
@@ -297,6 +316,22 @@ function RoomTileSession({
   useEffect(() => {
     if (frameW > 0 && frameH > 0) onAspect?.(broadcastId, frameW, frameH);
   }, [onAspect, broadcastId, frameW, frameH]);
+
+  // The stats panel's sample window, as the standalone viewer keeps it: the
+  // received bitrate needs two samples, so it fills whether or not the
+  // panel is open. A retry's new session starts a new one.
+  const [diag] = useState(() => new DiagnosticsBuffer<ViewerStats>());
+  useEffect(() => {
+    if (stats) diag.push(stats);
+  }, [diag, stats]);
+  const [statsCopied, setStatsCopied] = useState(false);
+  const copyDiagnostics = useCallback(() => {
+    const json = diag.build({ surface: 'viewer', broadcastId, codec, telemetrySessionId });
+    void navigator.clipboard?.writeText(json).then(() => {
+      setStatsCopied(true);
+      setTimeout(() => setStatsCopied(false), 1800);
+    });
+  }, [diag, broadcastId, codec, telemetrySessionId]);
 
   const { setSuppressed } = audio;
   useEffect(() => {
@@ -385,25 +420,55 @@ function RoomTileSession({
     muteButton
   );
 
+  const onContextMenu = onTileMenu
+    ? (e: MouseEvent<HTMLDivElement>) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onTileMenu(broadcastId, e.clientX, e.clientY);
+      }
+    : undefined;
+
   return (
-    <TileFrame
-      attachment={attachment}
-      index={index}
-      stripIndex={stripIndex}
-      variant={variant}
-      edges={edges}
-      box={box}
-      frameSize={frameW > 0 && frameH > 0 ? { width: frameW, height: frameH } : null}
-      own={own}
-      ownControls={ownControls}
-      showChrome={showChrome}
-      status={status}
-      frames={stats?.framesCompleted ?? 0}
-      onFocus={onFocus}
-      audioControls={audioControls}
-      surface={<canvas ref={canvasRef} className={styles.tileCanvas} />}
-      state={state}
-    />
+    <>
+      <TileFrame
+        attachment={attachment}
+        index={index}
+        stripIndex={stripIndex}
+        variant={variant}
+        edges={edges}
+        box={box}
+        frameSize={frameW > 0 && frameH > 0 ? { width: frameW, height: frameH } : null}
+        own={own}
+        ownControls={ownControls}
+        showChrome={showChrome}
+        status={status}
+        frames={stats?.framesCompleted ?? 0}
+        onFocus={onFocus}
+        audioControls={audioControls}
+        surface={<canvas ref={canvasRef} className={styles.tileCanvas} />}
+        state={state}
+        onContextMenu={onContextMenu}
+      />
+      {statsOpen &&
+        statsHost &&
+        createPortal(
+          <StatsOverlay
+            stats={stats}
+            codec={codec}
+            bitrateBps={(() => {
+              const bytesRate = diag.rate((s) => s.videoBytesReceived);
+              return bytesRate == null ? null : bytesRate * 8;
+            })()}
+            telemetrySessionId={telemetrySessionId}
+            streamName={attachment.label || broadcastId}
+            footer="Right-click the tile to toggle"
+            onClose={() => onCloseStats?.()}
+            onCopy={copyDiagnostics}
+            copied={statsCopied}
+          />,
+          statsHost,
+        )}
+    </>
   );
 }
 
