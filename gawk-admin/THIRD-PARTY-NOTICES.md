@@ -64,12 +64,12 @@ script for what counts as a dependency here and why.
 | `github.com/jackc/pgx/v5` | v5.13.0 | `MIT` | Copyright (c) 2013-2021 Jack Christensen |
 | `github.com/jackc/puddle/v2` | v2.2.3 | `MIT` | Copyright (c) 2018 Jack Christensen |
 | `github.com/json-iterator/go` | v1.1.12 | `MIT` | Copyright (c) 2016 json-iterator |
-| `github.com/klauspost/compress` | v1.20.3 | `Apache-2.0 OR MIT OR BSD-3-Clause` | Copyright (c) 2012 The Go Authors. All rights reserved<br>Copyright (c) 2019 Klaus Post. All rights reserved<br>Copyright 2016-2017 The New York Times Company<br>Copyright (c) 2015 Klaus Post<br>Copyright (c) 2011 The Snappy-Go Authors. All rights reserved<br>Copyright 2016 The filepathx Authors |
+| `github.com/klauspost/compress` | v1.20.4 | `Apache-2.0 OR MIT OR BSD-3-Clause` | Copyright (c) 2012 The Go Authors. All rights reserved<br>Copyright (c) 2019 Klaus Post. All rights reserved<br>Copyright 2016-2017 The New York Times Company<br>Copyright (c) 2015 Klaus Post<br>Copyright (c) 2011 The Snappy-Go Authors. All rights reserved<br>Copyright 2016 The filepathx Authors |
 | `github.com/modern-go/concurrent` | v0.0.0-20180306012644-bacd9c7ef1dd | `Apache-2.0` | — |
 | `github.com/modern-go/reflect2` | v1.0.3-0.20250322232337-35a7c28c31ee | `Apache-2.0` | — |
 | `github.com/munnerz/goautoneg` | v0.0.0-20191010083416-a7dc8b61c822 | `BSD-3-Clause` | Copyright (c) 2011, Open Knowledge Foundation Ltd |
 | `github.com/nats-io/nats.go` | v1.55.0 | `Apache-2.0` | — |
-| `github.com/nats-io/nkeys` | v0.4.16 | `Apache-2.0` | — |
+| `github.com/nats-io/nkeys` | v0.4.17 | `Apache-2.0` | — |
 | `github.com/nats-io/nuid` | v1.0.1 | `Apache-2.0` | — |
 | `github.com/pmezard/go-difflib` | v1.0.1-0.20181226105442-5d4384ee4fb2 | `BSD-2-Clause` | Copyright (c) 2013, Patrick Mezard |
 | `github.com/prometheus/client_golang` | v1.25.0 | `Apache-2.0 OR UNKNOWN` | Copyright 2012-2015 The Prometheus Authors<br>Copyright 2013-2015 Blake Mizerany, Björn Rabenstein<br>Copyright 2010 The Go Authors |
