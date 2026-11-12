@@ -9,7 +9,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { ServerIndicator } from '../servers/ServerIndicator';
 import { useTransportStore } from '../../state/transportStore';
 import { usePopStore } from './popStore';
-import { OPT_OUT_KEY, resetSwitchForTest } from './switch';
+import { LEGACY_OPT_OUT_KEY, resetSwitchForTest } from './switch';
 
 beforeEach(() => {
   localStorage.clear();
@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 describe('the local relay chip', () => {
-  it('names the PoP on a switched session, and "Use … instead" goes home and remembers it', () => {
+  it('names the PoP on a switched session, and "Use … instead" goes home without storing it', () => {
     act(() => {
       useTransportStore.getState().setOfferOverride('https://192.168.1.20:4433', [], 'pop-uid-1', 'Assembly 2026');
       usePopStore.setState({ phase: 'switched' });
@@ -34,7 +34,8 @@ describe('the local relay chip', () => {
     fireEvent.click(screen.getByRole('button', { name: /Assembly 2026 · local relay/ }));
     fireEvent.click(screen.getByRole('menuitem', { name: `Use ${window.location.host} instead` }));
     expect(useTransportStore.getState().resolvedSource).not.toBe('pop');
-    expect(JSON.parse(localStorage.getItem(OPT_OUT_KEY) ?? '[]')).toEqual(['pop-uid-1']);
+    expect(localStorage.getItem(LEGACY_OPT_OUT_KEY)).toBe(null);
+    expect(usePopStore.getState().declined).toEqual({ handle: 'pop-uid-1', name: 'Assembly 2026' });
   });
 
   it('strips control and bidi characters from the offered name', () => {

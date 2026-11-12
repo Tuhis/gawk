@@ -2,7 +2,8 @@
 //
 // docs/76 item 43, the web client's half of PP14: what a fresh
 // LocalRelayOffer does under each permission state, the parallel candidate
-// probes, failure, the opt-out, and the broadcaster who is already live.
+// probes, failure, the per-stream opt-out, and the broadcaster who is already
+// live.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ProbeOptions, ProbeResult } from '../servers/probe';
@@ -10,7 +11,8 @@ import type { LocalRelayOfferMessage } from '../../transport/wire';
 import { useTransportStore } from '../../state/transportStore';
 import { usePopStore } from './popStore';
 import {
-  OPT_OUT_KEY,
+  LEGACY_OPT_OUT_KEY,
+  enterStream,
   POP_PROMPT_PROBE_TIMEOUT_MS,
   considerOffer,
   noteLocalRelay,
@@ -183,20 +185,29 @@ describe('considerOffer failure and repeats', () => {
   });
 });
 
-describe('opt-out per PoP handle', () => {
-  it('"Use … instead" goes home, is remembered per handle, and that PoP’s offers are then ignored', async () => {
-    const h = harness('granted');
+describe('opt-out for the current stream only', () => {
+  async function switchedViewer(h: ReturnType<typeof harness>, stream = 'viewer:ABC123') {
+    enterStream(stream);
     const done = considerOffer(offer(), 'viewer');
     await flush();
-    h.probes[0].settle(OK);
+    h.probes[h.probes.length - 2].settle(OK);
     await done;
+    expect(useTransportStore.getState().resolvedSource).toBe('pop');
+  }
+
+  it('"Use … instead" goes home, stores nothing, and the redial of the same stream ignores the offer', async () => {
+    const h = harness('granted');
+    await switchedViewer(h);
     optOut();
     expect(useTransportStore.getState().resolvedSource).toBe('default');
-    expect(JSON.parse(localStorage.getItem(OPT_OUT_KEY) ?? '[]')).toEqual(['pop-uid-1']);
+    expect(localStorage.getItem(LEGACY_OPT_OUT_KEY)).toBe(null);
+    // The redial onto home for the same stream gets the offer again.
+    enterStream('viewer:ABC123');
     await considerOffer(offer(), 'viewer');
     expect(h.probes).toHaveLength(2);
     // The ignored offer is still named, so the user can pick it again.
     expect(usePopStore.getState().declined).toEqual({ handle: 'pop-uid-1', name: 'Assembly 2026' });
+    expect(willFollowOffers()).toBe(false);
     // Another PoP is not opted out.
     const other = considerOffer(offer({ handle: 'pop-uid-2' }), 'viewer');
     await flush();
@@ -206,16 +217,63 @@ describe('opt-out per PoP handle', () => {
     await other;
   });
 
+  it('joining another stream offers the PoP again and follows it', async () => {
+    const h = harness('granted');
+    await switchedViewer(h);
+    optOut();
+    enterStream('room:{"kind":"join","code":"party"}');
+    expect(usePopStore.getState().declined).toBe(null);
+    expect(willFollowOffers()).toBe(true);
+    const done = considerOffer(offer(), 'room');
+    await flush();
+    expect(h.probes).toHaveLength(4);
+    h.probes[3].settle(OK);
+    await done;
+    expect(useTransportStore.getState().resolvedSource).toBe('pop');
+  });
+
+  it('a reload remembers nothing, and an opt-out stored by an older build is ignored and cleared', async () => {
+    const h = harness('granted');
+    localStorage.setItem(LEGACY_OPT_OUT_KEY, JSON.stringify(['pop-uid-1']));
+    await primeLocalNetworkPermission();
+    expect(localStorage.getItem(LEGACY_OPT_OUT_KEY)).toBe(null);
+    enterStream('viewer:ABC123');
+    const done = considerOffer(offer(), 'viewer');
+    await flush();
+    expect(h.probes).toHaveLength(2);
+    h.probes[0].settle(OK);
+    await done;
+    expect(useTransportStore.getState().resolvedSource).toBe('pop');
+  });
+
   it('picking it again forgets the opt-out and follows the offer', async () => {
     const h = harness('granted');
-    localStorage.setItem(OPT_OUT_KEY, JSON.stringify(['pop-uid-1']));
-    await considerOffer(offer(), 'viewer');
-    expect(h.probes).toHaveLength(0);
+    await switchedViewer(h);
+    optOut();
     const again = pickLocalRelayAgain();
     await flush();
-    expect(localStorage.getItem(OPT_OUT_KEY)).toBe('[]');
-    h.probes[0].settle(OK);
+    expect(usePopStore.getState().declined).toBe(null);
+    expect(h.probes).toHaveLength(4);
+    h.probes[2].settle(OK);
     await again;
+    expect(useTransportStore.getState().resolvedSource).toBe('pop');
+  });
+
+  it('a broadcaster’s opt-out lasts one broadcast; when it ends the PoP is offered again', async () => {
+    const h = harness('granted');
+    await switchedViewer(h, 'broadcast');
+    optOut();
+    setBroadcasterLive(true);
+    await considerOffer(offer(), 'broadcaster');
+    expect(h.probes).toHaveLength(2);
+    expect(usePopStore.getState().declined).toEqual({ handle: 'pop-uid-1', name: 'Assembly 2026' });
+    setBroadcasterLive(false);
+    await flush();
+    expect(usePopStore.getState().declined).toBe(null);
+    expect(h.probes).toHaveLength(4);
+    h.probes[2].settle(OK);
+    await flush();
+    await flush();
     expect(useTransportStore.getState().resolvedSource).toBe('pop');
   });
 });
@@ -337,7 +395,7 @@ describe('primeLocalNetworkPermission', () => {
 });
 
 describe('lr=1 after this tab gave up on a PoP', () => {
-  it('a PoP that failed in this tab, or one opted out of, stops lr=1 so home never holds demand for nothing', async () => {
+  it('a PoP that failed in this tab, or one opted out of on this stream, stops lr=1 so home never holds demand for nothing', async () => {
     const h = harness('granted');
     const done = considerOffer(offer(), 'viewer');
     await flush();
@@ -345,9 +403,13 @@ describe('lr=1 after this tab gave up on a PoP', () => {
     await done;
     expect(willFollowOffers()).toBe(false);
     resetSwitchForTest();
-    harness('granted');
-    localStorage.setItem(OPT_OUT_KEY, JSON.stringify(['pop-uid-1']));
-    await considerOffer(offer(), 'viewer');
+    const h2 = harness('granted');
+    enterStream('viewer:ABC123');
+    const second = considerOffer(offer(), 'viewer');
+    await flush();
+    h2.probes[0].settle(OK);
+    await second;
+    optOut();
     expect(willFollowOffers()).toBe(false);
     // Another PoP's offer is a fresh decision again.
     usePopStore.setState({ declined: null, offer: offer({ handle: 'pop-uid-2' }) });

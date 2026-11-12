@@ -51,6 +51,7 @@ import type { ViewerStats } from '../../transport/viewer';
 import { HOME } from '../../routing';
 import { ServerIndicator } from '../servers/ServerIndicator';
 import { ServerPickerPanel } from '../servers/ServerPickerPanel';
+import { enterStream } from '../pop/switch';
 
 const CONTROL_IDLE_MS = 3000;
 
@@ -271,6 +272,10 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   // activates: no tee flag, no video element, plain element fullscreen.
   // Sampled once per mount.
   const [gated] = useState(() => !elementFullscreenAvailable());
+
+  // R74 (docs/76 item 43.6, OD18): an opt-out holds for the stream this screen
+  // shows. Declared before the connection, so it runs before the first dial.
+  useEffect(() => enterStream(`viewer:${broadcastId}`), [broadcastId]);
 
   // The connection (worker-offloaded when supported, main-thread otherwise)
   // owns decode + render and reports back only view state — no VideoFrame ever
