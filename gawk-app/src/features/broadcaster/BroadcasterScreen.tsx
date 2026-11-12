@@ -71,6 +71,7 @@ import { parseGrant, readGrant, type RoomGrant } from '../room/grantHandoff';
 import { takeRoomReturn } from '../room/roomReturn';
 import { BACKGROUND_STOP_NOTE, BackgroundWatchdog } from './backgroundWatchdog';
 import {
+  enterStream,
   leaveUnreachableLocalRelay,
   noteLocalRelay,
   probeHomeForOffer,
@@ -722,6 +723,9 @@ export function BroadcasterScreen({
   // first /publish. Never while a broadcast runs: its publish session says
   // the same.
   useEffect(() => {
+    // An opt-out (item 43.6) holds for one broadcast: this screen's stream,
+    // ended by setBroadcasterLive(false).
+    enterStream('broadcast');
     if (pipelineRef.current) return;
     void probeHomeForOffer();
   }, [resolvedServerUrl]);

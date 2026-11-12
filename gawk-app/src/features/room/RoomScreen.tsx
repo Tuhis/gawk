@@ -94,6 +94,7 @@ import { VoiceButton, VoiceDock, VoiceInvite, VoicePanel, VoiceThumbBar } from '
 import { inVoice, useVoiceStore } from './voice/voiceStore';
 import { loadTalkModeChosen, loadVoiceHintSeen, loadVoicePinned, saveVoiceHintSeen, saveVoicePinned } from './voice/voicePrefs';
 import voiceStyles from './voice/voice.module.css';
+import { enterStream, roomStreamKey } from '../pop/switch';
 
 // The viewer's idle period (ViewerScreen CONTROL_IDLE_MS): the dock fades
 // after the same 3 s.
@@ -1319,6 +1320,11 @@ export function RoomView({
 export function RoomScreen({ code, linkNickname = null }: { code: string; linkNickname?: string | null }) {
   const target = useMemo<RoomTarget>(() => ({ kind: 'join', code }), [code]);
   const [grant] = useState(() => readGrant(code));
+  // R74 (docs/76 item 43.6, OD18): an opt-out holds for this room, its tiles
+  // included. One key per screen: tiles and the broadcaster's embedded room
+  // never name a stream of their own. The room dials a macrotask later, so
+  // this runs first.
+  useEffect(() => enterStream(roomStreamKey({ kind: 'join', code })), [code]);
   return (
     <RoomView
       target={target}
