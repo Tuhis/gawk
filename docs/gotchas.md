@@ -283,13 +283,16 @@ Add to it when a new gotcha lands in `docs/`.
   prehashed (BLAKE2b-512) by default, which `ring` cannot verify, so the
   apps use `minisign-verify`. ([docs/48](48-signed-in-place-update.md) D3,
   D7)
-- **ureq's body limit refuses a body of exactly the limit.** Its limit
-  reader errors on the read after `limit` bytes, even when that read would
+- **ureq before 3.5.2 refused a body of exactly its limit.** Its limit
+  reader errored on the read after `limit` bytes, even when that read would
   only find the end. Passing a file's known size as the limit therefore
-  fails every download, and that is how R47's install failed silently in
-  every release from 2.2.0 to 2.4.0. `update::ureq_limit` adds the one byte
-  of headroom. Test a limit with a body of exactly its size, over real
-  HTTP, not with a stubbed download.
+  failed every download, and that is how R47's install failed silently in
+  every release from 2.2.0 to 2.4.0. The fix was one byte of headroom, until
+  ureq 3.5.2 made the limit inclusive and the headroom let a body one byte
+  *over* the limit through. The engine now passes the limit straight through
+  and pins `ureq = "3.5.2"` as its floor; don't lower it, and don't add
+  headroom back. Test a limit with a body of exactly its size and one byte
+  over, over real HTTP, not with a stubbed download.
   ([docs/48](48-signed-in-place-update.md) §8)
 - **The release signing key has two copies that must change together**: the
   `RELEASE_KEY` constant the apps compile in and
