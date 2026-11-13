@@ -292,8 +292,8 @@ script for what counts as a dependency here and why.
 | `windows_x86_64_msvc` | 0.52.6 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
 | `winit` | 0.30.13 | `Apache-2.0` | — |
 | `writeable` | 0.6.4 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
-| `wtransport` | 0.7.1 | `MIT OR Apache-2.0` | Copyright (c) 2023 Biagio Festa |
-| `wtransport-proto` | 0.7.1 | `MIT OR Apache-2.0` | Copyright (c) 2023 Biagio Festa |
+| `wtransport` | 0.7.2 | `MIT OR Apache-2.0` | Copyright (c) 2023 Biagio Festa |
+| `wtransport-proto` | 0.7.2 | `MIT OR Apache-2.0` | Copyright (c) 2023 Biagio Festa |
 | `x509-parser` | 0.18.1 | `MIT OR Apache-2.0` | Copyright (c) 2017 Pierre Chifflier |
 | `xmlwriter` | 0.1.0 | `MIT` | Copyright (c) 2019 Reizner Evgeniy |
 | `yasna` | 0.6.0 | `MIT OR Apache-2.0` | Copyright (c) 2016 Masaki Hara |

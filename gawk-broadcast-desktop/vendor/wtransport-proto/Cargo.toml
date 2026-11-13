@@ -13,7 +13,7 @@
 edition = "2021"
 rust-version = "1.86"
 name = "wtransport-proto"
-version = "0.7.1"
+version = "0.7.2"
 authors = ["Biagio Festa"]
 build = false
 autolib = false
