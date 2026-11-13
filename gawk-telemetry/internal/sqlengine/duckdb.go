@@ -23,6 +23,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -93,6 +94,10 @@ func openScoped(opts Options, only map[string]bool, until time.Time) (Engine, er
 	// control that has to be reasoned about.
 	db.SetMaxOpenConns(1)
 	if err := applyBudget(db, opts); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := confine(db, opts.Root); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -170,6 +175,46 @@ func applyBudget(db *sql.DB, opts Options) error {
 		}
 	}
 	return nil
+}
+
+// confine closes the engine off from everything but the data directory. It
+// runs after applyBudget and is the last configuration the connection ever
+// takes: the lock at the end refuses every later SET, whoever issues it.
+//
+// The statement allowlist decides what a query may DO; this decides what it
+// may REACH. A SELECT passes the allowlist and can call read_text, read_csv,
+// glob or an https:// reader, so without this the console read any file the
+// pod could open and fetched any URL it could reach.
+func confine(db *sql.DB, root string) error {
+	// DuckDB matches an allowed directory against the path a statement
+	// names. The views name paths under root as it was given, a query may
+	// name them absolutely, so both spellings are allowed.
+	dirs := []string{sqlString(root)}
+	if abs, err := filepath.Abs(root); err == nil && abs != root {
+		dirs = append(dirs, sqlString(abs))
+	}
+	for _, s := range []string{
+		"SET allowed_directories=[" + strings.Join(dirs, ", ") + "]",
+		"SET autoinstall_known_extensions=false",
+		"SET autoload_known_extensions=false",
+		"SET enable_external_access=false",
+		"SET lock_configuration=true",
+	} {
+		if _, err := db.Exec(s); err != nil {
+			return fmt.Errorf("sqlengine: confining the engine: %s: %w", firstWords(s), err)
+		}
+	}
+	return nil
+}
+
+// outsideRoot adds the console's rule to DuckDB's refusal of a path outside
+// the data directory, which on its own reads as a broken installation
+// ("file system operations are disabled by configuration").
+func (e *engine) outsideRoot(err error) error {
+	if err == nil || !strings.Contains(err.Error(), "file system operations are disabled by configuration") {
+		return err
+	}
+	return fmt.Errorf("%w\nThis console only reads files under the data directory (%s).", err, e.opts.Root)
 }
 
 // register (re)creates the views, each over its learned column list.
@@ -305,7 +350,7 @@ func (e *engine) Query(q string) (*Result, error) {
 				return nil, rerr
 			}
 		}
-		return nil, err
+		return nil, e.outsideRoot(err)
 	}
 	defer rows.Close()
 	if testHookRowsOpen != nil {
@@ -334,7 +379,7 @@ func (e *engine) Query(q string) (*Result, error) {
 			ptrs[i] = &cells[i]
 		}
 		if err := rows.Scan(ptrs...); err != nil {
-			return nil, err
+			return nil, e.outsideRoot(err)
 		}
 		for i, c := range cells {
 			// []byte is how the driver hands back BLOB and some decimal shapes.
@@ -350,7 +395,7 @@ func (e *engine) Query(q string) (*Result, error) {
 		res.Rows = append(res.Rows, cells)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, e.outsideRoot(err)
 	}
 	res.RowCount = len(res.Rows)
 	res.ElapsedMs = time.Since(started).Milliseconds()

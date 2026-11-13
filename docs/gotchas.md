@@ -85,6 +85,17 @@ Add to it when a new gotcha lands in `docs/`.
   returns it, so the service runs every query in a short-lived worker
   (`sqlengine.OpenIsolated`); never open DuckDB in the service process.
   ([docs/36](36-telemetry-ui-history.md) §TH10)
+- **A first-verb SQL allowlist does not make a DuckDB console read-only.**
+  `SELECT` reaches `read_text`, `glob` and `https://` readers, and
+  `EXPLAIN ANALYZE` executes the statement it explains, `COPY … TO`
+  included. The telemetry console is confined in the engine as well
+  (`sqlengine` `confine`: external access off, the data directory the only
+  allowed directory, configuration locked), and `Check` looks past
+  `EXPLAIN`. Any new DuckDB connection that runs operator SQL needs both.
+  Two side effects: `duckdb_extensions()` no longer answers (it stats the
+  home directory), and the worker inherits an allowlist of environment
+  names (`workerEnvKeep`), so a variable a worker should see must be added
+  there. ([docs/36](36-telemetry-ui-history.md) §TH10)
 - **Registering every telemetry SQL view at once grows with the store, so
   it must never gate the engine.** The open once also built the whole view
   catalogue in a single worker, which sniffs every file under `/data`, and a
