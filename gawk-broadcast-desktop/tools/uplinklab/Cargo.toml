@@ -30,7 +30,7 @@ path = "src/engine.rs"
 gawk-wire = { path = "../../crates/wire" }
 # Without `self-update`: the lab installs nothing.
 gawk-engine = { path = "../../crates/engine", default-features = false }
-wtransport = { version = "0.7.1", features = ["dangerous-configuration", "quinn"] }
+wtransport = { version = "0.7.2", features = ["dangerous-configuration", "quinn"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 
 [patch.crates-io]
