@@ -579,8 +579,11 @@ func TestPublicStatuszServesStoredSnapshot(t *testing.T) {
 		return rs.Totals.Broadcasts
 	}
 
+	// The server stamps the snapshot somewhere between these two readings.
+	// The skip below needs the earliest it can be, the sleep the latest.
+	asked := time.Now()
 	_, first := h3Get(t, ctx, clientTLS, url)
-	stored := time.Now() // the snapshot is at least this old from here on
+	stored := time.Now()
 	if n := broadcasts(first); n != 0 {
 		t.Fatalf("first snapshot lists %d broadcasts, want 0", n)
 	}
@@ -588,7 +591,7 @@ func TestPublicStatuszServesStoredSnapshot(t *testing.T) {
 		t.Fatalf("StartPublish: %v", err)
 	}
 	_, second := h3Get(t, ctx, clientTLS, url)
-	if time.Since(stored) >= ops.PublicStatuszMaxAge {
+	if time.Since(asked) >= ops.PublicStatuszMaxAge {
 		t.Skip("the second request took longer than the cache window; nothing to judge")
 	}
 	if !bytes.Equal(first, second) {
