@@ -453,15 +453,10 @@ fn download_agent() -> ureq::Agent {
         .into()
 }
 
-/// ureq's body limit for "at most `limit` bytes". ureq errors on the read
-/// after `limit` bytes are in, even when that read would find the end, so a
-/// body of exactly `limit` bytes fails; one more byte of headroom accepts
-/// it, and a longer body still fails on its next byte.
-fn ureq_limit(limit: u64) -> u64 {
-    limit.saturating_add(1)
-}
-
-/// GETs a small file whole, refusing more than `limit` bytes.
+/// GETs a small file whole, refusing more than `limit` bytes. ureq's limit
+/// is inclusive from 3.5.2 (a body of exactly `limit` bytes is whole); the
+/// engine's `ureq = "3.5.2"` floor is what makes passing it straight through
+/// right (docs/gotchas.md).
 fn fetch(url: &str, limit: u64) -> Result<Vec<u8>, String> {
     let mut resp = download_agent()
         .get(url)
@@ -469,7 +464,7 @@ fn fetch(url: &str, limit: u64) -> Result<Vec<u8>, String> {
         .map_err(|e| e.to_string())?;
     resp.body_mut()
         .with_config()
-        .limit(ureq_limit(limit))
+        .limit(limit)
         .read_to_vec()
         .map_err(|e| e.to_string())
 }
@@ -481,11 +476,7 @@ fn download(url: &str, path: &Path, limit: u64) -> Result<String, String> {
         .get(url)
         .call()
         .map_err(|e| e.to_string())?;
-    let mut body = resp
-        .body_mut()
-        .with_config()
-        .limit(ureq_limit(limit))
-        .reader();
+    let mut body = resp.body_mut().with_config().limit(limit).reader();
     let mut out = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 64 * 1024];
