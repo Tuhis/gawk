@@ -85,6 +85,17 @@ Add to it when a new gotcha lands in `docs/`.
   returns it, so the service runs every query in a short-lived worker
   (`sqlengine.OpenIsolated`); never open DuckDB in the service process.
   ([docs/36](36-telemetry-ui-history.md) §TH10)
+- **A first-verb SQL allowlist does not make a DuckDB console read-only.**
+  `SELECT` reaches `read_text`, `glob` and `https://` readers, and
+  `EXPLAIN ANALYZE` executes the statement it explains, `COPY … TO`
+  included. The telemetry console is confined in the engine as well
+  (`sqlengine` `confine`: external access off, the data directory the only
+  allowed directory, configuration locked), and `Check` looks past
+  `EXPLAIN`. Any new DuckDB connection that runs operator SQL needs both.
+  Two side effects: `duckdb_extensions()` no longer answers (it stats the
+  home directory), and the worker inherits an allowlist of environment
+  names (`workerEnvKeep`), so a variable a worker should see must be added
+  there. ([docs/36](36-telemetry-ui-history.md) §TH10)
 - **Registering every telemetry SQL view at once grows with the store, so
   it must never gate the engine.** The open once also built the whole view
   catalogue in a single worker, which sniffs every file under `/data`, and a
@@ -1974,10 +1985,17 @@ entries still describe code `gawk-pubsim` runs (now
   registry HMACs IDs with its own stats key, so a token that verifies under
   home's key must be minted over home's `ObfuscateID(id)` and the hello must
   carry that key, not the PoP's ([docs/78](78-pop-telemetry.md) §2).
-- **`/statusz` is served on the public listener too.** One handler serves
-  the HTTP/3 listener and the ops listener, so anything PoP-identifying goes
-  on an ops-only route (`/internal/telemetry/pops`), never into `/statusz`
+- **`/statusz` is served on the public listener too.** Both listeners serve
+  the same document, so anything PoP-identifying goes on an ops-only route
+  (`/internal/telemetry/pops`), never into `/statusz`
   ([docs/78](78-pop-telemetry.md) D7).
+- **The public `/statusz` is up to one second old; the ops one is current.**
+  A snapshot holds `Registry.mu`, the lock every relayed datagram takes, and
+  the HTTP/3 route is unauthenticated, so it serves a stored document for
+  `ops.PublicStatuszMaxAge`. Read the ops listener when pairing a capture
+  with a client's diagnostics. In `internal/transport` tests the helpers
+  set `testHookStatuszFresh`; a server built with a bare `New` serves the
+  cached route ([docs/13](13-observability.md)).
 - **A party broadcast is observed by two relays under one broadcast key.**
   Home sees its PoP-leg publisher and outside viewers, the PoP its own
   broadcaster and LAN viewers. Every relay-line reader must filter by issuer

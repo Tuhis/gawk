@@ -188,8 +188,8 @@ script for what counts as a dependency here and why.
 | `utf_types` | 1.0.0 | `Apache-2.0 OR MIT` | — |
 | `webpki-roots` | 1.0.11 | `CDLA-Permissive-2.0` | — |
 | `writeable` | 0.6.4 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
-| `wtransport` | 0.7.1 | `MIT OR Apache-2.0` | Copyright (c) 2023 Biagio Festa |
-| `wtransport-proto` | 0.7.1 | `MIT OR Apache-2.0` | Copyright (c) 2023 Biagio Festa |
+| `wtransport` | 0.7.2 | `MIT OR Apache-2.0` | Copyright (c) 2023 Biagio Festa |
+| `wtransport-proto` | 0.7.2 | `MIT OR Apache-2.0` | Copyright (c) 2023 Biagio Festa |
 | `x509-parser` | 0.18.1 | `MIT OR Apache-2.0` | Copyright (c) 2017 Pierre Chifflier |
 | `yasna` | 0.6.0 | `MIT OR Apache-2.0` | Copyright (c) 2016 Masaki Hara |
 | `yoke` | 0.8.4 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |

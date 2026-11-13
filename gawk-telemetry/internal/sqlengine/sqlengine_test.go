@@ -140,3 +140,69 @@ func TestParseSize(t *testing.T) {
 		}
 	}
 }
+
+// EXPLAIN ANALYZE runs the statement it explains. With "explain" on the
+// allowlist and nothing looking past it, `EXPLAIN ANALYZE COPY … TO` wrote a
+// file into the store from the console.
+func TestCheckLooksPastExplainAtTheStatementItRuns(t *testing.T) {
+	refused := []string{
+		"EXPLAIN ANALYZE COPY (SELECT 1) TO '/data/rollups/x.ndjson'",
+		"explain analyze copy (select 1) to 'x'",
+		"EXPLAIN COPY (SELECT 1) TO 'x'",
+		"EXPLAIN (ANALYZE) COPY (SELECT 1) TO 'x'",
+		"EXPLAIN (ANALYZE, FORMAT JSON) COPY (SELECT 1) TO 'x'",
+		"EXPLAIN ANALYZE VERBOSE INSERT INTO t VALUES (1)",
+		"EXPLAIN ANALYZE\nDELETE FROM rollups",
+		"EXPLAIN ANALYZE /* c */ COPY (SELECT 1) TO 'x'",
+		"EXPLAIN ANALYZE/**/COPY (SELECT 1) TO 'x'",
+		"EXPLAIN EXPLAIN ANALYZE COPY (SELECT 1) TO 'x'",
+		"EXPLAIN (FORMAT JSON",
+		// A parenthesis inside a comment or a string must not move where the
+		// option list is taken to end (PR #783 review).
+		"EXPLAIN (ANALYZE /* ) SELECT */) COPY (SELECT 1) TO 'x'",
+		"EXPLAIN (ANALYZE -- ) SELECT\n) COPY (SELECT 1) TO 'x'",
+		"EXPLAIN (ANALYZE, FORMAT ')') SELECT */ COPY (SELECT 1) TO 'x'",
+		"EXPLAIN (ANALYZE, FORMAT \")\") SELECT */ COPY (SELECT 1) TO 'x'",
+		// Only a reserved word can open a parenthesised statement: SHOW and
+		// friends could be read as option names.
+		"EXPLAIN (SHOW) COPY (SELECT 1) TO 'x'",
+		"EXPLAIN ANALYSE COPY (SELECT 1) TO 'x'",
+		"EXPLAIN (ANALYSE) COPY (SELECT 1) TO 'x'",
+		"EXPLAIN (FORMAT 'json') COPY (SELECT 1) TO 'x'",
+		"EXPLAIN (FORMAT 'js)on') SELECT 1",
+		"EXPLAIN (FORMAT 'json' /* ) SELECT */) COPY (SELECT 1) TO 'x'",
+		"EXPLAIN (DESCRIBE, ANALYZE) COPY (SELECT 1) TO 'x'",
+		"EXPLAIN (PIVOT /* */) COPY (SELECT 1) TO 'x'",
+		"EXPLAIN ANALYZE",
+		"EXPLAIN",
+	}
+	for _, q := range refused {
+		if _, err := Check(q); !errors.Is(err, ErrRefused) {
+			t.Errorf("Check(%q) = %v, want ErrRefused", q, err)
+		}
+	}
+	allowed := []string{
+		"EXPLAIN SELECT 1",
+		"EXPLAIN ANALYZE SELECT count(*) FROM sessions",
+		"explain analyze with x as (select 1) select * from x",
+		"EXPLAIN (FORMAT JSON) SELECT 1",
+		"EXPLAIN (ANALYZE, FORMAT JSON) SELECT 1",
+		"EXPLAIN ANALYZE (SELECT 1) UNION ALL (SELECT 2)",
+		"EXPLAIN (SELECT 1)",
+		"EXPLAIN ANALYZE FROM rollups",
+		"EXPLAIN ANALYZE\n  SELECT 1;",
+		"EXPLAIN ANALYZE SELECT count(*) FROM rollups WHERE role = 'viewer' -- (why",
+		"EXPLAIN (ANALYZE, FORMAT JSON)\nSELECT /* ( */ ')' FROM rollups",
+		"EXPLAIN ( FORMAT  json ,ANALYZE )SELECT 1",
+		"EXPLAIN (WITH x AS (SELECT 1) SELECT * FROM x)",
+		// Spellings DuckDB accepts and the console accepted before.
+		"EXPLAIN ANALYSE SELECT 1",
+		"EXPLAIN (ANALYSE, FORMAT 'json') SELECT 1",
+		"EXPLAIN (FORMAT 'json') SELECT 1",
+	}
+	for _, q := range allowed {
+		if _, err := Check(q); err != nil {
+			t.Errorf("Check(%q) = %v, want it allowed", q, err)
+		}
+	}
+}

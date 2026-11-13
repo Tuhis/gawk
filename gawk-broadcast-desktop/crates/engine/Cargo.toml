@@ -25,7 +25,7 @@ tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 # `update` passes each file's exact size as the limit (docs/gotchas.md).
 ureq = "3.5.2"
 url = "2"
-wtransport = { version = "0.7.1", features = ["dangerous-configuration", "quinn"] }
+wtransport = { version = "0.7.2", features = ["dangerous-configuration", "quinn"] }
 
 # R47 (docs/48 D6): the Linux install unpacks the one binary from the
 # verified release tarball. Linux only, so neither reaches the EXE or the

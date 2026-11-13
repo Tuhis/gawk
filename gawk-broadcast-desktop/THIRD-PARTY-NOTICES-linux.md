@@ -396,8 +396,8 @@ script for what counts as a dependency here and why.
 | `winnow` | 1.0.5 | `MIT` | — |
 | `wl-clipboard-rs` | 0.9.5 | `MIT OR Apache-2.0` | Copyright (c) 2019 Ivan Molodetskikh |
 | `writeable` | 0.6.4 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
-| `wtransport` | 0.7.1 | `MIT OR Apache-2.0` | Copyright (c) 2023 Biagio Festa |
-| `wtransport-proto` | 0.7.1 | `MIT OR Apache-2.0` | Copyright (c) 2023 Biagio Festa |
+| `wtransport` | 0.7.2 | `MIT OR Apache-2.0` | Copyright (c) 2023 Biagio Festa |
+| `wtransport-proto` | 0.7.2 | `MIT OR Apache-2.0` | Copyright (c) 2023 Biagio Festa |
 | `x11-dl` | 2.21.0 | `MIT` | — |
 | `x11rb` | 0.13.2 | `MIT OR Apache-2.0` | Copyright 2019 x11rb Contributers |
 | `x11rb-protocol` | 0.13.2 | `MIT OR Apache-2.0` | Copyright 2019 x11rb Contributers |

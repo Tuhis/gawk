@@ -35,6 +35,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -89,6 +90,39 @@ func referencedViews(stmt string) []string {
 
 func viewNameRE(name string) *regexp.Regexp {
 	return regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(name) + `\b`)
+}
+
+// workerEnvKeep is what a worker inherits from the service's environment:
+// the time zone and locale that shape how DuckDB prints a value, the
+// directories it looks for, and the Go runtime's own tuning. Everything else
+// stays behind.
+var workerEnvKeep = map[string]bool{
+	"TZ": true, "LANG": true, "LC_ALL": true,
+	"HOME": true, "TMPDIR": true,
+	"GOMEMLIMIT": true, "GOGC": true, "GODEBUG": true, "GOMAXPROCS": true,
+	// A coverage-instrumented binary writes its counters where this says.
+	"GOCOVERDIR": true,
+}
+
+// testWorkerEnvKeep is more names a worker inherits. Nil in production; the
+// tests' worker (TestMain) is steered through two variables of its own.
+var testWorkerEnvKeep []string
+
+// workerEnviron is the environment a worker starts with, given the service's.
+//
+// A worker runs an operator's SQL and needs nothing the service was
+// configured with: its request arrives on stdin. The service's environment
+// holds the read password, the OIDC client settings and whatever else the
+// pod was given, so a worker starts with an allowlist of names, not a copy.
+func workerEnviron(environ []string) []string {
+	out := make([]string, 0, len(workerEnvKeep)+1)
+	for _, kv := range environ {
+		name, _, ok := strings.Cut(kv, "=")
+		if ok && (workerEnvKeep[name] || slices.Contains(testWorkerEnvKeep, name)) {
+			out = append(out, kv)
+		}
+	}
+	return append(out, WorkerEnv+"=1")
 }
 
 // workerKillGrace is how long a killed worker gets to release its pipes before
@@ -273,7 +307,7 @@ func (e *isolated) run(ctx context.Context, stmt string, views []string) (*Resul
 		return nil, err
 	}
 	cmd := exec.CommandContext(ctx, e.exe)
-	cmd.Env = append(os.Environ(), WorkerEnv+"=1")
+	cmd.Env = workerEnviron(os.Environ())
 	cmd.Stdin = bytes.NewReader(req)
 	var stdout bytes.Buffer
 	stderr := &tailBuffer{limit: workerStderrLimit}

@@ -3172,7 +3172,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "wtransport"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "bytes",
  "pem",
@@ -3194,7 +3194,7 @@ dependencies = [
 
 [[package]]
 name = "wtransport-proto"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "httlib-huffman",
  "octets",
