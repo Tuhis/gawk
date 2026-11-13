@@ -327,6 +327,7 @@ func (f *roomFleet) startRoomPod(t *testing.T, ctx context.Context, podName stri
 	}
 	srv = New(cfg, r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &f.cert, nil }, discardLog,
 		metrics.NewServerMetrics(prometheus.NewRegistry()))
+	srv.testHookStatuszFresh.Store(true) // tests read state right after changing it
 	srv.drainSleep = func(time.Duration) {}
 	srv.SetCluster(coord, podName)
 	srv.edgeManager().dial = newEdgeDialer(cfg.InternalServerName, cfg.InternalPSK, f.pool, discardLog)

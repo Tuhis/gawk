@@ -130,6 +130,12 @@ convention; empty string disables). It serves:
 - `GET /statusz` — the same JSON snapshot as today, mirrored here so it is
   finally `curl`-able without an HTTP/3 client. The H3 route stays (it costs
   one shared handler and existing tooling may use it).
+  **Revised 2026-11-13:** the two routes no longer share a handler. The H3
+  route is public and unauthenticated, and a snapshot walks every broadcast
+  and subscriber under `Registry.mu`, the lock fan-out takes per datagram,
+  so it now serves a stored document for one second
+  (`ops.PublicStatuszMaxAge`). This listener is internal and still builds a
+  snapshot per request. Same JSON on both.
 
 The listener binds all interfaces inside the pod but is only reachable
 through the new ClusterIP Service (D6) — the public LoadBalancer Service
