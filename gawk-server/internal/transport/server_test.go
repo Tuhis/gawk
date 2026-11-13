@@ -27,6 +27,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
+	"github.com/Tuhis/gawk/gawk-server/internal/ops"
 	"github.com/Tuhis/gawk/gawk-server/internal/tlsutil"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
@@ -88,6 +89,7 @@ func startTestServerCfgLogSrv(t *testing.T, ctx context.Context, cfg config.Conf
 	})
 	srv = New(cfg, r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &cert, nil }, log,
 		metrics.NewServerMetrics(prometheus.NewRegistry()))
+	srv.testHookStatuszFresh.Store(true) // tests read state right after changing it
 
 	done = make(chan error, 1)
 	go func() { done <- srv.Run(ctx) }()
@@ -550,6 +552,53 @@ func h3Get(t *testing.T, ctx context.Context, clientTLS *tls.Config, url string)
 			t.Fatalf("GET %s: %v", url, err)
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// The public /statusz is unauthenticated and a snapshot walks every broadcast
+// under Registry.mu, so the route serves a stored document for
+// ops.PublicStatuszMaxAge instead of building one per request.
+func TestPublicStatuszServesStoredSnapshot(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	port, clientTLS, r, _, srv := startTestServerCfgLogSrv(t, ctx, config.Config{
+		MaxSubscribers:  4,
+		MaxIdleTimeout:  30 * time.Second,
+		KeepAlivePeriod: 10 * time.Second,
+		BroadcastGrace:  5 * time.Minute,
+	}, discardLog)
+	srv.testHookStatuszFresh.Store(false) // the route as production serves it
+	url := fmt.Sprintf("https://127.0.0.1:%d/statusz", port)
+
+	broadcasts := func(body []byte) int {
+		t.Helper()
+		var rs hub.RegistryStats
+		if err := json.Unmarshal(body, &rs); err != nil {
+			t.Fatalf("unmarshal /statusz %q: %v", body, err)
+		}
+		return rs.Totals.Broadcasts
+	}
+
+	_, first := h3Get(t, ctx, clientTLS, url)
+	stored := time.Now() // the snapshot is at least this old from here on
+	if n := broadcasts(first); n != 0 {
+		t.Fatalf("first snapshot lists %d broadcasts, want 0", n)
+	}
+	if _, _, err := r.StartPublish(""); err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	_, second := h3Get(t, ctx, clientTLS, url)
+	if time.Since(stored) >= ops.PublicStatuszMaxAge {
+		t.Skip("the second request took longer than the cache window; nothing to judge")
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatalf("a request inside the window built a new snapshot:\n first  %s\n second %s", first, second)
+	}
+
+	time.Sleep(time.Until(stored.Add(ops.PublicStatuszMaxAge + 100*time.Millisecond)))
+	_, third := h3Get(t, ctx, clientTLS, url)
+	if n := broadcasts(third); n != 1 {
+		t.Fatalf("after the window the snapshot lists %d broadcasts, want 1", n)
 	}
 }
 

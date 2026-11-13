@@ -160,6 +160,12 @@ type Server struct {
 	// Atomic, as above.
 	testHookPublishDatagramLoop atomic.Pointer[func()]
 
+	// testHookStatuszFresh makes the public /statusz build a snapshot per
+	// request, as the ops listener does, so a test can read the state right
+	// after changing it. Production leaves it false: the route is cached
+	// for ops.PublicStatuszMaxAge. Atomic, as above.
+	testHookStatuszFresh atomic.Bool
+
 	// testHookRateLimitLoopback disables the limiter's loopback bypass so
 	// tests (dialing from 127.0.0.1) can hit the 429 path. Atomic, as above.
 	testHookRateLimitLoopback atomic.Bool
@@ -362,8 +368,18 @@ func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
 	})
-	// Same handler as the TCP ops endpoint (single definition; see ops).
-	mux.HandleFunc("GET /statusz", ops.StatuszHandler(r, roomStatsSource{s}, log))
+	// The ops listener's document, but this route is public and
+	// unauthenticated, so it serves a stored snapshot (see
+	// ops.PublicStatuszMaxAge).
+	statuszFresh := ops.StatuszHandler(r, roomStatsSource{s}, log)
+	statuszCached := ops.CachedStatuszHandler(r, roomStatsSource{s}, log, ops.PublicStatuszMaxAge)
+	mux.HandleFunc("GET /statusz", func(w http.ResponseWriter, req *http.Request) {
+		if s.testHookStatuszFresh.Load() {
+			statuszFresh(w, req)
+			return
+		}
+		statuszCached(w, req)
+	})
 	mux.HandleFunc("CONNECT /echo", s.handleEcho)
 	mux.HandleFunc("CONNECT /publish", s.handlePublish)
 	mux.HandleFunc("CONNECT /publish/{id}", s.handlePublish)

@@ -1971,10 +1971,17 @@ entries still describe code `gawk-pubsim` runs (now
   registry HMACs IDs with its own stats key, so a token that verifies under
   home's key must be minted over home's `ObfuscateID(id)` and the hello must
   carry that key, not the PoP's ([docs/78](78-pop-telemetry.md) §2).
-- **`/statusz` is served on the public listener too.** One handler serves
-  the HTTP/3 listener and the ops listener, so anything PoP-identifying goes
-  on an ops-only route (`/internal/telemetry/pops`), never into `/statusz`
+- **`/statusz` is served on the public listener too.** Both listeners serve
+  the same document, so anything PoP-identifying goes on an ops-only route
+  (`/internal/telemetry/pops`), never into `/statusz`
   ([docs/78](78-pop-telemetry.md) D7).
+- **The public `/statusz` is up to one second old; the ops one is current.**
+  A snapshot holds `Registry.mu`, the lock every relayed datagram takes, and
+  the HTTP/3 route is unauthenticated, so it serves a stored document for
+  `ops.PublicStatuszMaxAge`. Read the ops listener when pairing a capture
+  with a client's diagnostics. In `internal/transport` tests the helpers
+  set `testHookStatuszFresh`; a server built with a bare `New` serves the
+  cached route ([docs/13](13-observability.md)).
 - **A party broadcast is observed by two relays under one broadcast key.**
   Home sees its PoP-leg publisher and outside viewers, the PoP its own
   broadcaster and LAN viewers. Every relay-line reader must filter by issuer

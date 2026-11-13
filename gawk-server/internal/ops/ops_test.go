@@ -9,11 +9,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
+	"github.com/Tuhis/gawk/gawk-server/internal/roomsrv"
 )
 
 var discardLog = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -149,5 +152,117 @@ func TestServeOverTCPAndGracefulShutdown(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Serve did not shut down after ctx cancel")
+	}
+}
+
+// countingRooms counts snapshot builds: the handler asks its rooms source
+// once per document, right after the registry snapshot.
+type countingRooms struct{ builds atomic.Int64 }
+
+func (c *countingRooms) Stats() map[string]roomsrv.RoomStats {
+	c.builds.Add(1)
+	return nil
+}
+
+func statuszBroadcasts(t *testing.T, h http.Handler) (int, string) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/statusz", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("/statusz = %d, want 200", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", ct)
+	}
+	body := w.Body.String()
+	var rs hub.RegistryStats
+	if err := json.Unmarshal([]byte(body), &rs); err != nil {
+		t.Fatalf("/statusz JSON: %v", err)
+	}
+	return rs.Totals.Broadcasts, body
+}
+
+// The public route must not build a snapshot per request: each one walks
+// every broadcast under Registry.mu, the lock fan-out takes per datagram.
+func TestCachedStatuszBuildsOneSnapshotPerWindow(t *testing.T) {
+	r := hub.NewRegistry(discardLog, hub.Options{})
+	rooms := &countingRooms{}
+	clock := time.Unix(1_800_000_000, 0)
+	h := cachedStatuszHandler(r, rooms, discardLog, time.Second, func() time.Time { return clock })
+
+	if n, _ := statuszBroadcasts(t, h); n != 0 {
+		t.Fatalf("first snapshot lists %d broadcasts, want 0", n)
+	}
+	if _, _, err := r.StartPublish(""); err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	for i := 0; i < 50; i++ {
+		clock = clock.Add(10 * time.Millisecond) // 500 ms in total, inside the window
+		if n, _ := statuszBroadcasts(t, h); n != 0 {
+			t.Fatalf("request %d inside the window lists %d broadcasts, want the stored 0", i, n)
+		}
+	}
+	if got := rooms.builds.Load(); got != 1 {
+		t.Fatalf("51 requests inside one window built %d snapshots, want 1", got)
+	}
+
+	clock = clock.Add(time.Second)
+	if n, _ := statuszBroadcasts(t, h); n != 1 {
+		t.Fatalf("after the window the snapshot lists %d broadcasts, want 1", n)
+	}
+	if got := rooms.builds.Load(); got != 2 {
+		t.Fatalf("builds after the window = %d, want 2", got)
+	}
+}
+
+// A flood that lands on an expired snapshot must share one rebuild.
+func TestCachedStatuszConcurrentRequestsShareOneBuild(t *testing.T) {
+	r := hub.NewRegistry(discardLog, hub.Options{})
+	rooms := &countingRooms{}
+	h := cachedStatuszHandler(r, rooms, discardLog, time.Hour, time.Now)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 64; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/statusz", nil))
+			if w.Code != http.StatusOK {
+				t.Errorf("/statusz = %d, want 200", w.Code)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := rooms.builds.Load(); got != 1 {
+		t.Fatalf("64 concurrent requests built %d snapshots, want 1", got)
+	}
+}
+
+// The cached document is the uncached one, byte for byte.
+func TestCachedStatuszMatchesUncachedBytes(t *testing.T) {
+	r := hub.NewRegistry(discardLog, hub.Options{})
+	if _, _, err := r.StartPublish(""); err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	_, fresh := statuszBroadcasts(t, StatuszHandler(r, nil, discardLog))
+	_, cached := statuszBroadcasts(t, CachedStatuszHandler(r, nil, discardLog, PublicStatuszMaxAge))
+	if fresh != cached {
+		t.Fatalf("cached /statusz differs from the uncached document:\n fresh  %s\n cached %s", fresh, cached)
+	}
+}
+
+// The ops listener is internal and its readers (the telemetry scrape, the
+// e2e tiers, an operator pairing a capture) expect the current state.
+func TestOpsListenerStatuszIsNotCached(t *testing.T) {
+	h, r := testHandler(t)
+	if n, _ := statuszBroadcasts(t, h); n != 0 {
+		t.Fatalf("first read lists %d broadcasts, want 0", n)
+	}
+	if _, _, err := r.StartPublish(""); err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	if n, _ := statuszBroadcasts(t, h); n != 1 {
+		t.Fatalf("read right after a publish lists %d broadcasts, want 1", n)
 	}
 }

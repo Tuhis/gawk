@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -36,9 +37,10 @@ type statusz struct {
 	Rooms map[string]roomsrv.RoomStats `json:"rooms,omitempty"`
 }
 
-// StatuszHandler serves the registry snapshot as JSON — the single definition
-// shared by the H3 route (transport) and the TCP ops endpoint, so the two can
-// never drift. rooms may be nil (no rooms section).
+// StatuszHandler serves the registry snapshot as JSON, built fresh for each
+// request. It is the ops listener's handler; the public H3 route serves the
+// same document through CachedStatuszHandler. rooms may be nil (no rooms
+// section).
 func StatuszHandler(r *hub.Registry, rooms RoomStatsSource, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -49,6 +51,58 @@ func StatuszHandler(r *hub.Registry, rooms RoomStatsSource, log *slog.Logger) ht
 		if err := json.NewEncoder(w).Encode(doc); err != nil {
 			log.Warn("statusz encode failed", "err", err)
 		}
+	}
+}
+
+// PublicStatuszMaxAge is how long the public H3 route serves one snapshot.
+// That route is unauthenticated, and a snapshot walks every broadcast and
+// subscriber under Registry.mu, the lock every relayed datagram takes, so
+// without a bound anyone could stall fan-out by polling it. One second keeps
+// the document useful for a human watching counters and makes a flood cost
+// one snapshot per second however many requests arrive.
+const PublicStatuszMaxAge = time.Second
+
+// CachedStatuszHandler is StatuszHandler for a listener strangers can reach:
+// it builds at most one snapshot per maxAge and serves the stored bytes to
+// everyone else. Requests that arrive while a snapshot is being built wait
+// for it instead of building their own. The document is the same one
+// StatuszHandler writes, up to maxAge old.
+func CachedStatuszHandler(r *hub.Registry, rooms RoomStatsSource, log *slog.Logger, maxAge time.Duration) http.HandlerFunc {
+	return cachedStatuszHandler(r, rooms, log, maxAge, time.Now)
+}
+
+func cachedStatuszHandler(r *hub.Registry, rooms RoomStatsSource, log *slog.Logger, maxAge time.Duration, now func() time.Time) http.HandlerFunc {
+	var (
+		mu    sync.Mutex // held across a build, so concurrent requests share it
+		body  []byte
+		built time.Time
+	)
+	snapshot := func() ([]byte, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if t := now(); body == nil || t.Sub(built) >= maxAge {
+			doc := statusz{RegistryStats: r.Stats()}
+			if rooms != nil {
+				doc.Rooms = rooms.Stats()
+			}
+			b, err := json.Marshal(doc)
+			if err != nil {
+				return nil, err
+			}
+			// json.Encoder, which StatuszHandler uses, ends with a newline.
+			body, built = append(b, '\n'), t
+		}
+		return body, nil
+	}
+	return func(w http.ResponseWriter, _ *http.Request) {
+		b, err := snapshot()
+		if err != nil {
+			log.Warn("statusz encode failed", "err", err)
+			http.Error(w, "statusz unavailable", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(b)
 	}
 }
 
