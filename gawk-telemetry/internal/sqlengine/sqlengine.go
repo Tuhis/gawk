@@ -40,6 +40,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -274,10 +276,25 @@ func isReadOnlyVerb(word string) bool {
 	return false
 }
 
+// explainOptions is EXPLAIN's parenthesised option list, in the only shape
+// this console accepts: words, one or two to an option, separated by commas,
+// as in `(ANALYZE, FORMAT JSON)`. Nothing that could hide a parenthesis
+// fits: no comment, no quote.
+var explainOptions = regexp.MustCompile(`^\(\s*[A-Za-z_]+(\s+[A-Za-z_]+)?(\s*,\s*[A-Za-z_]+(\s+[A-Za-z_]+)?)*\s*\)`)
+
+// parenStatementVerbs open a parenthesised statement after EXPLAIN, as in
+// `EXPLAIN (SELECT 1)`. Only SQL's reserved words: the rest of the allowlist
+// (SHOW, DESCRIBE, PIVOT …) could be read as an option's name.
+var parenStatementVerbs = []string{"select", "with", "from", "table"}
+
 // explained is what follows EXPLAIN's own words in rest: ANALYZE and VERBOSE,
 // then one parenthesised option list, as in `EXPLAIN (ANALYZE, FORMAT JSON)
-// SELECT …`. A parenthesis that opens with a read-only verb is the statement
-// itself (`EXPLAIN (SELECT 1)`), not an option list.
+// SELECT …`. A parenthesis that opens with a reserved read-only verb is the
+// statement itself (`EXPLAIN (SELECT 1)`), not an option list.
+//
+// The option list is matched whole against explainOptions, never by counting
+// parentheses: counting let `(ANALYZE /* ) SELECT */) COPY … TO` end the
+// list inside the comment and show the checker a SELECT (PR #783 review).
 func explained(rest string) (string, error) {
 	for {
 		rest = strings.TrimSpace(rest)
@@ -298,21 +315,14 @@ func explained(rest string) (string, error) {
 	if i := strings.IndexFunc(inner, func(r rune) bool { return r < 'a' || r > 'z' }); i >= 0 {
 		word = inner[:i]
 	}
-	if word != "explain" && isReadOnlyVerb(word) {
+	if slices.Contains(parenStatementVerbs, word) {
 		return rest, nil
 	}
-	depth := 0
-	for i, r := range rest {
-		switch r {
-		case '(':
-			depth++
-		case ')':
-			if depth--; depth == 0 {
-				return rest[i+1:], nil
-			}
-		}
+	opts := explainOptions.FindString(rest)
+	if opts == "" {
+		return "", fmt.Errorf("%w: EXPLAIN's options must be plain words, as in (ANALYZE, FORMAT JSON)", ErrRefused)
 	}
-	return "", fmt.Errorf("%w: EXPLAIN's option list is not closed", ErrRefused)
+	return rest[len(opts):], nil
 }
 
 func (o Options) rowLimit() int {

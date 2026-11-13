@@ -157,6 +157,17 @@ func TestCheckLooksPastExplainAtTheStatementItRuns(t *testing.T) {
 		"EXPLAIN ANALYZE/**/COPY (SELECT 1) TO 'x'",
 		"EXPLAIN EXPLAIN ANALYZE COPY (SELECT 1) TO 'x'",
 		"EXPLAIN (FORMAT JSON",
+		// A parenthesis inside a comment or a string must not move where the
+		// option list is taken to end (PR #783 review).
+		"EXPLAIN (ANALYZE /* ) SELECT */) COPY (SELECT 1) TO 'x'",
+		"EXPLAIN (ANALYZE -- ) SELECT\n) COPY (SELECT 1) TO 'x'",
+		"EXPLAIN (ANALYZE, FORMAT ')') SELECT */ COPY (SELECT 1) TO 'x'",
+		"EXPLAIN (ANALYZE, FORMAT \")\") SELECT */ COPY (SELECT 1) TO 'x'",
+		// Only a reserved word can open a parenthesised statement: SHOW and
+		// friends could be read as option names.
+		"EXPLAIN (SHOW) COPY (SELECT 1) TO 'x'",
+		"EXPLAIN (DESCRIBE, ANALYZE) COPY (SELECT 1) TO 'x'",
+		"EXPLAIN (PIVOT /* */) COPY (SELECT 1) TO 'x'",
 		"EXPLAIN ANALYZE",
 		"EXPLAIN",
 	}
@@ -175,6 +186,10 @@ func TestCheckLooksPastExplainAtTheStatementItRuns(t *testing.T) {
 		"EXPLAIN (SELECT 1)",
 		"EXPLAIN ANALYZE FROM rollups",
 		"EXPLAIN ANALYZE\n  SELECT 1;",
+		"EXPLAIN ANALYZE SELECT count(*) FROM rollups WHERE role = 'viewer' -- (why",
+		"EXPLAIN (ANALYZE, FORMAT JSON)\nSELECT /* ( */ ')' FROM rollups",
+		"EXPLAIN ( FORMAT  json ,ANALYZE )SELECT 1",
+		"EXPLAIN (WITH x AS (SELECT 1) SELECT * FROM x)",
 	}
 	for _, q := range allowed {
 		if _, err := Check(q); err != nil {

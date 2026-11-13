@@ -495,6 +495,12 @@ func TestNoAllowedStatementWritesAFile(t *testing.T) {
 		for _, q := range []string{
 			"EXPLAIN ANALYZE COPY (SELECT 42 AS stalls) TO %s (FORMAT JSON)",
 			"EXPLAIN (ANALYZE) COPY (SELECT 42 AS stalls) TO %s (FORMAT JSON)",
+			"EXPLAIN (ANALYZE /* ) SELECT */) COPY (SELECT 42 AS stalls) TO %s (FORMAT JSON)",
+			"EXPLAIN (ANALYZE -- ) SELECT\n) COPY (SELECT 42 AS stalls) TO %s (FORMAT JSON)",
+			"EXPLAIN (ANALYZE) COPY (SELECT 42 AS stalls) TO %s (FORMAT JSON) -- ) select",
+			"EXPLAIN (SHOW) COPY (SELECT 42 AS stalls) TO %s (FORMAT JSON)",
+			"EXPLAIN (PIVOT /* */, ANALYZE) COPY (SELECT 42 AS stalls) TO %s (FORMAT JSON)",
+			"EXPLAIN (SUMMARIZE, ANALYZE) COPY (SELECT 42 AS stalls) TO %s (FORMAT JSON)",
 			"WITH x AS (SELECT 42 AS stalls) COPY (SELECT * FROM x) TO %s (FORMAT JSON)",
 			"FROM (SELECT 42 AS stalls) COPY TO %s",
 			"SELECT * FROM query('COPY (SELECT 42 AS stalls) TO ' || %s)",
