@@ -499,6 +499,8 @@ func TestNoAllowedStatementWritesAFile(t *testing.T) {
 			"EXPLAIN (ANALYZE -- ) SELECT\n) COPY (SELECT 42 AS stalls) TO %s (FORMAT JSON)",
 			"EXPLAIN (ANALYZE) COPY (SELECT 42 AS stalls) TO %s (FORMAT JSON) -- ) select",
 			"EXPLAIN (SHOW) COPY (SELECT 42 AS stalls) TO %s (FORMAT JSON)",
+			"EXPLAIN ANALYSE COPY (SELECT 42 AS stalls) TO %s (FORMAT JSON)",
+			"EXPLAIN (ANALYSE, FORMAT 'text') COPY (SELECT 42 AS stalls) TO %s (FORMAT JSON)",
 			"EXPLAIN (PIVOT /* */, ANALYZE) COPY (SELECT 42 AS stalls) TO %s (FORMAT JSON)",
 			"EXPLAIN (SUMMARIZE, ANALYZE) COPY (SELECT 42 AS stalls) TO %s (FORMAT JSON)",
 			"WITH x AS (SELECT 42 AS stalls) COPY (SELECT * FROM x) TO %s (FORMAT JSON)",
@@ -533,5 +535,50 @@ func TestTheEngineConfigurationIsLocked(t *testing.T) {
 	}
 	if got := fmt.Sprint(res.Rows[0]); got != "[true false false false]" {
 		t.Fatalf("lock, external access, autoload, autoinstall = %s, want [true false false false]", got)
+	}
+}
+
+// Check takes a parenthesis after EXPLAIN that opens with one of
+// parenStatementVerbs as the statement, not as an option list. That is only
+// right while DuckDB cannot read those words as option names, which holds
+// because they are reserved. A DuckDB upgrade that unreserves one would turn
+// `EXPLAIN (ANALYZE, <word>) COPY … TO` into a write that passes Check.
+func TestParenStatementVerbsAreReservedInThisDuckDB(t *testing.T) {
+	e, err := Open(Options{Root: seedStore(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	for _, verb := range parenStatementVerbs {
+		res, err := e.Query("SELECT keyword_category FROM duckdb_keywords() WHERE keyword_name = " + sqlString(verb))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.RowCount != 1 || fmt.Sprint(res.Rows[0][0]) != "reserved" {
+			t.Errorf("%q in duckdb_keywords() = %v, want one row saying reserved", verb, res.Rows)
+		}
+	}
+}
+
+// The EXPLAIN spellings the console accepted before the allowlist looked
+// past EXPLAIN still run.
+func TestExplainSpellingsStillRun(t *testing.T) {
+	e, err := Open(Options{Root: seedStore(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	for _, q := range []string{
+		"EXPLAIN SELECT count(*) FROM rollups",
+		"EXPLAIN ANALYZE SELECT count(*) FROM rollups WHERE role = 'viewer'",
+		"EXPLAIN ANALYSE SELECT count(*) FROM rollups",
+		"EXPLAIN (FORMAT JSON) SELECT count(*) FROM rollups",
+		"EXPLAIN (FORMAT 'json') SELECT count(*) FROM rollups",
+		"EXPLAIN (ANALYZE, FORMAT JSON) SELECT count(*) FROM rollups",
+		"EXPLAIN (SELECT count(*) FROM rollups)",
+	} {
+		if _, err := e.Query(q); err != nil {
+			t.Errorf("%s: %v", q, err)
+		}
 	}
 }

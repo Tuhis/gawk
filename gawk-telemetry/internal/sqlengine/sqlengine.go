@@ -279,8 +279,13 @@ func isReadOnlyVerb(word string) bool {
 // explainOptions is EXPLAIN's parenthesised option list, in the only shape
 // this console accepts: words, one or two to an option, separated by commas,
 // as in `(ANALYZE, FORMAT JSON)`. Nothing that could hide a parenthesis
-// fits: no comment, no quote.
-var explainOptions = regexp.MustCompile(`^\(\s*[A-Za-z_]+(\s+[A-Za-z_]+)?(\s*,\s*[A-Za-z_]+(\s+[A-Za-z_]+)?)*\s*\)`)
+// fits: no comment, and no quote but one around a plain word.
+var explainOptions = regexp.MustCompile(`^\(\s*` + explainOption + `(\s*,\s*` + explainOption + `)*\s*\)`)
+
+// explainOption is one option: a name, then at most one value, bare or in
+// single quotes (`FORMAT JSON`, `FORMAT 'json'`). A quoted value holds
+// letters only, so the quote cannot hold a parenthesis either.
+const explainOption = `[A-Za-z_]+(\s+([A-Za-z_]+|'[A-Za-z_]+'))?`
 
 // parenStatementVerbs open a parenthesised statement after EXPLAIN, as in
 // `EXPLAIN (SELECT 1)`. Only SQL's reserved words: the rest of the allowlist
@@ -302,7 +307,8 @@ func explained(rest string) (string, error) {
 		if len(f) == 0 {
 			return "", nil
 		}
-		if w := strings.ToLower(f[0]); w != "analyze" && w != "verbose" {
+		// ANALYSE is DuckDB's other spelling of ANALYZE.
+		if w := strings.ToLower(f[0]); w != "analyze" && w != "analyse" && w != "verbose" {
 			break
 		}
 		rest = rest[len(f[0]):]

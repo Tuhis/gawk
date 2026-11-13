@@ -166,6 +166,11 @@ func TestCheckLooksPastExplainAtTheStatementItRuns(t *testing.T) {
 		// Only a reserved word can open a parenthesised statement: SHOW and
 		// friends could be read as option names.
 		"EXPLAIN (SHOW) COPY (SELECT 1) TO 'x'",
+		"EXPLAIN ANALYSE COPY (SELECT 1) TO 'x'",
+		"EXPLAIN (ANALYSE) COPY (SELECT 1) TO 'x'",
+		"EXPLAIN (FORMAT 'json') COPY (SELECT 1) TO 'x'",
+		"EXPLAIN (FORMAT 'js)on') SELECT 1",
+		"EXPLAIN (FORMAT 'json' /* ) SELECT */) COPY (SELECT 1) TO 'x'",
 		"EXPLAIN (DESCRIBE, ANALYZE) COPY (SELECT 1) TO 'x'",
 		"EXPLAIN (PIVOT /* */) COPY (SELECT 1) TO 'x'",
 		"EXPLAIN ANALYZE",
@@ -190,6 +195,10 @@ func TestCheckLooksPastExplainAtTheStatementItRuns(t *testing.T) {
 		"EXPLAIN (ANALYZE, FORMAT JSON)\nSELECT /* ( */ ')' FROM rollups",
 		"EXPLAIN ( FORMAT  json ,ANALYZE )SELECT 1",
 		"EXPLAIN (WITH x AS (SELECT 1) SELECT * FROM x)",
+		// Spellings DuckDB accepts and the console accepted before.
+		"EXPLAIN ANALYSE SELECT 1",
+		"EXPLAIN (ANALYSE, FORMAT 'json') SELECT 1",
+		"EXPLAIN (FORMAT 'json') SELECT 1",
 	}
 	for _, q := range allowed {
 		if _, err := Check(q); err != nil {
