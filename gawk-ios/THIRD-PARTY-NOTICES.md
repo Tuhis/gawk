@@ -180,7 +180,7 @@ script for what counts as a dependency here and why.
 | `uniffi_core` | 0.32.2 | `MPL-2.0` | — |
 | `uniffi_pipeline` | 0.32.2 | `MPL-2.0` | — |
 | `untrusted` | 0.9.0 | `ISC` | Copyright 2015-2021 Brian Smith |
-| `ureq` | 3.5.1 | `MIT OR Apache-2.0` | Copyright (c) 2019 Martin Algesten |
+| `ureq` | 3.5.2 | `MIT OR Apache-2.0` | Copyright (c) 2019 Martin Algesten |
 | `ureq-proto` | 0.7.1 | `MIT OR Apache-2.0` | Copyright 2022 Martin Algesten |
 | `url` | 2.5.8 | `MIT OR Apache-2.0` | Copyright (c) 2013-2025 The rust-url developers |
 | `utf8-zero` | 0.8.1 | `MIT OR Apache-2.0` | — |
