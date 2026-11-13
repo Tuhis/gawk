@@ -16,14 +16,23 @@
 // carries a libc, so the decision is delivered where it was asked for without
 // making a laptop build depend on a C toolchain.
 //
-// # Why an allowlist rather than a read-only connection
+// # Two gates: an allowlist for writes, a confined engine for reads
 //
-// The engine must read the NDJSON partitions, so DuckDB's external-access
-// switch has to stay on — which means read-only mode cannot be what stops a
-// `COPY … TO` from writing over the data directory. The statement allowlist is
-// what does. It is deliberately crude: one statement, and it must open with a
-// verb that only reads. That refuses far more than it needs to, which is the
-// correct bias for a console whose alternative is `curl` and a shell.
+// The engine reads the NDJSON partitions, and DuckDB has no read-only mode
+// for files, so a statement allowlist is what stops a `COPY … TO` from
+// writing over the data directory. It is deliberately crude: one statement,
+// and it must open with a verb that only reads (looking past EXPLAIN, which
+// can run what it explains). That refuses far more than it needs to, which
+// is the correct bias for a console whose alternative is `curl` and a shell.
+//
+// The allowlist says nothing about what a read may reach: SELECT is enough
+// to call read_text, glob or an https:// reader. Until 2026-11-13 that made
+// every file the pod could open, its environment included, and any URL it
+// could reach, readable from the console. So the engine is also confined
+// (confine, duckdb.go): external access is off, the data directory is the
+// one allowed directory, extensions do not load on demand, and the
+// configuration is locked. The views and a file under the data directory
+// read by path behave as before.
 package sqlengine
 
 import (
@@ -223,16 +232,87 @@ func Check(sql string) (string, error) {
 	if strings.Contains(s, ";") {
 		return "", fmt.Errorf("%w: one statement per query", ErrRefused)
 	}
-	first := strings.ToLower(strings.Fields(s)[0])
+	if err := checkVerb(s, true); err != nil {
+		return "", err
+	}
+	return s, nil
+}
+
+// checkVerb refuses s unless it opens with a read-only verb.
+//
+// EXPLAIN is looked past, to the statement it explains: EXPLAIN ANALYZE runs
+// that statement, so `EXPLAIN ANALYZE COPY … TO` wrote a file into the store
+// while the allowlist saw only "explain". explain says whether one may open
+// s; the statement behind an EXPLAIN may not be another.
+func checkVerb(s string, explain bool) error {
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return fmt.Errorf("%w: EXPLAIN needs a statement to explain", ErrRefused)
+	}
 	// A leading parenthesis is a bracketed SELECT; peel it before matching so
 	// `(SELECT …) UNION …` is not refused for punctuation.
-	first = strings.TrimLeft(first, "(")
+	first := strings.TrimLeft(strings.ToLower(fields[0]), "(")
+	if first == "explain" && explain {
+		rest, err := explained(s[strings.Index(s, fields[0])+len(fields[0]):])
+		if err != nil {
+			return err
+		}
+		return checkVerb(rest, false)
+	}
+	if first != "explain" && isReadOnlyVerb(first) {
+		return nil
+	}
+	return fmt.Errorf("%w: %q is not a read-only statement; this console runs SELECT and friends only", ErrRefused, first)
+}
+
+func isReadOnlyVerb(word string) bool {
 	for _, v := range readOnlyVerbs {
-		if first == v {
-			return s, nil
+		if word == v {
+			return true
 		}
 	}
-	return "", fmt.Errorf("%w: %q is not a read-only statement; this console runs SELECT and friends only", ErrRefused, first)
+	return false
+}
+
+// explained is what follows EXPLAIN's own words in rest: ANALYZE and VERBOSE,
+// then one parenthesised option list, as in `EXPLAIN (ANALYZE, FORMAT JSON)
+// SELECT …`. A parenthesis that opens with a read-only verb is the statement
+// itself (`EXPLAIN (SELECT 1)`), not an option list.
+func explained(rest string) (string, error) {
+	for {
+		rest = strings.TrimSpace(rest)
+		f := strings.Fields(rest)
+		if len(f) == 0 {
+			return "", nil
+		}
+		if w := strings.ToLower(f[0]); w != "analyze" && w != "verbose" {
+			break
+		}
+		rest = rest[len(f[0]):]
+	}
+	if !strings.HasPrefix(rest, "(") {
+		return rest, nil
+	}
+	inner := strings.ToLower(strings.TrimLeft(rest, "( \t\r\n"))
+	word := inner
+	if i := strings.IndexFunc(inner, func(r rune) bool { return r < 'a' || r > 'z' }); i >= 0 {
+		word = inner[:i]
+	}
+	if word != "explain" && isReadOnlyVerb(word) {
+		return rest, nil
+	}
+	depth := 0
+	for i, r := range rest {
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			if depth--; depth == 0 {
+				return rest[i+1:], nil
+			}
+		}
+	}
+	return "", fmt.Errorf("%w: EXPLAIN's option list is not closed", ErrRefused)
 }
 
 func (o Options) rowLimit() int {

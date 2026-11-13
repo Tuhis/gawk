@@ -140,3 +140,45 @@ func TestParseSize(t *testing.T) {
 		}
 	}
 }
+
+// EXPLAIN ANALYZE runs the statement it explains. With "explain" on the
+// allowlist and nothing looking past it, `EXPLAIN ANALYZE COPY … TO` wrote a
+// file into the store from the console.
+func TestCheckLooksPastExplainAtTheStatementItRuns(t *testing.T) {
+	refused := []string{
+		"EXPLAIN ANALYZE COPY (SELECT 1) TO '/data/rollups/x.ndjson'",
+		"explain analyze copy (select 1) to 'x'",
+		"EXPLAIN COPY (SELECT 1) TO 'x'",
+		"EXPLAIN (ANALYZE) COPY (SELECT 1) TO 'x'",
+		"EXPLAIN (ANALYZE, FORMAT JSON) COPY (SELECT 1) TO 'x'",
+		"EXPLAIN ANALYZE VERBOSE INSERT INTO t VALUES (1)",
+		"EXPLAIN ANALYZE\nDELETE FROM rollups",
+		"EXPLAIN ANALYZE /* c */ COPY (SELECT 1) TO 'x'",
+		"EXPLAIN ANALYZE/**/COPY (SELECT 1) TO 'x'",
+		"EXPLAIN EXPLAIN ANALYZE COPY (SELECT 1) TO 'x'",
+		"EXPLAIN (FORMAT JSON",
+		"EXPLAIN ANALYZE",
+		"EXPLAIN",
+	}
+	for _, q := range refused {
+		if _, err := Check(q); !errors.Is(err, ErrRefused) {
+			t.Errorf("Check(%q) = %v, want ErrRefused", q, err)
+		}
+	}
+	allowed := []string{
+		"EXPLAIN SELECT 1",
+		"EXPLAIN ANALYZE SELECT count(*) FROM sessions",
+		"explain analyze with x as (select 1) select * from x",
+		"EXPLAIN (FORMAT JSON) SELECT 1",
+		"EXPLAIN (ANALYZE, FORMAT JSON) SELECT 1",
+		"EXPLAIN ANALYZE (SELECT 1) UNION ALL (SELECT 2)",
+		"EXPLAIN (SELECT 1)",
+		"EXPLAIN ANALYZE FROM rollups",
+		"EXPLAIN ANALYZE\n  SELECT 1;",
+	}
+	for _, q := range allowed {
+		if _, err := Check(q); err != nil {
+			t.Errorf("Check(%q) = %v, want it allowed", q, err)
+		}
+	}
+}

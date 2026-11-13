@@ -385,3 +385,147 @@ func TestAnUnprunedSessionsScanFitsTheMemoryBudget(t *testing.T) {
 		}
 	}
 }
+
+// outsideFile is a file beside the store, not under it: what a pod's mounted
+// secret or /proc/self/environ is to the console.
+func outsideFile(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(p, []byte("s3cret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// The allowlist only looks at a statement's first verb, and SELECT reaches
+// every file-reading table function DuckDB has. The engine itself must
+// refuse a path outside the data directory.
+func TestAQueryCannotReadFilesOutsideTheDataDirectory(t *testing.T) {
+	root := seedStore(t)
+	secret := outsideFile(t)
+	e, err := Open(Options{Root: root, SpillLimit: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+
+	for _, q := range []string{
+		"SELECT content FROM read_text(" + sqlString(secret) + ")",
+		"SELECT * FROM read_csv(" + sqlString(secret) + ", header=false, columns={'a':'VARCHAR'})",
+		"SELECT * FROM read_json(" + sqlString(filepath.Join(root, "rollups", "..", "..", filepath.Base(filepath.Dir(secret)), "secret.txt")) + ")",
+		"SELECT * FROM read_text('/proc/self/environ')",
+		"SELECT file FROM glob(" + sqlString(filepath.Join(filepath.Dir(secret), "*")) + ")",
+		"SELECT * FROM read_blob('/etc/hostname')",
+		"SELECT * FROM read_csv('https://example.com/x.csv')",
+	} {
+		res, err := e.Query(q)
+		if err == nil {
+			t.Errorf("%s\n  answered %v, want it refused", q, res.Rows)
+			continue
+		}
+		// The operator is told the rule, not only DuckDB's wording of it.
+		if !strings.Contains(err.Error(), "only reads files under the data directory") {
+			t.Errorf("%s\n  error does not say what the console may read: %v", q, err)
+		}
+	}
+}
+
+// What an operator could do before still works: the views, and a file under
+// the data directory read by its path.
+func TestAQueryStillReadsTheDataDirectoryByPath(t *testing.T) {
+	root := seedStore(t)
+	e, err := Open(Options{Root: root, SpillLimit: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+
+	for _, q := range []string{
+		"SELECT role FROM rollups",
+		"SELECT role FROM read_json(" + sqlString(filepath.Join(root, "rollups", "2026-07-29.ndjson")) + ", format='newline_delimited')",
+		"SELECT role FROM read_json(" + sqlString(filepath.Join(root, "rollups", "*.ndjson")) + ", format='newline_delimited')",
+		"SELECT file FROM glob(" + sqlString(filepath.Join(root, "rollups", "*")) + ")",
+	} {
+		res, err := e.Query(q)
+		if err != nil {
+			t.Errorf("%s: %v", q, err)
+			continue
+		}
+		if res.RowCount != 1 {
+			t.Errorf("%s: %d rows, want 1", q, res.RowCount)
+		}
+	}
+}
+
+// A relative -data-dir is what a laptop run uses; the views must keep
+// answering over it once file access is confined to that directory.
+func TestARelativeDataDirectoryStaysQueryable(t *testing.T) {
+	root := seedStore(t)
+	t.Chdir(filepath.Dir(root))
+	e, err := Open(Options{Root: filepath.Base(root), SpillLimit: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	res, err := e.Query("SELECT role FROM rollups")
+	if err != nil {
+		t.Fatalf("query over a relative root: %v", err)
+	}
+	if res.RowCount != 1 {
+		t.Fatalf("rowCount = %d, want 1", res.RowCount)
+	}
+	if _, err := e.Query("SELECT * FROM read_text(" + sqlString(outsideFile(t)) + ")"); err == nil {
+		t.Fatal("a relative root left files outside it readable")
+	}
+}
+
+// No statement the allowlist passes may leave a file behind, in the store or
+// anywhere else.
+func TestNoAllowedStatementWritesAFile(t *testing.T) {
+	root := seedStore(t)
+	e, err := Open(Options{Root: root, SpillLimit: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+
+	inStore := filepath.Join(root, "rollups", "evil.ndjson")
+	elsewhere := filepath.Join(t.TempDir(), "evil.ndjson")
+	for _, target := range []string{inStore, elsewhere} {
+		for _, q := range []string{
+			"EXPLAIN ANALYZE COPY (SELECT 42 AS stalls) TO %s (FORMAT JSON)",
+			"EXPLAIN (ANALYZE) COPY (SELECT 42 AS stalls) TO %s (FORMAT JSON)",
+			"WITH x AS (SELECT 42 AS stalls) COPY (SELECT * FROM x) TO %s (FORMAT JSON)",
+			"FROM (SELECT 42 AS stalls) COPY TO %s",
+			"SELECT * FROM query('COPY (SELECT 42 AS stalls) TO ' || %s)",
+		} {
+			_, _ = e.Query(fmt.Sprintf(q, sqlString(target)))
+			if _, err := os.Stat(target); err == nil {
+				os.Remove(target)
+				t.Errorf("%s\n  wrote %s", q, target)
+			}
+		}
+	}
+	res, err := e.Query("SELECT count(*) FROM rollups")
+	if err != nil || fmt.Sprint(res.Rows[0][0]) != "1" {
+		t.Fatalf("rollups after the attempts = %v, %v; want the one seeded row", res, err)
+	}
+}
+
+// The budget and the confinement are SETs, and SET is refused by the
+// allowlist. The configuration is locked as well, so a statement that finds
+// another way to change a setting still cannot.
+func TestTheEngineConfigurationIsLocked(t *testing.T) {
+	e, err := Open(Options{Root: seedStore(t), SpillLimit: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	res, err := e.Query("SELECT current_setting('lock_configuration'), current_setting('enable_external_access'), current_setting('autoload_known_extensions'), current_setting('autoinstall_known_extensions')")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprint(res.Rows[0]); got != "[true false false false]" {
+		t.Fatalf("lock, external access, autoload, autoinstall = %s, want [true false false false]", got)
+	}
+}

@@ -23,6 +23,9 @@ const testWorkerSlowCatalogueEnv = "GAWK_TELEMETRY_TEST_SQL_WORKER_SLOW_CATALOGU
 // that binary is this test binary, so it must dispatch the way the service's
 // main does before any test runs.
 func TestMain(m *testing.M) {
+	// A worker starts with an allowlisted environment (workerEnviron); these
+	// two are how a test tells its worker to misbehave.
+	testWorkerEnvKeep = []string{testWorkerCrashEnv, testWorkerSlowCatalogueEnv}
 	if IsWorker() {
 		if os.Getenv(testWorkerCrashEnv) == "1" {
 			os.Exit(3)
@@ -51,5 +54,26 @@ func TestReferencedViewsNamesWhatTheStatementReads(t *testing.T) {
 		if got := strings.Join(referencedViews(stmt), " "); got != want {
 			t.Errorf("referencedViews(%q) = %q, want %q", stmt, got, want)
 		}
+	}
+}
+
+// The worker runs an operator's SQL, so it must not carry the service's
+// environment: the read password, the admin-roles client secret and the OIDC
+// settings all arrive there, and none of them is the worker's to hold.
+func TestTheWorkerEnvironmentCarriesNoServiceSecrets(t *testing.T) {
+	got := workerEnviron([]string{
+		"GAWK_TELEMETRY_READ_PASSWORD=hunter2",
+		"GAWK_TELEMETRY_READ_USER=ops",
+		"GAWK_TELEMETRY_ASK_API_KEY=sk-secret",
+		"KUBERNETES_SERVICE_HOST=10.0.0.1",
+		"AWS_SECRET_ACCESS_KEY=x",
+		"TZ=Europe/Helsinki",
+		"HOME=/home/nonroot",
+		"GOMEMLIMIT=1GiB",
+		WorkerEnv + "=0",
+	})
+	want := []string{"TZ=Europe/Helsinki", "HOME=/home/nonroot", "GOMEMLIMIT=1GiB", WorkerEnv + "=1"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("worker environment:\n got  %q\n want %q", got, want)
 	}
 }
