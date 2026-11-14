@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.41.1](https://github.com/Tuhis/gawk/compare/gawk-server/v0.41.0...gawk-server/v0.41.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* **server:** cache the public /statusz snapshot for one second ([#782](https://github.com/Tuhis/gawk/issues/782)) ([ed75e98](https://github.com/Tuhis/gawk/commit/ed75e9829b0f24367418011bb804bfe958eca440))
+
 ## [0.41.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.40.0...gawk-server/v0.41.0) (2026-11-10)
 
 
