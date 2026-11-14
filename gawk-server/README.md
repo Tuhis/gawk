@@ -28,7 +28,7 @@ flowchart LR
 |---|---|
 | `CONNECT /publish` | Start a broadcast; the relay mints a new broadcast ID |
 | `CONNECT /publish/{id}` | Reclaim an existing ID. A token-bearing reclaim supersedes an active publisher session ("newest publisher wins") |
-| `CONNECT /subscribe/{id}` | Watch a broadcast; 429 when full; primed with cached decoder config + last keyframe. `?delivery=reliable` opts into resilient carrier-stream delivery; adding `&buffer=<ms>` upgrades to the DVR ring (clamped to `-dvr-window`) |
+| `CONNECT /subscribe/{id}` | Watch a broadcast; when full, upgraded and closed with 4018 (broadcast full) or 4019 (relay full); primed with cached decoder config + last keyframe. `?delivery=reliable` opts into resilient carrier-stream delivery; adding `&buffer=<ms>` upgrades to the DVR ring (clamped to `-dvr-window`) |
 | `CONNECT /internal/subscribe/{id}` | Cluster-mode edge pull — one pod dialing another's origin hub. PSK-gated, never exposed publicly |
 | `CONNECT /echo` | Connectivity diagnostic (see `gawk-echo` below) |
 | `GET /healthz` | Liveness |
