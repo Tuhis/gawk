@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.19.1](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.19.0...gawk-telemetry/v1.19.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* **telemetry:** confine the SQL console to the data directory ([#783](https://github.com/Tuhis/gawk/issues/783)) ([01f657a](https://github.com/Tuhis/gawk/commit/01f657a8915241ba16d8c2569e49210e8c855f42))
+
 ## [1.19.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.18.0...gawk-telemetry/v1.19.0) (2026-11-10)
 
 

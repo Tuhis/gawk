@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.1](https://github.com/Tuhis/gawk/compare/gawk-ios/v1.9.0...gawk-ios/v1.9.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* **broadcast-desktop:** take ureq 3.5.2 and pass the update size limit straight through ([#778](https://github.com/Tuhis/gawk/issues/778)) ([f00cd0d](https://github.com/Tuhis/gawk/commit/f00cd0d71654d9215bf83995c268b72807bb96ee))
+
 ## [1.9.0](https://github.com/Tuhis/gawk/compare/gawk-ios/v1.8.0...gawk-ios/v1.9.0) (2026-11-10)
 
 

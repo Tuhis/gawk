@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.62.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.61.0...gawk-app/v0.62.0) (2026-11-14)
+
+
+### Features
+
+* **app:** hold the local relay opt-out for the current stream only ([#771](https://github.com/Tuhis/gawk/issues/771)) ([00941c7](https://github.com/Tuhis/gawk/commit/00941c74409f9cfabfb0068dd37fa5ce53f20858))
+* **app:** make Reliable the browser broadcaster's default delivery (R84) ([#774](https://github.com/Tuhis/gawk/issues/774)) ([9a47471](https://github.com/Tuhis/gawk/commit/9a4747105fbd5be5604a3ff5dac8f12443334a90))
+* **app:** per-tile stats in rooms from the tile's right-click menu ([#772](https://github.com/Tuhis/gawk/issues/772)) ([df0e345](https://github.com/Tuhis/gawk/commit/df0e345c66237c45f2c76d7df4ac65b544879da6))
+
 ## [0.61.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.60.2...gawk-app/v0.61.0) (2026-11-10)
 
 
