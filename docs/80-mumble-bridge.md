@@ -243,9 +243,9 @@ participant `identity` field stays empty).
   alternative is one observer per bridge pod watching every channel. That
   is cheaper, but temporary channels would then need a different keeper.
   *Answered by R85 (2026-11-15, [docs/89](89-mumble-ice-roster.md)): with
-  murmur's Ice configured there is no observer user at all; the roster is
-  polled over Ice and a dynamic room's channel is created by its first
-  voice user. The observer described here stays as the mode without Ice.*
+  murmur's Ice configured there is no observer user at all; the roster
+  comes from Ice callbacks and a dynamic room's channel is created by its
+  first voice user. The observer described here stays as the mode without Ice.*
 
 ---
 

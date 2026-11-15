@@ -2674,8 +2674,18 @@ entries still describe code `gawk-pubsim` runs (now
   it instead.** A process that registers a callback and can die without
   `removeCallback` can take the whole Mumble server down. Fixed upstream
   in `a780cc9259` (#7402), released in 1.6.1001 (RC2); 1.5.939 isn't
-  affected in practice. The bridge polls anyway.
+  affected. The bridge never registers a callback on 1.6.870.
   ([docs/89](89-mumble-ice-roster.md) §3 F1–F3)
+- **Murmur drops an Ice callback registration after one refused delivery
+  and doesn't tell the client.** Events simply stop. Calling `addCallback`
+  again restores it, and is a no-op while it is still registered, so the
+  bridge re-adds it on a timer. ([docs/89](89-mumble-ice-roster.md) §3 F13)
+- **An Ice callback endpoint that blackholes freezes murmur's whole event
+  loop** for about twice the endpoint's `-t` timeout, because murmur
+  delivers callbacks synchronously and Ice retries the connect once. With
+  no timeout (`-t -1`) that was 4.5 minutes for every user on the server.
+  Always register a short timeout. ([docs/89](89-mumble-ice-roster.md) §3
+  F15)
 - **`icesecretread` allows `getUsers` and `getChannels` but not
   `addCallback`**, which needs `icesecretwrite`.
   ([docs/89](89-mumble-ice-roster.md) §3 F4)
