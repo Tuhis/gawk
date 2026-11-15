@@ -166,7 +166,7 @@ time another client's view of a mute toggle.
 | D12 | **Status and metrics.** The bridge's `/statusz` gains `roster: "ice" \| "observer"` and, in Ice mode, `ice: {available, reason, serverId, murmurVersion, callbacks, lastEventAgeMs, lastReconcileAgeMs}`. `callbacks` is `registered`, `unsafe` (D16) or `unreachable` (D15). New metrics: `gawk_bridge_ice_events_total{op}`, `gawk_bridge_ice_reconciles_total{result}`, `gawk_bridge_ice_reconcile_drift_total` and the gauge `gawk_bridge_ice_registered`. `gawk_bridge_observers` keeps counting observer links in both modes. | docs/self-hosting.md §15.4 "Is it working?" needs an answer in both modes. |
 | D13 | **Names.** In Ice mode no Mumble user named `-mumble-observer-name` ever exists. The flag applies only in observer mode, and the observer name ladder (docs/80 §11.5, 1000 names) only there. | OD33 becomes observer mode's rule. |
 | D14 | **The callback endpoint.** Each bridge pod listens on `-mumble-ice-callback-listen` (default `:6503`, TCP). It registers the proxy `<identity> -o:tcp -h <callback-host> -p <port> -t <callback-timeout>`: the host is `-mumble-ice-callback-host` (the chart sets the pod IP through the downward API) and the timeout `-mumble-ice-callback-timeout` (default **100 ms**). The identity is `gawk-bridge-<128 random bits, hex>`, new for each process. The endpoint serves only that identity; any other identity, such as an old process's registration arriving at a reused pod IP, gets "object does not exist". The listener is **never routed publicly**: the chart's NetworkPolicy lets in only murmur, from `networkPolicy.murmur` selectors. | F12: murmur dials each pod, so each pod needs an address murmur can reach. F15: the endpoint timeout bounds how long a dead pod can freeze murmur, at about twice its value, so it defaults low. An in-cluster connect takes well under a millisecond. The random identity means a reused IP can't inherit a dead process's events, and it makes injecting fake events harder. Murmur logs the proxy when it adds or removes it, so the identity is a capability against the network, not against murmur's log readers. |
-| D15 | **Reconciliation.** Every `-mumble-ice-reconcile` (default **30 s**), and after any client reconnect, the pod calls `addCallback` again (a no-op while registered, F13) and re-reads `getUsers` and `getChannels`. If the re-read differs from the mirror, the pod replaces the mirror, sends any `Roster` that changed and counts `gawk_bridge_ice_reconcile_drift_total`. If a pod sees drift twice in a row without having received any event since registering, it reports `callbacks: "unreachable"` (murmur can't dial it) and logs it once per state change. Its roster then keeps working at the reconciliation's pace. | F13: murmur drops a registration after one failed delivery and doesn't say so, and a TCP connection murmur thinks is alive can hide a dead peer. The reconciliation bounds how stale the mirror can get without anyone noticing to one interval. At 30 s it costs one `getUsers` per pod per 30 s (F7). |
+| D15 | **Reconciliation.** Every `-mumble-ice-reconcile` (default **30 s**), and after any client reconnect, the pod calls `addCallback` again (a no-op while registered, F13) and re-reads `getUsers` and `getChannels`. If the re-read differs from the mirror, the pod replaces the mirror, sends any `Roster` that changed and counts `gawk_bridge_ice_reconcile_drift_total`. If a pod sees drift twice in a row without having received any event since registering, it reports `callbacks: "unreachable"` (murmur can't dial it), logs it once per state change, **calls `removeCallback` and stops re-adding**. Its roster then runs on the reconciliation alone, as on 1.6.870 (D16). It **probes** by registering again after `-mumble-ice-callback-probe` (default **10 min**), doubling after each failed probe up to 2 h, and goes back to `registered` as soon as an event arrives. | F13: murmur drops a registration after one failed delivery and doesn't say so, and a TCP connection murmur thinks is alive can hide a dead peer. The reconciliation bounds how stale the mirror can get without anyone noticing to one interval. At 30 s it costs one `getUsers` per pod per 30 s (F7). Re-adding is safe only while murmur can reach the pod: when the callback host blackholes, every re-add is a new dead registration, and each one costs everyone on the server one F15 freeze at the next event. So an unreachable pod costs at most two freezes before it stops, then one per probe. |
 | D16 | **No callbacks on 1.6.870.** After connecting, the bridge reads `Meta.getVersion` (F17). On 1.6.0 up to and including 1.6.870 it never calls `addCallback`: `callbacks` is `unsafe`, it logs why once, and the roster runs on D15's reconciliation alone at `-mumble-ice-reconcile`. Every other version 1.5 or later registers. | F1, F3. A gawk pod that crashes must never crash the operator's Mumble server. A slow roster beats none, and operators see the reason in `/statusz`. |
 | D17 | **Leaving cleanly.** On drain, and when the pod loses its last observer link, the bridge calls `removeCallback` before it closes its listener. A pod that dies without doing so (SIGKILL, OOM, a lost node) leaves a registration that murmur drops at its next event: at no cost if the address refuses, or one freeze of about twice the callback timeout if it blackholes (F15). | F15 is the only cost callbacks put on murmur's other users, so normal rollouts must never pay it. |
 
@@ -182,6 +182,7 @@ time another client's view of a mute toggle.
 | `-mumble-ice-callback-host` | — | the address murmur dials, required in Ice mode; the chart sets the pod IP (D14) |
 | `-mumble-ice-callback-timeout` | `100ms` | the timeout in the registered endpoint, bounded to 20 ms–1 s; it bounds F15's freeze (D14) |
 | `-mumble-ice-reconcile` | `30s` | the reconciliation interval, bounded to 5 s–5 min (D15, D16) |
+| `-mumble-ice-callback-probe` | `10m` | the first probe after a pod gives up on callbacks, doubling up to 2 h; bounded to 30 s–2 h (D15) |
 
 These go in the bridge's options struct under its carry-all test, the
 same rule as the relay's `registryOptions` (CLAUDE.md, docs/80 D23).
@@ -197,7 +198,9 @@ without `-mumble-ice-callback-host`, refuses to start.
   when its first gawk user joins voice and goes once everyone has left.
   If a bridge pod dies without cleaning up and its address blackholes,
   everyone on the server sees one pause of about 0.2 s at the next
-  server event (F15, D14).
+  server event (F15, D14). A pod murmur can't reach costs up to two such
+  pauses before it stops registering, then one per probe, every 10 min
+  at first and every 2 h at most (D15).
 - **In gawk:** the same voice roster as before, as fast as the observer's
   (F16). Speaking indicators are exactly as fast as before. A dynamic
   room shows no Mumble users until someone from gawk is in voice, because
@@ -221,7 +224,7 @@ without `-mumble-ice-callback-host`, refuses to start.
 | G4 | Voice keeps working through an Ice outage, the roster reports unavailable and then recovers, and no bot appears | MI2 integration test. MI4 pass 7. |
 | G5 | The bridge keeps no IP, comment, identity or context from Ice, and logs no Ice payload | MI1's type-walk and log test |
 | G6 | Observer mode is unchanged | Every existing bridge test and the existing MI4 passes, green in observer mode with no edits to their assertions |
-| G7 | Gawk never crashes murmur and never freezes it longer than about twice the callback timeout per dead registration: no registration on 1.6.870, `removeCallback` on every clean exit | MI1 criterion 6, MI2 criteria 7–8, MI4 pass 8 |
+| G7 | Gawk never crashes murmur, never freezes it for longer than about twice the callback timeout at a time, and freezes it at most twice per pod before an unreachable pod stops registering, then once per probe: no registration on 1.6.870, `removeCallback` on every clean exit | MI1 criterion 6, MI2 criteria 5, 8 and 9, MI4 pass 8 |
 | G8 | A native user's join, leave and mute reach the gawk roster in callback time, and a silently dropped registration is repaired within one reconciliation | MI2 criteria 3 and 7 |
 
 ### MI0 — Spikes (done 2026-11-15)
@@ -256,12 +259,13 @@ without `-mumble-ice-callback-host`, refuses to start.
 | 6 | The options carry-all test covers every new knob |
 | 7 | **Silent loss repaired.** The test drops the bridge's callback connection so that one delivery is refused, then changes a native user's mute: the roster has it within one reconciliation interval (set to 5 s in the test), and `gawk_bridge_ice_reconcile_drift_total` counts it. A callback host murmur can't reach ends in `callbacks: "unreachable"`, with the roster still updating at reconciliation pace. |
 | 8 | **Version gate.** Against 1.6.870 the bridge never sends `addCallback` (no "Added Ice ServerCallback" in murmur's log), reports `callbacks: "unsafe"`, and its roster follows changes at reconciliation pace |
+| 9 | **An unreachable pod stops costing murmur.** With the callback host set to an unroutable address, the reconciliation at 5 s and the probe at 30 s, a native client toggles its mute every 500 ms for at least 70 s while a second client times each toggle: at most two toggles take longer than 50 ms before the bridge reports `unreachable`, none after that until the probe, and at most one at the probe. Murmur's log shows the `removeCallback` when the pod gives up. |
 
 ### MI3 — Config, chart, docs
 
 | # | Criterion |
 |---|---|
-| 1 | §5.1's flags, `GAWK_BRIDGE_*` envs and chart values (`mumble.ice.addr`, `mumble.ice.secretRef`, `mumble.ice.serverId`, `mumble.ice.timeout`, `mumble.ice.callbackPort`, `mumble.ice.callbackTimeout`, `mumble.ice.reconcile`). The callback host comes from `status.podIP`. The chart's NetworkPolicy egress allows the Ice port, and its ingress allows the callback port from `networkPolicy.murmur` only, both when `mumble.ice.addr` is set. `helm template` tests for both modes. |
+| 1 | §5.1's flags, `GAWK_BRIDGE_*` envs and chart values (`mumble.ice.addr`, `mumble.ice.secretRef`, `mumble.ice.serverId`, `mumble.ice.timeout`, `mumble.ice.callbackPort`, `mumble.ice.callbackTimeout`, `mumble.ice.reconcile`, `mumble.ice.callbackProbe`). The callback host comes from `status.podIP`. The chart's NetworkPolicy egress allows the Ice port, and its ingress allows the callback port from `networkPolicy.murmur` only, both when `mumble.ice.addr` is set. `helm template` tests for both modes. |
 | 2 | `docs/self-hosting.md` §15: the Ice prerequisites (`ice=`, `icesecretwrite`, murmur 1.5 or 1.6.1001 and later, murmur able to reach the bridge pods, all of it on the private network) as the recommended setup, observer mode as the fallback, and §15.4 in both modes |
 | 3 | The bridge README's knob table. `docs/gotchas.md` entries for F1–F4, F8, F9, F13 and F15. |
 | 4 | The dev voice stack (`dev/compose.voice.yml`) runs Ice mode by default, with murmur on 1.6.1001 and observer mode one variable away |
@@ -297,9 +301,11 @@ without `-mumble-ice-callback-host`, refuses to start.
   theirs (D17). An operator who raises the timeout raises this cost with
   it, which is why the flag is capped at 1 s.
 - **Murmur can't reach the pods.** A murmur outside the cluster usually
-  can't dial pod IPs. D15 detects it (`callbacks: "unreachable"`) and the
-  roster keeps working every 30 s. Observer mode is the alternative for
-  such setups.
+  can't dial pod IPs, and a NetworkPolicy that drops packets has the same
+  effect. If the address blackholes, each registration costs one F15
+  freeze. D15 detects it after at most two, removes the registration and
+  probes only rarely, and the roster keeps working every 30 s. Observer
+  mode is the alternative for such setups.
 - **The write secret.** It grants all of Ice's administration: kicking,
   banning, ACLs, registrations. D9 handles it like the access token, and
   Ice must stay on the private network, as it already must for
