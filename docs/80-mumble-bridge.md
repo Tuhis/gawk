@@ -6,6 +6,10 @@ reference deployment 2026-10-26** (§12.5). Open: MV0's owner-device rows
 (Safari on macOS and iOS, Chrome on Android, echo cancellation) and the
 owner's sign-off on the latency target, then the rest of MV8 (phones, a
 kick from each side, a bridge rollout mid-call, latency). Owner decisions taken in the design interview on 2026-10-25 (§2).
+R85 ([docs/89](89-mumble-ice-roster.md), designed 2026-11-15) adds a mode
+in which the roster comes from murmur's Ice and no observer user exists.
+D4, D9's observer names, D11's keeper and OD33 then describe the mode
+without Ice.
 
 **Relationship to earlier work**: docs/44 §4.11 reserved the hooks for
 this: a `voice` room capability, `spec.integrations.mumble` on the `Room`
@@ -238,6 +242,10 @@ participant `identity` field stays empty).
   in Mumble, the
   alternative is one observer per bridge pod watching every channel. That
   is cheaper, but temporary channels would then need a different keeper.
+  *Answered by R85 (2026-11-15, [docs/89](89-mumble-ice-roster.md)): with
+  murmur's Ice configured there is no observer user at all; the roster is
+  polled over Ice and a dynamic room's channel is created by its first
+  voice user. The observer described here stays as the mode without Ice.*
 
 ---
 

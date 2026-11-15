@@ -2666,6 +2666,27 @@ entries still describe code `gawk-pubsim` runs (now
   decoder's output order, after the old codec drained, or its last outputs
   land on the new timeline. ([docs/80](80-mumble-bridge.md) §12.8)
 
+**Murmur's Ice interface (R85)**
+
+- **Murmur 1.6.870 segfaults when the most recently registered Ice
+  `ServerCallback` is dead and any server event fires, and with a dead
+  callback earlier in the list it removes the live one after it instead.**
+  Each event handler loops over a reference to the callback list while the
+  failure path removes from it. The same code is in 1.5.939 (which survived
+  the same cases) and in master. A process that registers a callback and
+  can die without `removeCallback` can take the whole Mumble server down,
+  which is why the bridge polls. ([docs/89](89-mumble-ice-roster.md) §3
+  F1–F3)
+- **`icesecretread` allows `getUsers` and `getChannels` but not
+  `addCallback`**, which needs `icesecretwrite`.
+  ([docs/89](89-mumble-ice-roster.md) §3 F4)
+- **Murmur 1.6 numbers its default virtual server `0`, 1.5 numbers it
+  `1`.** Ask `Meta.getBootedServers` for its identity instead of
+  hard-coding `s/1`. ([docs/89](89-mumble-ice-roster.md) §3 F8)
+- **Murmur's Ice exceptions have different base types by version**
+  (`ServerException` on 1.6, `MurmurException` on 1.5). Match on the
+  most-derived type ID. ([docs/89](89-mumble-ice-roster.md) §3 F9)
+
 **RNNoise in the browser (R80)**
 
 - **The RNNoise 0.2 release tarball does not compile its scalar or NEON
