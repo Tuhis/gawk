@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/Tuhis/gawk/compare/gawk-mumble-bridge/v1.1.0...gawk-mumble-bridge/v1.2.0) (2026-11-15)
+
+
+### Features
+
+* **mumble-bridge:** a Mumble roster without a visible bot, from murmur's Ice (R85 MI1–MI4) ([#790](https://github.com/Tuhis/gawk/issues/790)) ([88bd375](https://github.com/Tuhis/gawk/commit/88bd37540db73ec501dffc5adcc1b7db7af8440b))
+
 ## [1.1.0](https://github.com/Tuhis/gawk/compare/gawk-mumble-bridge/v1.0.0...gawk-mumble-bridge/v1.1.0) (2026-10-27)
 
 
