@@ -615,8 +615,8 @@ func TestStatuszRosterMode(t *testing.T) {
 // baseline, not from the reconcile before it.
 func TestIceProbeIsJudgedFromItsOwnBaseline(t *testing.T) {
 	tb, fr, m, ic := iceStack(t, func(o *Options) {
-		o.Mumble.Ice.Reconcile = 2 * time.Second
-		o.Mumble.Ice.CallbackProbe = 3 * time.Second
+		o.Mumble.Ice.Reconcile = 4 * time.Second
+		o.Mumble.Ice.CallbackProbe = 6 * time.Second
 	})
 	b := joinVoice(t, tb, "room-a", "alice", 0)
 	fr.nextLink(t)
@@ -633,23 +633,23 @@ func TestIceProbeIsJudgedFromItsOwnBaseline(t *testing.T) {
 			select {
 			case <-stop:
 				return
-			case <-time.After(400 * time.Millisecond):
+			case <-time.After(700 * time.Millisecond): // never divides the 4 s interval evenly
 				mute = !mute
 				m.SetMute(st.Session, mute)
 			}
 		}
 	}()
-	waitIce(t, tb, "unreachable", func(s *IceStatus) bool { return s.Callbacks == cbUnreachable })
+	eventually2(t, 20*time.Second, "unreachable", func() bool { return tb.Status().Ice.Callbacks == cbUnreachable })
 	close(stop)
 	<-toggled
 	gaveUp := time.Now() // a reconcile tick, within the 10 ms poll
 	ic.Refuse.Store(false)
-	// A change after that reconcile and before the probe (at +3 s).
-	time.Sleep(time.Until(gaveUp.Add(2500 * time.Millisecond))) // after the +2 s reconcile
+	// A change after the next reconcile and before the probe.
+	time.Sleep(time.Until(gaveUp.Add(5 * time.Second))) // after the +4 s reconcile, before the +6 s probe
 	m.SetMute(st.Session, !mute)
-	eventually(t, "the probe", func() bool { return tb.Status().Ice.Callbacks == cbProbing })
-	// The reconcile after the probe (at +4 s) sees nothing new since it.
-	time.Sleep(time.Until(gaveUp.Add(4500 * time.Millisecond)))
+	eventually2(t, 10*time.Second, "the probe", func() bool { return tb.Status().Ice.Callbacks == cbProbing })
+	// The reconcile after the probe (at +8 s) sees nothing new since it.
+	time.Sleep(time.Until(gaveUp.Add(9 * time.Second)))
 	if s := tb.Status().Ice; s.Callbacks != cbProbing {
 		t.Fatalf("callbacks %s after a quiet interval: the probe failed on a change from before it", s.Callbacks)
 	}

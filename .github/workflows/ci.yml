@@ -2653,10 +2653,11 @@ jobs:
           # callback host, the port, and the NetworkPolicy both ways.
           # With the NetworkPolicy on, the callback port needs murmur's source
           # named: no default opens it to everyone (D14).
-          if helm template gawk-mumble-bridge "$chart" --set networkPolicy.enabled=true \
-               --set mumble.ice.addr=m:6502 >/dev/null 2>&1; then
+          if out=$(helm template gawk-mumble-bridge "$chart" --set networkPolicy.enabled=true \
+               --set mumble.ice.addr=m:6502 2>&1); then
             echo "::error::Ice mode rendered a NetworkPolicy open to every source"; exit 1
           fi
+          grep -q 'docs/89 D14' <<<"$out" || { echo "$out"; exit 1; }
           ice=$(helm template gawk-mumble-bridge "$chart" --set networkPolicy.enabled=true \
                   --set networkPolicy.murmur.callbackCidr=10.0.0.5/32 \
                   --set mumble.ice.addr=mumble-ice.mumble:6502 \
