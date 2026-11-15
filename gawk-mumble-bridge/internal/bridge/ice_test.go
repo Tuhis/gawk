@@ -624,25 +624,29 @@ func TestIceProbeIsJudgedFromItsOwnBaseline(t *testing.T) {
 	waitIce(t, tb, "registered", func(s *IceStatus) bool { return s.Available && s.Callbacks == cbRegistered })
 	// Every delivery fails: two drifting reconciles give up.
 	ic.Refuse.Store(true)
+	// Each change is a new channel, a state that never repeats, so every
+	// reconcile interval drifts whatever the phase (a toggle drifts only on
+	// an odd count per interval: review round 3).
 	mute := false
 	stop := make(chan struct{})
 	toggled := make(chan struct{})
 	go func() {
 		defer close(toggled)
-		for {
+		tick := time.NewTicker(700 * time.Millisecond)
+		defer tick.Stop()
+		for i := 0; ; i++ {
 			select {
 			case <-stop:
 				return
-			case <-time.After(700 * time.Millisecond): // never divides the 4 s interval evenly
-				mute = !mute
-				m.SetMute(st.Session, mute)
+			case <-tick.C:
+				m.AddChannel(0, fmt.Sprintf("drift-%d", i))
 			}
 		}
 	}()
 	eventually2(t, 20*time.Second, "unreachable", func() bool { return tb.Status().Ice.Callbacks == cbUnreachable })
 	close(stop)
 	<-toggled
-	gaveUp := time.Now() // a reconcile tick, within the 10 ms poll
+	gaveUp := time.Now() // a reconcile tick, within eventually2's 100 ms poll
 	ic.Refuse.Store(false)
 	// A change after the next reconcile and before the probe.
 	time.Sleep(time.Until(gaveUp.Add(5 * time.Second))) // after the +4 s reconcile, before the +6 s probe
