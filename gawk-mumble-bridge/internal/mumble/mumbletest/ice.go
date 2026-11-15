@@ -31,6 +31,9 @@ type Ice struct {
 	ServerIDs           []int32
 	// Down refuses every call with a dropped connection.
 	Down atomic.Bool
+	// Refuse makes every delivery fail, as if the endpoint refused it:
+	// murmur then drops the registration (F13).
+	Refuse atomic.Bool
 
 	mu        sync.Mutex
 	regs      map[icetest.Proxy]*icetest.Caller // nil until the first delivery
@@ -318,7 +321,10 @@ func (ic *Ice) deliver(op string, params []byte) {
 		if c != nil && !c.Alive() {
 			err = errors.New("the endpoint closed the connection")
 		}
-		if c == nil {
+		if ic.Refuse.Load() {
+			err = errors.New("refused")
+		}
+		if c == nil && err == nil {
 			timeout := time.Duration(p.TimeoutMs) * time.Millisecond
 			if timeout <= 0 {
 				timeout = time.Second

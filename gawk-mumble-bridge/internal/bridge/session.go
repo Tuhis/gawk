@@ -339,7 +339,7 @@ func (vs *voiceSession) connect(nick string, mute, deaf bool, code string, acc v
 		if s.ice != nil {
 			// Ice mode: nobody keeps the channel, so the first voice
 			// user creates it, without waiting (docs/89 D5, D6).
-			channel, err = enterTemp(ectx, c, s.opts.Mumble.TempParent, s.tempChannel(code, acc.DisplayCode), 0, s.iceTempCap(c))
+			channel, err = enterTemp(ectx, c, s.opts.Mumble.TempParent, s.tempChannel(code, acc.DisplayCode), 0, s.iceTempCap(s.tempChannel(code, acc.DisplayCode)))
 		} else {
 			channel, err = enterTemp(ectx, c, s.opts.Mumble.TempParent, s.tempChannel(code, acc.DisplayCode), s.timings.TempChannelWait, nil)
 		}

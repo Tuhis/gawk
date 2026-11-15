@@ -362,9 +362,17 @@ func stateFlags(u mumble.User, connected bool) uint8 {
 // was created cannot tell it is one (F18). Every Ice-mode pod keeps the
 // mirror, observer link or not (D2). It covers the whole server, and two
 // pods can race past it by one each: an abuse guard, not a quota.
-func (s *Server) iceTempCap(c *mumble.Client) func(parent uint32) error {
+func (s *Server) iceTempCap(name string) func(parent uint32) error {
 	return func(parent uint32) error {
-		if n := s.ice.tempChannelsUnder(parent); n >= s.opts.MaxTempChannels {
+		// Another pod may have just made it: the voice user's own tree
+		// does not show it yet, but the mirror does, and the "create"
+		// will end as a join (enterTemp's ChannelName race), which the
+		// cap never refuses (review round 1).
+		n, exists := s.ice.tempChannels(parent, name)
+		if exists {
+			return nil
+		}
+		if n >= s.opts.MaxTempChannels {
 			return fail(ReasonTempChannelCap, fmt.Errorf("-max-temp-channels reached: %d temporary channels", n))
 		}
 		return nil

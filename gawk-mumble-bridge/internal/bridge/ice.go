@@ -119,6 +119,11 @@ func (m *iceMirror) onEvent(ev murmurice.Event, err error) {
 	if m.fsm.state == cbUnsafe {
 		return // never registered: not murmur's
 	}
+	// An event murmur sent just before a removeCallback can land after it,
+	// leaving the state registered with nothing registered. It repairs
+	// itself: the next drifting reconcile re-adds (D15), and until then the
+	// roster runs at reconcile pace, as an event older than a read's
+	// snapshot is applied after it (D2).
 	was := m.fsm.state
 	m.fsm.onEvent()
 	if was != cbRegistered {
@@ -318,6 +323,18 @@ func (m *iceMirror) session(ctx context.Context, first bool) error {
 			if err := m.perform(ctx, act); err != nil {
 				return err
 			}
+			if act.add {
+				// The probe runs between reconciles: re-read now, not as a
+				// reconcile, so the next one judges drift from the
+				// registration on, not from a change before it (review
+				// round 1).
+				if _, err := m.read(ctx, false); err != nil {
+					return err
+				}
+				if m.cli.Generation() != gen {
+					return errReconnected
+				}
+			}
 		case <-tick.C:
 			stopProbe()
 			drift, err := m.read(ctx, true)
@@ -455,12 +472,10 @@ func (m *iceMirror) read(ctx context.Context, reconcile bool) (bool, error) {
 	if reconcile {
 		touchedU, touchedC := map[uint32]bool{}, map[uint32]bool{}
 		for _, ev := range buf {
-			if ev.Op == murmurice.OpUserTextMessage {
-				continue
-			}
-			if ev.Op[0] == 'u' {
+			switch ev.Op {
+			case murmurice.OpUserConnected, murmurice.OpUserStateChanged, murmurice.OpUserDisconnected:
 				touchedU[ev.User.Session] = true
-			} else {
+			case murmurice.OpChannelCreated, murmurice.OpChannelStateChanged, murmurice.OpChannelRemoved:
 				touchedC[ev.Channel.ID] = true
 			}
 		}
@@ -497,6 +512,9 @@ func differs[V comparable](a, b map[uint32]V, skip map[uint32]bool) bool {
 	return false
 }
 
+// leaveTimeout caps D17's removeCallback.
+const leaveTimeout = 2 * time.Second
+
 // stop ends the loop and waits for it.
 func (m *iceMirror) stop() {
 	if m.cancel != nil {
@@ -521,7 +539,10 @@ func (m *iceMirror) leave() {
 	if state == cbUnsafe || !have || sid < 0 {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), m.o.Timeout)
+	// Bounded below -mumble-ice-timeout's 1 min ceiling: the pod's grace
+	// period is the drain plus 5 s, and a removeCallback cut off by
+	// SIGKILL leaves the registration D17 exists to remove (review round 1).
+	ctx, cancel := context.WithTimeout(context.Background(), min(m.o.Timeout, leaveTimeout))
 	defer cancel()
 	err := m.cli.RemoveCallback(ctx, sid, m.proxy)
 	m.mu.Lock()
@@ -547,15 +568,25 @@ func (m *iceMirror) close() {
 // mirror keeps its last state through an outage, which is good enough for
 // an abuse guard.
 func (m *iceMirror) tempChannelsUnder(parent uint32) int {
+	n, _ := m.tempChannels(parent, "")
+	return n
+}
+
+// tempChannels counts the temporary channels under parent and reports
+// whether one is named name.
+func (m *iceMirror) tempChannels(parent uint32, name string) (int, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	n := 0
+	n, found := 0, false
 	for id, ch := range m.chans {
-		if id != 0 && ch.Parent == parent && ch.Temporary {
-			n++
+		if id != 0 && ch.Parent == parent {
+			if ch.Temporary {
+				n++
+			}
+			found = found || (name != "" && ch.Name == name)
 		}
 	}
-	return n
+	return n, found
 }
 
 // rosterView is what one watcher reports.

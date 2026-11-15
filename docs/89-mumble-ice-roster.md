@@ -374,3 +374,24 @@ the mirror (F18); D15 doesn't count a read secret's refusal; MI1 criterion
 4's murmur runs on the host network (F19); MI2 criterion 9 counts freezes
 from 150 ms and runs without the race detector (F21); MI3 criterion 4's dev
 murmur stays on 1.5.939 (F20).
+
+From review round 1 on PR #790:
+
+- **A probe is judged from its own baseline.** The probe fires between two
+  reconciles, so the pod re-reads the state right after the probe's
+  `addCallback` (not as a reconcile). Otherwise a change from before the
+  probe counted as drift and failed a probe whose registration worked,
+  doubling the backoff (`TestIceProbeIsJudgedFromItsOwnBaseline`).
+- **`unanswered` drops back to 2 when a probe ends**, failed or not run, so
+  it reads 3 only during a probe, as D12 says.
+- **D6's cap lets a join through:** if the mirror already holds the room's
+  channel (another pod's), the "create" ends as a join and isn't refused.
+- **D17's `removeCallback` is capped at 2 s**, inside the pod's grace
+  period (drain + 5 s), whatever `-mumble-ice-timeout` says.
+- **D14's NetworkPolicy names murmur's source:**
+  `networkPolicy.murmur.callbackCidr` or the murmur selectors. With Ice on,
+  the policy on and neither set, the chart refuses to render, instead of
+  reusing the egress `cidr`, whose default is `0.0.0.0/0`.
+- An event murmur sent just before a `removeCallback` can arrive after it
+  and leave the state `registered` with nothing registered. The next
+  drifting reconcile repairs it (D15), like D2's stale buffered event.

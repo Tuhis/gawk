@@ -608,3 +608,70 @@ func TestStatuszRosterMode(t *testing.T) {
 	}
 	_ = fmt.Sprint
 }
+
+// Round-1 review finding 1: a probe whose registration works must not fail
+// on a change that happened before its addCallback. The probe fires between
+// two reconciles; the next reconcile must judge drift from the probe's own
+// baseline, not from the reconcile before it.
+func TestIceProbeIsJudgedFromItsOwnBaseline(t *testing.T) {
+	tb, fr, m, ic := iceStack(t, func(o *Options) {
+		o.Mumble.Ice.Reconcile = 2 * time.Second
+		o.Mumble.Ice.CallbackProbe = 3 * time.Second
+	})
+	b := joinVoice(t, tb, "room-a", "alice", 0)
+	fr.nextLink(t)
+	st := b.waitState(connected)
+	waitIce(t, tb, "registered", func(s *IceStatus) bool { return s.Available && s.Callbacks == cbRegistered })
+	// Every delivery fails: two drifting reconciles give up.
+	ic.Refuse.Store(true)
+	mute := false
+	stop := make(chan struct{})
+	toggled := make(chan struct{})
+	go func() {
+		defer close(toggled)
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(400 * time.Millisecond):
+				mute = !mute
+				m.SetMute(st.Session, mute)
+			}
+		}
+	}()
+	waitIce(t, tb, "unreachable", func(s *IceStatus) bool { return s.Callbacks == cbUnreachable })
+	close(stop)
+	<-toggled
+	gaveUp := time.Now() // a reconcile tick, within the 10 ms poll
+	ic.Refuse.Store(false)
+	// A change after that reconcile and before the probe (at +3 s).
+	time.Sleep(time.Until(gaveUp.Add(2500 * time.Millisecond))) // after the +2 s reconcile
+	m.SetMute(st.Session, !mute)
+	eventually(t, "the probe", func() bool { return tb.Status().Ice.Callbacks == cbProbing })
+	// The reconcile after the probe (at +4 s) sees nothing new since it.
+	time.Sleep(time.Until(gaveUp.Add(4500 * time.Millisecond)))
+	if s := tb.Status().Ice; s.Callbacks != cbProbing {
+		t.Fatalf("callbacks %s after a quiet interval: the probe failed on a change from before it", s.Callbacks)
+	}
+	// And the next change arrives by callback: the probe passes.
+	m.SetMute(st.Session, mute)
+	waitIce(t, tb, "registered", func(s *IceStatus) bool { return s.Callbacks == cbRegistered })
+}
+
+// Round-1 review finding 6: the cap refuses a create only when the mirror
+// does not already hold the channel (another pod's), which would end as a
+// join.
+func TestIceTempCapLetsAJoinThrough(t *testing.T) {
+	s := &Server{opts: Options{MaxTempChannels: 1}}
+	s.ice = &iceMirror{s: s, chans: map[uint32]murmurice.Channel{
+		0: {ID: 0, Name: "Root"},
+		1: {ID: 1, Parent: 0, Name: "Gawk"},
+		2: {ID: 2, Parent: 1, Name: "gawk abc", Temporary: true},
+	}}
+	if err := s.iceTempCap("gawk abc")(1); err != nil {
+		t.Fatalf("a channel the mirror holds was refused: %v", err)
+	}
+	if err := s.iceTempCap("gawk def")(1); failureReason(err) != ReasonTempChannelCap {
+		t.Fatalf("a new channel past the cap: %v", err)
+	}
+}

@@ -71,6 +71,7 @@ func (f *callbackFSM) onConnect(unsafe bool, now time.Time) cbAction {
 		// A reconnect ends the probe as not run; two in a row count as
 		// one failed probe.
 		f.state = cbUnreachable
+		f.unanswered = min(f.unanswered, cbMaxUnanswered) // D12: 3 only during a probe
 		f.notRun++
 		if f.notRun >= 2 {
 			f.notRun = 0
@@ -107,6 +108,7 @@ func (f *callbackFSM) onDrift(now time.Time) (cbAction, bool) {
 	case cbProbing:
 		// The probe's registration drifted with no event: failed.
 		f.state = cbUnreachable
+		f.unanswered = min(f.unanswered, cbMaxUnanswered) // D12: 3 only during a probe
 		f.notRun = 0
 		f.backoff = min(2*f.backoff, f.max)
 		f.probeAt = now.Add(f.backoff)
