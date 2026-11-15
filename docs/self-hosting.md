@@ -2049,8 +2049,10 @@ mumble:
 For Ice mode, add murmur's write secret to the shared Secret
 (`--from-literal=mumbleIceWrite=…`, the value of `icesecretwrite`). With
 `networkPolicy.enabled`, the chart lets in the callback port only from
-`networkPolicy.murmur` (its `cidr`, or `podSelector`/`namespaceSelector` for
-a murmur in the cluster) and lets the pods out to `networkPolicy.murmur.icePort`.
+murmur, which you name: `networkPolicy.murmur.callbackCidr` (murmur's
+address), or `podSelector`/`namespaceSelector` for a murmur in the cluster.
+It refuses to render with neither, rather than open the port to everyone.
+It also lets the pods out to `networkPolicy.murmur.icePort`.
 
 ```sh
 helm upgrade --install gawk-mumble-bridge oci://ghcr.io/tuhis/charts/gawk-mumble-bridge \

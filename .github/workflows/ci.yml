@@ -2651,7 +2651,14 @@ jobs:
           fi
           # Ice mode: every knob, the secret from its Ref, the pod IP as the
           # callback host, the port, and the NetworkPolicy both ways.
+          # With the NetworkPolicy on, the callback port needs murmur's source
+          # named: no default opens it to everyone (D14).
+          if helm template gawk-mumble-bridge "$chart" --set networkPolicy.enabled=true \
+               --set mumble.ice.addr=m:6502 >/dev/null 2>&1; then
+            echo "::error::Ice mode rendered a NetworkPolicy open to every source"; exit 1
+          fi
           ice=$(helm template gawk-mumble-bridge "$chart" --set networkPolicy.enabled=true \
+                  --set networkPolicy.murmur.callbackCidr=10.0.0.5/32 \
                   --set mumble.ice.addr=mumble-ice.mumble:6502 \
                   --set mumble.ice.secretRef.name=mumble-ice --set mumble.ice.secretRef.key=icesecretwrite)
           for e in ADDR SECRET TIMEOUT CALLBACK_LISTEN CALLBACK_HOST CALLBACK_TIMEOUT RECONCILE CALLBACK_PROBE; do
@@ -2666,6 +2673,7 @@ jobs:
           np=$(awk '/^kind: NetworkPolicy/{p=1} /^---/{p=0} p' <<<"$ice")
           grep -q 'port: 6503' <<<"$np"
           grep -q 'port: 6502' <<<"$np"
+          grep -q 'cidr: 10.0.0.5/32' <<<"$np"
           helm template gawk-mumble-bridge "$chart" --set mumble.ice.addr=m:6502 --set mumble.ice.serverId=0 \
             | grep -A1 'name: GAWK_BRIDGE_MUMBLE_ICE_SERVER_ID$' | grep -q 'value: "0"'
       # ---- R33 (docs/83 WG3, WG4) -----------------------------------------

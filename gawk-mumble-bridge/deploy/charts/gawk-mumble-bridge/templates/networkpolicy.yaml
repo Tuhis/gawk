@@ -59,9 +59,11 @@ spec:
             matchLabels:
               {{- toYaml . | nindent 14 }}
           {{- end }}
-        {{- else }}
+        {{- else if $np.murmur.callbackCidr }}
         - ipBlock:
-            cidr: {{ $np.murmur.cidr }}
+            cidr: {{ $np.murmur.callbackCidr }}
+        {{- else }}
+        {{- fail "networkPolicy with mumble.ice.addr: set networkPolicy.murmur.podSelector/namespaceSelector or networkPolicy.murmur.callbackCidr, so only murmur reaches the callback port (docs/89 D14)" }}
         {{- end }}
       ports:
         - protocol: TCP

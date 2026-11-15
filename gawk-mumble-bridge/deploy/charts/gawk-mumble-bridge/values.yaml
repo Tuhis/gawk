@@ -221,9 +221,12 @@ networkPolicy:
     cidr: 0.0.0.0/0
     port: 64738
     # Ice mode: egress to murmur's Ice port, and ingress to the callback
-    # port from murmur only — from `cidr`, or from these selectors when set
-    # (murmur in the cluster).
+    # port from murmur only: from these selectors (murmur in the cluster),
+    # or else from callbackCidr (murmur's own address). Not from `cidr`,
+    # whose permissive default suits egress only; with Ice on and neither
+    # set, the chart refuses to render rather than open the port to all.
     icePort: 6502
+    callbackCidr: ""
     podSelector: {}
     namespaceSelector: {}
   dns:
