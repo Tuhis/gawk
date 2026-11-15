@@ -78,6 +78,7 @@ type Server struct {
 	versions []uint64
 	closed   bool
 	wg       sync.WaitGroup
+	ice      *Ice
 }
 
 type channel struct {
@@ -320,6 +321,12 @@ func (s *Server) broadcast(typ uint16, payload []byte) {
 	for _, u := range us {
 		s.send(u, typ, payload)
 	}
+	s.mu.Lock()
+	ic := s.ice
+	s.mu.Unlock()
+	if ic != nil {
+		ic.sync()
+	}
 }
 
 func reject(conn net.Conn, typ mumble.RejectType, reason string) {
@@ -402,7 +409,12 @@ func (s *Server) serve(conn net.Conn) {
 	s.mu.Unlock()
 	sort.Slice(chans, func(i, j int) bool { return chans[i].id < chans[j].id })
 	for _, ch := range chans {
-		s.send(u, tChannelState, channelState(ch))
+		// murmur's login tree leaves `temporary` out: only clients that
+		// were connected when a temporary channel was created know it is
+		// one (measured 2026-11-15 on 1.5.939 and 1.6.1001, docs/89 F18).
+		login := *ch
+		login.temp = false
+		s.send(u, tChannelState, channelState(&login))
 	}
 	for _, o := range others {
 		if o != u {

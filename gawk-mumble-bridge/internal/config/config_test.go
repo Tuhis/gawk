@@ -83,6 +83,16 @@ var knobs = []struct {
 	{"max-temp-channels", "3", func(o bridge.Options) any { return o.MaxTempChannels }, 3},
 	{"drain-timeout", "25s", func(o bridge.Options) any { return o.DrainTimeout }, 25 * time.Second},
 	{"stats-key", "fixed-stats-key", func(o bridge.Options) any { return string(o.StatsKey) }, "fixed-stats-key"},
+	// Ice mode (docs/89 §5.1, MI2 criterion 6).
+	{"mumble-ice-addr", "mumble-ice:6502", func(o bridge.Options) any { return o.Mumble.Ice.Addr }, "mumble-ice:6502"},
+	{"mumble-ice-secret", "ice-write-secret", func(o bridge.Options) any { return o.Mumble.Ice.Secret }, "ice-write-secret"},
+	{"mumble-ice-server-id", "1", func(o bridge.Options) any { return o.Mumble.Ice.ServerID }, 1},
+	{"mumble-ice-timeout", "3s", func(o bridge.Options) any { return o.Mumble.Ice.Timeout }, 3 * time.Second},
+	{"mumble-ice-callback-listen", ":7503", func(o bridge.Options) any { return o.Mumble.Ice.CallbackListen }, ":7503"},
+	{"mumble-ice-callback-host", "10.0.0.7", func(o bridge.Options) any { return o.Mumble.Ice.CallbackHost }, "10.0.0.7"},
+	{"mumble-ice-callback-timeout", "200ms", func(o bridge.Options) any { return o.Mumble.Ice.CallbackTimeout }, 200 * time.Millisecond},
+	{"mumble-ice-reconcile", "45s", func(o bridge.Options) any { return o.Mumble.Ice.Reconcile }, 45 * time.Second},
+	{"mumble-ice-callback-probe", "20m", func(o bridge.Options) any { return o.Mumble.Ice.CallbackProbe }, 20 * time.Minute},
 }
 
 // Knobs that exclude one another get their own carry test.
@@ -210,42 +220,58 @@ func TestEveryEnvTwinWorksAndFlagsWin(t *testing.T) {
 
 func TestValidation(t *testing.T) {
 	bad := map[string][]string{
-		"no psk":             {"-psk", ""},
-		"short secret":       {"-ticket-secret", "short"},
-		"http relay":         {"-relay-url", "http://relay:4433"},
-		"relay with path":    {"-relay-url", "https://relay:4433/x"},
-		"relay with query":   {"-relay-url", "https://relay:4433?a=b"},
-		"no relay":           {"-relay-url", ""},
-		"no mumble":          {"-mumble-addr", ""},
-		"mumble no port":     {"-mumble-addr", "murmur"},
-		"bad listen":         {"-listen", "nope"},
-		"bad internal":       {"-internal-listen", "nope"},
-		"bad ops":            {"-ops-listen", "nope"},
-		"no {nick}":          {"-mumble-name-template", "web user"},
-		"empty observer":     {"-mumble-observer-name", " "},
-		"constant temp name": {"-mumble-temp-channel-template", "gawk"},
-		"protobuf audio":     {"-mumble-client-version", "1.5.0"},
-		"no opus":            {"-mumble-client-version", "1.2.3"},
-		"bad version":        {"-mumble-client-version", "1.4"},
-		"zero sessions":      {"-max-voice-sessions", "0"},
-		"negative temp":      {"-max-temp-channels", "-1"},
-		"bad drain":          {"-drain-timeout", "soon"},
-		"zero drain":         {"-drain-timeout", "0s"},
-		"bad bool":           {"-mumble-insecure-skip-verify", "maybe"},
-		"bad dev-cert":       {"-dev-cert=maybe"},
-		"bad pin":            {"-mumble-cert-sha256", "abc"},
-		"two trusts":         {"-mumble-insecure-skip-verify", "true", "-mumble-ca-file", "/x"},
-		"link origin listed": {"-allowed-origins", voice.LinkOrigin},
-		"dev and file certs": {"-cert-file", "/a", "-key-file", "/b"},
-		"bad level":          {"-log-level", "loud"},
-		"bad format":         {"-log-format", "xml"},
-		"stray argument":     {"extra"},
-		"unknown flag":       {"-nope"},
+		"no psk":                  {"-psk", ""},
+		"short secret":            {"-ticket-secret", "short"},
+		"http relay":              {"-relay-url", "http://relay:4433"},
+		"relay with path":         {"-relay-url", "https://relay:4433/x"},
+		"relay with query":        {"-relay-url", "https://relay:4433?a=b"},
+		"no relay":                {"-relay-url", ""},
+		"no mumble":               {"-mumble-addr", ""},
+		"mumble no port":          {"-mumble-addr", "murmur"},
+		"bad listen":              {"-listen", "nope"},
+		"bad internal":            {"-internal-listen", "nope"},
+		"bad ops":                 {"-ops-listen", "nope"},
+		"no {nick}":               {"-mumble-name-template", "web user"},
+		"empty observer":          {"-mumble-observer-name", " "},
+		"constant temp name":      {"-mumble-temp-channel-template", "gawk"},
+		"protobuf audio":          {"-mumble-client-version", "1.5.0"},
+		"no opus":                 {"-mumble-client-version", "1.2.3"},
+		"bad version":             {"-mumble-client-version", "1.4"},
+		"zero sessions":           {"-max-voice-sessions", "0"},
+		"negative temp":           {"-max-temp-channels", "-1"},
+		"bad drain":               {"-drain-timeout", "soon"},
+		"zero drain":              {"-drain-timeout", "0s"},
+		"bad bool":                {"-mumble-insecure-skip-verify", "maybe"},
+		"bad dev-cert":            {"-dev-cert=maybe"},
+		"bad pin":                 {"-mumble-cert-sha256", "abc"},
+		"two trusts":              {"-mumble-insecure-skip-verify", "true", "-mumble-ca-file", "/x"},
+		"link origin listed":      {"-allowed-origins", voice.LinkOrigin},
+		"dev and file certs":      {"-cert-file", "/a", "-key-file", "/b"},
+		"bad level":               {"-log-level", "loud"},
+		"bad format":              {"-log-format", "xml"},
+		"stray argument":          {"extra"},
+		"ice knob without addr":   {"-mumble-ice-reconcile", "40s"},
+		"ice secret without addr": {"-mumble-ice-secret", "x"},
+		"ice without secret":      {"-mumble-ice-addr", "m:6502", "-mumble-ice-callback-host", "10.0.0.1"},
+		"ice without cb host":     {"-mumble-ice-addr", "m:6502", "-mumble-ice-secret", "x"},
+		"ice bad addr":            {"-mumble-ice-addr", "m", "-mumble-ice-secret", "x", "-mumble-ice-callback-host", "10.0.0.1"},
+		"ice cb timeout high":     {"-mumble-ice-addr", "m:1", "-mumble-ice-secret", "x", "-mumble-ice-callback-host", "h", "-mumble-ice-callback-timeout", "2s"},
+		"ice cb timeout low":      {"-mumble-ice-addr", "m:1", "-mumble-ice-secret", "x", "-mumble-ice-callback-host", "h", "-mumble-ice-callback-timeout", "10ms"},
+		"ice reconcile low":       {"-mumble-ice-addr", "m:1", "-mumble-ice-secret", "x", "-mumble-ice-callback-host", "h", "-mumble-ice-reconcile", "1s"},
+		"ice reconcile high":      {"-mumble-ice-addr", "m:1", "-mumble-ice-secret", "x", "-mumble-ice-callback-host", "h", "-mumble-ice-reconcile", "10m"},
+		"ice probe low":           {"-mumble-ice-addr", "m:1", "-mumble-ice-secret", "x", "-mumble-ice-callback-host", "h", "-mumble-ice-callback-probe", "10s"},
+		"ice probe high":          {"-mumble-ice-addr", "m:1", "-mumble-ice-secret", "x", "-mumble-ice-callback-host", "h", "-mumble-ice-callback-probe", "3h"},
+		"ice bad server id":       {"-mumble-ice-addr", "m:1", "-mumble-ice-secret", "x", "-mumble-ice-callback-host", "h", "-mumble-ice-server-id", "-2"},
+		"ice listen port 0":       {"-mumble-ice-addr", "m:1", "-mumble-ice-secret", "x", "-mumble-ice-callback-host", "h", "-mumble-ice-callback-listen", ":0"},
+		"unknown flag":            {"-nope"},
 	}
 	for name, extra := range bad {
 		if _, err := Parse(append(required(), extra...), env(nil)); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+	if _, err := Parse(required(), env(map[string]string{"GAWK_BRIDGE_MUMBLE_ICE_SECRET": "x"})); err == nil {
+		t.Error("an Ice env without -mumble-ice-addr accepted")
 	}
 	if _, err := Parse(required(), env(map[string]string{"GAWK_BRIDGE_MUMBLE_INSECURE_SKIP_VERIFY": "maybe"})); err == nil {
 		t.Error("bad boolean env accepted")
@@ -269,7 +295,7 @@ func TestLogAttrsNeverCarrySecrets(t *testing.T) {
 		}
 		return s
 	}(), " ")))
-	for _, secret := range []string{"the-psk", "a-ticket-secret-of-length", "server-pw", "bridge-token", "fixed-stats-key"} {
+	for _, secret := range []string{"the-psk", "a-ticket-secret-of-length", "server-pw", "bridge-token", "fixed-stats-key", "ice-write-secret"} {
 		if strings.Contains(joined, secret) {
 			t.Errorf("start-up log carries %q", secret)
 		}

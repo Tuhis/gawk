@@ -243,8 +243,10 @@ func (s *Server) tempChannel(code, displayCode string) string {
 // enterTemp joins the room's temporary channel under the parent, waiting up
 // to wait for it to appear (the observer creates it) and creating it itself
 // when it does not (D11: a redialled observer, or a user's pod that got
-// there first, finds the existing channel by name).
-func enterTemp(ctx context.Context, c *mumble.Client, parentPath, name string, wait time.Duration) (uint32, error) {
+// there first, finds the existing channel by name). beforeCreate, when set,
+// may refuse a create (never a join): Ice mode's -max-temp-channels
+// (docs/89 D6).
+func enterTemp(ctx context.Context, c *mumble.Client, parentPath, name string, wait time.Duration, beforeCreate func(parent uint32) error) (uint32, error) {
 	parent, ok := c.FindPath(voice.ChannelPath(parentPath))
 	if !ok {
 		return 0, fail(ReasonChannelNotFound, fmt.Errorf("%w: temporary-channel parent", mumble.ErrChannelNotFound))
@@ -267,6 +269,11 @@ func enterTemp(ctx context.Context, c *mumble.Client, parentPath, name string, w
 				return 0, fail(classify(err), err)
 			}
 			continue // it went away under us: create it
+		}
+		if beforeCreate != nil {
+			if err := beforeCreate(parent); err != nil {
+				return 0, err
+			}
 		}
 		id, err := c.CreateChannel(ctx, parent, name, true)
 		if err == nil {
@@ -346,4 +353,28 @@ func stateFlags(u mumble.User, connected bool) uint8 {
 		f |= wire.VoiceStateFlagConnected
 	}
 	return f
+}
+
+// iceTempCap is Ice mode's -max-temp-channels (docs/89 D6): the temporary
+// channels under the parent, counted in the pod's Ice mirror just before a
+// create. Not in the voice user's own connection's tree: murmur's login tree
+// leaves `temporary` out, so a connection made after a temporary channel
+// was created cannot tell it is one (F18). Every Ice-mode pod keeps the
+// mirror, observer link or not (D2). It covers the whole server, and two
+// pods can race past it by one each: an abuse guard, not a quota.
+func (s *Server) iceTempCap(name string) func(parent uint32) error {
+	return func(parent uint32) error {
+		// Another pod may have just made it: the voice user's own tree
+		// does not show it yet, but the mirror does, and the "create"
+		// will end as a join (enterTemp's ChannelName race), which the
+		// cap never refuses (review round 1).
+		n, exists := s.ice.tempChannels(parent, name)
+		if exists {
+			return nil
+		}
+		if n >= s.opts.MaxTempChannels {
+			return fail(ReasonTempChannelCap, fmt.Errorf("-max-temp-channels reached: %d temporary channels", n))
+		}
+		return nil
+	}
 }

@@ -64,6 +64,32 @@ type MumbleOptions struct {
 	ObserverName        string
 	TempParent          string
 	TempChannelTemplate string
+	// Ice, when Ice.Addr is set, is Ice mode (docs/89 D1): the roster comes
+	// from murmur's Ice and no observer user exists. Unset is observer
+	// mode, R79's behaviour.
+	Ice IceOptions
+}
+
+// IceOptions configures Ice mode (docs/89 §5.1).
+type IceOptions struct {
+	// Addr is murmur's Ice endpoint, host:port over TCP.
+	Addr string
+	// Secret is murmur's icesecretwrite (D9). Never logged.
+	Secret string
+	// ServerID is the virtual server; negative discovers it (D8).
+	ServerID int
+	// Timeout bounds each Ice call and the dial.
+	Timeout time.Duration
+	// CallbackListen is the callback endpoint's listen address (D14).
+	CallbackListen string
+	// CallbackHost is the address murmur dials (the pod IP).
+	CallbackHost string
+	// CallbackTimeout is the registered endpoint's timeout (F15).
+	CallbackTimeout time.Duration
+	// Reconcile is the reconciliation interval (D15).
+	Reconcile time.Duration
+	// CallbackProbe is the first probe's wait after giving up (D15).
+	CallbackProbe time.Duration
 }
 
 // Timings are the service's internal timers.

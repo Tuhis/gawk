@@ -50,6 +50,11 @@ export class UdpBalancer {
     for (const b of this.backends) if (b.name === name) b.terminating = true;
   }
 
+  /** `name` takes new flows again (a pod that came back). */
+  restore(name) {
+    for (const b of this.backends) if (b.name === name) b.terminating = false;
+  }
+
   /** Flow counts per backend, for assertions. */
   stats() {
     return Object.fromEntries(this.backends.map((b) => [b.name, b.flows]));

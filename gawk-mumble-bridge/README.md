@@ -15,8 +15,25 @@ is not configured to use it.
 browser ── WebTransport :4443 (VoiceHello + ticket, VoiceFrame datagrams) ──▶ bridge pod
 relay home pod ── /internal/observe :4444 (observer link) ───────────────────▶ bridge pod
 bridge pod ── /internal/voice/{code} (session link) ─────────────────────────▶ relay
-bridge pod ── one TLS connection per gawk user, plus one observer per room ──▶ murmur
+bridge pod ── one TLS connection per gawk user (plus one observer per room ───▶ murmur
+              in observer mode)
+bridge pod ── Ice :6502, getUsers/getChannels and one callback registration ─▶ murmur  (Ice mode)
+murmur ── Ice callbacks, pushed to each pod's :6503 ─────────────────────────▶ bridge pod (Ice mode)
 ```
+
+The roster has two modes, chosen by configuration (R85,
+[docs/89](../docs/89-mumble-ice-roster.md)):
+
+- **Ice mode** (`-mumble-ice-addr` set, recommended): the roster comes from
+  murmur's Ice administration interface. Every pod keeps one
+  `ServerCallback` registration and a mirror of the server's users and
+  channels that murmur's pushed events keep current, and re-reads it every
+  `-mumble-ice-reconcile`. No Mumble user other than gawk's voice users
+  exists. A dynamic room's temporary channel is created by its first gawk
+  voice user. On murmur 1.6.870, whose callback handling crashes, the
+  bridge never registers and the roster runs on the re-read alone.
+- **Observer mode** (no `-mumble-ice-addr`): R79's behaviour, a visible
+  observer user per voice-live room.
 
 - **Public listener** (`-listen`, QUIC, a UDP LoadBalancer): `CONNECT /voice`.
   The browser sends a `VoiceHello` with a ticket its room's home pod minted;
@@ -27,10 +44,14 @@ bridge pod ── one TLS connection per gawk user, plus one observer per room �
   ACLs and whispers apply as for a native client.
 - **Internal listener** (`-internal-listen`, QUIC, ClusterIP only):
   `CONNECT /internal/observe?psk=`. The room's home relay pod opens one
-  observer link per voice-live room. The bridge pod that accepts it runs the
-  room's observer, a Mumble user named `gawkBridgeBot` that sits in the channel —
-  creating a dynamic room's temporary channel and keeping it alive — and
-  reports the channel's users back.
+  observer link per voice-live room. The bridge pod that accepts it reports
+  the channel's users back: in Ice mode from its mirror, in observer mode
+  through the room's observer, a Mumble user named `gawkBridgeBot` that sits
+  in the channel, creating a dynamic room's temporary channel and keeping it
+  alive.
+- **Ice callback listener** (`-mumble-ice-callback-listen`, TCP, Ice mode
+  only, never public): murmur dials it to push roster events. It serves one
+  random identity per process.
 - **Ops listener** (`-ops-listen`, TCP, never public): `/healthz`, `/readyz`,
   `/metrics`, `/statusz`.
 
@@ -72,18 +93,28 @@ Secret refs) for the secrets.
 | `-mumble-cert-sha256` | — | pin murmur's certificate (SHA-256 of the DER, hex) |
 | `-mumble-insecure-skip-verify` | `false` | accept any murmur certificate (lab only) |
 | `-mumble-name-template` | `{nick} [web]` | a bridged user's Mumble name |
-| `-mumble-observer-name` | `gawkBridgeBot` | the observer's Mumble name |
+| `-mumble-observer-name` | `gawkBridgeBot` | the observer's Mumble name (observer mode only) |
 | `-mumble-temp-parent` | root | channel path temporary channels go under |
 | `-mumble-temp-channel-template` | `gawk {key}` | a dynamic room's channel; `{key}` keyed hash, `{code}` the code |
 | `-mumble-client-version` | `1.4.0` | reported Mumble version; must be ≥ 1.2.4 and < 1.5.0 |
 | `-max-voice-sessions` | `200` | voice sessions per pod; more get 4016 |
-| `-max-temp-channels` | `50` | temporary channels this pod's observers hold |
+| `-mumble-ice-addr` | — | murmur's Ice `host:port` (TCP); set, Ice mode |
+| `-mumble-ice-secret` | — | murmur's `icesecretwrite` (callbacks need the write secret) |
+| `-mumble-ice-server-id` | discovered | the virtual server's Ice ID; default the one booted server |
+| `-mumble-ice-timeout` | `2s` | deadline on each Ice call and the dial |
+| `-mumble-ice-callback-listen` | `:6503` | the callback endpoint's TCP listen address |
+| `-mumble-ice-callback-host` | — | the address murmur dials to reach this pod (the pod IP); required in Ice mode |
+| `-mumble-ice-callback-timeout` | `100ms` | the timeout murmur uses to reach the pod, 20 ms–1 s; it bounds a dead pod's stall of murmur |
+| `-mumble-ice-reconcile` | `30s` | the full re-read, 5 s–5 min |
+| `-mumble-ice-callback-probe` | `10m` | after giving up on callbacks, the first retry, doubling to 2 h; 30 s–2 h |
+| `-max-temp-channels` | `50` | temporary channels this pod's observers hold (observer mode); in Ice mode, those under the parent server-wide, checked before a create |
 | `-drain-timeout` | `10s` | bound on the SIGTERM drain |
 | `-stats-key` | random per process | key for room hashes in logs and `/statusz` |
 | `-log-level`, `-log-format` | `info`, `text` | `debug`…`error`; `text` or `json` |
 
 The three murmur trust flags are exclusive. The bridge refuses to start on
-any invalid value and names the flag.
+any invalid value and names the flag, and on any `-mumble-ice-*` flag set
+without `-mumble-ice-addr`.
 
 ## Murmur prerequisites
 
@@ -109,6 +140,10 @@ and reports a violation (`gawk_bridge_mumble_failures_total{reason}`,
 - **An ACL on the temporary-channel parent** granting `#<access token>`
   `MakeTempChannel` and `Enter`, and on mapped static channels whatever
   bridged users should have.
+- **For Ice mode**: murmur 1.5, or 1.6.1001 and later; `ice=` and
+  `icesecretwrite` set, on the private network (Ice is clear text and the
+  write secret administers the server); and murmur able to reach every
+  bridge pod's IP on `-mumble-ice-callback-listen`'s port.
 
 Two murmur behaviours the bridge works around, measured on 1.5.939 and
 1.6.870:
@@ -151,8 +186,9 @@ user and `-grant-temp <token>` on `-channel`.
 
 ```sh
 go test -race ./...                       # unit tests, a fake murmur in-process
-eval "$(testdata/murmur.sh up 1.5)"       # or 1.6: three real murmurs in docker
-go test -race ./...                       # now also the TestMurmur* integration tests
+eval "$(testdata/murmur.sh up 1.5)"       # or 1.6 (1.6.1001), 1.6.870: three real murmurs in docker
+go test -race -p 1 ./...                  # now also the TestMurmur* integration tests
+go test -run 'TestMurmurIceUnreachable|TestMurmurBlackholed' ./internal/...  # the freeze timings, without -race
 testdata/murmur.sh down
 ```
 
@@ -160,8 +196,16 @@ testdata/murmur.sh down
 `strict` one (the no-space username rule) and an `autoban` one (3
 connections a minute), and prints `GAWK_TEST_MURMUR`,
 `GAWK_TEST_MURMUR_STRICT`, `GAWK_TEST_MURMUR_AUTOBAN` and
-`GAWK_TEST_MURMUR_SUPERUSER_PASSWORD`. Without them the integration tests
-skip. `GAWK_MURMUR_PREFIX` and `GAWK_MURMUR_BASE_PORT` run a second set side
+`GAWK_TEST_MURMUR_SUPERUSER_PASSWORD`. `main` also has Ice on, runs on the
+host's network so it can dial the tests' callback endpoints on loopback,
+and adds `GAWK_TEST_MURMUR_ICE`, `GAWK_TEST_MURMUR_ICE_SECRET`,
+`GAWK_TEST_MURMUR_ICE_READ_SECRET`, `GAWK_TEST_MURMUR_CALLBACK_HOST` and
+`GAWK_TEST_MURMUR_CONTAINER` (its log is how the tests see murmur add and
+remove callbacks). The Ice tests run in both roster modes; on 1.6.870 the
+callback tests skip and the version gate runs. `GAWK_TEST_MURMUR_RESTART=1`
+lets the outage test restart murmur, so run with `-p 1` then: another
+package's tests would lose their murmur. Without the variables the
+integration tests skip. `GAWK_MURMUR_PREFIX` and `GAWK_MURMUR_BASE_PORT` run a second set side
 by side.
 
 ## Image and chart

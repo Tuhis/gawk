@@ -506,7 +506,15 @@ bridge on the relay's own `./certs` pair (public `127.0.0.1:4443/udp`, ops
 the channels and the bridge token's MakeTempChannel grant, and
 `native-echo`, a `gawk-mumblesim` that repeats whatever it hears in
 `devroom`, so one tab hears itself both ways. A desktop Mumble client on
-`localhost:64738` is the other way to be the native side.
+`localhost:64738` is the other way to be the native side. Since R85
+(docs/89) the bridge runs **Ice mode** by default: murmur's Ice on the
+compose network (`murmur:6502`, never published) with a dev write secret,
+and murmur pushing roster changes to `mumble-bridge:6503`
+(`dev/voice-ice.env`); `VOICE_ROSTER=observer` swaps in
+`dev/voice-observer.env`, which sets no Ice knob, for R79's visible
+observer. Murmur stays on 1.5.939, whose Ice callbacks are safe, because the
+1.6 images (1.6.1001 included, measured 2026-11-15) lose
+`MUMBLE_SUPERUSER_PASSWORD` after their first start.
 
 **R40's screening lane is an override file, not a profile** (added
 2026-10-13, docs/71 §9.7): `docker compose -f docker-compose.yml -f
