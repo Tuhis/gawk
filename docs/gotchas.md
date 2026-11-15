@@ -2668,15 +2668,14 @@ entries still describe code `gawk-pubsim` runs (now
 
 **Murmur's Ice interface (R85)**
 
-- **Murmur 1.6.870 segfaults when the most recently registered Ice
-  `ServerCallback` is dead and any server event fires, and with a dead
-  callback earlier in the list it removes the live one after it instead.**
-  Each event handler loops over a reference to the callback list while the
-  failure path removes from it. The same code is in 1.5.939 (which survived
-  the same cases) and in master. A process that registers a callback and
-  can die without `removeCallback` can take the whole Mumble server down,
-  which is why the bridge polls. ([docs/89](89-mumble-ice-roster.md) §3
-  F1–F3)
+- **Murmur 1.6.870 (1.6.x RC1) segfaults when the most recently
+  registered Ice `ServerCallback` is dead and any server event fires, and
+  with a dead callback earlier in the list it removes the live one after
+  it instead.** A process that registers a callback and can die without
+  `removeCallback` can take the whole Mumble server down. Fixed upstream
+  in `a780cc9259` (#7402), released in 1.6.1001 (RC2); 1.5.939 isn't
+  affected in practice. The bridge polls anyway.
+  ([docs/89](89-mumble-ice-roster.md) §3 F1–F3)
 - **`icesecretread` allows `getUsers` and `getChannels` but not
   `addCallback`**, which needs `icesecretwrite`.
   ([docs/89](89-mumble-ice-roster.md) §3 F4)

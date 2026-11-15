@@ -1,8 +1,9 @@
 # R85 — A Mumble roster without a visible bot: murmur's Ice (docs/89)
 
 **Status**: designed 2026-11-15 from the MI0 spike against real murmur
-1.5.939 and 1.6.870 (§3). The owner made decisions OD1–OD6 on 2026-11-15
-(§2). One question is still open (§2.1). MI1–MI5 not started. `MI` =
+1.5.939 and 1.6.870 (§3), and the callback crash checked against 1.6.1001
+(RC2) the same day. The owner made decisions OD1–OD6 on 2026-11-15 (§2).
+No question is open (§2.1). MI1–MI5 not started. `MI` =
 Mumble Ice.
 
 This touches only `gawk-mumble-bridge`: its Mumble side, its config, the
@@ -67,10 +68,9 @@ importing it (owner, 2026-11-15; D7).
 
 ### 2.1 Open
 
-- **OQ2 — Reporting the murmur crash (§3 F1) upstream.** It isn't
-  reported (searched 2026-11-15) and master has the same code. A report
-  is drafted for the owner to file (2026-11-15); posting it is the
-  owner's call. (OQ1, Ice failing at runtime, became OD6.)
+None. OQ1 (Ice failing at runtime) became OD6. OQ2 (reporting the murmur
+crash upstream) closed: upstream had already fixed it (§3 F3), so there
+is nothing to report.
 
 ---
 
@@ -85,9 +85,9 @@ the bridge's own `internal/mumble` client, all on loopback.
 
 | # | Finding | Measured |
 |---|---|---|
-| F1 | **Murmur 1.6.870 segfaults when the most recently registered Ice callback is dead and any server event fires.** | 3 runs of 3, exit 139: three callbacks registered, the last one's endpoint closed, one user connects. 1.5.939 survived the same case. |
-| F2 | **On 1.6.870 a dead callback removes a *live* one.** When callback *a* fails, murmur logs "Removed" for the callback after it, *b*, and keeps calling the dead *a*. | 1 dead of 3 (the first): the live second callback got no further events. 1.5.939 removed the right one. |
-| F3 | The cause of F1 and F2, from the source: each event handler loops over a *reference* to the callback list (`const QList<…> &qmList = qmServerCallbacks[…]`), and the failure path (`badServerProxy` → `removeAll`) changes that list during the loop. | The same code is in `v1.5.939`, `v1.6.870` and `master` (`src/murmur/MumbleServerIce.cpp`). 1.5 surviving is probably luck in Qt 5's `QList`, not a fix. Not reported upstream (§2.1 OQ2). |
+| F1 | **Murmur 1.6.870 segfaults when the most recently registered Ice callback is dead and any server event fires.** | 3 runs of 3, exit 139: three callbacks registered, the last one's endpoint closed, one user connects. 1.5.939 and 1.6.1001 (RC2) survived the same case. |
+| F2 | **On 1.6.870 a dead callback removes a *live* one.** When callback *a* fails, murmur logs "Removed" for the callback after it, *b*, and keeps calling the dead *a*. | 1 dead of 3 (the first): the live second callback got no further events. 1.5.939 and 1.6.1001 removed the right one. |
+| F3 | **Already fixed upstream; only 1.6.870 (RC1) is affected.** The cause: each event handler looped over a *reference* to the live callback list and removed a failed callback from it inside the loop (`badServerProxy` → `removeAll`), so removal shifted elements under the iteration. Mumble's `a780cc9259` ("Remove failed Ice callbacks only after notifying all callbacks", #7402, merged 2026-10-04) collects failures and removes them after the loop, at every notification site. Its message names `c80ece5bb` (`foreach` over a copy replaced by range-based `for`) as where the bug came in. | Fixed in `v1.6.1001` (1.6.x RC2, tag `v1.6.0-alpha2`, 2026-10-25) and `master`: neither F1 nor F2 reproduced on RC2 (3 runs). 1.5.939 has neither the fix nor the bug in practice. The reference deployment runs 1.6.870. |
 | F4 | The read secret (`icesecretread`) allows `getBootedServers`, `getUsers` and `getChannels`. **`addCallback` needs the write secret.** No secret gets `InvalidSecretException` on every call. | Both versions. |
 | F5 | A callback is dialled lazily, on the first event after `addCallback`. Murmur removes callbacks by identity, so a stale registration with the same identity as a new one takes the new one with it when it fails. | 1.6.870. |
 | F6 | Callbacks are fast: a self-mute toggle arrives over Ice in **0.23 ms median (1.1 ms max)**, against **0.31 ms (1.3 ms)** for a Mumble client watching the same user. | 40 toggles, 1.6.870, loopback. |
@@ -97,10 +97,12 @@ the bridge's own `internal/mumble` client, all on loopback.
 | F10 | **Option 3 works.** Two token-group users who both create the same temporary channel: the loser gets `Permission denied: ChannelName`, finds the channel by name and joins it, and they end up in one channel. The channel survives its creator leaving while others stay. Murmur removes it when the last user leaves. Ice sees it with `temporary = true` throughout. | Both versions, with the docs/80 §5 ACL on a fresh parent. The bridge's `enterTemp` already handles the race this way (`internal/bridge/mumbleconn.go`). |
 | F11 | `getUsers` returns every user's IP address, comment, identity and plugin context, as well as the fields a roster needs. | Both versions (and the reference ini's own comment). |
 
-**What it settles:** callbacks are out, because a bridge pod killed
-without `removeCallback` (SIGKILL, OOM, a lost node) would crash the
-operator's whole Mumble server (F1). Polling with the read secret is the
-design (D2): it is cheap (F7), needs the lesser secret (F4), and
+**What it settles:** callbacks are out. On 1.6.870, which the reference
+deployment and anyone else on RC1 still run, a bridge pod killed without
+`removeCallback` (SIGKILL, OOM, a lost node) would crash the operator's
+whole Mumble server (F1). Even where F3's fix is in, callbacks would need
+the write secret (F4) and an endpoint in every pod that murmur can dial.
+Polling with the read secret is the design (D2): it is cheap (F7), needs the lesser secret (F4), and
 mumisija's serveradmin already polls the same server every 3 s
 (mumisija `docs/serveradmin-control-plane.md`, "Presence").
 
@@ -108,8 +110,8 @@ mumisija's serveradmin already polls the same server every 3 s
 `MUMBLE_CONFIG_ICE='tcp -h 127.0.0.1 -p 6599'`,
 `MUMBLE_CONFIG_ICESECRETWRITE` and `MUMBLE_CONFIG_ICESECRETREAD`, then
 `addCallback` three proxies to three TCP listeners, close the third, and
-connect a Mumble user. MI1's integration test keeps a guard for this (MI1
-criterion 5).
+connect a Mumble user. 1.6.870 crashes; 1.6.1001 doesn't. MI1 criterion 5
+keeps the bridge from ever registering a callback.
 
 ---
 
@@ -122,7 +124,7 @@ criterion 5).
 | 3. The first gawk user creates the temporary channel | Removes the keeper role. A native user can't wait in a dynamic room's channel before a gawk user is in voice. | **Yes (OD2).** |
 | 4. Roster from the voice users' own connections | No extra connection while someone from gawk is in voice. Still needs something for the gap before anyone joins (OD28). | No. A degraded mode for Ice outages was considered and not taken (OD6). |
 | 5. Murmur's Ice | No Mumble user at all. Needs Ice reachable and a secret, and a first-party Ice client. | **Yes (OD1).** |
-| 5a. …with callbacks | Push, about as fast as a Mumble client (F6). | **No: crashes murmur 1.6 (F1, F2)**, and needs the write secret (F4) plus an endpoint murmur can reach in each pod. |
+| 5a. …with callbacks | Push, about as fast as a Mumble client (F6). | **No: crashes murmur 1.6.870 (F1, F2; fixed in 1.6.1001, F3)**, and needs the write secret (F4) plus an endpoint murmur can reach in each pod. |
 | 5b. …by polling | One `getUsers` and one `getChannels` per pod per tick. Roster lag up to one interval. | **Yes (D2).** |
 | Import `mumisija/ice` | A tested, dependency-free client. | No: the owner asked for gawk's own minimum (D7). The licence would allow it. |
 
@@ -207,7 +209,7 @@ refuses to start.
 | 1 | The D7 scope: dial, validate, multiplexed twoway calls, close, reconnect with one retry for idempotent calls, a deadline on every call |
 | 2 | Unit tests against an in-process fake Ice server (mumisija's `icetest` shape): framing, sizes ≥ 255, strings, dictionaries, user exceptions matched on the most-derived type ID for both 1.5's and 1.6's hierarchy (F9), a reply that ends early or runs long (`ice_protocol`), reconnect after the server closes, a call outliving its deadline |
 | 3 | The D10 type-walk test, and a test that no Ice payload or secret reaches a log line |
-| 4 | Integration tests against real murmur 1.5 and 1.6 (the existing CI matrix). `testdata/murmur.sh` enables Ice on its `main` server with both secrets and exports `GAWK_TEST_MURMUR_ICE` and `GAWK_TEST_MURMUR_ICE_SECRET`. The tests cover server discovery (`0` on 1.6, `1` on 1.5), `getUsers` and `getChannels` decoding with 50 users (a name, mute, deafen and channel each checked), the wrong secret, and no secret |
+| 4 | Integration tests against real murmur 1.5 and 1.6 (the existing CI matrix). `testdata/murmur.sh` gains 1.6.1001 (RC2) alongside 1.5.939 and 1.6.870, and enables Ice on its `main` server with both secrets and exports `GAWK_TEST_MURMUR_ICE` and `GAWK_TEST_MURMUR_ICE_SECRET`. The tests cover server discovery (`0` on 1.6, `1` on 1.5), `getUsers` and `getChannels` decoding with 50 users (a name, mute, deafen and channel each checked), the wrong secret, and no secret |
 | 5 | A test that the package exposes no way to register a callback: `addCallback` isn't an operation it can send (G7) |
 
 ### MI2 — The bridge's Ice mode
@@ -275,8 +277,9 @@ refuses to start.
 
 ## 9. Out of scope
 
-- Ice callbacks (§3 F1). Revisit only once murmur fixes F3 and every
-  supported version has the fix.
+- Ice callbacks (§3 F1). Revisit only once every supported murmur has
+  F3's upstream fix (1.6.1001 and later) and 1.6.870 is out of the
+  support matrix, and only if polling's lag (D2) turns out to matter.
 - Using Ice for anything but reading: moderation, channel creation, ACLs,
   registration. The voice users' own connections keep doing what they do
   today.
