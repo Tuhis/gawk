@@ -19,6 +19,11 @@
 # The bridge serves the relay's own certificate (./certs), so the browser's
 # pinned hash covers both, and each side trusts the other through that same
 # file. Its public port is 127.0.0.1:4443/udp, like the relay's 4433.
+#
+# The roster comes from murmur's Ice by default (R85, docs/89): no bot in
+# Mumble, and a dynamic room's channel appears when its first gawk user
+# joins voice. VOICE_ROSTER=observer runs R79's visible observer instead
+# (dev/voice-observer.env, which sets no Ice knob).
 
 services:
   relay:
@@ -35,9 +40,10 @@ services:
       GAWK_VOICE_BRIDGE_CA_FILE: /certs/cert.pem
 
   murmur:
-    # 1.5: the 1.6.870 image ignores MUMBLE_SUPERUSER_PASSWORD after its first
-    # start (gawk-mumble-bridge/testdata/murmur.sh works around it with
-    # docker exec; a compose lane should not need to).
+    # 1.5: the 1.6 images (1.6.870, and 1.6.1001 re-measured 2026-11-15)
+    # ignore MUMBLE_SUPERUSER_PASSWORD after their first start
+    # (gawk-mumble-bridge/testdata/murmur.sh works around it with docker
+    # exec; a compose lane should not need to). 1.5 has safe Ice callbacks.
     image: mumblevoip/mumble-server:v1.5.939
     ports:
       # TCP only: the bridge tunnels voice over the control connection, and
@@ -49,6 +55,9 @@ services:
       # address, so murmur's autoban would ban it within a minute.
       MUMBLE_CONFIG_AUTOBANATTEMPTS: "0"
       MUMBLE_CONFIG_WELCOMETEXT: "gawk dev stack"
+      # Ice on the compose network only (docs/89 D9): never published.
+      MUMBLE_CONFIG_ICE: "tcp -h 0.0.0.0 -p 6502"
+      MUMBLE_CONFIG_ICESECRETWRITE: "${MURMUR_ICE_SECRET:-gawk-dev-ice-write}"
     restart: unless-stopped
 
   mumble-bridge:
@@ -61,6 +70,9 @@ services:
       - "127.0.0.1:2113:2113"
     volumes:
       - ./certs:/certs:ro
+    # Ice mode (dev/voice-ice.env) or observer mode (dev/voice-observer.env).
+    env_file:
+      - dev/voice-${VOICE_ROSTER:-ice}.env
     environment:
       GAWK_BRIDGE_CERT_FILE: /certs/cert.pem
       GAWK_BRIDGE_KEY_FILE: /certs/key.pem

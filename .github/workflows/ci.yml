@@ -1354,6 +1354,13 @@ jobs:
   # because every surprise MV5 found — the ghost-not-reject name clash, the
   # certificate a temporary channel needs, the compiled-in username rule —
   # was invisible to the in-process fake. The fake still runs every unit test.
+  #
+  # R85 (docs/89 MI1, MI2): `main` also has Ice on, and the Ice tests run in
+  # both roster modes. "1.6" is 1.6.1001; "1.6.870" is the RC1 whose
+  # callback handling crashes, where the callback tests skip and the
+  # version gate (no callback operation at all) runs. -p 1: the outage test
+  # restarts murmur (GAWK_TEST_MURMUR_RESTART), and the freeze-timing tests
+  # must not share murmur with another package's dead registrations.
   bridge:
     needs: changes
     if: needs.changes.outputs.bridge == 'true'
@@ -1362,7 +1369,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        murmur: ["1.5", "1.6"]
+        murmur: ["1.5", "1.6", "1.6.870"]
     defaults:
       run:
         working-directory: gawk-mumble-bridge
@@ -1388,9 +1395,17 @@ jobs:
       - name: the suite, against real murmur
         run: |
           set -a; . "$RUNNER_TEMP/murmur.env"; set +a
-          go test -race ./...
+          go test -race -p 1 ./...
         env:
           CGO_ENABLED: "1"
+          GAWK_TEST_MURMUR_RESTART: "1"
+      # F15 and MI2 criterion 9 time murmur's freezes (~0.22 s) against
+      # moves that take well under 1 ms; the race detector puts 100-200 ms
+      # of noise on a move, so these two skip under -race and run here.
+      - name: the freeze timings, without -race
+        run: |
+          set -a; . "$RUNNER_TEMP/murmur.env"; set +a
+          go test -count=1 -p 1 -run 'TestMurmurIceUnreachablePodStopsCostingMurmur|TestMurmurBlackholedCallbackFreezesOnceBriefly' ./internal/...
       - name: murmur logs
         if: failure()
         run: for c in $(docker ps -aq --filter name=gawk-test-murmur); do docker logs "$c" 2>&1 | tail -40; done
@@ -1430,8 +1445,11 @@ jobs:
           # Per-package coverage, as server-coverage measures: -coverpkg
           # would list every package once per test binary, and the
           # normaliser sums blocks, so the duplicates sank it to 25%.
-          pkgs=$(go list ./... | grep -v -e /mumbletest -e /cmd/gawk-voiceload)
-          go test -covermode=set -coverprofile=coverage.out $pkgs
+          pkgs=$(go list ./... | grep -v -e /mumbletest -e /icetest -e /cmd/gawk-voiceload)
+          # -p 1 for the bridge job's reason; the 70 s freeze timing is the
+          # bridge job's, not coverage's.
+          go test -p 1 -covermode=set -coverprofile=coverage.out \
+            -skip 'TestMurmurIceUnreachablePodStopsCostingMurmur|TestMurmurBlackholedCallbackFreezesOnceBriefly' $pkgs
       - if: always()
         run: testdata/murmur.sh down
       - uses: ./.github/actions/coverage
@@ -2622,6 +2640,34 @@ jobs:
           fi
           appver=$(awk '/^appVersion:/{gsub(/"/,"",$2); print $2}' "$chart/Chart.yaml")
           grep -q "ghcr.io/tuhis/gawk-mumble-bridge:${appver}" <<<"$out"
+      - name: bridge chart — Ice mode and observer mode (docs/89 MI3)
+        run: |
+          set -euo pipefail
+          chart=gawk-mumble-bridge/deploy/charts/gawk-mumble-bridge
+          # Observer mode (the default): no Ice knob, no callback port.
+          obs=$(helm template gawk-mumble-bridge "$chart" --set networkPolicy.enabled=true)
+          if grep -qE 'GAWK_BRIDGE_MUMBLE_ICE_|ice-callback|port: 6503' <<<"$obs"; then
+            echo "::error::observer mode renders an Ice knob or the callback port"; exit 1
+          fi
+          # Ice mode: every knob, the secret from its Ref, the pod IP as the
+          # callback host, the port, and the NetworkPolicy both ways.
+          ice=$(helm template gawk-mumble-bridge "$chart" --set networkPolicy.enabled=true \
+                  --set mumble.ice.addr=mumble-ice.mumble:6502 \
+                  --set mumble.ice.secretRef.name=mumble-ice --set mumble.ice.secretRef.key=icesecretwrite)
+          for e in ADDR SECRET TIMEOUT CALLBACK_LISTEN CALLBACK_HOST CALLBACK_TIMEOUT RECONCILE CALLBACK_PROBE; do
+            grep -q "name: GAWK_BRIDGE_MUMBLE_ICE_$e$" <<<"$ice" || { echo "::error::Ice mode lacks GAWK_BRIDGE_MUMBLE_ICE_$e"; exit 1; }
+          done
+          grep -A3 'name: GAWK_BRIDGE_MUMBLE_ICE_CALLBACK_HOST$' <<<"$ice" | grep -q 'fieldPath: status.podIP'
+          grep -A4 'name: GAWK_BRIDGE_MUMBLE_ICE_SECRET$' <<<"$ice" | grep -q 'name: "mumble-ice"'
+          if grep -q 'GAWK_BRIDGE_MUMBLE_ICE_SERVER_ID' <<<"$ice"; then
+            echo "::error::an empty serverId must render no env (discovery)"; exit 1
+          fi
+          grep -q 'name: ice-callback' <<<"$ice"
+          np=$(awk '/^kind: NetworkPolicy/{p=1} /^---/{p=0} p' <<<"$ice")
+          grep -q 'port: 6503' <<<"$np"
+          grep -q 'port: 6502' <<<"$np"
+          helm template gawk-mumble-bridge "$chart" --set mumble.ice.addr=m:6502 --set mumble.ice.serverId=0 \
+            | grep -A1 'name: GAWK_BRIDGE_MUMBLE_ICE_SERVER_ID$' | grep -q 'value: "0"'
       # ---- R33 (docs/83 WG3, WG4) -----------------------------------------
       # The relay half (D4, D12): no proxy token by default, the token and
       # an explicit resume-token key render the env, and the token without
@@ -3533,7 +3579,7 @@ jobs:
   # each skipped the other's unit tests still meet here — on the merged tree.
   # R79 MV7 (docs/80 §9): room voice with every real component — the relay,
   # two gawk-mumble-bridge pods behind a UDP LoadBalancer stand-in
-  # (e2e/udp-lb.mjs), murmur 1.6 in docker, three browsers on Chromium's fake
+  # (e2e/udp-lb.mjs), murmur 1.6.1001 in docker, three browsers on Chromium's fake
   # microphone and a scripted native Mumble user. Six passes: the roster
   # before anyone is in voice, audio both ways, a Mumble mute and kick, a
   # bridge pod drain mid-call, a dynamic room's temporary channel, and a gawk
@@ -3550,10 +3596,18 @@ jobs:
     # nothing but the app build, and in series the check's 92 s made this the
     # longest job left on an app PR (run 41302323482). Splitting rather than
     # path-gating the check keeps it on every change that can break it.
+    #
+    # R85 MI4 (docs/89): the voice E2E runs in both roster modes, Ice (no
+    # bot in Mumble, two extra passes) and R79's observer.
     strategy:
       fail-fast: false
       matrix:
-        check: [voice, rnnoise]
+        include:
+          - check: voice
+            roster: ice
+          - check: voice
+            roster: observer
+          - check: rnnoise
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -3591,10 +3645,12 @@ jobs:
         working-directory: gawk-app
       - run: npm ci
         working-directory: e2e
-      - name: Run the voice E2E (R79)
+      - name: Run the voice E2E (R79, R85)
         if: matrix.check == 'voice'
         run: node voice.mjs
         working-directory: e2e
+        env:
+          VOICE_ROSTER: ${{ matrix.roster }}
       # R80 NS4 (docs/81 §9): RNNoise in Chromium against the in-page fake
       # relay and bridge, the microphone played from a generated WAV:
       # RNNoise by default, a switch to Browser and back (each a re-open),
@@ -3615,7 +3671,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
-          name: e2e-voice-${{ matrix.check }}
+          name: e2e-voice-${{ matrix.check }}${{ matrix.roster && format('-{0}', matrix.roster) || '' }}
           path: |
             e2e/out/voice
             e2e/out/voice-rnnoise

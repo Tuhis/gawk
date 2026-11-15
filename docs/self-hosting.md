@@ -1956,9 +1956,9 @@ the channel. It is three things working together: your own Mumble server
     `maxVoiceSessions`, which keeps a per-address throttle on password
     guessing). Murmur bans an address after 10 connections in 2 minutes,
     and every bridged user connects from a bridge pod's address.
-  - `users` sized for native **plus** bridged users, plus one observer per
-    voice room. At the cap the bridge closes the newcomer with "the Mumble
-    server is full" and counts it.
+  - `users` sized for native **plus** bridged users (plus one observer per
+    voice room in observer mode, below). At the cap the bridge closes the
+    newcomer with "the Mumble server is full" and counts it.
   - Leave `username` unset, or allow spaces and brackets in it. The rule in
     murmur's sample ini does not, and bridged users then get `Alice_[web]`.
   - An access token for the bridge (`mumble.accessToken`), and an ACL
@@ -1969,7 +1969,7 @@ the channel. It is three things working together: your own Mumble server
     access tokens (Server → Access Tokens), and one that sends the bridge's
     gets every grant `#<token>` holds, past a channel's `@all` deny
     included. Generate it (`openssl rand -hex 16`); never use a name such as
-    the bridge's, which anyone on the server can read from the observer's
+    the bridge's, which anyone on the server can read from a bridged user's
     client version.
   - **A channel with its own deny needs its own entry.** An entry on the
     root reaches only channels that inherit it; a channel that denies
@@ -1977,6 +1977,30 @@ the channel. It is three things working together: your own Mumble server
     so put the `#<token>` entry on that channel, after the deny.
   - A **Mumble ban of a bridged user bans the bridge pod's address**, and so
     every gawk user on that pod. Kick bridged users; ban them in gawk.
+- **Murmur's Ice, recommended** (R85, [docs/89](89-mumble-ice-roster.md)).
+  With it the bridge reads the roster from murmur's administration
+  interface and no bot sits in your channels. Without it the bridge runs in
+  **observer mode**: a visible Mumble user, `gawkBridgeBot` (numbered when
+  there are several), in every voice room's channel, which is also what
+  keeps a dynamic room's temporary channel alive. Ice mode needs:
+  - **murmur 1.5, or 1.6.1001 or later.** 1.6.870 (1.6.x RC1) crashes when
+    a registered callback is dead, so on it the bridge never registers one
+    and the roster follows changes only every `mumble.ice.reconcile`
+    (30 s); `/statusz` says `callbacks: "unsafe"`.
+  - **`ice=` on the private network**, e.g. `ice="tcp -h 10.0.0.5 -p 6502"`,
+    and **`icesecretwrite`** set. The bridge needs the write secret
+    (callbacks are refused with the read one), and the write secret grants
+    all of Ice's administration: kick, ban, ACLs. Ice sends it in clear
+    text, so neither the port nor the secret may leave the private network.
+  - **Murmur able to reach every bridge pod's IP** on the callback port
+    (`mumble.ice.callbackPort`, 6503): murmur dials each pod to push roster
+    changes. A murmur outside the cluster usually cannot reach pod IPs; such
+    a setup is what observer mode is for. If murmur's side has a
+    NetworkPolicy, let it out to the bridge pods on that port.
+  - In Ice mode a dynamic room's temporary channel appears when its first
+    gawk user joins voice, not when the room is created, so a native user
+    cannot wait in it before then. Static rooms show their Mumble users as
+    before.
 - **A public DNS name and certificate for the bridge** (the browser opens
   a WebTransport session to it), and a second UDP LoadBalancer address.
 - **One shared Secret** for the relay and the bridge: the link PSK and
@@ -2017,7 +2041,16 @@ mumble:
   accessTokenRef: {name: gawk-voice, key: mumbleToken}
   certSha256: "<murmur's certificate SHA-256>" # or caRef, for a CA-signed murmur
   tempParent: "gawk rooms"
+  ice:                                         # leave out for observer mode
+    addr: mumble-ice.example.internal:6502     # murmur's ice= endpoint
+    secretRef: {name: gawk-voice, key: mumbleIceWrite}  # murmur's icesecretwrite
 ```
+
+For Ice mode, add murmur's write secret to the shared Secret
+(`--from-literal=mumbleIceWrite=…`, the value of `icesecretwrite`). With
+`networkPolicy.enabled`, the chart lets in the callback port only from
+`networkPolicy.murmur` (its `cidr`, or `podSelector`/`namespaceSelector` for
+a murmur in the cluster) and lets the pods out to `networkPolicy.murmur.icePort`.
 
 ```sh
 helm upgrade --install gawk-mumble-bridge oci://ghcr.io/tuhis/charts/gawk-mumble-bridge \
@@ -2062,17 +2095,44 @@ unset, nothing changes: no voice capability, no voice UI, no new route.
   `voiceObserver: "available"` once the bridge watches the channel.
   `unavailable` with the bridge's `/statusz` failure counts names the reason
   (murmur unreachable, full, autobanned, a channel it may not enter).
-- In Mumble, a user named `gawkBridgeBot` sits in each mapped channel: the room's
-  observer. It never speaks.
+- The bridge's `/statusz` says `roster: "ice"` or `"observer"`.
+- **Ice mode**: nobody from the bridge is in Mumble except gawk users in
+  voice. Every bridge pod's `/statusz` `ice` object should read
+  `available: true` and `callbacks: "registered"`:
+  - `available: false` with `reason` `ice_unavailable` (Ice unreachable),
+    `ice_secret` (a wrong secret, or the read secret), `ice_protocol` (a
+    murmur whose Ice answers the bridge does not understand) or
+    `ice_server_ambiguous` (several virtual servers: set
+    `mumble.ice.serverId`). Voice keeps working meanwhile; only the roster
+    is missing, and no bot appears.
+  - `callbacks: "unreachable"` is a **misconfiguration**: murmur cannot
+    reach this pod's IP on the callback port, so the pod stopped
+    registering after two tries and the roster follows changes every
+    `reconcile` only. `nextProbeInMs` is when it tries once more (10
+    minutes, doubling to 2 hours). Each try that fails can stall murmur
+    for about 0.2 s if the address blackholes, which is why it backs off.
+    Once fixed, restart the bridge pods to skip the backoff.
+  - `callbacks: "unsafe"`: murmur 1.6.870, see 15.1. Upgrade murmur.
+  - `lastEventAgeMs` and `lastReconcileAgeMs` show the push and the 30 s
+    re-read working; `gawk_bridge_ice_reconcile_drift_total` counts re-reads
+    that found something the push missed, and should stay near zero.
+- **Observer mode**: in Mumble, a user named `gawkBridgeBot` sits in each
+  mapped channel: the room's observer. It never speaks.
 - Metrics: `gawk_bridge_voice_sessions`, `gawk_bridge_observers`,
   `gawk_bridge_mumble_failures_total{reason}` on the bridge;
-  `gawk_rooms_voice_live` and `gawk_room_voice_sessions` on the relay.
+  `gawk_rooms_voice_live` and `gawk_room_voice_sessions` on the relay. In
+  Ice mode also `gawk_bridge_ice_registered`, `gawk_bridge_ice_events_total`,
+  `gawk_bridge_ice_reconciles_total{result}` and
+  `gawk_bridge_ice_registrations_total{result}`.
 
 ### 15.5 What to expect
 
 - **Rollouts**: a draining bridge pod tells its browsers to rejoin and they
   land on another pod within a second or two; Mumble users see a leave and a
-  rejoin.
+  rejoin. In Ice mode a draining pod removes its callback first, so a
+  rollout costs murmur nothing. A pod that dies without cleaning up (a lost
+  node) can stall murmur once, for about twice `mumble.ice.callbackTimeout`
+  (0.2 s), if its address blackholes.
 - **Capacity**: one bridge pod delivered every frame to 25 users in one
   channel with three talking, on a shared 8-core machine; at 50 the loss was
   murmur → bridge (docs/80 §12.4). Murmur sends one copy of every frame to

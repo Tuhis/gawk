@@ -2695,6 +2695,17 @@ entries still describe code `gawk-pubsim` runs (now
 - **Murmur's Ice exceptions have different base types by version**
   (`ServerException` on 1.6, `MurmurException` on 1.5). Match on the
   most-derived type ID. ([docs/89](89-mumble-ice-roster.md) §3 F9)
+- **Murmur's login channel tree leaves `temporary` out.** A Mumble client
+  that connects after a temporary channel was created sees it as
+  permanent; only clients connected at its creation, and Ice, know it is
+  temporary. Count temporary channels in Ice, not in a connection's tree.
+  Measured on 1.5.939 and 1.6.1001. ([docs/89](89-mumble-ice-roster.md) §3
+  F18)
+- **A container can't always reach the host through the docker gateway.**
+  On the self-hosted runners and dev machines the host firewall drops it,
+  and an Ice callback to `host-gateway` then fails exactly like a
+  blackholed address. The tests' murmur with Ice runs on the host network
+  instead. ([docs/89](89-mumble-ice-roster.md) MI1)
 
 **RNNoise in the browser (R80)**
 
