@@ -40,6 +40,13 @@ const (
 	DefaultMaxTempChannels     = 50
 	DefaultDrainTimeout        = 10 * time.Second
 	DefaultTempChannelTemplate = voice.DefaultTempChannelTemplate
+
+	// Ice mode (docs/89 §5.1).
+	DefaultIceTimeout         = 2 * time.Second
+	DefaultIceCallbackListen  = ":6503"
+	DefaultIceCallbackTimeout = 100 * time.Millisecond
+	DefaultIceReconcile       = 30 * time.Second
+	DefaultIceCallbackProbe   = 10 * time.Minute
 )
 
 // Config is the fully resolved configuration.
@@ -70,6 +77,17 @@ type Config struct {
 	MumbleTempParent         string
 	MumbleTempTemplate       string
 	MumbleClientVersion      mumble.Version
+
+	// Ice mode (docs/89 D1): set MumbleIceAddr, or observer mode.
+	MumbleIceAddr            string
+	MumbleIceSecret          string
+	MumbleIceServerID        int // -1: discover (D8)
+	MumbleIceTimeout         time.Duration
+	MumbleIceCallbackListen  string
+	MumbleIceCallbackHost    string
+	MumbleIceCallbackTimeout time.Duration
+	MumbleIceReconcile       time.Duration
+	MumbleIceCallbackProbe   time.Duration
 
 	MaxVoiceSessions int
 	MaxTempChannels  int
@@ -129,10 +147,19 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 	mumblePin := str("mumble-cert-sha256", "", "pin murmur's certificate by the SHA-256 of its DER (hex); replaces chain verification")
 	mumbleInsecure := boolean("mumble-insecure-skip-verify", "accept any murmur certificate (lab only)")
 	nameTmpl := str("mumble-name-template", DefaultNameTemplate, "a bridged user's Mumble name; {nick} is the gawk nickname (D9)")
-	observerName := str("mumble-observer-name", DefaultObserverName, "the observer's Mumble name (OD33)")
+	observerName := str("mumble-observer-name", DefaultObserverName, "the observer's Mumble name (OD33); observer mode only (docs/89 D13)")
 	tempParent := str("mumble-temp-parent", "", "path of the channel temporary channels are created under, e.g. Gawk/Rooms; empty is the root")
 	tempTmpl := str("mumble-temp-channel-template", DefaultTempChannelTemplate, "a dynamic room's temporary channel name; {key} the keyed channel key, {code} the room code (OD32)")
 	clientVersion := str("mumble-client-version", DefaultClientVersion, "the Mumble version the bridge reports; below 1.5.0 so murmur speaks the legacy voice format")
+	iceAddr := str("mumble-ice-addr", "", "murmur's Ice endpoint, host:port over TCP; set, the roster comes from Ice and no observer user exists (Ice mode, docs/89 D1)")
+	iceSecret := str("mumble-ice-secret", "", "murmur's icesecretwrite (Ice mode needs the write secret for callbacks); prefer the env")
+	iceServerID := str("mumble-ice-server-id", "", "the virtual server's Ice ID; default discovered (the one booted server)")
+	iceTimeout := str("mumble-ice-timeout", DefaultIceTimeout.String(), "the deadline on each Ice call and the Ice dial")
+	iceListen := str("mumble-ice-callback-listen", DefaultIceCallbackListen, "the Ice callback endpoint's TCP listen address; murmur dials it; never route it publicly")
+	iceHost := str("mumble-ice-callback-host", "", "the address murmur dials to reach this pod's callback endpoint (the pod IP); required in Ice mode")
+	iceCBTimeout := str("mumble-ice-callback-timeout", DefaultIceCallbackTimeout.String(), "the timeout murmur uses to reach the callback endpoint, 20ms to 1s; it bounds how long a dead pod can stall murmur")
+	iceReconcile := str("mumble-ice-reconcile", DefaultIceReconcile.String(), "how often the Ice roster is re-read in full, 5s to 5m")
+	iceProbe := str("mumble-ice-callback-probe", DefaultIceCallbackProbe.String(), "how long after giving up on callbacks the pod tries once more, doubling to 2h; 30s to 2h")
 	maxSessions := str("max-voice-sessions", strconv.Itoa(DefaultMaxVoiceSessions), "voice sessions per pod (D23); more are refused with 4016")
 	maxTemp := str("max-temp-channels", strconv.Itoa(DefaultMaxTempChannels), "temporary channels this pod's observers hold at once (D23)")
 	drain := str("drain-timeout", DefaultDrainTimeout.String(), "how long the SIGTERM drain may take (D19)")
@@ -142,6 +169,17 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
+	iceSet := []string{}
+	fs.Visit(func(f *flag.Flag) {
+		if strings.HasPrefix(f.Name, "mumble-ice-") {
+			iceSet = append(iceSet, "-"+f.Name)
+		}
+	})
+	fs.VisitAll(func(f *flag.Flag) {
+		if strings.HasPrefix(f.Name, "mumble-ice-") && getenv(envName(f.Name)) != "" {
+			iceSet = append(iceSet, envName(f.Name))
+		}
+	})
 	if fs.NArg() > 0 {
 		return Config{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
@@ -243,6 +281,9 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("invalid -mumble-client-version %s: want %s up to below %s (Opus, and the legacy voice format the bridge speaks)",
 			c.MumbleClientVersion, mumble.MinOpusVersion, mumble.LegacyAudioBefore)
 	}
+	if err := c.parseIce(iceSet, *iceAddr, *iceSecret, *iceServerID, *iceTimeout, *iceListen, *iceHost, *iceCBTimeout, *iceReconcile, *iceProbe); err != nil {
+		return Config{}, err
+	}
 	if c.MaxVoiceSessions, err = positive("-max-voice-sessions", *maxSessions); err != nil {
 		return Config{}, err
 	}
@@ -268,6 +309,69 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("invalid -log-format %q (want text or json)", c.LogFormat)
 	}
 	return c, nil
+}
+
+// parseIce validates the Ice-mode knobs (docs/89 §5.1): any of them without
+// -mumble-ice-addr, or Ice mode without -mumble-ice-callback-host, refuses
+// to start.
+func (c *Config) parseIce(set []string, addr, secret, serverID, timeout, listen, host, cbTimeout, reconcile, probe string) error {
+	c.MumbleIceAddr = strings.TrimSpace(addr)
+	c.MumbleIceSecret = secret
+	c.MumbleIceServerID = -1
+	c.MumbleIceCallbackListen = strings.TrimSpace(listen)
+	c.MumbleIceCallbackHost = strings.TrimSpace(host)
+	if c.MumbleIceAddr == "" {
+		if len(set) > 0 {
+			return fmt.Errorf("%s set without -mumble-ice-addr", strings.Join(set, ", "))
+		}
+		c.MumbleIceTimeout, c.MumbleIceCallbackTimeout = DefaultIceTimeout, DefaultIceCallbackTimeout
+		c.MumbleIceReconcile, c.MumbleIceCallbackProbe = DefaultIceReconcile, DefaultIceCallbackProbe
+		return nil
+	}
+	if h, p, err := net.SplitHostPort(c.MumbleIceAddr); err != nil || h == "" || p == "" {
+		return fmt.Errorf("invalid -mumble-ice-addr %q (want host:port)", c.MumbleIceAddr)
+	}
+	if c.MumbleIceSecret == "" {
+		return errors.New("-mumble-ice-secret (GAWK_BRIDGE_MUMBLE_ICE_SECRET) is required with -mumble-ice-addr: murmur's icesecretwrite")
+	}
+	if v := strings.TrimSpace(serverID); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return fmt.Errorf("invalid -mumble-ice-server-id %q (want a non-negative integer)", serverID)
+		}
+		c.MumbleIceServerID = n
+	}
+	if _, p, err := net.SplitHostPort(c.MumbleIceCallbackListen); err != nil || p == "" || p == "0" {
+		return fmt.Errorf("invalid -mumble-ice-callback-listen %q (want host:port with a fixed port)", c.MumbleIceCallbackListen)
+	}
+	if c.MumbleIceCallbackHost == "" {
+		return errors.New("-mumble-ice-callback-host is required with -mumble-ice-addr: the address murmur dials to reach this pod (the chart sets the pod IP)")
+	}
+	if strings.ContainsAny(c.MumbleIceCallbackHost, " :\"") && net.ParseIP(c.MumbleIceCallbackHost) == nil {
+		return fmt.Errorf("invalid -mumble-ice-callback-host %q", c.MumbleIceCallbackHost)
+	}
+	var err error
+	if c.MumbleIceTimeout, err = bounded("-mumble-ice-timeout", timeout, 10*time.Millisecond, time.Minute); err != nil {
+		return err
+	}
+	if c.MumbleIceCallbackTimeout, err = bounded("-mumble-ice-callback-timeout", cbTimeout, 20*time.Millisecond, time.Second); err != nil {
+		return err
+	}
+	if c.MumbleIceReconcile, err = bounded("-mumble-ice-reconcile", reconcile, 5*time.Second, 5*time.Minute); err != nil {
+		return err
+	}
+	if c.MumbleIceCallbackProbe, err = bounded("-mumble-ice-callback-probe", probe, 30*time.Second, 2*time.Hour); err != nil {
+		return err
+	}
+	return nil
+}
+
+func bounded(name, v string, lo, hi time.Duration) (time.Duration, error) {
+	d, err := time.ParseDuration(strings.TrimSpace(v))
+	if err != nil || d < lo || d > hi {
+		return 0, fmt.Errorf("invalid %s %q (want %s to %s)", name, v, lo, hi)
+	}
+	return d, nil
 }
 
 func positive(name, v string) (int, error) {
@@ -317,6 +421,17 @@ func (c Config) Options(version string, log *slog.Logger) bridge.Options {
 			ObserverName:        c.MumbleObserverName,
 			TempParent:          c.MumbleTempParent,
 			TempChannelTemplate: c.MumbleTempTemplate,
+			Ice: bridge.IceOptions{
+				Addr:            c.MumbleIceAddr,
+				Secret:          c.MumbleIceSecret,
+				ServerID:        c.MumbleIceServerID,
+				Timeout:         c.MumbleIceTimeout,
+				CallbackListen:  c.MumbleIceCallbackListen,
+				CallbackHost:    c.MumbleIceCallbackHost,
+				CallbackTimeout: c.MumbleIceCallbackTimeout,
+				Reconcile:       c.MumbleIceReconcile,
+				CallbackProbe:   c.MumbleIceCallbackProbe,
+			},
 		},
 		MaxVoiceSessions: c.MaxVoiceSessions,
 		MaxTempChannels:  c.MaxTempChannels,
@@ -341,6 +456,12 @@ func (c Config) LogAttrs() []any {
 		"mumble_name_template", c.MumbleNameTemplate, "mumble_observer_name", c.MumbleObserverName,
 		"mumble_temp_parent", c.MumbleTempParent, "mumble_temp_channel_template", c.MumbleTempTemplate,
 		"mumble_client_version", c.MumbleClientVersion.String(),
+		"roster", map[bool]string{true: "ice", false: "observer"}[c.MumbleIceAddr != ""],
+		"mumble_ice_addr", c.MumbleIceAddr, "mumble_ice_secret_set", set(c.MumbleIceSecret),
+		"mumble_ice_server_id", c.MumbleIceServerID, "mumble_ice_timeout", c.MumbleIceTimeout,
+		"mumble_ice_callback_listen", c.MumbleIceCallbackListen, "mumble_ice_callback_host", c.MumbleIceCallbackHost,
+		"mumble_ice_callback_timeout", c.MumbleIceCallbackTimeout, "mumble_ice_reconcile", c.MumbleIceReconcile,
+		"mumble_ice_callback_probe", c.MumbleIceCallbackProbe,
 		"max_voice_sessions", c.MaxVoiceSessions, "max_temp_channels", c.MaxTempChannels,
 		"drain_timeout", c.DrainTimeout, "stats_key_random", c.StatsKeyRandom,
 	}

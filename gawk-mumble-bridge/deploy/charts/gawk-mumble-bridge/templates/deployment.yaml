@@ -89,6 +89,11 @@ spec:
             - name: ops
               containerPort: 2113
               protocol: TCP
+            {{- if $m.ice.addr }}
+            - name: ice-callback
+              containerPort: {{ $m.ice.callbackPort }}
+              protocol: TCP
+            {{- end }}
           env:
             - name: POD_NAME
               valueFrom:
@@ -138,6 +143,30 @@ spec:
               value: {{ $m.tempChannelTemplate | quote }}
             - name: GAWK_BRIDGE_MUMBLE_CLIENT_VERSION
               value: {{ $m.clientVersion | quote }}
+            {{- if $m.ice.addr }}
+            # Ice mode (R85, docs/89 D1). Murmur dials each pod's IP (D14).
+            - name: GAWK_BRIDGE_MUMBLE_ICE_ADDR
+              value: {{ $m.ice.addr | quote }}
+            {{- include "gawk-mumble-bridge.secretEnv" (dict "name" "GAWK_BRIDGE_MUMBLE_ICE_SECRET" "value" $m.ice.secret "ref" $m.ice.secretRef) | nindent 12 }}
+            {{- if ne (toString $m.ice.serverId) "" }}
+            - name: GAWK_BRIDGE_MUMBLE_ICE_SERVER_ID
+              value: {{ $m.ice.serverId | quote }}
+            {{- end }}
+            - name: GAWK_BRIDGE_MUMBLE_ICE_TIMEOUT
+              value: {{ $m.ice.timeout | quote }}
+            - name: GAWK_BRIDGE_MUMBLE_ICE_CALLBACK_LISTEN
+              value: ":{{ $m.ice.callbackPort }}"
+            - name: GAWK_BRIDGE_MUMBLE_ICE_CALLBACK_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: GAWK_BRIDGE_MUMBLE_ICE_CALLBACK_TIMEOUT
+              value: {{ $m.ice.callbackTimeout | quote }}
+            - name: GAWK_BRIDGE_MUMBLE_ICE_RECONCILE
+              value: {{ $m.ice.reconcile | quote }}
+            - name: GAWK_BRIDGE_MUMBLE_ICE_CALLBACK_PROBE
+              value: {{ $m.ice.callbackProbe | quote }}
+            {{- end }}
             - name: GAWK_BRIDGE_MAX_VOICE_SESSIONS
               value: {{ .Values.maxVoiceSessions | quote }}
             - name: GAWK_BRIDGE_MAX_TEMP_CHANNELS

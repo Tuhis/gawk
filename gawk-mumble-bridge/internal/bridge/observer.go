@@ -20,6 +20,9 @@ import (
 // room's temporary channel and staying in it, so murmur keeps it while the
 // room is voice-live (D11) — and reports the channel's users to the room's
 // home over the observer link, which the home dialled.
+//
+// In Ice mode (docs/89 D3) the same link runs an Ice watcher instead: no
+// Mumble connection, the channel resolved in the pod's Ice mirror.
 type observer struct {
 	s    *Server
 	sess *webtransport.Session
@@ -151,6 +154,10 @@ func (ob *observer) run() {
 		}
 	}()
 	s := ob.s
+	if s.ice != nil {
+		ob.watchIce()
+		return
+	}
 	backoff := s.timings.ObserverBackoff
 	for ob.ctx.Err() == nil {
 		start := time.Now()
@@ -188,7 +195,7 @@ func (ob *observer) enter(c *mumble.Client) (uint32, error) {
 	ctx, cancel := context.WithTimeout(ob.ctx, s.timings.ChannelEnter)
 	defer cancel()
 	if ob.room.Temporary {
-		return enterTemp(ctx, c, s.opts.Mumble.TempParent, s.tempChannel(ob.room.Code, ob.room.DisplayCode), 0)
+		return enterTemp(ctx, c, s.opts.Mumble.TempParent, s.tempChannel(ob.room.Code, ob.room.DisplayCode), 0, nil)
 	}
 	return enterStatic(ctx, c, ob.room.Channel)
 }
@@ -260,4 +267,49 @@ func rosterUsers(c *mumble.Client, channel, self uint32) []voice.User {
 		}
 	}
 	return out
+}
+
+// watchIce is the Ice watcher (docs/89 D3): it resolves the room's channel
+// in the pod's mirror after each change and sends a Roster when what it
+// would report differs from the last one sent. It never connects to
+// Mumble, so no user named -mumble-observer-name exists (D13).
+func (ob *observer) watchIce() {
+	s, m := ob.s, ob.s.ice
+	tempName := ""
+	if ob.room.Temporary {
+		tempName = s.tempChannel(ob.room.Code, ob.room.DisplayCode)
+	}
+	var last rosterView
+	sent := false
+	for {
+		ch := m.Changed()
+		v := m.roster(ob.room, tempName)
+		if !sent || !v.equal(last) {
+			msg := voice.Message{Type: voice.TypeRoster, Available: v.available, Users: v.users}
+			if !v.available {
+				msg.Reason = failureText[v.reason]
+				// The mirror counts its own Ice failures once; a channel
+				// this room cannot find is the watcher's.
+				if v.reason == ReasonChannelNotFound && (!sent || last.reason != v.reason) {
+					s.recordFailure(v.reason, ob.key)
+					s.log.Warn("observer unavailable", "room", ob.key, "reason", v.reason)
+				}
+			}
+			if err := ob.report(msg, v.available, v.reason, len(v.users)); err != nil {
+				ob.stop()
+				return
+			}
+			last, sent = v, true
+		}
+		select {
+		case <-ch:
+		case <-ob.ctx.Done():
+			return
+		}
+		select {
+		case <-time.After(s.timings.RosterCoalesce):
+		case <-ob.ctx.Done():
+			return
+		}
+	}
 }

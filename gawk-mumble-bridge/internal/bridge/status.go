@@ -30,7 +30,11 @@ type Status struct {
 	MaxTempChannels  int                    `json:"maxTempChannels"`
 	Rooms            map[string]*RoomStatus `json:"rooms"`
 	MumbleFailures   map[string]uint64      `json:"mumbleFailures"`
-	LastFailure      *FailureStatus         `json:"lastMumbleFailure,omitempty"`
+	// Roster is "ice" or "observer" (docs/89 D1, D12); Ice is set in Ice
+	// mode.
+	Roster      string         `json:"roster"`
+	Ice         *IceStatus     `json:"ice,omitempty"`
+	LastFailure *FailureStatus `json:"lastMumbleFailure,omitempty"`
 }
 
 // RoomStatus is one room, keyed by RoomKey.
@@ -65,6 +69,10 @@ func (s *Server) Status() Status {
 		MaxTempChannels:  s.opts.MaxTempChannels,
 		Rooms:            map[string]*RoomStatus{},
 		MumbleFailures:   map[string]uint64{},
+		Roster:           "observer",
+	}
+	if s.ice != nil {
+		st.Roster, st.Ice = "ice", s.ice.status()
 	}
 	room := func(k string) *RoomStatus {
 		r := st.Rooms[k]
