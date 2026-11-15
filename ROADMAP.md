@@ -102,7 +102,7 @@ feature set exists).
 | R82 | [Ask in English in the telemetry SQL console](#r82--ask-in-english-in-the-telemetry-sql-console) | 🔧 **implemented 2026-11-05** (NQ1–NQ4, after the NQ0 spike, NQ0b's NaN fix and owner decisions OD1–OD5 on 2026-11-01/02); open: NQ5, the owner pass on the reference deployment and an Ollama on a GPU — an optional question box above `#/sql`: a model drafts DuckDB SQL from English, checks it with `EXPLAIN` in a shadow catalogue of empty tables built from the learned schema, and puts it in the editor with one line on how it read the question; the operator runs it. The model never sees a row. Anthropic (official SDK) or any OpenAI-compatible server (Ollama, llama.cpp, vLLM), server-side on the read listener, default off. Measured: with a curated glossary, Claude Opus 5.5, Sonnet 5.5 and Haiku 5.5 each drafted 19 of 20 questions right (the owner's four included) at about $0.028, $0.013 and $0.001 a question; without it, Sonnet got 14, every miss from not knowing what the values mean; a 7B local model on CPU gave no answer to the full prompt in 30 min and 3 of 5 right on a slim one; the spike also found that a NaN or ±Inf result killed the SQL worker (fixed in NQ0b) ([docs/84](docs/84-telemetry-ask-in-english.md) §12) |
 | R83 | [Fit: a room layout that follows the streams' shapes](#r83--fit-a-room-layout-that-follows-the-streams-shapes) | 🔧 **implemented 2026-11-10** (FL1–FL3 web, FL5 iOS; owner decisions OD1: a choice, not a replacement, and OD2: iOS too), open: FL4, the owner pass — a fourth room layout mode, **Fit**, beside Grid: tiles take each stream's decoded aspect ratio and are arranged in order-preserving rows or columns, scored by Σ ln(tile area), so two 32:9 broadcasters stack on a 16:9 viewer instead of sitting side by side. Prototype: 25 % → 100 % of a 1080p stage is video for that case; over ten mixes at four stage sizes, more of the screen is video in 32 of 40 and the same in the rest, and Grid's own geometry is a candidate, so Fit never scores below it. The web app and the iOS app's room player (one algorithm, ported to Swift and pinned to the same table): no wire, relay or Rust-core change ([docs/87](docs/87-room-fit-layout.md)) |
 | R84 | [Browser Reliable uplink](#r84--browser-reliable-uplink) | 🔧 **designed 2026-11-10** from a lab pass on Chrome's own QUIC stack (Chrome for Testing 151 and 158, the shipping viewer replayed at four presentation phases); **owner decisions taken 2026-11-10** (OD1 = K3, "get rid of the extra round trip"); **Reliable the browser's default since 2026-11-11** (OD2, owner, ahead of BR0 and BR5: the field data reviewed after a few weeks); the owner chose to build before BR0, which now gates the default, not the code; **BR1–BR4 built** (relay and wire, the browser's carrier lane and its Delivery setting, Chromium only, and the lab and e2e on the shipping code: Reliable costs nothing on a clean path at 10–100 ms on Chrome 151, 157 and 158) — the browser broadcaster gets docs/75's per-GOP carrier on RU1's relay ingest, so its *Smoother* and *Most stable* viewers stop freezing on uplink bursts and outages (99.0–100 % shown at 10 ms where today's datagrams give 71.6–80.1 %); Chrome 151–158 expose no stream priority, so docs/75's keyframe gate cost a round trip per GOP (83 against 67 ms on screen at 40 ms, 167 against 100 ms at 100 ms), and putting the keyframe at the head of the GOP's own stream removes it (67 and 100 ms) at the price of one stream type and one capability bit on the relay; that stream follows RU9's keyframe rules, because docs/75's 150 ms reset left 136 of 199 keyframes unacknowledged where Chrome's Cubic collapses; docs/75's intermittent *Smoother* dip behind the gate is the lab replay locking onto a bad presentation phase, not the uplink ([docs/88](docs/88-browser-reliable-uplink.md)) |
-| R85 | [A Mumble roster without a visible bot](#r85--a-mumble-roster-without-a-visible-bot) | 🔶 **designed 2026-11-15** from the MI0 spike on real murmur 1.5.939 and 1.6.870, **owner decisions OD1–OD6 taken 2026-11-15** (Ice, the first voice user creates the temporary channel, read-write allowed, the visible observer as the fallback without Ice, both modes tested, no bot on an Ice outage), open: MI1–MI5 — R79's `gawkBridgeBot` observer leaves Mumble: the bridge reads each voice room's channel from murmur's Ice, polling `getUsers` and `getChannels` every 250 ms with the read secret through a minimal first-party Ice client, and a dynamic room's temporary channel is created by its first gawk voice user; without Ice the visible observer stays; no relay, wire or app change. Measured: Ice callbacks arrive in 0.23 ms, but **murmur 1.6.870 segfaults when the newest callback is dead** and removes a live one when an earlier one is, so a killed bridge pod could crash the operator's Mumble server (already fixed upstream, in 1.6.1001 RC2); `getUsers` with 50 users costs about 1 ms; 1.6 numbers its default server 0, 1.5 numbers it 1; two first joins racing for one temporary channel end up in one channel ([docs/89](docs/89-mumble-ice-roster.md)) |
+| R85 | [A Mumble roster without a visible bot](#r85--a-mumble-roster-without-a-visible-bot) | 🔶 **designed 2026-11-15** from the MI0 spike on real murmur 1.5.939 and 1.6.870, **redesigned around Ice callbacks the same day** after the reference murmur moved to 1.6.1001 (MI0b), **owner decisions OD1–OD7 taken 2026-11-15** (Ice, the first voice user creates the temporary channel, read-write allowed, the visible observer as the fallback without Ice, both modes tested, no bot on an Ice outage, callbacks rather than polling), open: MI1–MI5 — R79's `gawkBridgeBot` observer leaves Mumble: each bridge pod registers an Ice `ServerCallback` with murmur through a minimal first-party Ice client and endpoint, keeps a mirror of the server's users and channels from the events, and re-registers and re-reads it every 30 s; a dynamic room's temporary channel is created by its first gawk voice user; without Ice the visible observer stays; no relay, wire or app change. Measured: callbacks arrive in 0.22 ms, faster than a Mumble client sees the same change; **murmur 1.6.870 segfaults when the newest callback is dead** (fixed upstream in 1.6.1001, so the bridge never registers on 1.6.870); murmur drops a registration after one refused delivery without telling the client; **an endpoint that blackholes freezes murmur's whole event loop** for about twice its timeout, 4.5 min with no timeout, so the bridge registers a 100 ms timeout (0.22 s freeze) and removes its registration on every clean exit; 1.6 numbers its default server 0, 1.5 numbers it 1; two first joins racing for one temporary channel end up in one channel ([docs/89](docs/89-mumble-ice-roster.md)) |
 
 ---
 
@@ -5813,23 +5813,25 @@ voice room's channel, numbered when there are several (docs/80 OD33 and
 §10). The owner: a better experience if Mumble users didn't see it.
 
 **Design**: [docs/89](docs/89-mumble-ice-roster.md). The roster comes from
-murmur's Ice by polling, because callbacks crash murmur 1.6 (§3). A
-dynamic room's temporary channel is created by its first gawk voice user.
-The observer link to the relay is unchanged, and without Ice the visible
-observer stays.
+murmur's Ice callbacks, with a 30 s reconciliation for what murmur can
+drop silently, and none on 1.6.870, whose callback handling crashes
+(§3). A dynamic room's temporary channel is created by its first gawk
+voice user. The observer link to the relay is unchanged, and without Ice
+the visible observer stays.
 
-**Scope** (chunks MI0–MI5): **MI0** the spike (done); **MI1** the minimal
-Ice client; **MI2** the bridge's Ice mode; **MI3** config, chart and docs;
+**Scope** (chunks MI0–MI5): **MI0** the spikes (done); **MI1** the minimal
+Ice client and callback endpoint; **MI2** the bridge's Ice mode; **MI3** config, chart and docs;
 **MI4** the voice e2e in both modes; **MI5** the owner pass on the
 reference deployment.
 
-**Non-goals**: Ice callbacks; Ice for moderation or channel creation; any
-relay, wire or web app change.
+**Non-goals**: polling as the primary path; Ice for moderation or channel
+creation; any relay, wire or web app change.
 
-**Acceptance**: docs/89 §7 (goals G1–G7 and the per-chunk tables).
+**Acceptance**: docs/89 §7 (goals G1–G8 and the per-chunk tables).
 
-**Status**: 🔶 designed 2026-11-15; owner decisions OD1–OD6 taken
-2026-11-15; no open questions; MI0 done, MI1–MI5 not started.
+**Status**: 🔶 designed 2026-11-15 and redesigned around callbacks the
+same day; owner decisions OD1–OD7 taken 2026-11-15; no open questions;
+MI0 done, MI1–MI5 not started.
 
 ---
 
