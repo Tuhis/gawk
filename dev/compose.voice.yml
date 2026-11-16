@@ -44,7 +44,7 @@ services:
     # ignore MUMBLE_SUPERUSER_PASSWORD after their first start
     # (gawk-mumble-bridge/testdata/murmur.sh works around it with docker
     # exec; a compose lane should not need to). 1.5 has safe Ice callbacks.
-    image: mumblevoip/mumble-server:v1.5.939
+    image: mumblevoip/mumble-server:v1.6.1001
     ports:
       # TCP only: the bridge tunnels voice over the control connection, and
       # a desktop Mumble client falls back to the same when UDP is absent.
