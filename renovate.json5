@@ -124,5 +124,11 @@
       matchPackageNames: ["mumblevoip/mumble-server"],
       allowedVersions: "/^v?1\\.5\\./",
     },
+    {
+      description: "gawk-whip-gateway stays on pion/rtp v1 until pion/webrtc/v4 moves to rtp v2: webrtc's public API (TrackRemote.ReadRTP), pion/interceptor and pion/srtp/v3 all hand out rtp v1 types, so importing /v2 fails to compile with a *rtp.Packet type mismatch, and converting every packet on the media path buys nothing (PR #696). Lift this once a pion/webrtc/v4 release depends on github.com/pion/rtp/v2.",
+      matchManagers: ["gomod"],
+      matchPackageNames: ["github.com/pion/rtp", "github.com/pion/rtp/v2"],
+      allowedVersions: "<2",
+    },
   ],
 }
