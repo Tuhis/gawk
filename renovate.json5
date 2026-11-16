@@ -118,5 +118,11 @@
       matchFileNames: ["gawk-broadcast-desktop/vendor/**"],
       enabled: false,
     },
+    {
+      description: "The compose voice lane pins murmur to 1.5 on purpose (the comment above its image line in dev/compose.voice.yml, docs/gotchas.md): the 1.6 images, 1.6.1001 included (re-measured 2026-11-15), honour MUMBLE_SUPERUSER_PASSWORD only on their first start, and CI's green on a bump never restarts murmur to show it (PR #739). Keep 1.5.x patches coming; lift this rule together with that comment once a 1.6 image keeps the password. gawk-mumble-bridge/testdata/murmur.sh tests 1.6 deliberately and is not this file.",
+      matchFileNames: ["dev/compose.voice.yml"],
+      matchPackageNames: ["mumblevoip/mumble-server"],
+      allowedVersions: "/^v?1\\.5\\./",
+    },
   ],
 }
