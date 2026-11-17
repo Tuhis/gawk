@@ -17,13 +17,13 @@ script for what counts as a dependency here and why.
 
 **Scope:** `cargo tree -e normal --target aarch64-apple-darwin` — build- and dev-dependencies (proc macros, test harnesses) are excluded because they are not part of the shipped bundle.
 
-## Summary — 282 packages
+## Summary — 284 packages
 
 | License (as declared) | Packages |
 |---|---:|
 | `MIT OR Apache-2.0` | 116 |
-| `MIT` | 43 |
-| `Apache-2.0 OR MIT` | 25 |
+| `MIT` | 44 |
+| `Apache-2.0 OR MIT` | 26 |
 | `Unicode-3.0` | 22 |
 | `Zlib OR Apache-2.0 OR MIT` | 22 |
 | `MIT/Apache-2.0` | 9 |
@@ -51,10 +51,10 @@ script for what counts as a dependency here and why.
 
 | Package | Version | License | Copyright |
 |---|---|---|---|
-| `accesskit` | 0.24.1 | `MIT OR Apache-2.0` | Copyright 2021 The AccessKit Authors. All rights reserved |
-| `accesskit_consumer` | 0.38.0 | `MIT OR Apache-2.0` | Copyright 2021 The AccessKit Authors. All rights reserved |
-| `accesskit_macos` | 0.26.3 | `MIT OR Apache-2.0` | Copyright 2022 The AccessKit Authors. All rights reserved |
-| `accesskit_winit` | 0.33.2 | `Apache-2.0` | Copyright 2022 The AccessKit Authors. All rights reserved |
+| `accesskit` | 0.25.2 | `MIT OR Apache-2.0` | Copyright 2021 The AccessKit Authors. All rights reserved |
+| `accesskit_consumer` | 0.39.2 | `MIT OR Apache-2.0` | Copyright 2021 The AccessKit Authors. All rights reserved |
+| `accesskit_macos` | 0.27.2 | `MIT OR Apache-2.0` | Copyright 2022 The AccessKit Authors. All rights reserved |
+| `accesskit_winit` | 0.34.2 | `Apache-2.0` | Copyright 2022 The AccessKit Authors. All rights reserved |
 | `adler2` | 2.0.1 | `0BSD OR MIT OR Apache-2.0` | Copyright (C) Jonas Schievink <jonasschievink@gmail.com> |
 | `allocator-api2` | 0.2.21 | `MIT OR Apache-2.0` | — |
 | `arboard` | 3.7.0 | `MIT OR Apache-2.0` | Copyright (c) 2022 The Arboard contributors |
@@ -104,7 +104,7 @@ script for what counts as a dependency here and why.
 | `euclid` | 0.22.14 | `MIT OR Apache-2.0` | Copyright (c) 2012-2013 Mozilla Foundation |
 | `fax` | 0.2.7 | `MIT` | Copyright © 2021 The pdf-rs contributers |
 | `fdeflate` | 0.3.7 | `MIT OR Apache-2.0` | — |
-| `femtovg` | 0.27.0 | `MIT OR Apache-2.0` | Copyright 2021 femtovg contributors<br>Copyright 2021 Developers of the femtovg project |
+| `femtovg` | 0.28.0 | `MIT OR Apache-2.0` | Copyright 2021 femtovg contributors<br>Copyright 2021 Developers of the femtovg project |
 | `field-offset` | 0.3.6 | `MIT OR Apache-2.0` | Copyright (c) 2016-2021 Diggory Blake, and other contributors |
 | `fixed_decimal` | 0.7.3 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `flate2` | 1.1.11 | `MIT OR Apache-2.0` | Copyright (c) 2014-2026 Alex Crichton |
@@ -113,7 +113,7 @@ script for what counts as a dependency here and why.
 | `foldhash` | 0.2.0 | `Zlib` | Copyright (c) 2024 Orson Peters |
 | `font-types` | 0.12.7 | `MIT OR Apache-2.0` | Copyright 2019 Fontations Developers<br>Copyright (c) 2019 Fontations Developers |
 | `fontdb` | 0.24.0 | `MIT` | Copyright (c) 2020 Yevhenii Reizner |
-| `fontique` | 0.11.1 | `Apache-2.0 OR MIT` | Copyright 2024 the Parley Authors |
+| `fontique` | 0.12.0 | `Apache-2.0 OR MIT` | Copyright 2024 the Parley Authors |
 | `foreign-types` | 0.5.0 | `MIT/Apache-2.0` | Copyright (c) 2017 The foreign-types Developers |
 | `foreign-types-shared` | 0.3.1 | `MIT/Apache-2.0` | Copyright (c) 2017 The foreign-types Developers |
 | `form_urlencoded` | 1.2.2 | `MIT OR Apache-2.0` | Copyright (c) 2013-2016 The rust-url developers |
@@ -125,19 +125,19 @@ script for what counts as a dependency here and why.
 | `glutin-winit` | 0.5.0 | `MIT` | Copyright © 2022 Kirill Chibisov |
 | `half` | 2.7.1 | `MIT OR Apache-2.0` | — |
 | `harfrust` | 0.12.0 | `MIT` | Copyright (c) HarfBuzz developers<br>Copyright (c) 2020 Yevhenii Reizner |
-| `hashbrown` | 0.16.1 | `MIT OR Apache-2.0` | Copyright (c) 2016 Amanieu d'Antras |
 | `hashbrown` | 0.17.1 | `MIT OR Apache-2.0` | Copyright (c) 2016 Amanieu d'Antras |
+| `hashbrown` | 0.16.1 | `MIT OR Apache-2.0` | Copyright (c) 2016 Amanieu d'Antras |
 | `htmlparser` | 0.2.1 | `MIT OR Apache-2.0` | Copyright (c) 2018 Reizner Evgeniy |
 | `httlib-huffman` | 0.3.4 | `MIT` | — |
 | `http` | 1.5.0 | `MIT OR Apache-2.0` | Copyright 2017 http-rs authors<br>Copyright (c) 2017 http-rs authors |
 | `httparse` | 1.10.1 | `MIT OR Apache-2.0` | Copyright (c) 2015-2025 Sean McArthur |
 | `hybrid-array` | 0.4.15 | `MIT OR Apache-2.0` | Copyright (c) 2022-2026 The RustCrypto Project Developers |
-| `i-slint-backend-selector` | 1.18.1 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
-| `i-slint-backend-winit` | 1.18.1 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
-| `i-slint-common` | 1.18.1 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
-| `i-slint-core` | 1.18.1 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
-| `i-slint-renderer-femtovg` | 1.18.1 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
-| `i-slint-renderer-software` | 1.18.1 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
+| `i-slint-backend-selector` | 1.19.0 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
+| `i-slint-backend-winit` | 1.19.0 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
+| `i-slint-common` | 1.19.0 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
+| `i-slint-core` | 1.19.0 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
+| `i-slint-renderer-femtovg` | 1.19.0 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
+| `i-slint-renderer-software` | 1.19.0 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
 | `iana-time-zone` | 0.1.65 | `MIT OR Apache-2.0` | Copyright 2020 Andrew Straw<br>Copyright (c) 2020 Andrew D. Straw |
 | `icu_collections` | 2.4.0 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `icu_decimal` | 2.4.0 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
@@ -160,7 +160,7 @@ script for what counts as a dependency here and why.
 | `imgref` | 1.12.3 | `CC0-1.0 OR Apache-2.0` | — |
 | `itertools` | 0.15.0 | `MIT OR Apache-2.0` | Copyright (c) 2015 |
 | `itoa` | 1.0.19 | `MIT OR Apache-2.0` | — |
-| `keyboard-types` | 0.7.0 | `MIT OR Apache-2.0` | Copyright (c) 2017 Pyfisch |
+| `keyboard-types` | 0.8.3 | `MIT OR Apache-2.0` | Copyright (c) 2017 Pyfisch |
 | `kurbo` | 0.13.1 | `Apache-2.0 OR MIT` | Copyright (c) 2018 Raph Levien |
 | `lazy_static` | 1.5.1 | `MIT OR Apache-2.0` | Copyright 2016 lazy-static.rs Developers |
 | `libc` | 0.2.191 | `MIT OR Apache-2.0` | Copyright (c) The Rust Project Developers |
@@ -184,7 +184,7 @@ script for what counts as a dependency here and why.
 | `miniz_oxide` | 0.8.9 | `MIT OR Zlib OR Apache-2.0` | Copyright 2013-2014 RAD Game Tools and Valve Software<br>Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC<br>Copyright (c) 2017 Frommi<br>Copyright (c) 2017-2024 oyvindln<br>Copyright (c) 2020 Frommi |
 | `mio` | 1.2.4 | `MIT` | Copyright (c) 2014 Carl Lerche and other MIO contributors |
 | `moxcms` | 0.8.1 | `BSD-3-Clause OR Apache-2.0` | Copyright 2024 Radzivon Bartoshyk<br>Copyright (c) Radzivon Bartoshyk. All rights reserved |
-| `muda` | 0.19.3 | `Apache-2.0 OR MIT` | Copyright (c) 2022-2022 Tauri Programme within The Commons Conservancy |
+| `muda` | 0.21.2 | `Apache-2.0 OR MIT` | Copyright (c) 2022-2022 Tauri Programme within The Commons Conservancy |
 | `nom` | 7.1.3 | `MIT` | Copyright (c) 2014-2019 Geoffroy Couprie |
 | `num-bigint` | 0.4.8 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
 | `num-conv` | 0.2.2 | `MIT OR Apache-2.0` | Copyright (c) Jacob Pratt |
@@ -222,8 +222,10 @@ script for what counts as a dependency here and why.
 | `opus` | 0.4.0 | `MIT/Apache-2.0` | Copyright (c) 2016 Tad Hardesty |
 | `opusic-sys` | 0.7.7 | `BSD-3-Clause` | Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, |
 | `parlance` | 0.1.1 | `Apache-2.0 OR MIT` | Copyright 2020 the Parley Authors |
-| `parley` | 0.11.1 | `Apache-2.0 OR MIT` | Copyright 2020 the Parley Authors |
-| `parley_data` | 0.11.1 | `Apache-2.0 OR MIT` | Copyright 2020 the Parley Authors |
+| `parley` | 0.12.0 | `Apache-2.0 OR MIT` | Copyright 2020 the Parley Authors |
+| `parley_data` | 0.12.0 | `Apache-2.0 OR MIT` | Copyright 2020 the Parley Authors |
+| `parley_emoji` | 0.12.0 | `MIT` | Copyright 2020 the Parley Authors<br>Copyright (c) 2026 Christian Hansen <chansen@cpan.org> |
+| `parley_engine` | 0.12.0 | `Apache-2.0 OR MIT` | Copyright 2025 the Parley Authors |
 | `pem` | 4.0.0 | `MIT` | Copyright (c) 2016 Jonathan Creekmore |
 | `percent-encoding` | 2.3.2 | `MIT OR Apache-2.0` | Copyright (c) 2013-2025 The rust-url developers |
 | `pico-args` | 0.5.0 | `MIT` | Copyright (c) 2019 Yevhenii Reizner |
@@ -247,7 +249,7 @@ script for what counts as a dependency here and why.
 | `raw-window-handle` | 0.6.2 | `MIT OR Apache-2.0 OR Zlib` | Copyright (c) 2019 Osspial<br>Copyright (c) 2020 Osspial |
 | `rcgen` | 0.14.10 | `MIT OR Apache-2.0` | Copyright (c) 2019-2026 est31 <MTest31@outlook.com> and contributors |
 | `read-fonts` | 0.41.0 | `MIT OR Apache-2.0` | Copyright 2019 Fontations Developers<br>Copyright (c) 2019 Fontations Developers |
-| `resvg` | 0.48.1 | `Apache-2.0 OR MIT` | Copyright 2017 the Resvg Authors |
+| `resvg` | 0.49.0 | `Apache-2.0 OR MIT` | Copyright 2017 the Resvg Authors |
 | `rgb` | 0.8.53 | `MIT` | Copyright (c) 2019 Kornel |
 | `ring` | 0.17.14 | `Apache-2.0 AND ISC` | Copyright (c) 2009 The Go Authors. All rights reserved<br>Copyright 2015 The Chromium Authors. All rights reserved<br>Copyright 2015-2025 Brian Smith |
 | `roxmltree` | 0.21.2 | `MIT OR Apache-2.0` | Copyright (c) 2018 Yevhenii Reizner |
@@ -270,7 +272,7 @@ script for what counts as a dependency here and why.
 | `siphasher` | 1.0.4 | `MIT OR Apache-2.0` | Copyright 2012-2016 The Rust Project Developers<br>Copyright 2016-2026 Frank Denis |
 | `skrifa` | 0.44.0 | `MIT OR Apache-2.0` | Copyright 2019 Fontations Developers<br>Copyright (c) 2019 Fontations Developers |
 | `slab` | 0.4.12 | `MIT` | Copyright (c) 2019 Carl Lerche |
-| `slint` | 1.18.1 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
+| `slint` | 1.19.0 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
 | `slotmap` | 1.1.1 | `Zlib` | Copyright (c) 2021 Orson Peters <orsonpeters@gmail.com> |
 | `smallvec` | 1.16.5 | `MIT OR Apache-2.0` | Copyright (c) 2018 The Servo Project Developers |
 | `smol_str` | 0.2.2 | `MIT OR Apache-2.0` | — |
@@ -283,7 +285,7 @@ script for what counts as a dependency here and why.
 | `svgtypes` | 0.16.2 | `Apache-2.0 OR MIT` | Copyright (c) 2018 Yevhenii Reizner |
 | `swash` | 0.2.10 | `Apache-2.0 OR MIT` | Copyright (c) 2020 Chad Brokaw |
 | `sys-locale` | 0.3.2 | `MIT OR Apache-2.0` | Copyright (c) 2021 1Password |
-| `taffy` | 0.10.1 | `MIT` | — |
+| `taffy` | 0.15.1 | `MIT` | — |
 | `thiserror` | 2.0.21 | `MIT OR Apache-2.0` | — |
 | `tiff` | 0.11.3 | `MIT` | Copyright (c) 2018 PistonDevelopers |
 | `time` | 0.3.55 | `MIT OR Apache-2.0` | Copyright (c) Jacob Pratt et al |
@@ -306,12 +308,12 @@ script for what counts as a dependency here and why.
 | `ureq` | 3.5.2 | `MIT OR Apache-2.0` | Copyright (c) 2019 Martin Algesten |
 | `ureq-proto` | 0.7.1 | `MIT OR Apache-2.0` | Copyright 2022 Martin Algesten |
 | `url` | 2.5.8 | `MIT OR Apache-2.0` | Copyright (c) 2013-2025 The rust-url developers |
-| `usvg` | 0.48.1 | `Apache-2.0 OR MIT` | Copyright 2017 the Resvg Authors |
+| `usvg` | 0.49.0 | `Apache-2.0 OR MIT` | Copyright 2017 the Resvg Authors |
 | `utf8-zero` | 0.8.1 | `MIT OR Apache-2.0` | — |
 | `utf8_iter` | 1.1.0 | `Apache-2.0 OR MIT` | — |
 | `utf_types` | 1.0.0 | `Apache-2.0 OR MIT` | — |
 | `uuid` | 1.29.2 | `Apache-2.0 OR MIT` | Copyright (c) 2014 The Rust Project Developers<br>Copyright (c) 2018 Ashley Mannix, Christopher Armstrong, Dylan DPC, Hunar Roop Kahlon |
-| `vtable` | 0.5.0 | `MIT OR Apache-2.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
+| `vtable` | 0.5.1 | `MIT OR Apache-2.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
 | `webbrowser` | 1.2.6 | `MIT OR Apache-2.0` | Copyright (c) 2015-2022 Amod Malviya |
 | `webpki-roots` | 1.0.11 | `CDLA-Permissive-2.0` | — |
 | `weezl` | 0.1.12 | `MIT OR Apache-2.0` | Copyright (c) HeroicKatora 2020 |
@@ -788,9 +790,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 3. Apache-2.0 — 26 packages
+### 3. Apache-2.0 — 27 packages
 
-Applies to: `allocator-api2`, `arboard`, `fdeflate`, `field-offset`, `half`, `image`, `image-webp`, `itoa`, `libc`, `linebender_resource_handle`, `miniz_oxide`, `num-conv` — and 14 more
+Applies to: `allocator-api2`, `arboard`, `fdeflate`, `field-offset`, `half`, `image`, `image-webp`, `itoa`, `libc`, `linebender_resource_handle`, `miniz_oxide`, `num-conv` — and 15 more
 
 ```
 Apache License
@@ -4680,9 +4682,9 @@ Applies to: `untrusted`
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### 41. MIT — 131 packages
+### 41. MIT — 132 packages
 
-Applies to: `adler2`, `allocator-api2`, `arrayvec`, `asn1-rs`, `bitflags`, `block-buffer`, `bytes`, `cfg-if`, `cgl`, `chacha20`, `clru`, `const-oid` — and 119 more
+Applies to: `adler2`, `allocator-api2`, `arrayvec`, `asn1-rs`, `bitflags`, `block-buffer`, `bytes`, `cfg-if`, `cgl`, `chacha20`, `clru`, `const-oid` — and 120 more
 
 ```
 Permission is hereby granted, free of charge, to any
@@ -5018,6 +5020,40 @@ DEALINGS IN THE SOFTWARE.
 
 ### 50. MIT — 1 package
 
+Applies to: `parley_emoji`
+
+```
+Copyright 2020 the Parley Authors
+Copyright (c) 2026 Christian Hansen <chansen@cpan.org>
+<https://github.com/chansen/c-emoji>
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+### 51. MIT — 1 package
+
 Applies to: `pulldown-cmark`
 
 ```
@@ -5044,7 +5080,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 51. UNKNOWN — 1 package
+### 52. UNKNOWN — 1 package
 
 Applies to: `imgref`
 
@@ -5172,7 +5208,7 @@ express Statement of Purpose.
     this CC0 or use of the Work.
 ```
 
-### 52. UNKNOWN — 1 package
+### 53. UNKNOWN — 1 package
 
 Applies to: `memchr`
 
@@ -5182,7 +5218,7 @@ This project is dual-licensed under the Unlicense and MIT licenses.
 You may use this code under the terms of either license.
 ```
 
-### 53. UNKNOWN — 1 package
+### 54. UNKNOWN — 1 package
 
 Applies to: `muda`
 
@@ -5208,7 +5244,7 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/muda.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-### 54. UNKNOWN — 1 package
+### 55. UNKNOWN — 1 package
 
 Applies to: `ring`
 
@@ -5224,7 +5260,7 @@ See src/polyfill/once_cell/LICENSE-APACHE and src/polyfill/once_cell/LICENSE-MIT
 for the license to code that was sourced from the once_cell project.
 ```
 
-### 55. UNKNOWN — 1 package
+### 56. UNKNOWN — 1 package
 
 Applies to: `typenum`
 
@@ -5232,7 +5268,7 @@ Applies to: `typenum`
 MIT OR Apache-2.0
 ```
 
-### 56. UNKNOWN — 1 package
+### 57. UNKNOWN — 1 package
 
 Applies to: `webpki-roots`
 
@@ -5300,7 +5336,7 @@ of Data, including for example machine learning models and models'
 insights.
 ```
 
-### 57. Unlicense — 2 packages
+### 58. Unlicense — 2 packages
 
 Applies to: `byteorder-lite`, `memchr`
 
@@ -5331,7 +5367,7 @@ OTHER DEALINGS IN THE SOFTWARE.
 For more information, please refer to <http://unlicense.org/>
 ```
 
-### 58. Zlib — 9 packages
+### 59. Zlib — 9 packages
 
 Applies to: `bytemuck`, `cursor-icon`, `foldhash`, `glow`, `lru-slab`, `miniz_oxide`, `raw-window-handle`, `slotmap`, `tinyvec`
 
@@ -5353,7 +5389,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### 59. Zlib — 2 packages
+### 60. Zlib — 2 packages
 
 Applies to: `zune-core`, `zune-jpeg`
 
