@@ -118,5 +118,11 @@
       matchFileNames: ["gawk-broadcast-desktop/vendor/**"],
       enabled: false,
     },
+    {
+      description: "The compose voice lane pins murmur to the 1.5 line on purpose (the comment on its `murmur` service in dev/compose.voice.yml): the 1.6 images (1.6.870, 1.6.1001) ignore MUMBLE_SUPERUSER_PASSWORD after their first start, and 1.5 has safe Ice callbacks. Renovate kept re-proposing 1.6 (PR #739). 1.5.x patches still flow; lift this hold only with that comment. gawk-mumble-bridge/testdata/murmur.sh tests 1.6 deliberately and is not scanned by any manager.",
+      matchFileNames: ["dev/compose.voice.yml"],
+      matchPackageNames: ["mumblevoip/mumble-server"],
+      allowedVersions: "/^v?1\\.5\\./",
+    },
   ],
 }
