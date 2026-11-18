@@ -118,5 +118,12 @@
       matchFileNames: ["gawk-broadcast-desktop/vendor/**"],
       enabled: false,
     },
+    {
+      description: "The compose voice lane (dev/compose.voice.yml) pins murmur to 1.5 on purpose, as the comment above its image says: the 1.6 images (1.6.870, and 1.6.1001 re-measured 2026-11-15) honour MUMBLE_SUPERUSER_PASSWORD only on their first start, and a compose lane should not need murmur.sh's docker-exec workaround. CI never restarts that lane, so a 1.6 bump goes green there anyway (PR #739). Keep it on 1.5.x patches; the bridge's CI matrix tests 1.6 through gawk-mumble-bridge/testdata/murmur.sh, which this rule does not touch. Drop it when a 1.6 image is measured to honour the variable on a restart, together with that comment.",
+      matchManagers: ["docker-compose"],
+      matchFileNames: ["dev/compose.voice.yml"],
+      matchPackageNames: ["mumblevoip/mumble-server"],
+      allowedVersions: "/^v1\\.5\\./",
+    },
   ],
 }
