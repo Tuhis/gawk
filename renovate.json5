@@ -125,5 +125,12 @@
       matchPackageNames: ["mumblevoip/mumble-server"],
       allowedVersions: "/^v1\\.5\\./",
     },
+    {
+      description: "Hold pion/rtp at v1 until pion/webrtc moves to v2. webrtc/v4 (v4.2.26), interceptor and srtp/v3 all depend on rtp v1, and the gateway passes their *rtp.Packet straight through (TrackRemote.ReadRTP in session.go, WriteRTP in the tests). A v2 import does not compile against them, and the import-less require Renovate opens (PR #696) is dropped again by go mod tidy. Minor and patch updates to v1 still flow. Drop this rule, and bump with gomodUpdateImportPaths, once a webrtc release requires github.com/pion/rtp/v2.",
+      matchManagers: ["gomod"],
+      matchPackageNames: ["github.com/pion/rtp"],
+      matchUpdateTypes: ["major"],
+      enabled: false,
+    },
   ],
 }
