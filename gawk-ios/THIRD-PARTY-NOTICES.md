@@ -56,17 +56,17 @@ script for what counts as a dependency here and why.
 | `bitflags` | 2.13.2 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
 | `block-buffer` | 0.12.1 | `MIT OR Apache-2.0` | Copyright (c) 2018-2025 The RustCrypto Project Developers |
 | `block2` | 0.6.2 | `MIT` | — |
-| `bytes` | 1.12.1 | `MIT` | Copyright (c) 2018 Carl Lerche |
+| `bytes` | 1.12.2 | `MIT` | Copyright (c) 2018 Carl Lerche |
 | `camino` | 1.2.6 | `MIT OR Apache-2.0` | Copyright (c) The camino Contributors |
 | `cargo-platform` | 0.3.3 | `MIT OR Apache-2.0` | — |
 | `cargo_metadata` | 0.23.1 | `MIT` | — |
 | `cfg-if` | 1.0.5 | `MIT OR Apache-2.0` | Copyright (c) 2014 Alex Crichton |
 | `chacha20` | 0.10.2 | `MIT OR Apache-2.0` | Copyright (c) 2019-2026 The RustCrypto Project Developers |
-| `const-oid` | 0.10.2 | `Apache-2.0 OR MIT` | Copyright (c) 2020-2026 The RustCrypto Project Developers |
+| `const-oid` | 0.10.3 | `Apache-2.0 OR MIT` | Copyright (c) 2020-2026 The RustCrypto Project Developers |
 | `core-foundation` | 0.10.1 | `MIT OR Apache-2.0` | Copyright (c) 2012-2013 Mozilla Foundation |
 | `core-foundation-sys` | 0.8.7 | `MIT OR Apache-2.0` | Copyright (c) 2012-2013 Mozilla Foundation |
 | `cpufeatures` | 0.3.1 | `MIT OR Apache-2.0` | Copyright (c) 2020-2026 The RustCrypto Project Developers |
-| `crc32fast` | 1.5.4 | `MIT OR Apache-2.0` | Copyright (c) 2018 Sam Rijs, Alex Crichton and contributors |
+| `crc32fast` | 1.5.5 | `MIT OR Apache-2.0` | Copyright (c) 2018 Sam Rijs, Alex Crichton and contributors |
 | `crypto-common` | 0.2.2 | `MIT OR Apache-2.0` | Copyright (c) 2021-2026 RustCrypto Developers |
 | `data-encoding` | 2.11.1 | `MIT` | Copyright (c) 2015-2020 Julien Cretin<br>Copyright (c) 2017-2020 Google Inc |
 | `der-parser` | 10.0.0 | `MIT OR Apache-2.0` | Copyright (c) 2017 Pierre Chifflier |
@@ -74,7 +74,7 @@ script for what counts as a dependency here and why.
 | `digest` | 0.11.3 | `MIT OR Apache-2.0` | Copyright (c) 2017-2025 RustCrypto Developers<br>Copyright (c) 2017 Artyom Pavlov |
 | `dispatch2` | 0.3.1 | `Zlib OR Apache-2.0 OR MIT` | — |
 | `equivalent` | 1.0.3 | `Apache-2.0 OR MIT` | Copyright (c) 2016--2023 |
-| `errno` | 0.3.14 | `MIT OR Apache-2.0` | Copyright (c) 2014 Chris Wong |
+| `errno` | 0.3.15 | `MIT OR Apache-2.0` | Copyright (c) 2014 Chris Wong |
 | `fastrand` | 2.5.0 | `Apache-2.0 OR MIT` | — |
 | `flate2` | 1.1.11 | `MIT OR Apache-2.0` | Copyright (c) 2014-2026 Alex Crichton |
 | `form_urlencoded` | 1.2.2 | `MIT OR Apache-2.0` | Copyright (c) 2013-2016 The rust-url developers |
@@ -107,7 +107,7 @@ script for what counts as a dependency here and why.
 | `memchr` | 2.8.3 | `Unlicense OR MIT` | Copyright (c) 2015 Andrew Gallant |
 | `minimal-lexical` | 0.2.1 | `MIT/Apache-2.0` | Copyright (c) 2009 The Go Authors. All rights reserved |
 | `miniz_oxide` | 0.9.1 | `MIT OR Zlib OR Apache-2.0` | Copyright 2013-2014 RAD Game Tools and Valve Software<br>Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC<br>Copyright (c) 2017 Frommi<br>Copyright (c) 2017-2024 oyvindln<br>Copyright (c) 2020 Frommi |
-| `mio` | 1.2.4 | `MIT` | Copyright (c) 2014 Carl Lerche and other MIO contributors |
+| `mio` | 1.2.5 | `MIT` | Copyright (c) 2014 Carl Lerche and other MIO contributors |
 | `nom` | 7.1.3 | `MIT` | Copyright (c) 2014-2019 Geoffroy Couprie |
 | `num-bigint` | 0.4.8 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
 | `num-conv` | 0.2.2 | `MIT OR Apache-2.0` | Copyright (c) Jacob Pratt |
@@ -138,7 +138,7 @@ script for what counts as a dependency here and why.
 | `quinn` | 0.11.12 | `MIT OR Apache-2.0` | Copyright (c) 2018 The quinn Developers |
 | `quinn-proto` | 0.11.19 | `MIT OR Apache-2.0` | Copyright (c) 2018 The quinn Developers |
 | `quinn-udp` | 0.5.16 | `MIT OR Apache-2.0` | Copyright (c) 2018 The quinn Developers |
-| `rand` | 0.10.3 | `MIT OR Apache-2.0` | Copyright 2018 Developers of the Rand project<br>Copyright (c) 2014 The Rust Project Developers |
+| `rand` | 0.10.4 | `MIT OR Apache-2.0` | Copyright 2018 Developers of the Rand project<br>Copyright (c) 2014 The Rust Project Developers |
 | `rand_core` | 0.10.1 | `MIT OR Apache-2.0` | Copyright (c) 2018-2026 The Rand Project Developers |
 | `rand_pcg` | 0.10.2 | `MIT OR Apache-2.0` | Copyright (c) 2014-2017 Melissa O'Neill and PCG Project contributors<br>Copyright 2018 Developers of the Rand project |
 | `rcgen` | 0.14.10 | `MIT OR Apache-2.0` | Copyright (c) 2019-2026 est31 <MTest31@outlook.com> and contributors |
@@ -148,9 +148,9 @@ script for what counts as a dependency here and why.
 | `rustix` | 1.1.6 | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | — |
 | `rustls` | 0.23.46 | `Apache-2.0 OR ISC OR MIT` | Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com><br>Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com> |
 | `rustls-native-certs` | 0.8.5 | `Apache-2.0 OR ISC OR MIT` | Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com><br>Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com> |
-| `rustls-pki-types` | 1.15.1 | `MIT OR Apache-2.0` | Copyright 2023 Dirkjan Ochtman<br>Copyright (c) 2023 Dirkjan Ochtman <dirkjan@ochtman.nl> |
+| `rustls-pki-types` | 1.16.0 | `MIT OR Apache-2.0` | Copyright 2023 Dirkjan Ochtman<br>Copyright (c) 2023 Dirkjan Ochtman <dirkjan@ochtman.nl> |
 | `rustls-platform-verifier` | 0.7.1 | `MIT OR Apache-2.0` | Copyright (c) 2022 1Password |
-| `rustls-webpki` | 0.103.16 | `ISC` | Copyright 2015 Brian Smith |
+| `rustls-webpki` | 0.103.17 | `ISC` | Copyright 2015 Brian Smith |
 | `security-framework` | 3.7.0 | `MIT OR Apache-2.0` | Copyright (c) 2015 Steven Fackler |
 | `security-framework-sys` | 2.17.0 | `MIT OR Apache-2.0` | Copyright (c) 2015 Steven Fackler |
 | `semver` | 1.0.28 | `MIT OR Apache-2.0` | — |
@@ -186,7 +186,7 @@ script for what counts as a dependency here and why.
 | `utf8-zero` | 0.8.1 | `MIT OR Apache-2.0` | — |
 | `utf8_iter` | 1.1.0 | `Apache-2.0 OR MIT` | — |
 | `utf_types` | 1.0.0 | `Apache-2.0 OR MIT` | — |
-| `webpki-roots` | 1.0.11 | `CDLA-Permissive-2.0` | — |
+| `webpki-roots` | 1.0.12 | `CDLA-Permissive-2.0` | — |
 | `writeable` | 0.6.4 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `wtransport` | 0.7.2 | `MIT OR Apache-2.0` | Copyright (c) 2023 Biagio Festa |
 | `wtransport-proto` | 0.7.2 | `MIT OR Apache-2.0` | Copyright (c) 2023 Biagio Festa |
@@ -194,7 +194,7 @@ script for what counts as a dependency here and why.
 | `yasna` | 0.6.0 | `MIT OR Apache-2.0` | Copyright (c) 2016 Masaki Hara |
 | `yoke` | 0.8.4 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `zerofrom` | 0.1.8 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
-| `zeroize` | 1.9.1 | `Apache-2.0 OR MIT` | Copyright (c) 2018-2026 The RustCrypto Project Developers |
+| `zeroize` | 1.9.2 | `Apache-2.0 OR MIT` | Copyright (c) 2018-2026 The RustCrypto Project Developers |
 | `zerotrie` | 0.2.5 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `zerovec` | 0.11.9 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `zmij` | 1.0.23 | `MIT` | — |
