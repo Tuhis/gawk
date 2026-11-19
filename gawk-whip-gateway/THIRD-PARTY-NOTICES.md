@@ -39,8 +39,8 @@ script for what counts as a dependency here and why.
 | `github.com/modern-go/concurrent` | v0.0.0-20180306012644-bacd9c7ef1dd | `Apache-2.0` | — |
 | `github.com/modern-go/reflect2` | v1.0.3-0.20250322232337-35a7c28c31ee | `Apache-2.0` | — |
 | `github.com/munnerz/goautoneg` | v0.0.0-20191010083416-a7dc8b61c822 | `BSD-3-Clause` | Copyright (c) 2011, Open Knowledge Foundation Ltd |
-| `github.com/pion/datachannel` | v1.6.3 | `MIT` | Copyright (c) 2026 The Pion community <https://pion.ly> |
-| `github.com/pion/dtls/v3` | v3.1.15 | `MIT OR UNKNOWN` | Copyright (c) 2026 The Pion community <https://pion.ly> |
+| `github.com/pion/datachannel` | v1.6.4 | `MIT` | Copyright (c) 2026 The Pion community <https://pion.ly> |
+| `github.com/pion/dtls/v3` | v3.1.16 | `MIT OR UNKNOWN` | Copyright (c) 2026 The Pion community <https://pion.ly> |
 | `github.com/pion/ice/v4` | v4.4.9 | `MIT` | Copyright (c) 2026 The Pion community <https://pion.ly> |
 | `github.com/pion/interceptor` | v0.1.51 | `MIT` | Copyright (c) 2026 The Pion community <https://pion.ly> |
 | `github.com/pion/logging` | v0.2.4 | `MIT` | Copyright (c) 2023 The Pion community <https://pion.ly> |
@@ -48,13 +48,13 @@ script for what counts as a dependency here and why.
 | `github.com/pion/randutil` | v0.1.0 | `MIT` | Copyright (c) 2020 Pion |
 | `github.com/pion/rtcp` | v1.2.20 | `MIT OR UNKNOWN` | Copyright (c) 2026 The Pion community <https://pion.ly> |
 | `github.com/pion/rtp` | v1.10.6 | `MIT` | — |
-| `github.com/pion/sctp` | v1.12.0 | `MIT` | Copyright (c) 2026 The Pion community <https://pion.ly> |
+| `github.com/pion/sctp` | v1.12.1 | `MIT` | Copyright (c) 2026 The Pion community <https://pion.ly> |
 | `github.com/pion/sdp/v3` | v3.0.20 | `MIT` | Copyright (c) 2026 The Pion community <https://pion.ly> |
 | `github.com/pion/srtp/v3` | v3.1.3 | `MIT` | Copyright (c) 2026 The Pion community <https://pion.ly> |
 | `github.com/pion/stun/v4` | v4.0.1 | `MIT OR BSD-3-Clause OR UNKNOWN` | Copyright (c) 2026 The Pion community <https://pion.ly> |
-| `github.com/pion/transport/v5` | v5.1.4 | `MIT OR BSD-3-Clause` | Copyright (c) 2026 The Pion community <https://pion.ly> |
+| `github.com/pion/transport/v5` | v5.1.5 | `MIT OR BSD-3-Clause` | Copyright (c) 2026 The Pion community <https://pion.ly> |
 | `github.com/pion/turn/v5` | v5.1.3 | `MIT OR UNKNOWN` | Copyright (c) 2026 The Pion community <https://pion.ly> |
-| `github.com/pion/webrtc/v4` | v4.2.26 | `MIT` | Copyright (c) 2026 The Pion community <https://pion.ly> |
+| `github.com/pion/webrtc/v4` | v4.2.27 | `MIT` | Copyright (c) 2026 The Pion community <https://pion.ly> |
 | `github.com/prometheus/client_golang` | v1.25.0 | `Apache-2.0 OR UNKNOWN` | Copyright 2012-2015 The Prometheus Authors<br>Copyright 2013-2015 Blake Mizerany, Björn Rabenstein<br>Copyright 2010 The Go Authors |
 | `github.com/prometheus/client_model` | v0.6.3 | `Apache-2.0 OR UNKNOWN` | Copyright 2012-2015 The Prometheus Authors |
 | `github.com/prometheus/common` | v0.72.0 | `Apache-2.0 OR UNKNOWN` | Copyright 2015 The Prometheus Authors |
