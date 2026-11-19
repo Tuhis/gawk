@@ -41,8 +41,8 @@ const GRID_KEY = 'gawk:room-grid';
 const PRESET_KEY = 'gawk:room-preset';
 const VIDEOS_KEY = 'gawk:room-videos';
 const PICKS_KEY = 'gawk:room-picks';
-// D5: the rooms remembered, most recently changed last, and the hidden IDs
-// kept per room.
+// D5: the rooms remembered, most recently used last, and the hidden IDs kept
+// per room.
 export const MAX_PICK_ROOMS = 20;
 export const MAX_HIDDEN_PER_ROOM = 64;
 const VOLUME_PREFIX = 'gawk:room-volume:';
@@ -75,16 +75,20 @@ export function saveNickname(nickname: string): void {
 
 // D6: before R86 Hide videos was a fourth layout mode. A stored one becomes
 // None, with the layout `0` would have returned to. Runs before every read
-// of either key, and once it has rewritten the mode it never runs again.
+// of either key, and once it has rewritten the mode it never runs again. The
+// mode is rewritten only once None reads back: a failed write (a full
+// storage quota) must not lose the old answer, so until it succeeds the
+// stored `hidden` itself still reads as None.
 function migrateHiddenMode(): void {
   if (readStored(MODE_KEY) !== 'hidden') return;
   writeStored(VIDEOS_KEY, 'off');
-  writeStored(MODE_KEY, loadRoomAllMode());
+  if (readStored(VIDEOS_KEY) === 'off') writeStored(MODE_KEY, loadRoomAllMode());
 }
 
 export function loadRoomMode(): RoomMode {
   migrateHiddenMode();
   const v = readStored(MODE_KEY);
+  if (v === 'hidden') return loadRoomAllMode();
   return v === 'fit' || v === 'focus' ? v : 'grid';
 }
 
@@ -103,11 +107,13 @@ export function saveRoomAllMode(mode: RoomAllMode): void {
 // None: no stream on the stage, in any room.
 export function loadVideosOff(): boolean {
   migrateHiddenMode();
-  return readStored(VIDEOS_KEY) === 'off';
+  return readStored(VIDEOS_KEY) === 'off' || readStored(MODE_KEY) === 'hidden';
 }
 
 export function saveVideosOff(off: boolean): void {
   writeStored(VIDEOS_KEY, off ? 'off' : null);
+  // An unmigrated `hidden` would read as None again (see the migration).
+  if (!off && readStored(MODE_KEY) === 'hidden') writeStored(MODE_KEY, loadRoomAllMode());
 }
 
 interface StoredPicks {
@@ -151,8 +157,9 @@ export function loadRoomPicks(code: string): RoomPicks {
   return e ? { choose: e.choose, hidden: e.hidden } : NO_PICKS;
 }
 
-// Moves the room to the end of the list, then drops the oldest past the cap.
-// A room back to All streams with nothing hidden is forgotten.
+// Moves the room to the end of the list, then drops the least recently used
+// past the cap. A room back to All streams with nothing hidden is forgotten.
+// The room view saves on every change and on entering a room.
 export function saveRoomPicks(code: string, picks: RoomPicks): void {
   if (code === '') return;
   const list = readPicks().filter((p) => p.code !== code);

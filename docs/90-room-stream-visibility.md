@@ -58,13 +58,13 @@ owner pass can revise them in place.
 | D2 | **None replaces Hide videos**, and for a broadcaster with a local preview it reads **Preview only**, as the segment's fourth button did. Its note says "Hide videos" so returning users find it. | It is the same state with the same cost. The note is the proposal's own answer to its one drawback: the control moved. |
 | D3 | **Hiding is unsubscribing.** A hidden stream has no tile, so its media session closes, as every session does under None. Showing it again dials a new one. | The point is the download, not only the pixels. A muted, invisible tile still costs the uplink and the decoder. |
 | D4 | **The choice is a set of hidden streams**, by broadcast ID, so a stream that joins later arrives shown. Choose with nothing unticked shows everything. | Someone who hid a lobby screen still expects the friend who joins next to appear. |
-| D5 | **Remembered per room, on this device**: `gawk:room-picks` holds the 20 most recently changed rooms by room code, each with whether Choose is selected and up to 64 hidden IDs. All streams keeps the set, so going back to Choose restores it. None stays global (`gawk:room-videos`), as Hide videos was. | A pick belongs to a room; None is a bandwidth habit. The caps keep the key small: a room carries far fewer attachments than 64, and old rooms fall off. The room code and the broadcast IDs never leave the device, as the tile volumes (`gawk:room-volume:<id>`) never do. |
-| D6 | **The old preference migrates once**: a stored `gawk:room-mode` of `hidden` becomes None, with the layout set to the last all-POV layout (`gawk:room-grid`). | A reload must not drop a participant who was in Hide videos into a full room of downloads. |
-| D7 | **Numbers keep the room's order.** Stream 4 stays 4 when 2 is hidden. `1`–`4` show (if hidden, or if None is on) and focus that stream. `Shift`+`1`–`4` hide it if it is on the stage, else show it; hiding from All streams starts Choose with only that stream hidden. | A number is the stream's, not the slot's, so the keys don't move under the user. Hiding from All with the old set would bring back streams the user isn't looking at. |
+| D5 | **Remembered per room, on this device**: `gawk:room-picks` holds the 20 most recently used rooms by room code, each with whether Choose is selected and up to 64 hidden IDs; past 64, the IDs of streams no longer in the room go first, oldest first. All streams keeps the set, so going back to Choose restores it. A choice made before a mint's first state (no code yet) is the new room's. None stays global (`gawk:room-videos`), as Hide videos was. | A pick belongs to a room; None is a bandwidth habit. The caps keep the key small: a room carries far fewer attachments than 64, and old rooms fall off; a stream hidden long ago and still in the room is never the one dropped. The room code and the broadcast IDs never leave the device, as the tile volumes (`gawk:room-volume:<id>`) never do. |
+| D6 | **The old preference migrates once**: a stored `gawk:room-mode` of `hidden` becomes None, with the layout set to the last all-POV layout (`gawk:room-grid`). The mode is rewritten only after None reads back; until then the stored `hidden` itself reads as None. | A reload must not drop a participant who was in Hide videos into a full room of downloads, even when a full storage quota refuses the new key. |
+| D7 | **Numbers keep the room's order.** Stream 4 stays 4 when 2 is hidden. `1`–`4` show (if hidden, or if None is on) and focus that stream. `Shift`+`1`–`4` hide it if it is on the stage, else show it; hiding from All streams starts Choose with only that stream hidden. The keys work with a checkbox or radio focused (only text fields take typing), and where Shift types the digit itself (AZERTY) that is the digit, not `Shift`+digit. | A number is the stream's, not the slot's, so the keys don't move under the user. Hiding from All with the old set would bring back streams the user isn't looking at. |
 | D8 | **Picking a layout leaves None**, as `0` does, and as clicking Grid did when Hide videos was the same segment. While None is on, the segment is dimmed. | Returning users clicked Grid to get out of Hide videos; that keeps working. |
-| D9 | **Focus skips hidden streams.** Hiding the focused stream focuses the first one shown. | A focused tile you can't see is no focus. |
+| D9 | **Focus skips hidden streams.** Hiding the focused stream focuses the first one shown, for good: showing it again doesn't take focus back. | A focused tile you can't see is no focus, and focus is also where the audio is: it must not jump on its own. |
 | D10 | **Every empty stage has a card.** None: "You're still in the room", with All streams and Choose…. Choose with nothing ticked: "No streams chosen", with All streams and Choose…. | docs/44's rule: every state has a visible form. |
-| D11 | **The popover is a dialog** anchored above the pill: native radios for the three states, native checkboxes for the streams (each named by its label, the room number and the watching count beside it), and a line naming the keys. Outside presses and Escape close it; it holds the chrome while open. On a phone it spans the footer, and the pill reads "All", "3/5" or None's icon alone (its accessible name keeps the full text). | Native inputs bring arrow keys and screen-reader roles for free. At 390 px the full "All streams" squeezed the quality pill to one letter (§8). |
+| D11 | **The popover is a dialog** anchored above the pill: the three states as radio buttons like the layout segment's, picked by a click or Enter, not by the arrow keys; under Choose, after them, a "Streams · 3 of 5 shown" group of native checkboxes (each named by its label, the room number and the watching count beside it); and a line naming the keys. Outside presses and Escape close it; it holds the chrome while open. On a phone it spans the footer, and the pill reads "All", "3/5" or None's icon alone (its accessible name keeps the full text). | Native radios select as the arrow keys move, and each pick here opens or closes media sessions, so walking the options would re-dial every stream. A radiogroup may own only radios, so the checkboxes are their own group. At 390 px the full "All streams" squeezed the quality pill to one letter (§8). |
 | D12 | **No eye icon.** The pill is text, with the video-off or screen icon only for None. | The eye is the "N watching" glyph across the app. |
 | D13 | A tile's stats panel closes when its tile leaves the stage, as it does when its stream is detached. | A panel about a stream you hid would be about nothing on screen. |
 
@@ -73,11 +73,13 @@ owner pass can revise them in place.
 | File | Change |
 |---|---|
 | `features/room/roomPrefs.ts` | `RoomMode` loses `'hidden'`; `loadVideosOff` / `saveVideosOff`, `loadRoomPicks` / `saveRoomPicks`; the D6 migration. |
-| `features/room/roomVisibility.ts` (new) | The pure parts: which attachments are shown, the pill's text, the D7 key rules. |
-| `features/room/VisibilityControl.tsx` (new) | The pill and its popover. |
+| `features/room/roomVisibility.ts` (new) | The pure parts: the room numbers, which streams are shown, and every transition (D4–D8), with D5's cap. |
+| `features/room/VisibilityControl.tsx` (new) | The pill (its text and phone short form) and its popover. |
+| `lib/useDismiss.ts` (new) | Outside press and Escape for an anchored popover; the Creator help uses it too. |
+| `lib/useHotkey.ts` | `Shift`+digit by physical key (D7); checkboxes, radios and sliders no longer count as typing. |
 | `features/room/RoomScreen.tsx` | The state (layout, None, picks), the stage built from the shown streams with their room numbers, keys, cards, the segment without Hide videos. |
 | `features/room/roomCopy.ts` | The pill, popover and card copy. |
-| `features/room/room.module.css` | The pill, popover and dimmed segment. |
+| `features/room/room.module.css` | The pill, popover and dimmed segment; the preview-only stage keys on `data-vis="none"`. |
 | `e2e/run.mjs`, `e2e/README.md` | The rooms pass hides one stream, then turns on None. |
 
 ## 5. Risks and limits
@@ -109,21 +111,32 @@ owner pass can revise them in place.
 
 ## 8. Implementation notes (VS1–VS3, 2026-11-19)
 
-- **The state is two facts and a pure module.** `RoomScreen` keeps None
-  and the room's picks; `roomVisibility.ts` turns them into the shown
-  streams and implements every transition (a radio, a checkbox, `Shift`+a
-  number, a number, a layout pick) as a function of the current state, so
-  the rules of D4–D8 are unit-tested without a component. Unchanged
-  transitions return the same object, and only a changed fact is saved.
-- **Two updates in one event compose.** A number key picks Focus (which
-  leaves None, D8) and then reveals its stream; both read the state
-  through a ref the second update sees, so it doesn't undo the first.
+- **One state and a pure module.** `RoomScreen` keeps None, the room's
+  picks and the code they belong to in one state; `roomVisibility.ts`
+  turns it into the shown streams and implements every transition (a
+  radio, a checkbox, `Shift`+a number, a number, a layout pick) as a
+  function of the current state, so the rules of D4–D8 are unit-tested
+  without a component. Updates are functional, so two in one event (a
+  number key picks Focus, which leaves None, then reveals its stream)
+  compose. Each fact is saved by an effect on the state, so once per
+  change and on entering a room, which is what makes D5's list most
+  recently *used*.
 - **`Shift`+a digit is matched by its physical key.** Shift changes the
   digit's `KeyboardEvent.key` with the layout (`!` on US, `"` on Nordic),
-  so `useHotkey` now also matches a Shift shortcut's digit by `code`
-  (`Digit2`), as it already did for an Alt shortcut's letter on macOS.
-- **`data-mode` still reads `hidden` under None**, so the preview-only
-  stage's CSS (the broadcaster's own tile, full bleed) needed no change.
+  so `useHotkey` matches a Shift shortcut's digit by `code` (`Digit2`),
+  as it already did for an Alt shortcut's letter on macOS — and not when
+  the key Shift produced is itself a digit (AZERTY), so typing "1" there
+  never hides stream 1. `isEditable` now counts only text-like inputs as
+  typing: a focused checkbox swallowed every room key, including the ones
+  the popover names.
+- **None is `data-vis="none"` on the stage**, beside the layout's
+  `data-mode`, and the preview-only stage's CSS keys on it.
+- **Review round 1** (2026-11-19) found the dead keys on a focused
+  checkbox, the AZERTY misfire, focus returning to a re-shown stream,
+  a mint's early choice lost, the migration's quota hole, radios that
+  re-dialled on arrow keys, checkboxes inside the radiogroup and the cap
+  dropping a still-hidden stream; all fixed with tests, as above and in
+  D5–D11.
 - **The popover raises the footer** (`data-raised`, z-index 26): the voice
   dock, the invite chip (22) and the unmute prompt (25) sit in the band it
   opens into, above the footer's usual 20.

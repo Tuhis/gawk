@@ -1,6 +1,7 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useRef } from 'react';
 import styles from './room.module.css';
 import { GlassPanel } from '../../ui/GlassPanel';
+import { useDismiss } from '../../lib/useDismiss';
 import { CREATOR_HELP } from './roomCopy';
 
 interface Props {
@@ -15,21 +16,11 @@ interface Props {
 // do. Escape or a click outside closes it.
 export function CreatorBadge({ open, onOpenChange }: Props) {
   const wrapRef = useRef<HTMLSpanElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (e: PointerEvent) => {
-      if (!wrapRef.current?.contains(e.target as Node)) onOpenChange(false);
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onOpenChange(false);
-    };
-    document.addEventListener('pointerdown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [open, onOpenChange]);
+  useDismiss(
+    wrapRef,
+    open,
+    useCallback(() => onOpenChange(false), [onOpenChange]),
+  );
 
   return (
     <span ref={wrapRef} className={styles.creatorWrap}>

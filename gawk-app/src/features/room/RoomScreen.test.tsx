@@ -390,14 +390,17 @@ describe('RoomScreen What to show', () => {
     openWhatToShow();
     const pop = screen.getByRole('dialog', { name: 'What to show' });
     const group = within(pop).getByRole('radiogroup', { name: 'What to show' });
-    const radios = within(group).getAllByRole('radio') as HTMLInputElement[];
-    expect(radios.map((r) => r.checked)).toEqual([true, false, false]);
+    const radios = within(group).getAllByRole('radio');
+    expect(radios.map((r) => r.getAttribute('aria-checked'))).toEqual(['true', 'false', 'false']);
     expect(within(group).getByRole('radio', { name: 'All streams' })).toBe(radios[0]);
     expect(within(group).getByRole('radio', { name: 'Choose' })).toBe(radios[1]);
     expect(within(group).getByRole('radio', { name: 'None' })).toBe(radios[2]);
     expect(within(pop).queryAllByRole('checkbox')).toHaveLength(0);
     fireEvent.click(screen.getByRole('radio', { name: 'Choose' }));
-    expect(within(pop).getAllByRole('checkbox')).toHaveLength(3);
+    // The checkboxes are their own group, not members of the radiogroup.
+    expect(within(group).queryAllByRole('checkbox')).toHaveLength(0);
+    const streams = within(pop).getByRole('group', { name: 'Streams · 3 of 3 shown' });
+    expect(within(streams).getAllByRole('checkbox')).toHaveLength(3);
     for (const name of ['alpha', 'bravo', 'charlie']) {
       expect((within(pop).getByRole('checkbox', { name }) as HTMLInputElement).checked).toBe(true);
     }
@@ -520,13 +523,41 @@ describe('RoomScreen What to show', () => {
     expect(tileNumbers()).toEqual(['1', '2', '3']);
   });
 
-  it('focus skips hidden streams (D9)', async () => {
+  it('focus skips hidden streams, and showing one again does not take focus back (D9)', async () => {
     await joinAs();
     fireEvent.keyDown(window, { key: '1' });
     expect(variants()).toEqual(['focus', 'small', 'small']);
     shift('1');
     expect(tileNumbers()).toEqual(['2', '3']);
     expect(variants()).toEqual(['focus', 'small']);
+    shift('1');
+    expect(tileNumbers()).toEqual(['1', '2', '3']);
+    expect(variants()).toEqual(['small', 'focus', 'small']);
+  });
+
+  it('keeps the keys working while a checkbox in the popover has focus', async () => {
+    await joinAs();
+    choose();
+    const bravo = screen.getByRole('checkbox', { name: 'bravo' });
+    bravo.focus();
+    fireEvent.keyDown(bravo, { key: '#', code: 'Digit3', shiftKey: true });
+    expect(tileNumbers()).toEqual(['1', '2']);
+  });
+
+  it('a choice made before a mint’s first state is the new room’s', async () => {
+    render(
+      <RoomView
+        target={{ kind: 'mint', broadcastId: 'AAAAAA', resumeTokenHex: 'b'.repeat(32), label: 'mine' }}
+        presetNickname="me"
+        onLeave={() => {}}
+      />,
+    );
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    openWhatToShow();
+    fireEvent.click(screen.getByRole('radio', { name: 'Choose' }));
+    act(() => roomSessions[0].cbs.onState(state()));
+    expect(screen.getByRole('button', { name: 'What to show: 3 of 3' })).toBeTruthy();
+    expect(JSON.parse(localStorage.getItem('gawk:room-picks')!)).toEqual([{ code: 'AB2CD3', choose: true, hidden: [] }]);
   });
 
   it('closes on Escape back onto the pill, and on a press outside', async () => {

@@ -1,14 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type CSSProperties,
-  type MouseEvent,
-  type ReactNode,
-} from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react';
 import styles from './room.module.css';
 import { Button } from '../../ui/Button';
 import { GlassPanel } from '../../ui/GlassPanel';
@@ -94,12 +84,20 @@ import {
   saveRoomPicks,
   saveRoomPreset,
   saveVideosOff,
+  NO_PICKS,
   type RoomAllMode,
   type RoomMode,
-  type RoomPicks,
   type RoomVisibility,
 } from './roomPrefs';
-import { revealStream, setVisibility, shownStreams, toggleStream, visibilityOf, type VisState } from './roomVisibility';
+import {
+  numberStreams,
+  revealStream,
+  setVisibility,
+  shownStreams,
+  toggleStream,
+  visibilityOf,
+  type VisState,
+} from './roomVisibility';
 import { VisibilityControl } from './VisibilityControl';
 import { DEFAULT_ASPECT, aspectChanged, clampAspect, fitLayout, type FitResult } from './fitLayout';
 import type { TileEdges } from './RoomTile';
@@ -321,45 +319,35 @@ export function RoomView({
   const secretRefused =
     status === 'error' && attachSecret !== null && (errorKind === 'refused' || errorKind === 'forbidden');
 
-  // R86 (docs/90): what is shown. None is global, as Hide videos was; the
-  // picks are this room's, by its code (D5), loaded again when the code
-  // becomes known or changes (adjusted during render, like the fit result
-  // below). visRef is the latest state, so two updates in one event (a
-  // layout pick, then a reveal) compose instead of the second undoing the
-  // first; it follows each render before any event can read it.
+  // R86 (docs/90): what is shown — None (global, as Hide videos was) and
+  // this room's picks, with the code they belong to (D5). One state, changed
+  // only through roomVisibility's transitions, so two in one event (a layout
+  // pick, then a reveal) compose; each fact is saved from the state, so once
+  // per change whatever made it. When the code becomes known or changes, the
+  // room's picks are loaded (adjusted during render, like the fit result
+  // below) — except a choice made before a mint's first state, which is this
+  // room's and carries over.
   const code = snapshot?.code ?? (target.kind === 'join' ? target.code : '');
-  const [videosOff, setVideosOff] = useState(loadVideosOff);
-  const [pickState, setPickState] = useState<{ code: string; picks: RoomPicks }>(() => ({
+  const [visState, setVisState] = useState<VisState & { code: string }>(() => ({
     code,
+    videosOff: loadVideosOff(),
     picks: loadRoomPicks(code),
   }));
-  let picks = pickState.picks;
-  if (pickState.code !== code) {
-    picks = loadRoomPicks(code);
-    setPickState({ code, picks });
+  let vis = visState;
+  if (visState.code !== code) {
+    const carried = visState.code === '' && visState.picks !== NO_PICKS;
+    vis = { ...visState, code, picks: carried ? visState.picks : loadRoomPicks(code) };
+    setVisState(vis);
   }
-  const vis = useMemo<VisState>(() => ({ videosOff, picks }), [videosOff, picks]);
   const visibility: RoomVisibility = visibilityOf(vis);
-  const visRef = useRef(vis);
-  useLayoutEffect(() => {
-    visRef.current = vis;
-  }, [vis]);
-  const updateVis = useCallback(
-    (change: (s: VisState) => VisState) => {
-      const cur = visRef.current;
-      const next = change(cur);
-      visRef.current = next;
-      if (next.videosOff !== cur.videosOff) {
-        setVideosOff(next.videosOff);
-        saveVideosOff(next.videosOff);
-      }
-      if (next.picks !== cur.picks) {
-        setPickState({ code, picks: next.picks });
-        saveRoomPicks(code, next.picks);
-      }
-    },
-    [code],
-  );
+  const updateVis = useCallback((change: (s: VisState) => VisState) => {
+    setVisState((prev) => {
+      const next = change(prev);
+      return next === prev ? prev : { code: prev.code, videosOff: next.videosOff, picks: next.picks };
+    });
+  }, []);
+  useEffect(() => saveVideosOff(vis.videosOff), [vis.videosOff]);
+  useEffect(() => saveRoomPicks(vis.code, vis.picks), [vis.code, vis.picks]);
   const [visOpen, setVisOpen] = useState(false);
 
   // Layout mode, persisted; grid and fit degrade to focus on a narrow screen.
@@ -388,13 +376,17 @@ export function RoomView({
 
   const attachments: RoomAttachment[] = snapshot?.attachments ?? NO_ATTACHMENTS;
   // Every stream with its room number, and the ones on the stage (D4, D7).
-  const numbered = useMemo(() => attachments.map((attachment, i) => ({ attachment, index: i + 1 })), [attachments]);
-  const shown = useMemo(() => shownStreams(attachments, vis), [attachments, vis]);
+  const numbered = useMemo(() => numberStreams(attachments), [attachments]);
+  const roomIds = useMemo(() => new Set(attachments.map((a) => a.broadcastId)), [attachments]);
+  const shown = useMemo(() => shownStreams(numbered, vis), [numbered, vis]);
   const shownIds = useMemo(() => new Set(shown.map((s) => s.attachment.broadcastId)), [shown]);
   const [focusedId, setFocusedId] = useState<string | null>(null);
-  // D9: focus skips hidden streams.
+  // D9: focus skips hidden streams, and moves for good, so showing the
+  // hidden one again doesn't pull focus (and audio) back from the stream
+  // being watched. Adjusted during render, like the fit result below.
   const focused =
     shown.find((s) => s.attachment.broadcastId === focusedId)?.attachment ?? shown[0]?.attachment ?? null;
+  if (focusedId !== null && focused !== null && focused.broadcastId !== focusedId) setFocusedId(focused.broadcastId);
   const focus = useCallback(
     (id: string) => {
       setFocusedId(id);
@@ -415,9 +407,9 @@ export function RoomView({
   const toggleIndex = useCallback(
     (i: number) => {
       const a = attachments[i];
-      if (a) updateVis((s) => toggleStream(s, a.broadcastId));
+      if (a) updateVis((s) => toggleStream(s, a.broadcastId, roomIds));
     },
-    [attachments, updateVis],
+    [attachments, roomIds, updateVis],
   );
   useHotkey({ key: '1' }, () => focusIndex(0));
   useHotkey({ key: '2' }, () => focusIndex(1));
@@ -965,9 +957,6 @@ export function RoomView({
       </Button>
     </>
   );
-  // The stage's data-mode: the layout, or `hidden` while None is on (the
-  // preview-only stage's CSS keys on it).
-  const stageMode = visibility === 'none' ? 'hidden' : effectiveMode;
 
   const voiceButton =
     hasVoice && snapshot ? (
@@ -1018,7 +1007,7 @@ export function RoomView({
     <div
       ref={setRoot}
       className={[styles.root, isFullscreen && tier === 'pseudo' ? styles.pseudoFullscreen : ''].join(' ')}
-      data-mode={stageMode}
+      data-mode={effectiveMode}
       data-status={status}
       data-side={sideOpen ? (panelOpen ? 'people' : 'voice') : undefined}
       onContextMenu={(e) => {
@@ -1029,7 +1018,9 @@ export function RoomView({
       <div
         ref={stageRef}
         className={styles.stage}
-        data-mode={stageMode}
+        data-mode={effectiveMode}
+        // The preview-only stage's CSS keys on None (docs/90 D2).
+        data-vis={visibility}
         data-panel={sideOpen ? 'true' : 'false'}
         style={{ '--cols': cols } as CSSProperties}
       >
@@ -1285,7 +1276,7 @@ export function RoomView({
             open={visOpen}
             onOpenChange={setVisOpen}
             onVisibility={(v) => updateVis((s) => setVisibility(s, v))}
-            onToggle={(id) => updateVis((s) => toggleStream(s, id))}
+            onToggle={(id) => updateVis((s) => toggleStream(s, id, roomIds))}
           />
           <button
             ref={presetButtonRef}

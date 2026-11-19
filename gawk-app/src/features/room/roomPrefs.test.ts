@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   loadNickname,
   loadRoomAllMode,
@@ -81,6 +81,26 @@ describe('room prefs', () => {
     localStorage.setItem('gawk:room-mode', 'hidden');
     expect(loadRoomMode()).toBe('grid');
     expect(loadVideosOff()).toBe(true);
+  });
+
+  it('keeps the stored hidden mode as None when None cannot be written (a full quota)', () => {
+    localStorage.setItem('gawk:room-mode', 'hidden');
+    const setItem = Storage.prototype.setItem;
+    const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+      if (k === 'gawk:room-videos') throw new DOMException('full', 'QuotaExceededError');
+      setItem.call(this, k, v);
+    });
+    try {
+      expect(loadVideosOff()).toBe(true);
+      expect(loadRoomMode()).toBe('grid');
+      expect(localStorage.getItem('gawk:room-mode')).toBe('hidden');
+      expect(loadVideosOff()).toBe(true);
+      // Leaving None clears it all the same.
+      saveVideosOff(false);
+      expect(loadVideosOff()).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('remembers None across rooms, off by default', () => {

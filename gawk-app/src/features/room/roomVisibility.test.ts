@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { revealStream, setVisibility, shownStreams, toggleStream, visibilityOf, type VisState } from './roomVisibility';
+import { numberStreams, revealStream, setVisibility, shownStreams, toggleStream, visibilityOf, type VisState } from './roomVisibility';
+import { MAX_HIDDEN_PER_ROOM } from './roomPrefs';
 import type { RoomAttachment } from '../../transport/wire';
 
 const att = (broadcastId: string): RoomAttachment => ({ broadcastId, label: broadcastId.toLowerCase(), live: true, viewerCount: 0 });
 const ROOM = [att('A'), att('B'), att('C')];
 const ALL: VisState = { videosOff: false, picks: { choose: false, hidden: [] } };
-const ids = (s: VisState) => shownStreams(ROOM, s).map((n) => `${n.index}${n.attachment.broadcastId}`);
+const IN_ROOM = new Set(ROOM.map((a) => a.broadcastId));
+const ids = (s: VisState) => shownStreams(numberStreams(ROOM), s).map((n) => `${n.index}${n.attachment.broadcastId}`);
 
 describe('room visibility (docs/90)', () => {
   it('shows everyone, the unhidden, or nobody; numbers stay the room’s (D4, D7)', () => {
@@ -21,7 +23,7 @@ describe('room visibility (docs/90)', () => {
 
   it('a stream that joins later arrives shown', () => {
     const some: VisState = { videosOff: false, picks: { choose: true, hidden: ['B'] } };
-    expect(shownStreams([...ROOM, att('D')], some).map((n) => n.attachment.broadcastId)).toEqual(['A', 'C', 'D']);
+    expect(shownStreams(numberStreams([...ROOM, att('D')]), some).map((n) => n.attachment.broadcastId)).toEqual(['A', 'C', 'D']);
   });
 
   it('switches between the three, keeping the set (D5)', () => {
@@ -42,14 +44,24 @@ describe('room visibility (docs/90)', () => {
     // From All streams: Choose with only that one hidden, whatever set was
     // kept from before.
     const kept: VisState = { videosOff: false, picks: { choose: false, hidden: ['A'] } };
-    expect(toggleStream(kept, 'B')).toEqual({ videosOff: false, picks: { choose: true, hidden: ['B'] } });
+    expect(toggleStream(kept, 'B', IN_ROOM)).toEqual({ videosOff: false, picks: { choose: true, hidden: ['B'] } });
     const some: VisState = { videosOff: false, picks: { choose: true, hidden: ['B'] } };
-    expect(toggleStream(some, 'C')).toEqual({ videosOff: false, picks: { choose: true, hidden: ['B', 'C'] } });
-    expect(toggleStream(some, 'B')).toEqual({ videosOff: false, picks: { choose: true, hidden: [] } });
+    expect(toggleStream(some, 'C', IN_ROOM)).toEqual({ videosOff: false, picks: { choose: true, hidden: ['B', 'C'] } });
+    expect(toggleStream(some, 'B', IN_ROOM)).toEqual({ videosOff: false, picks: { choose: true, hidden: [] } });
     // Under None every stream is off the stage: the key brings that one
     // back, with the rest as they were.
-    expect(toggleStream({ ...some, videosOff: true }, 'A')).toEqual(some);
-    expect(toggleStream({ ...some, videosOff: true }, 'B')).toEqual({ videosOff: false, picks: { choose: true, hidden: [] } });
+    expect(toggleStream({ ...some, videosOff: true }, 'A', IN_ROOM)).toEqual(some);
+    expect(toggleStream({ ...some, videosOff: true }, 'B', IN_ROOM)).toEqual({ videosOff: false, picks: { choose: true, hidden: [] } });
+  });
+
+  it('past the cap, forgets streams that left the room first, so one hidden long ago and still here stays (D5)', () => {
+    const gone = Array.from({ length: MAX_HIDDEN_PER_ROOM - 1 }, (_, i) => `GONE${i}`);
+    const s: VisState = { videosOff: false, picks: { choose: true, hidden: ['A', ...gone] } };
+    const next = toggleStream(s, 'B', IN_ROOM).picks.hidden;
+    expect(next).toHaveLength(MAX_HIDDEN_PER_ROOM);
+    expect(next[0]).toBe('A');
+    expect(next).not.toContain('GONE0');
+    expect(next.at(-1)).toBe('B');
   });
 
   it('a number or a layout pick reveals: leaves None, unhides that stream (D7, D8)', () => {

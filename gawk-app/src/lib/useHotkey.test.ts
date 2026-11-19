@@ -94,6 +94,27 @@ describe('useHotkey', () => {
     expect(shifted).toHaveBeenCalledTimes(2);
   });
 
+  // AZERTY types a digit with Shift: that is the digit, not Shift+digit.
+  it('does not take a digit Shift typed (AZERTY) for the Shift shortcut', () => {
+    const shifted = vi.fn();
+    renderHook(() => useHotkey({ key: '1', shift: true }, shifted));
+    press(window, { key: '1', code: 'Digit1', ctrlKey: false, altKey: false, shiftKey: true });
+    expect(shifted).not.toHaveBeenCalled();
+  });
+
+  // A checkbox or radio takes no typing, so keys stay commands there (R86).
+  it('fires with a checkbox, radio or range focused, not with a text field', () => {
+    const handler = vi.fn();
+    renderHook(() => useHotkey({ key: '2', shift: true }, handler));
+    for (const type of ['checkbox', 'radio', 'range', 'text', 'search', 'number']) {
+      const input = document.createElement('input');
+      input.type = type;
+      document.body.appendChild(input);
+      press(input, { key: '@', code: 'Digit2', ctrlKey: false, altKey: false, shiftKey: true });
+    }
+    expect(handler).toHaveBeenCalledTimes(3);
+  });
+
   it('formats a readable label', () => {
     expect(formatHotkey(STATS)).toBe('Ctrl+Alt+Shift+D');
   });

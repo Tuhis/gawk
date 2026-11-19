@@ -19,16 +19,17 @@ export function formatHotkey(h: Hotkey): string {
   return parts.join('+');
 }
 
+// Inputs that take no typing: with one focused, a key is still a command
+// (R86: a focused checkbox in the room's What to show popover must not
+// swallow the Shift+number keys the popover itself names).
+const NON_TEXT_INPUTS = new Set(['checkbox', 'radio', 'range', 'button', 'submit', 'reset', 'image', 'color', 'file']);
+
 // True when the event target is a text field, where keys are typing.
 export function isEditable(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
   if (!el || typeof el.tagName !== 'string') return false;
-  return (
-    el.tagName === 'INPUT' ||
-    el.tagName === 'TEXTAREA' ||
-    el.tagName === 'SELECT' ||
-    el.isContentEditable
-  );
+  if (el.tagName === 'INPUT') return !NON_TEXT_INPUTS.has((el as HTMLInputElement).type);
+  return el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable;
 }
 
 // On macOS, Option changes the character `key` reports (Option+Shift+D is
@@ -36,12 +37,13 @@ export function isEditable(target: EventTarget | null): boolean {
 // then: elsewhere `code` would misfire on non-QWERTY layouts.
 //
 // Shift changes a digit's `key` the same way (Shift+1 is '!' on US layouts,
-// '"' on Nordic ones), so a Shift shortcut's digit also matches by its
-// physical key in the number row.
+// '"' on Nordic ones), so a Shift shortcut's digit matches by its physical
+// key in the number row instead — unless Shift typed the digit itself, as on
+// AZERTY, where that is the user typing "1", not asking for Shift+1.
 function matchesKey(e: KeyboardEvent, key: string, alt: boolean, shift: boolean): boolean {
   const want = key.toLowerCase();
+  if (shift && /^[0-9]$/.test(want)) return e.code === `Digit${want}` && !/^[0-9]$/.test(e.key);
   if (e.key.toLowerCase() === want) return true;
-  if (shift && /^[0-9]$/.test(want) && e.code === `Digit${want}`) return true;
   return alt && /^[a-z]$/.test(want) && e.code === `Key${want.toUpperCase()}`;
 }
 

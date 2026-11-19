@@ -104,7 +104,7 @@
 }
 
 .stage[data-mode='focus'] .tile[data-variant='focus'],
-.stage[data-mode='hidden'] .tile[data-variant='focus'] {
+.stage[data-vis='none'] .tile[data-variant='focus'] {
   position: absolute;
   inset: 0;
 }
@@ -113,24 +113,24 @@
    controls move into the bands the room chrome leaves free — level with the
    small-tile strip at the top, above the footer at the bottom. */
 .stage[data-mode='focus'] .tile[data-variant='focus'] .tileHead,
-.stage[data-mode='hidden'] .tile[data-variant='focus'] .tileHead {
+.stage[data-vis='none'] .tile[data-variant='focus'] .tileHead {
   top: var(--strip-top);
   left: 1rem;
 }
 
 .stage[data-mode='focus'] .tile[data-variant='focus'] .tileFoot,
-.stage[data-mode='hidden'] .tile[data-variant='focus'] .tileFoot {
+.stage[data-vis='none'] .tile[data-variant='focus'] .tileFoot {
   bottom: var(--chrome-bottom);
   right: 1rem;
 }
 
 .stage[data-mode='focus'] .tile[data-variant='focus'] .ownBar,
-.stage[data-mode='hidden'] .tile[data-variant='focus'] .ownBar {
+.stage[data-vis='none'] .tile[data-variant='focus'] .ownBar {
   bottom: calc(var(--chrome-bottom) + 0.25rem);
 }
 
-/* The broadcaster's "preview only": the
-   own tile alone in the hidden stage mode, full bleed like a focused tile. */
+/* The broadcaster's "preview only" (None with a local preview, docs/90 D2):
+   the own tile alone, full bleed like a focused tile, whatever the layout. */
 
 .stage[data-mode='focus'] .tile[data-variant='small'] {
   position: absolute;
@@ -548,6 +548,7 @@
   z-index: 26;
 }
 
+/* A GlassPanel (its blur, border and shadow); positioned here. */
 .visPopover {
   position: absolute;
   left: 0;
@@ -561,13 +562,15 @@
   gap: 0.1rem;
   padding: 0.35rem;
   text-align: left;
-  background: rgba(18, 19, 23, 0.94);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--r-md);
-  box-shadow: var(--shadow);
   animation: visIn var(--dur-fast) var(--ease);
+}
+
+/* Doubled class: an opaque surface over GlassPanel's translucent glass
+   (whose stylesheet may load after this one), as the Creator help does —
+   the choices sit over live video. */
+.visPopover.visPopover {
+  background: color-mix(in srgb, var(--surface-1) 94%, transparent);
+  border-radius: var(--r-md);
 }
 
 @keyframes visIn {
@@ -591,31 +594,50 @@
   display: flex;
   align-items: flex-start;
   gap: 0.6rem;
+  width: 100%;
   padding: 0.5rem 0.7rem;
+  border: none;
   border-radius: var(--r-sm);
+  font: inherit;
   font-size: var(--fs-sm);
+  text-align: left;
   color: var(--text);
+  background: transparent;
   cursor: pointer;
 }
 
-.visOption:hover {
+.visOption:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.06);
 }
 
-.visOption:has(input:checked) {
+.visOption[aria-checked='true'] {
   background: rgba(255, 255, 255, 0.08);
 }
 
-.visOption input,
-.visPick input {
+/* The radio's ring, drawn from aria-checked like the menus' check marks. */
+.visRing {
   flex: none;
-  margin: 0;
-  accent-color: var(--text);
-  cursor: pointer;
+  width: 1rem;
+  height: 1rem;
+  margin-top: 0.05rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1.5px solid var(--faint);
+  box-sizing: border-box;
 }
 
-.visOption input {
-  margin-top: 0.1rem;
+.visOption[aria-checked='true'] .visRing {
+  border-color: var(--text);
+}
+
+.visOption[aria-checked='true'] .visRing::after {
+  content: '';
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: var(--text);
 }
 
 .visOptionText {
@@ -630,25 +652,46 @@
   color: var(--muted);
 }
 
-/* The streams under Choose, indented under its radio. Scrolls past ten or
-   so, so a big room never pushes the popover off the top of the screen. */
+/* The streams, shown under Choose. */
+.visStreams {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  margin-top: 0.2rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--border-soft);
+}
+
+.visStreamsTitle {
+  padding: 0.1rem 0.7rem 0.2rem;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.visStreams > .visNote {
+  margin: 0;
+  padding: 0.2rem 0.7rem 0.3rem;
+}
+
+/* Scrolls past ten or so, so a big room never pushes the popover off the
+   top of the screen. */
 .visList {
   list-style: none;
-  margin: 0.1rem 0 0.25rem 1.6rem;
-  padding: 0 0 0 0.5rem;
+  margin: 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
   gap: 0.05rem;
   max-height: min(16rem, 40vh);
   overflow-y: auto;
-  border-left: 1px solid var(--border);
 }
 
 .visPick {
   display: flex;
   align-items: center;
   gap: 0.55rem;
-  padding: 0.3rem 0.5rem;
+  padding: 0.35rem 0.7rem;
   border-radius: var(--r-sm);
   font-size: var(--fs-sm);
   color: var(--text);
@@ -657,6 +700,13 @@
 
 .visPick:hover {
   background: rgba(255, 255, 255, 0.06);
+}
+
+.visPick input {
+  flex: none;
+  margin: 0;
+  accent-color: var(--text);
+  cursor: pointer;
 }
 
 /* The stream's room number, as its tile shows it. */
@@ -695,10 +745,6 @@
 
 .visPick .visNote[data-live='false'] {
   color: var(--warning);
-}
-
-.visEmpty {
-  margin: 0.1rem 0 0.25rem 2.1rem;
 }
 
 .visKeys {

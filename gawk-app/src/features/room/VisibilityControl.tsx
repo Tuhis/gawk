@@ -1,7 +1,9 @@
-import { useEffect, useId, useRef } from 'react';
+import { useCallback, useId, useRef } from 'react';
 import styles from './room.module.css';
+import { GlassPanel } from '../../ui/GlassPanel';
 import { ScreenIcon, VideoOffIcon } from '../../ui/Icons';
 import { fmtWatching } from '../../lib/format';
+import { useDismiss } from '../../lib/useDismiss';
 import type { RoomVisibility } from './roomPrefs';
 import type { NumberedStream } from './roomVisibility';
 import { VISIBILITY_KEYS_NOTE, VISIBILITY_OPTIONS, VISIBILITY_TITLE } from './roomCopy';
@@ -21,8 +23,10 @@ export interface VisibilityControlProps {
 }
 
 // R86 (docs/90 D1, D11): the footer pill that says what is on the stage, and
-// its popover: All streams · Choose (with a checkbox per stream) · None.
-// Native radios and checkboxes, so the arrow keys and the roles come free.
+// its popover: All streams · Choose · None, then under Choose a checkbox per
+// stream. The three are radio buttons like the layout segment's — a click or
+// Enter picks one, and arrow keys don't, because each pick opens or closes
+// media sessions.
 export function VisibilityControl({
   visibility,
   streams,
@@ -38,53 +42,44 @@ export function VisibilityControl({
   const pillRef = useRef<HTMLButtonElement | null>(null);
   const baseId = useId();
 
-  // A press anywhere outside closes it; Escape closes back onto the pill.
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) onOpenChange(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      onOpenChange(false);
-      pillRef.current?.focus();
-    };
-    document.addEventListener('pointerdown', onDown, true);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('pointerdown', onDown, true);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open, onOpenChange]);
+  // A press outside closes it; Escape closes back onto the pill.
+  useDismiss(
+    rootRef,
+    open,
+    useCallback(
+      (via: 'outside' | 'escape') => {
+        onOpenChange(false);
+        if (via === 'escape') pillRef.current?.focus();
+      },
+      [onOpenChange],
+    ),
+  );
 
   const none = preview ? VISIBILITY_OPTIONS.preview : VISIBILITY_OPTIONS.none;
-  const text =
-    visibility === 'all'
-      ? VISIBILITY_OPTIONS.all.label
-      : visibility === 'none'
-        ? none.label
-        : `${shownIds.size} of ${streams.length}`;
+  const counted = `${shownIds.size} of ${streams.length}`;
+  const text = visibility === 'all' ? VISIBILITY_OPTIONS.all.label : visibility === 'none' ? none.label : counted;
   // A phone's footer has no room for the words beside the quality pill: "All",
   // "3/5", and None as its icon alone. The full text stays the name.
   const short = visibility === 'all' ? 'All' : visibility === 'none' ? '' : `${shownIds.size}/${streams.length}`;
 
   const option = (v: RoomVisibility, copy: { label: string; note: string }) => (
-    <label className={styles.visOption}>
-      <input
-        type="radio"
-        name={`${baseId}-vis`}
-        checked={visibility === v}
-        onChange={() => onVisibility(v)}
-        aria-labelledby={`${baseId}-${v}-l`}
-        aria-describedby={`${baseId}-${v}-n`}
-      />
+    <button
+      type="button"
+      role="radio"
+      aria-checked={visibility === v}
+      className={styles.visOption}
+      onClick={() => onVisibility(v)}
+      aria-labelledby={`${baseId}-${v}-l`}
+      aria-describedby={`${baseId}-${v}-n`}
+    >
+      <span className={styles.visRing} aria-hidden="true" />
       <span className={styles.visOptionText}>
         <span id={`${baseId}-${v}-l`}>{copy.label}</span>
         <span id={`${baseId}-${v}-n`} className={styles.visNote}>
           {copy.note}
         </span>
       </span>
-    </label>
+    </button>
   );
 
   return (
@@ -108,13 +103,26 @@ export function VisibilityControl({
       </button>
       {/* After the pill in the DOM, so Tab goes from the pill into it. */}
       {open && (
-        <div className={styles.visPopover} role="dialog" aria-label={VISIBILITY_TITLE} data-testid="visibility-popover">
+        <GlassPanel
+          className={styles.visPopover}
+          role="dialog"
+          aria-label={VISIBILITY_TITLE}
+          data-testid="visibility-popover"
+        >
           <div role="radiogroup" aria-label={VISIBILITY_TITLE} className={styles.visGroup}>
             {option('all', VISIBILITY_OPTIONS.all)}
             {option('some', VISIBILITY_OPTIONS.some)}
-            {visibility === 'some' &&
-              (streams.length === 0 ? (
-                <p className={[styles.visNote, styles.visEmpty].join(' ')}>Nobody is streaming yet.</p>
+            {option('none', none)}
+          </div>
+          {/* Its own group, not inside the radiogroup, which may own radios
+              only. */}
+          {visibility === 'some' && (
+            <div role="group" aria-labelledby={`${baseId}-streams`} className={styles.visStreams}>
+              <span id={`${baseId}-streams`} className={styles.visStreamsTitle}>
+                Streams · {counted} shown
+              </span>
+              {streams.length === 0 ? (
+                <p className={styles.visNote}>Nobody is streaming yet.</p>
               ) : (
                 <ul className={styles.visList}>
                   {streams.map(({ attachment: a, index }) => {
@@ -145,11 +153,11 @@ export function VisibilityControl({
                     );
                   })}
                 </ul>
-              ))}
-            {option('none', none)}
-          </div>
+              )}
+            </div>
+          )}
           <p className={[styles.visNote, styles.visKeys].join(' ')}>{VISIBILITY_KEYS_NOTE}</p>
-        </div>
+        </GlassPanel>
       )}
     </span>
   );

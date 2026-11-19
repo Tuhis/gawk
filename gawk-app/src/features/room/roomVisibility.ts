@@ -1,9 +1,10 @@
 // R86 (docs/90): which of a room's streams are on the stage, as pure
 // functions over the two stored facts — None (global) and the room's picks.
-// RoomScreen holds the state; this module decides what it means.
+// RoomScreen holds the state; this module decides what it means. Every
+// transition returns its input unchanged when it changes nothing.
 
 import type { RoomAttachment } from '../../transport/wire';
-import type { RoomPicks, RoomVisibility } from './roomPrefs';
+import { MAX_HIDDEN_PER_ROOM, type RoomPicks, type RoomVisibility } from './roomPrefs';
 
 export interface VisState {
   videosOff: boolean;
@@ -17,6 +18,10 @@ export interface NumberedStream {
   index: number;
 }
 
+export function numberStreams(attachments: RoomAttachment[]): NumberedStream[] {
+  return attachments.map((attachment, i) => ({ attachment, index: i + 1 }));
+}
+
 export function visibilityOf(s: VisState): RoomVisibility {
   if (s.videosOff) return 'none';
   return s.picks.choose ? 'some' : 'all';
@@ -24,12 +29,11 @@ export function visibilityOf(s: VisState): RoomVisibility {
 
 // The streams on the stage, in room order. New streams are not in the hidden
 // set, so they arrive shown (D4).
-export function shownStreams(attachments: RoomAttachment[], s: VisState): NumberedStream[] {
+export function shownStreams(streams: NumberedStream[], s: VisState): NumberedStream[] {
   const visibility = visibilityOf(s);
   if (visibility === 'none') return [];
-  const numbered = attachments.map((attachment, i) => ({ attachment, index: i + 1 }));
-  if (visibility === 'all') return numbered;
-  return numbered.filter((n) => !s.picks.hidden.includes(n.attachment.broadcastId));
+  if (visibility === 'all') return streams;
+  return streams.filter((n) => !s.picks.hidden.includes(n.attachment.broadcastId));
 }
 
 export function setVisibility(s: VisState, v: RoomVisibility): VisState {
@@ -56,13 +60,22 @@ export function revealStream(s: VisState, id: string | null): VisState {
 // Shift+number and the popover's checkboxes: hide the stream if it is on the
 // stage, else show it. Hiding from All streams starts Choose with only this
 // stream hidden; the set kept from an earlier Choose is not in effect, so
-// bringing it back would hide streams the user is looking at (D7).
-export function toggleStream(s: VisState, id: string): VisState {
+// bringing it back would hide streams the user is looking at (D7). `inRoom`
+// is the room's roster, for the cap.
+export function toggleStream(s: VisState, id: string, inRoom: ReadonlySet<string>): VisState {
   const visibility = visibilityOf(s);
   const onStage = visibility === 'all' || (visibility === 'some' && !s.picks.hidden.includes(id));
   if (!onStage) return revealStream(s, id);
   return {
     videosOff: false,
-    picks: { choose: true, hidden: visibility === 'all' ? [id] : [...s.picks.hidden, id] },
+    picks: { choose: true, hidden: visibility === 'all' ? [id] : capHidden([...s.picks.hidden, id], inRoom) },
   };
+}
+
+// D5's cap, past which the oldest IDs go — but streams that have left the
+// room first, so one hidden long ago and still here is not the one dropped.
+function capHidden(hidden: string[], inRoom: ReadonlySet<string>): string[] {
+  let over = hidden.length - MAX_HIDDEN_PER_ROOM;
+  if (over <= 0) return hidden;
+  return hidden.filter((h) => inRoom.has(h) || over-- <= 0);
 }
