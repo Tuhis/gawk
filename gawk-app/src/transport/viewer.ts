@@ -204,6 +204,13 @@ const MAPPINGS_PROVING_LIVE = 2;
 // Whether a datagram belongs to the audio lane. Used only to keep audio bytes
 // out of the *video* byte counter; a too-short datagram is left to the
 // reassembler's strict parsing.
+// What the deep-buffer stripe decision measured this tick.
+interface DvrRates {
+  goodputBps: number | null;
+  liveRateBps: number | null;
+  idle: boolean;
+}
+
 function isAudioDatagram(dgram: Uint8Array): boolean {
   return dgram.length >= 2 && (dgram[1] === TYPE_AUDIO_FRAME || dgram[1] === TYPE_AUDIO_CONFIG);
 }
@@ -415,6 +422,11 @@ export interface ViewerStats extends ReassemblerStats {
   //                            absent before the first frame
   dvrLiveRateBps?: number;
   dvrGoodputBps?: number;
+  //   dvrIdle                  the policy's last window held no video bytes
+  //                            on any connection: a broadcaster pause. False
+  //                            whenever bytes arrived, including starvation
+  //                            (bytes but no complete frame, dvrGoodputBps 0)
+  dvrIdle?: boolean;
   // The audio lane, as observed by this pipeline. It leaves 'absent' on the
   // first AudioConfig/packet, which is what gates every piece of viewer audio
   // UI. 'unsupported' means audio arrived but this scope has no AudioDecoder;
@@ -1441,7 +1453,7 @@ export class ViewerPipeline {
     // per frame, so any parity in the session sizes as the full k=2 —
     // conservative by at most one leg at a share boundary.
     this.stripe.noteParityActive((reasm?.parityChunksReceived ?? 0) > 0 ? 2 : 0);
-    let dvrRates: { goodputBps: number | null; liveRateBps: number | null } | null = null;
+    let dvrRates: DvrRates | null = null;
     if (this.deep) {
       dvrRates = this.decideDvrStripe(reorder);
     } else {
@@ -1572,6 +1584,7 @@ export class ViewerPipeline {
             dvrLateFramesDropped: reorder?.lateFramesDropped ?? 0,
             ...(dvrRates?.liveRateBps != null ? { dvrLiveRateBps: dvrRates.liveRateBps } : {}),
             ...(dvrRates?.goodputBps != null ? { dvrGoodputBps: dvrRates.goodputBps } : {}),
+            dvrIdle: dvrRates?.idle ?? true,
           }
         : {}),
     });
@@ -1585,7 +1598,7 @@ export class ViewerPipeline {
   // the old state in place and asks nobody again. So the request is
   // reconciled against what is actually up, retried once per failure after
   // the same backoff a leg death takes.
-  private decideDvrStripe(reorder: ReorderStats | undefined): { goodputBps: number | null; liveRateBps: number | null } {
+  private decideDvrStripe(reorder: ReorderStats | undefined): DvrRates {
     const mode = getStripeMode();
     // Keyframe bytes still arriving count as video arriving: a big keyframe on
     // a starved link is starvation, not a pause.
@@ -1594,6 +1607,7 @@ export class ViewerPipeline {
     this.dvrKeyframeBytesSeen = Math.max(this.dvrKeyframeBytesSeen, kfBytes);
     const goodputBps = this.dvrMeter.goodputBps();
     const liveRateBps = this.dvrMeter.liveRateBps();
+    const idle = this.dvrMeter.idle();
     const width = this.dvrPolicy.decide({
       allowed: dvrStripeAllowed({
         deep: this.deep,
@@ -1605,7 +1619,7 @@ export class ViewerPipeline {
       goodputBps,
       liveRateBps,
       resyncs: reorder?.holeSkips ?? 0,
-      idle: this.dvrMeter.idle(),
+      idle,
     });
     const legs = width - 1;
     const now = performance.now();
@@ -1639,7 +1653,7 @@ export class ViewerPipeline {
       this.dvrRetryAt = null;
       this.transport.setStripe(legs, 'dvr');
     }
-    return { goodputBps, liveRateBps };
+    return { goodputBps, liveRateBps, idle };
   }
 
   private fail(err: Error): void {

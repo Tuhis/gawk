@@ -20,7 +20,7 @@ import { setViewerDeliveryMode } from './playout';
 import { setStripeMode, type StripeMode } from './stripe';
 import { CAP_PARITY_CHUNKS, CAP_STRIPED_DELIVERY, CAP_STRIPED_DVR } from './parity';
 import type { StripeLayout, ViewerTransport, ViewerTransportCallbacks } from './viewer-transport';
-import { encodeDeliveryAck, type DeliveryServedMode } from './wire';
+import { encodeDeliveryAck, encodeVideoChunk, type DeliveryServedMode } from './wire';
 import { DVR_STRIPE_DIAL_TIMEOUT_MS, DVR_STRIPE_REENGAGE_BACKOFF_MS } from './dvr-stripe';
 import type { ViewerDeliveryMode } from './resilient';
 
@@ -293,6 +293,35 @@ describe('ViewerPipeline striped deep-buffer gate (docs/91 SG2)', () => {
     expect(h.stripeCalls).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(1500);
     expect(h.stripeCalls).toEqual([[1, 'dvr'], [1, 'dvr']]);
+    await h.pipeline.stop();
+  });
+
+  // Review round 3, item 4: dvrIdle tells a broadcaster pause (no video bytes
+  // on any connection) from starvation (bytes, no complete frame).
+  it('reports dvrIdle: true with no video bytes, false while bytes arrive without a frame', async () => {
+    const h = await startPipeline('deep');
+    await vi.advanceTimersByTimeAsync(500);
+    expect(h.stats.at(-1)!.dvrIdle).toBe(true);
+    // One chunk of a two-chunk frame, every 200 ms: bytes, never a frame.
+    for (let i = 0; i < 10; i++) {
+      h.cb.onDatagram(
+        encodeVideoChunk(
+          { keyframe: false, frameId: 10 + i, chunkIndex: 0, chunkCount: 2, timestampUs: BigInt(i) * 1000n },
+          new Uint8Array(500),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(200);
+    }
+    const s = h.stats.at(-1)!;
+    expect(s.dvrIdle).toBe(false);
+    expect(s.dvrGoodputBps ?? 0).toBe(0);
+    await h.pipeline.stop();
+  });
+
+  it('leaves dvrIdle off a live-edge session', async () => {
+    const h = await startPipeline('live');
+    await vi.advanceTimersByTimeAsync(600);
+    expect(h.stats.at(-1)!.dvrIdle).toBeUndefined();
     await h.pipeline.stop();
   });
 });

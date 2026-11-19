@@ -294,6 +294,21 @@ describe('DvrStripePolicy (docs/91 D10)', () => {
     expect(r.phase).toBe('held');
   });
 
+  // Review round 3, finding 2: a pause longer than the postponement bound
+  // leaves no frame-bearing sample to judge on; judging an empty window would
+  // read "not helped" and hold for the session. It waits for frames instead.
+  it('does not hold the policy over a 90 s pause during an evaluation', () => {
+    const paused = (t: number) => t >= 11_000 && t < 101_000;
+    const r = simulate({
+      mode: 'auto',
+      seconds: 220,
+      goodput: (w, t) => (paused(t) ? 0 : Math.min(LIVE, w * 4_000_000)),
+      idle: paused,
+    });
+    expect(r.phase).toBe('engaged');
+    expect(r.final).toBe(3);
+  });
+
   // Review round 1, finding 3: goodput cannot exceed the live rate, so a step
   // from a near-live baseline can never show +20 %. Removing the shortfall
   // counts as helping; a full link still steps back.

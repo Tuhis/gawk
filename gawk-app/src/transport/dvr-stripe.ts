@@ -41,6 +41,10 @@ export const DVR_STRIPE_DIAL_TIMEOUT_MS = 10_000;
 // past when the evaluation would first have ended; then the step is judged on
 // every frame-bearing sample since its legs came up.
 export const DVR_STRIPE_MAX_EVAL_POSTPONE_MS = 60_000;
+// A step is never judged on fewer frame-bearing samples than this since its
+// legs came up (5 s at the 500 ms stats cadence): an empty window would read
+// as "not helped" and hold the policy for the session over a long pause.
+export const DVR_STRIPE_MIN_EVAL_SAMPLES = 10;
 // After a leg death forced a fallback, as stripe.ts: a flapping path must not
 // burn dials at the stats cadence.
 export const DVR_STRIPE_REENGAGE_BACKOFF_MS = 5_000;
@@ -311,7 +315,12 @@ export class DvrStripePolicy {
 
   private observe(now: number, input: DvrStripeInput): void {
     if (input.liveRateBps !== null) this.liveRateBps = input.liveRateBps;
-    const keepMs = DVR_STRIPE_ENGAGE_MS + DVR_STRIPE_SETTLE_MS + DVR_STRIPE_EVAL_MS + DVR_STRIPE_DIAL_TIMEOUT_MS;
+    const keepMs =
+      DVR_STRIPE_ENGAGE_MS +
+      DVR_STRIPE_SETTLE_MS +
+      DVR_STRIPE_EVAL_MS +
+      DVR_STRIPE_DIAL_TIMEOUT_MS +
+      DVR_STRIPE_MAX_EVAL_POSTPONE_MS;
     while (this.samples.length > 0 && this.samples[0].atMs < now - keepMs) this.samples.shift();
     if (input.resyncs > this.lastResyncs) this.lastResyncAt = now;
     this.lastResyncs = input.resyncs;
@@ -361,10 +370,16 @@ export class DvrStripePolicy {
       if (now - this.stepAt >= DVR_STRIPE_DIAL_TIMEOUT_MS) this.stepBack();
       return;
     }
+    // The window since the last (re)start, once it has run its length and
+    // holds enough frame-bearing samples. Past the postponement bound, the
+    // window since the legs first came up — again only once it holds enough:
+    // a step is never judged on a pause, however long.
     let from = this.activeAt + DVR_STRIPE_SETTLE_MS;
-    if (now < from + DVR_STRIPE_EVAL_MS) {
+    const ready = now >= from + DVR_STRIPE_EVAL_MS && this.sampleCount(from, now) >= DVR_STRIPE_MIN_EVAL_SAMPLES;
+    if (!ready) {
       if (now < this.evalDeadline()) return;
       from = this.firstActiveAt + DVR_STRIPE_SETTLE_MS;
+      if (this.sampleCount(from, now) < DVR_STRIPE_MIN_EVAL_SAMPLES) return;
     }
     const after = this.meanGoodput(from, now);
     const shortfallGone =
@@ -395,6 +410,12 @@ export class DvrStripePolicy {
     this.target = this.previous;
     this.phase = 'held';
     this.activeAt = null;
+  }
+
+  private sampleCount(fromMs: number, toMs: number): number {
+    let n = 0;
+    for (const s of this.samples) if (s.atMs >= fromMs && s.atMs <= toMs) n++;
+    return n;
   }
 
   private meanGoodput(fromMs: number, toMs: number): number {

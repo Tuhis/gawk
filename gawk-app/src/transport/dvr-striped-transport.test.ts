@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LocalViewerTransport, maxLegs, stripeLegUrl } from './viewer-transport';
 import type { KeyframeStreamFrame } from './connection';
 import {
+  CLOSE_CODE_STRIPE_LEG_DRAINED,
   MAX_STRIPE_LEGS,
   encodeCarrierPrologue,
   encodeCarrierRecord,
@@ -16,6 +17,10 @@ import {
   encodeVideoChunk,
   parseStripeState,
 } from './wire';
+
+// Every datagram written on any session, in order: the cross-session
+// ordering the primary/drain handover depends on.
+const writeLog: { wt: FakeWT; data: Uint8Array }[] = [];
 
 class FakeWT {
   static instances: FakeWT[] = [];
@@ -29,6 +34,10 @@ class FakeWT {
   written: Uint8Array[] = [];
   closeCalled = false;
   pushStream: ((chunks: Uint8Array[]) => void) | null = null;
+  // An accepted stream the test feeds by hand.
+  openStream: (() => ReadableStreamDefaultController<Uint8Array>) | null = null;
+  private incoming: ReadableStreamDefaultController<ReadableStream<Uint8Array>> | null = null;
+  private accepted: ReadableStreamDefaultController<Uint8Array>[] = [];
   datagrams: { maxDatagramSize: number; readable: ReadableStream<Uint8Array>; writable: WritableStream<BufferSource> };
   incomingUnidirectionalStreams: ReadableStream<ReadableStream<Uint8Array>>;
 
@@ -39,20 +48,44 @@ class FakeWT {
       this.readyResolve = r;
     });
     if (FakeWT.autoReady) this.readyResolve();
+    // The session closing ends the accept loop. Streams already accepted are
+    // left to finish: a relay that closes a drained leg has finished them.
     this.closed = new Promise((r) => {
-      this.closedResolve = (info?: unknown) => r(info ?? {});
+      this.closedResolve = (info?: unknown) => {
+        try {
+          this.incoming?.close();
+        } catch {
+          /* already closed */
+        }
+        r(info ?? {});
+      };
     });
     this.datagrams = {
       maxDatagramSize: 1200,
       readable: new ReadableStream<Uint8Array>({ start() {} }),
       writable: new WritableStream<BufferSource>({
         write: (chunk) => {
-          this.written.push(new Uint8Array(chunk as Uint8Array));
+          const data = new Uint8Array(chunk as Uint8Array);
+          this.written.push(data);
+          writeLog.push({ wt: this, data });
         },
       }),
     };
     this.incomingUnidirectionalStreams = new ReadableStream<ReadableStream<Uint8Array>>({
       start: (controller) => {
+        this.incoming = controller;
+        this.openStream = () => {
+          let inner!: ReadableStreamDefaultController<Uint8Array>;
+          controller.enqueue(
+            new ReadableStream<Uint8Array>({
+              start: (c) => {
+                inner = c;
+              },
+            }),
+          );
+          this.accepted.push(inner);
+          return inner;
+        };
         this.pushStream = (chunks) =>
           controller.enqueue(
             new ReadableStream<Uint8Array>({
@@ -66,8 +99,17 @@ class FakeWT {
     });
   }
 
+  // A local close aborts whatever the session was still receiving, as a
+  // browser's does.
   close(): void {
     this.closeCalled = true;
+    for (const c of this.accepted) {
+      try {
+        c.error(new Error('session closed locally'));
+      } catch {
+        /* already closed */
+      }
+    }
     this.closedResolve({ reason: 'locally closed' });
   }
 
@@ -106,6 +148,7 @@ async function connect(url = PRIMARY): Promise<void> {
 beforeEach(() => {
   FakeWT.instances = [];
   FakeWT.autoReady = true;
+  writeLog.length = 0;
   datagrams = [];
   keyframes = [];
   stripeChanges = [];
@@ -327,7 +370,7 @@ describe('LocalViewerTransport in the deep-buffer layout (docs/91)', () => {
       await tick();
       const [old] = FakeWT.legs();
       transport.setStripe(2, 'dvr');
-      await tick(350);
+      await tick(600);
       const drains = stripeStates(old).filter((st) => !st.striped);
       expect(drains.length).toBeGreaterThanOrEqual(3);
       expect(drains.every((st) => st.stripeN === 0)).toBe(true);
@@ -385,14 +428,76 @@ describe('LocalViewerTransport in the deep-buffer layout (docs/91)', () => {
       expect(stripeChanges).toEqual([1, 2]);
     });
 
-    it('a leg death still tears everything down at once', async () => {
+    // Review round 3, finding 3: one leg's death unstripes the primary at
+    // once, but the surviving legs drain rather than close, so only the dead
+    // leg's backlog is lost.
+    it('a leg death unstripes the primary at once and drains the survivors', async () => {
       await connect();
       transport.setStripe(2, 'dvr');
       await tick();
-      const legs = FakeWT.legs();
-      legs[0].closedResolve({ reason: 'gone' });
+      const [dead, survivor] = FakeWT.legs();
+      dead.closedResolve({ reason: 'gone' });
       await tick();
-      expect(legs[1].closeCalled).toBe(true);
+      expect(transport.sampleStripe()).toMatchObject({ active: 0, legDeaths: 1 });
+      expect(stripeStates(FakeWT.instances[0]).at(-1)).toEqual({ striped: false, stripeN: 0 });
+      expect(survivor.closeCalled).toBe(false);
+      await tick(1000);
+      expect(stripeStates(survivor).some((st) => !st.striped)).toBe(true);
+      // Its first drain only after the primary's unstripe burst.
+      const primaryLast = writeLog.findLastIndex((w) => w.wt === FakeWT.instances[0] && w.data[1] === 0x10);
+      const firstDrain = writeLog.findIndex((w) => w.wt === survivor && w.data[1] === 0x10 && w.data[2] === 0);
+      expect(firstDrain).toBeGreaterThan(primaryLast);
+      kfOn(survivor, 120);
+      await tick();
+      expect(keyframes.map((k) => [k.kf.frameId, k.conn])).toContainEqual([120, 2]);
+      expect(dead.closeCalled).toBe(true);
+      await tick(DRAIN_MS);
+      expect(survivor.closeCalled).toBe(true);
+    });
+
+    // Review round 3, finding 1: the primary hears the new width as a burst,
+    // and the old legs are told to drain only after the burst, so the primary
+    // has switched before the old legs stop taking GOPs.
+    it('bursts the new width to the primary before any old leg hears the drain', async () => {
+      await connect();
+      transport.setStripe(1, 'dvr');
+      await tick();
+      const [old] = FakeWT.legs();
+      writeLog.length = 0;
+      transport.setStripe(2, 'dvr');
+      await tick(1000);
+      const primary = FakeWT.instances[0];
+      const isState = (w: { wt: FakeWT; data: Uint8Array }, wt: FakeWT) => w.wt === wt && w.data.length === 5 && w.data[1] === 0x10;
+      const widthSends = writeLog
+        .map((w, i) => ({ w, i }))
+        .filter(({ w }) => isState(w, primary) && parseStripeState(w.data).stripeN === 3);
+      expect(widthSends.length).toBeGreaterThanOrEqual(3);
+      const firstDrain = writeLog.findIndex((w) => isState(w, old) && !parseStripeState(w.data).striped);
+      expect(firstDrain).toBeGreaterThan(widthSends[2].i);
+    });
+
+    // Review round 3, finding 5: 4020 is a drained leg's expected end. The
+    // session closing must not cut off a stream still delivering: the leg is
+    // closed only once its stream loop has ended.
+    it('reads a drained leg to the end of its streams after the relay closes it with 4020', async () => {
+      await connect();
+      transport.setStripe(1, 'dvr');
+      await tick();
+      const [old] = FakeWT.legs();
+      transport.setStripe(2, 'dvr');
+      await tick(500);
+      const msg = encodeStreamFrame({ keyframe: true, frameId: 200, timestampUs: 1n }, new Uint8Array(0), new Uint8Array(500).fill(3));
+      const stream = old.openStream!();
+      stream.enqueue(msg.subarray(0, 100));
+      await tick();
+      old.closedResolve({ closeCode: CLOSE_CODE_STRIPE_LEG_DRAINED, reason: 'drained' });
+      await tick();
+      stream.enqueue(msg.subarray(100));
+      stream.close();
+      await tick();
+      expect(keyframes.map((k) => [k.kf.frameId, k.conn])).toContainEqual([200, 1]);
+      expect(old.closeCalled).toBe(true);
+      expect(transport.sampleStripe()).toMatchObject({ active: 2, legDeaths: 0 });
     });
 
     it('close() closes draining legs too', async () => {
