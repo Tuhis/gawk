@@ -38,6 +38,7 @@ import {
   DvrGoodputMeter,
   DvrStripePolicy,
   dvrStripeAllowed,
+  DVR_STRIPE_REENGAGE_BACKOFF_MS,
   type DvrStripePhase,
 } from './dvr-stripe';
 import {
@@ -391,6 +392,15 @@ export interface ViewerStats extends ReassemblerStats {
   dvrStripePhase?: DvrStripePhase;
   dvrDuplicateFrames?: number;
   dvrLateFramesDropped?: number;
+  //   dvrLiveRateBps           the stream's own video rate, bits/s: complete
+  //                            frames' bytes over media time, keyframe to
+  //                            keyframe (no audio, no parity); absent until
+  //                            measurable
+  //   dvrGoodputBps            complete-frame video goodput over the last 2 s,
+  //                            bits/s, every connection, duplicates once;
+  //                            absent before the first frame
+  dvrLiveRateBps?: number;
+  dvrGoodputBps?: number;
   // The audio lane, as observed by this pipeline. It leaves 'absent' on the
   // first AudioConfig/packet, which is what gates every piece of viewer audio
   // UI. 'unsupported' means audio arrived but this scope has no AudioDecoder;
@@ -640,6 +650,10 @@ export class ViewerPipeline {
   private dvrStriped = false;
   private dvrStripeWidth = 1;
   private connectionBytes: number[] = [0];
+  // Leg-dial failures already answered with a retry, and when the next retry
+  // is due (null: none pending).
+  private dvrDialFailuresSeen = 0;
+  private dvrRetryAt: number | null = null;
   // The audio lane. Built lazily on the first audio message —
   // a video-only stream never constructs it, so nothing about this pipeline
   // changes for broadcasts without audio.
@@ -1410,8 +1424,9 @@ export class ViewerPipeline {
     // per frame, so any parity in the session sizes as the full k=2 —
     // conservative by at most one leg at a share boundary.
     this.stripe.noteParityActive((reasm?.parityChunksReceived ?? 0) > 0 ? 2 : 0);
+    let dvrRates: { goodputBps: number | null; liveRateBps: number | null } | null = null;
     if (this.deep) {
-      this.decideDvrStripe(reorder);
+      dvrRates = this.decideDvrStripe(reorder);
     } else {
       const stripeTarget = this.stripe.decide();
       if (stripeTarget !== this.lastStripeRequested && this.transport?.setStripe) {
@@ -1538,6 +1553,8 @@ export class ViewerPipeline {
             dvrDuplicateFrames:
               (reorder?.duplicateFrames ?? 0) + (this.reassembler?.duplicateFramesDropped() ?? 0),
             dvrLateFramesDropped: reorder?.lateFramesDropped ?? 0,
+            ...(dvrRates?.liveRateBps != null ? { dvrLiveRateBps: dvrRates.liveRateBps } : {}),
+            ...(dvrRates?.goodputBps != null ? { dvrGoodputBps: dvrRates.goodputBps } : {}),
           }
         : {}),
     });
@@ -1545,8 +1562,16 @@ export class ViewerPipeline {
 
   // The deep-buffer stripe decision (docs/91 D10), at the stats cadence. The
   // policy states a width; the transport takes a leg count.
-  private decideDvrStripe(reorder: ReorderStats | undefined): void {
+  //
+  // The policy's width can stay the same while the transport has fewer legs
+  // than asked for: a transition whose dial failed (a 429 at capacity) leaves
+  // the old state in place and asks nobody again. So the request is
+  // reconciled against what is actually up, retried once per failure after
+  // the same backoff a leg death takes.
+  private decideDvrStripe(reorder: ReorderStats | undefined): { goodputBps: number | null; liveRateBps: number | null } {
     const mode = getStripeMode();
+    const goodputBps = this.dvrMeter.goodputBps();
+    const liveRateBps = this.dvrMeter.liveRateBps();
     const width = this.dvrPolicy.decide({
       allowed: dvrStripeAllowed({
         deep: this.deep,
@@ -1555,15 +1580,26 @@ export class ViewerPipeline {
         mode,
       }),
       mode,
-      goodputBps: this.dvrMeter.goodputBps(),
-      liveRateBps: this.dvrMeter.liveRateBps(),
+      goodputBps,
+      liveRateBps,
       resyncs: reorder?.holeSkips ?? 0,
     });
     const legs = width - 1;
-    if (legs === this.lastStripeRequested || !this.transport?.setStripe) return;
-    if (legs > 0) this.dvrStriped = true;
-    this.lastStripeRequested = legs;
-    this.transport.setStripe(legs, 'dvr');
+    const now = performance.now();
+    const failures = this.transport?.sampleStripe?.()?.legDialFailures ?? 0;
+    if (failures > this.dvrDialFailuresSeen) {
+      this.dvrDialFailuresSeen = failures;
+      this.dvrRetryAt = now + DVR_STRIPE_REENGAGE_BACKOFF_MS;
+    }
+    const changed = legs !== this.lastStripeRequested;
+    const retry = !changed && this.dvrRetryAt !== null && now >= this.dvrRetryAt && legs !== this.stripeActive;
+    if (this.dvrRetryAt !== null && (changed || retry || legs === this.stripeActive)) this.dvrRetryAt = null;
+    if ((changed || retry) && this.transport?.setStripe) {
+      if (legs > 0) this.dvrStriped = true;
+      this.lastStripeRequested = legs;
+      this.transport.setStripe(legs, 'dvr');
+    }
+    return { goodputBps, liveRateBps };
   }
 
   private fail(err: Error): void {

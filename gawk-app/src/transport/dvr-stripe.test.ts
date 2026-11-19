@@ -126,7 +126,7 @@ function simulate(opts: {
   mode: StripeMode;
   seconds: number;
   goodput: (width: number, tMs: number) => number;
-  resyncAt?: (tMs: number) => boolean;
+  resyncAt?: (tMs: number, width: number) => boolean;
 }): Run {
   const clock = { t: 0 };
   const policy = new DvrStripePolicy(() => clock.t);
@@ -135,7 +135,7 @@ function simulate(opts: {
   const widths: number[] = [];
   for (let t = 0; t <= opts.seconds * 1000; t += TICK_MS) {
     clock.t = t;
-    if (opts.resyncAt?.(t)) resyncs++;
+    if (opts.resyncAt?.(t, active)) resyncs++;
     const width = policy.decide({
       allowed: true,
       mode: opts.mode,
@@ -199,6 +199,71 @@ describe('DvrStripePolicy (docs/91 D10)', () => {
     });
     expect(r.widths.indexOf(2)).toBeGreaterThan(0);
     expect(r.widths.indexOf(2) * TICK_MS).toBeGreaterThanOrEqual(DVR_STRIPE_ENGAGE_MS);
+  });
+
+  // Review round 1, finding 2: a broadcaster pause delivers nothing, which is
+  // idle, not starved — the cached live rate must not turn it into
+  // undersupply, an evaluation must not be judged on it, and it must not set
+  // a step's baseline.
+  it('never engages through a broadcaster pause', () => {
+    const r = simulate({ mode: 'auto', seconds: 120, goodput: (_w, t) => (t < 20_000 ? LIVE : 0) });
+    expect(Math.max(...r.widths)).toBe(1);
+    expect(r.phase).toBe('idle');
+  });
+
+  it('does not judge a step on a pause: the evaluation waits for frames again', () => {
+    // A per-connection ceiling, engaged at ~10 s; the broadcaster then pauses
+    // for 20 s, right across the first evaluation window.
+    const paused = (t: number) => t >= 11_000 && t < 31_000;
+    const r = simulate({
+      mode: 'auto',
+      seconds: 150,
+      goodput: (w, t) => (paused(t) ? 0 : Math.min(LIVE, w * 4_000_000)),
+    });
+    expect(r.final).toBe(3);
+    expect(r.phase).toBe('engaged');
+  });
+
+  it('does not let a pause before a step set its baseline', () => {
+    // Undersupplied, then paused, then undersupplied again: the baseline is
+    // the 4 Mbit/s actually measured, not an average with the pause's zeros
+    // (which would make a step that did nothing look like it helped).
+    const paused = (t: number) => t >= 5_000 && t < 9_000;
+    const r = simulate({ mode: 'auto', seconds: 120, goodput: (_w, t) => (paused(t) ? 0 : 4_000_000) });
+    expect(r.final).toBe(1);
+    expect(r.phase).toBe('held');
+  });
+
+  // Review round 1, finding 3: goodput cannot exceed the live rate, so a step
+  // from a near-live baseline can never show +20 %. Removing the shortfall
+  // counts as helping; a full link still steps back.
+  it('keeps a resync-only engagement that ended the skips', () => {
+    const r = simulate({
+      mode: 'auto',
+      seconds: 120,
+      goodput: () => LIVE,
+      resyncAt: (t, w) => w === 1 && t > 0 && t % 4000 === 0,
+    });
+    expect(r.final).toBe(2);
+    expect(r.phase).toBe('engaged');
+  });
+
+  it('keeps a step that brought goodput from 85 % to the live rate', () => {
+    const r = simulate({ mode: 'auto', seconds: 120, goodput: (w) => (w > 1 ? LIVE : 0.85 * LIVE) });
+    expect(r.final).toBe(2);
+    expect(r.phase).toBe('engaged');
+  });
+
+  it('still steps back on a full link whose skips continue at a flat near-live total', () => {
+    const r = simulate({
+      mode: 'auto',
+      seconds: 120,
+      goodput: () => 0.97 * LIVE,
+      resyncAt: (t) => t > 0 && t % 4000 === 0,
+    });
+    expect(Math.max(...r.widths)).toBe(2);
+    expect(r.final).toBe(1);
+    expect(r.phase).toBe('held');
   });
 
   it('does not engage on a single resync', () => {

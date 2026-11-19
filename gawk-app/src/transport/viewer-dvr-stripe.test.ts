@@ -21,10 +21,13 @@ import { setStripeMode, type StripeMode } from './stripe';
 import { CAP_PARITY_CHUNKS, CAP_STRIPED_DELIVERY, CAP_STRIPED_DVR } from './parity';
 import type { StripeLayout, ViewerTransport, ViewerTransportCallbacks } from './viewer-transport';
 import { encodeDeliveryAck, type DeliveryServedMode } from './wire';
+import { DVR_STRIPE_REENGAGE_BACKOFF_MS } from './dvr-stripe';
 import type { ViewerDeliveryMode } from './resilient';
 
 interface Harness {
   pipeline: ViewerPipeline;
+  // What the fake transport reports from sampleStripe().
+  stripeSample: { active: number; target: number; legDials: number; legDialFailures: number; legDeaths: number };
   stripeCalls: [number, StripeLayout | undefined][];
   cb: ViewerTransportCallbacks;
   stats: ViewerStats[];
@@ -34,7 +37,9 @@ async function startPipeline(delivery: ViewerDeliveryMode): Promise<Harness> {
   const stripeCalls: Harness['stripeCalls'] = [];
   const stats: ViewerStats[] = [];
   let cb: ViewerTransportCallbacks | null = null;
+  const stripeSample = { active: 0, target: 0, legDials: 0, legDialFailures: 0, legDeaths: 0 };
   const transport: ViewerTransport = {
+    sampleStripe: () => ({ ...stripeSample }),
     kind: 'in-process',
     connect: async (c) => {
       cb = c;
@@ -62,7 +67,7 @@ async function startPipeline(delivery: ViewerDeliveryMode): Promise<Harness> {
     () => transport,
   );
   await pipeline.start();
-  return { pipeline, stripeCalls, cb: cb!, stats };
+  return { pipeline, stripeSample, stripeCalls, cb: cb!, stats };
 }
 
 beforeEach(() => {
@@ -199,6 +204,59 @@ describe('ViewerPipeline striped deep-buffer gate (docs/91 SG2)', () => {
     expect(s.stripeDvrCapable).toBe(true);
     expect(s.dvrStripeWidth).toBeUndefined();
     expect(s.connectionBytesReceived).toBeUndefined();
+    await h.pipeline.stop();
+  });
+
+  // Review round 1, finding 4: a failed DVR leg dial (a 429 at capacity) is
+  // retried after the leg-death backoff, because the policy's width never
+  // changed and nothing else would ask again.
+  it('retries a failed deep-buffer leg dial after the backoff, and stops once the legs are up', async () => {
+    setStripeMode('on');
+    const h = await startPipeline('deep');
+    h.cb.onRelayCapabilities?.({ flags: CAP_STRIPED_DVR, parityLevel: 0 });
+    h.cb.onDatagram(encodeDeliveryAck('dvr', 3000));
+    await vi.advanceTimersByTimeAsync(500);
+    expect(h.stripeCalls).toEqual([[1, 'dvr']]);
+
+    // The transport reports the transition failed: still no legs.
+    h.stripeSample.target = 1;
+    h.stripeSample.legDialFailures = 1;
+    await vi.advanceTimersByTimeAsync(DVR_STRIPE_REENGAGE_BACKOFF_MS - 1000);
+    expect(h.stripeCalls).toEqual([[1, 'dvr']]);
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(h.stripeCalls).toEqual([[1, 'dvr'], [1, 'dvr']]);
+
+    // This one works.
+    h.stripeSample.active = 1;
+    h.cb.onStripeChange?.(1);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(h.stripeCalls).toHaveLength(2);
+    await h.pipeline.stop();
+  });
+
+  // Review round 1, item 6: telemetry compares goodput against the client's
+  // own live rate (video only), not the relay's ingress.
+  it('reports the live rate and goodput on a deep-buffer session once measurable', async () => {
+    const h = await startPipeline('deep');
+    await vi.advanceTimersByTimeAsync(500);
+    expect(h.stats.at(-1)).not.toHaveProperty('dvrLiveRateBps');
+    expect(h.stats.at(-1)).not.toHaveProperty('dvrGoodputBps');
+    // Eleven 1000-byte frames, 100 ms of media apart: 10 frames' bytes over
+    // 1 s of media from the first keyframe to the last.
+    for (let id = 0; id <= 10; id++) {
+      h.cb.onKeyframe({
+        frameId: id,
+        timestampUs: BigInt(id) * 100_000n,
+        config: null,
+        data: new Uint8Array(1000),
+        streamBytes: 1020,
+      });
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    await vi.advanceTimersByTimeAsync(500);
+    const s = h.stats.at(-1)!;
+    expect(s.dvrLiveRateBps).toBeCloseTo(80_000, -2);
+    expect(s.dvrGoodputBps).toBeGreaterThan(0);
     await h.pipeline.stop();
   });
 });

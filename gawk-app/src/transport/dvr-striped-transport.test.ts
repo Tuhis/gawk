@@ -197,7 +197,7 @@ describe('LocalViewerTransport in the deep-buffer layout (docs/91)', () => {
     const fresh = FakeWT.legs().slice(1);
     expect(fresh.map((l) => new URL(l.url).searchParams.get('leg'))).toEqual(['1', '2']);
     expect(fresh.every((l) => new URL(l.url).searchParams.get('stripe') === '3')).toBe(true);
-    expect(old.closeCalled).toBe(true);
+    expect(old.closeCalled).toBe(false); // it drains; see below
     expect(stripeStates(FakeWT.instances[0])).toEqual([
       { striped: true, stripeN: 2 },
       { striped: true, stripeN: 3 },
@@ -224,5 +224,100 @@ describe('LocalViewerTransport in the deep-buffer layout (docs/91)', () => {
     legs[0].pushStream?.([encodeStreamFrame({ keyframe: true, frameId: 30, timestampUs: 0n }, new Uint8Array(0), new Uint8Array([1]))]);
     await flush();
     expect(keyframes).toHaveLength(0);
+  });
+
+  // Review round 1, finding 1: a superseded deep-buffer leg still holds GOPs
+  // the primary has already skipped, so it drains for the DVR buffer + 1 s
+  // before it is closed. Duplicates are the reorder buffer's to drop.
+  describe('drains superseded legs (buffer + 1 s)', () => {
+    const DRAIN_MS = 3000 + 1000; // PRIMARY carries buffer=3000
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+    const tick = (ms = 0) => vi.advanceTimersByTimeAsync(ms);
+    const kfOn = (leg: FakeWT, frameId: number) =>
+      leg.pushStream?.([
+        encodeStreamFrame({ keyframe: true, frameId, timestampUs: BigInt(frameId) * 1000n }, new Uint8Array(0), new Uint8Array([1])),
+      ]);
+
+    const transitions: { name: string; from: number; to: number }[] = [
+      { name: 'a grow', from: 1, to: 2 },
+      { name: 'a step down', from: 2, to: 1 },
+      { name: 'a disengage', from: 1, to: 0 },
+    ];
+    for (const t of transitions) {
+      it(`keeps the old legs reading and heartbeating through ${t.name}, then closes them`, async () => {
+        await connect();
+        transport.setStripe(t.from, 'dvr');
+        await tick();
+        const old = FakeWT.legs();
+        transport.setStripe(t.to, 'dvr');
+        await tick();
+        expect(old.every((l) => !l.closeCalled)).toBe(true);
+        expect(transport.sampleStripe()).toMatchObject({ active: t.to });
+
+        kfOn(old[0], 90);
+        await tick();
+        expect(keyframes.map((k) => [k.kf.frameId, k.conn])).toContainEqual([90, 1]);
+
+        const beats = stripeStates(old[0]).length;
+        await tick(2000);
+        expect(stripeStates(old[0]).length).toBeGreaterThan(beats);
+        // Old legs keep their own width in the heartbeat.
+        expect(stripeStates(old[0]).at(-1)).toEqual({ striped: true, stripeN: t.from + 1 });
+
+        await tick(DRAIN_MS);
+        expect(old.every((l) => l.closeCalled)).toBe(true);
+        expect(stripeChanges.at(-1)).toBe(t.to);
+      });
+    }
+
+    it("ignores a draining leg's death: it is no longer part of the cover", async () => {
+      await connect();
+      transport.setStripe(1, 'dvr');
+      await tick();
+      const [old] = FakeWT.legs();
+      transport.setStripe(2, 'dvr');
+      await tick();
+      old.closedResolve({ reason: 'gone' });
+      await tick();
+      expect(transport.sampleStripe()).toMatchObject({ active: 2, legDeaths: 0 });
+      expect(stripeChanges).toEqual([1, 2]);
+    });
+
+    it('a leg death still tears everything down at once', async () => {
+      await connect();
+      transport.setStripe(2, 'dvr');
+      await tick();
+      const legs = FakeWT.legs();
+      legs[0].closedResolve({ reason: 'gone' });
+      await tick();
+      expect(legs[1].closeCalled).toBe(true);
+    });
+
+    it('close() closes draining legs too', async () => {
+      await connect();
+      transport.setStripe(1, 'dvr');
+      await tick();
+      const [old] = FakeWT.legs();
+      transport.setStripe(2, 'dvr');
+      await tick();
+      transport.close();
+      expect(old.closeCalled).toBe(true);
+    });
+
+    it('live legs still close as soon as the new set is up (R30 unchanged)', async () => {
+      await connect('https://relay.test:4433/subscribe/ABC123?owner=aabbccdd00112233');
+      transport.setStripe(1);
+      await tick();
+      const [old] = FakeWT.legs();
+      transport.setStripe(2);
+      await tick();
+      expect(old.closeCalled).toBe(true);
+    });
   });
 });

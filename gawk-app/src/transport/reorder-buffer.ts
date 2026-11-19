@@ -93,6 +93,10 @@ export const KEYFRAME_WAIT_PLAYOUT_HEADROOM_MS = 500;
 // satisfy either bound alone.
 export const STRIPED_LATE_GOP_HEADROOM_MS = 5000;
 export const STRIPED_LATE_GOP_MAX_FRAMES = 2048;
+// How many released frameIds are remembered to tell a duplicate from a late
+// frame. A copy trails its original by at most a width transition, a drain
+// grace or a StripeState TTL: well under 30 s, which is 1800 frames at 60 fps.
+export const RECENTLY_RELEASED_FRAMES = STRIPED_LATE_GOP_MAX_FRAMES;
 
 // The three bounds widen while resilient mode is on — read live per use.
 function keyframeWaitMs(): number {
@@ -285,6 +289,10 @@ export class ReorderBuffer {
   private gopsOutOfOrder: () => boolean;
   // Timestamp of the last released frame, the late-GOP test's reference.
   private lastReleasedTimestampUs: bigint | null = null;
+  // Recently released frameIds (insertion ordered, bounded), so a frame
+  // arriving behind the decode position can be told apart as a copy of one
+  // that played (a duplicate) or one that never did (late: skipped as a hole).
+  private recentlyReleased = new Set<number>();
   // Windowed min of (arrivalMs − timestampMs): the pacing anchor.
   // Reset with the restart signal — new session, new timestamp timeline.
   // Its window is profile-independent on purpose: `releasableAt` anchors the
@@ -344,6 +352,7 @@ export class ReorderBuffer {
     // of the current position; anything else is buffered and the resync logic
     // sorts out ordering (jumping backwards on restart is intentional).
     if (this.decodePosition !== null && kf.frameId === this.decodePosition) {
+      if (this.gopsOutOfOrder()) this.stats.duplicateFrames++;
       return; // exact duplicate of the just-decoded frame
     }
     // A keyframe BEHIND the decode position (serially) is the restart signal:
@@ -355,7 +364,7 @@ export class ReorderBuffer {
     const backwards =
       this.decodePosition !== null && !frameIdAhead(kf.frameId, this.decodePosition);
     if (backwards && this.gopsOutOfOrder() && this.isStragglingGop(kf)) {
-      this.stats.lateFramesDropped++;
+      this.countBehind(kf.frameId);
       return;
     }
     if (backwards) {
@@ -388,7 +397,7 @@ export class ReorderBuffer {
     // Serial comparison: a delta just past the uint32 rollover is ahead.
     if (this.decodePosition !== null && !frameIdAhead(d.frameId, this.decodePosition)) {
       this.stats.deltasDropped++;
-      if (this.gopsOutOfOrder()) this.stats.lateFramesDropped++;
+      if (this.gopsOutOfOrder()) this.countBehind(d.frameId);
       return;
     }
     this.insert({
@@ -626,6 +635,13 @@ export class ReorderBuffer {
     return this.now() >= this.releasableAt(first);
   }
 
+  // Out of order, a frame behind the decode position is a duplicate if it
+  // played and late if it was skipped (docs/91 D9).
+  private countBehind(frameId: number): void {
+    if (this.recentlyReleased.has(frameId)) this.stats.duplicateFrames++;
+    else this.stats.lateFramesDropped++;
+  }
+
   private shouldDeclareGap(): boolean {
     // Declare a gap once the oldest frame waiting above the missing one has sat
     // in the buffer longer than the grace — the straggler isn't coming.
@@ -652,6 +668,11 @@ export class ReorderBuffer {
     this.buffer.delete(entry.frameId);
     this.decodePosition = entry.frameId;
     this.lastReleasedTimestampUs = entry.timestampUs;
+    this.recentlyReleased.add(entry.frameId);
+    if (this.recentlyReleased.size > RECENTLY_RELEASED_FRAMES) {
+      const oldest = this.recentlyReleased.values().next().value;
+      if (oldest !== undefined) this.recentlyReleased.delete(oldest);
+    }
     this.stats.released++;
     if (entry.keyframe) {
       this.stats.keyframesReleased++;

@@ -140,6 +140,9 @@ describe('ReorderBuffer with GOPs out of order (docs/91 D9)', () => {
     h.pushGop(3);
     h.runTo(due(15));
     expect(h.ids()).toEqual([...range(0, 4), ...range(8, 16)]);
+    // And a copy of a GOP that did play is a duplicate.
+    h.pushGop(2);
+    expect(h.rb.getStats()).toMatchObject({ lateFramesDropped: GOP, duplicateFrames: GOP });
   });
 
   it('drops duplicate keyframes and deltas by frameId, held or already played', () => {
@@ -155,9 +158,12 @@ describe('ReorderBuffer with GOPs out of order (docs/91 D9)', () => {
     h.runTo(due(11));
     expect(h.ids()).toEqual(range(0, 12));
     expect(h.restarts()).toBe(0);
+    // A re-arrival of a frame already played is a duplicate, not a late
+    // frame: late is reserved for frames that were skipped as a hole
+    // (review round 1, finding 5).
     const s = h.rb.getStats();
-    expect(s.duplicateFrames).toBe(GOP);
-    expect(s.lateFramesDropped).toBe(GOP);
+    expect(s.duplicateFrames).toBe(2 * GOP);
+    expect(s.lateFramesDropped).toBe(0);
   });
 
   it('still recognises a broadcaster restart: a keyframe far behind on a new timeline', () => {

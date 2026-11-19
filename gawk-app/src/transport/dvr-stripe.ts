@@ -25,6 +25,12 @@ export const DVR_STRIPE_ENGAGE_MS = 10_000;
 export const DVR_STRIPE_RESYNC_WINDOW_MS = 10_000;
 // D10: a step helped when it raised aggregate goodput by at least 20 %.
 export const DVR_STRIPE_HELP_RATIO = 1.2;
+// Goodput cannot exceed the live rate (plus the relay's catch-up), so a step
+// from a baseline near it can never show +20 %. It also helped when it removed
+// the shortfall: goodput at this share of the live rate with no hole skip
+// during the evaluation. A full link fails both: its total stays flat, and the
+// skips go on.
+export const DVR_STRIPE_SHORTFALL_GONE_RATIO = 0.95;
 // After a step's legs are up: time for the new connections to ramp before
 // goodput is measured, then the window it is measured over.
 export const DVR_STRIPE_SETTLE_MS = 3_000;
@@ -183,7 +189,8 @@ interface GoodputSample {
 // Auto engages ×2 once undersupply has held for DVR_STRIPE_ENGAGE_MS. Each
 // step is measured: goodput over DVR_STRIPE_EVAL_MS after its legs settle,
 // against goodput over the DVR_STRIPE_ENGAGE_MS before it. A step that raised
-// it by DVR_STRIPE_HELP_RATIO stays, and if the stream is still undersupplied
+// it by DVR_STRIPE_HELP_RATIO, or removed the shortfall
+// (DVR_STRIPE_SHORTFALL_GONE_RATIO), stays, and if the stream is still undersupplied
 // the next step follows, up to DVR_STRIPE_MAX_WIDTH; a step that did not
 // returns to the previous width and holds it for the session — on a full
 // link extra connections take nothing more, so Auto ends at ×1 or ×2 (G4).
@@ -278,11 +285,23 @@ export class DvrStripePolicy {
 
   private observe(now: number, input: DvrStripeInput): void {
     if (input.liveRateBps !== null) this.liveRateBps = input.liveRateBps;
-    if (input.goodputBps !== null) this.samples.push({ atMs: now, bps: input.goodputBps });
     const keepMs = DVR_STRIPE_ENGAGE_MS + DVR_STRIPE_SETTLE_MS + DVR_STRIPE_EVAL_MS + DVR_STRIPE_DIAL_TIMEOUT_MS;
     while (this.samples.length > 0 && this.samples[0].atMs < now - keepMs) this.samples.shift();
     if (input.resyncs > this.lastResyncs) this.lastResyncAt = now;
     this.lastResyncs = input.resyncs;
+
+    // No complete frame in the window is a broadcaster that stopped sending,
+    // not a path that cannot carry it: the live rate is a cached estimate
+    // there, and goodput against it would read as starvation. An idle tick
+    // records no sample (so it never sets a baseline), resets the undersupply
+    // hold, and restarts a step's evaluation, which is judged on frames only.
+    if (input.goodputBps === null || input.goodputBps <= 0) {
+      this.undersupplied = false;
+      this.undersuppliedSince = null;
+      if (this.phase === 'stepping' && this.activeAt !== null) this.activeAt = now;
+      return;
+    }
+    this.samples.push({ atMs: now, bps: input.goodputBps });
 
     const starved =
       this.liveRateBps !== null &&
@@ -316,7 +335,11 @@ export class DvrStripePolicy {
     const from = this.activeAt + DVR_STRIPE_SETTLE_MS;
     if (now < from + DVR_STRIPE_EVAL_MS) return;
     const after = this.meanGoodput(from, now);
-    const helped = after >= DVR_STRIPE_HELP_RATIO * this.baselineBps && after > 0;
+    const shortfallGone =
+      this.liveRateBps !== null &&
+      after >= DVR_STRIPE_SHORTFALL_GONE_RATIO * this.liveRateBps &&
+      (this.lastResyncAt === null || this.lastResyncAt < from);
+    const helped = (after >= DVR_STRIPE_HELP_RATIO * this.baselineBps && after > 0) || shortfallGone;
     if (!helped) {
       this.stepBack();
       return;

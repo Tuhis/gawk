@@ -5,6 +5,7 @@
 // (WorkerViewerTransport), where no decode/render pressure can ever starve the
 // browser's small incoming-datagram queue.
 
+import { getDvrBufferMs } from '../config';
 import { log } from '../lib/logger';
 import type { LocalRelayEvent } from './local-relay';
 import {
@@ -105,6 +106,13 @@ export interface ViewerTransport {
 //         carrier), StripeN on the wire = n + 1, the width with the primary.
 export type StripeLayout = 'live' | 'dvr';
 
+// The DVR buffer this session asked for: the primary URL's `buffer` parameter,
+// which the legs copy; the configured default when absent.
+function dvrBufferMsOf(url: string): number {
+  const ms = Number(new URL(url).searchParams.get('buffer'));
+  return Number.isFinite(ms) && ms > 0 ? ms : getDvrBufferMs();
+}
+
 // The most legs a layout may dial. Both keep one viewer at MAX_STRIPE_LEGS
 // connections beside the primary's role: in dvr the primary is one of them
 // (docs/91 D12).
@@ -180,6 +188,9 @@ export class LocalViewerTransport implements ViewerTransport {
   // before touching it (make-before-break), so at every instant either the
   // primary or a complete leg set covers the frame.
   private legs: StripeLegSession[] = [];
+  // Deep-buffer legs a transition superseded, still read and heartbeated until
+  // their drain timer closes them (see drainLegs).
+  private draining = new Map<StripeLegSession, ReturnType<typeof setTimeout>>();
   private stripeTarget = 0;
   private stripeActive = 0;
   private stripeLayout: StripeLayout = 'live';
@@ -356,9 +367,45 @@ export class LocalViewerTransport implements ViewerTransport {
     // First heartbeat immediately: the relay armed each leg's liveness lease at
     // subscribe, and the 1 Hz refresh below is what keeps renewing it.
     this.sendLegHeartbeats();
-    if (firstEngage) this.startStripeRefresh();
-    for (const leg of old) leg.close();
+    if (firstEngage || !this.stripeRefresh) this.startStripeRefresh();
+    this.retireLegs(old);
     this.cb?.onStripeChange?.(target);
+  }
+
+  // A superseded live leg carries only datagrams the new set duplicates, so it
+  // closes at once. A superseded deep-buffer leg may still hold a backlog of
+  // its GOPs: the primary skipped them, and a new leg starts at the newest GOP
+  // of its share, so closing it would lose up to the buffer's worth of video
+  // (docs/91 D11). It drains instead.
+  private retireLegs(old: StripeLegSession[]): void {
+    if (this.stripeLayout === 'dvr') this.drainLegs(old);
+    else for (const leg of old) leg.close();
+  }
+
+  // Keeps superseded legs reading and heartbeating for the DVR buffer plus a
+  // second — a leg is never further behind than its buffer before the relay
+  // resyncs it (D3) — then closes them. Whatever they deliver that a new leg
+  // also delivers is dropped by frameId (D9). A draining leg's death is not a
+  // leg death: its generation is no longer the live one.
+  private drainLegs(old: StripeLegSession[]): void {
+    if (old.length === 0) return;
+    const drainMs = dvrBufferMsOf(this.url) + 1000;
+    for (const leg of old) {
+      const timer = setTimeout(() => {
+        this.draining.delete(leg);
+        leg.close();
+      }, drainMs);
+      this.draining.set(leg, timer);
+    }
+    if (!this.stripeRefresh) this.startStripeRefresh();
+  }
+
+  private closeDraining(): void {
+    for (const [leg, timer] of this.draining) {
+      clearTimeout(timer);
+      leg.close();
+    }
+    this.draining.clear();
   }
 
   // Leg death: the cover is broken, so restore the primary's full flow FIRST
@@ -368,10 +415,12 @@ export class LocalViewerTransport implements ViewerTransport {
   private handleLegDeath(generation: number): void {
     if (this.closing || generation !== this.liveStripeGeneration || this.stripeActive === 0) return;
     this.stripeStats.legDeaths++;
-    this.disengageStripe();
+    this.disengageStripe(false);
   }
 
-  private disengageStripe(): void {
+  // A requested disengage drains deep-buffer legs like any transition; a
+  // leg-death fallback tears the set down at once, as it always has.
+  private disengageStripe(drain = true): void {
     this.stripeGeneration++;
     this.liveStripeGeneration = -1;
     this.stopStripeRefresh();
@@ -380,7 +429,8 @@ export class LocalViewerTransport implements ViewerTransport {
     this.legs = [];
     const wasActive = this.stripeActive;
     this.stripeActive = 0;
-    for (const leg of old) leg.close();
+    if (drain) this.retireLegs(old);
+    else for (const leg of old) leg.close();
     if (wasActive > 0) this.cb?.onStripeChange?.(0);
   }
 
@@ -395,7 +445,7 @@ export class LocalViewerTransport implements ViewerTransport {
     const dvr = this.stripeLayout === 'dvr';
     const conn: ConnectionIndex = dvr ? member : member + 1;
     const wt = await connectWebTransport(stripeLegUrl(this.url, member, stripeN), this.opts, this.abort.signal);
-    const leg = new StripeLegSession(wt, member);
+    const leg = new StripeLegSession(wt, member, stripeN);
     // A live leg carries this viewer's delta share and nothing else: same
     // datagram handler, same receive-queue raise (the buffer is the whole
     // point), no TimeSync, no server-stream reader (the relay sends live legs
@@ -476,6 +526,9 @@ export class LocalViewerTransport implements ViewerTransport {
         this.sendStripeState(true, this.wireStripeN(this.stripeActive));
         this.sendLegHeartbeats();
       }
+      // Draining legs keep their own lease alive, at their own width.
+      for (const leg of this.draining.keys()) leg.heartbeat(leg.stripeN);
+      if (this.stripeActive === 0 && this.draining.size === 0) this.stopStripeRefresh();
     }, 1000);
   }
 
@@ -558,6 +611,7 @@ export class LocalViewerTransport implements ViewerTransport {
     this.stopStripeRefresh();
     for (const leg of this.legs) leg.close();
     this.legs = [];
+    this.closeDraining();
     this.stripeActive = 0;
     this.timeSync?.stop();
     this.timeSync = null;
@@ -587,12 +641,15 @@ export class LocalViewerTransport implements ViewerTransport {
 class StripeLegSession {
   readonly abort = new AbortController();
   readonly member: number;
+  // The width this leg was dialed into: what it heartbeats with while it drains.
+  readonly stripeN: number;
   private wt: WebTransport;
   private writer: WritableStreamDefaultWriter<BufferSource> | null = null;
 
-  constructor(wt: WebTransport, member: number) {
+  constructor(wt: WebTransport, member: number, stripeN: number) {
     this.wt = wt;
     this.member = member;
+    this.stripeN = stripeN;
     try {
       this.writer = openDatagramWriter(wt);
     } catch {
