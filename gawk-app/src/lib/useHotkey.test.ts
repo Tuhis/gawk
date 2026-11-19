@@ -75,6 +75,25 @@ describe('useHotkey', () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
+  // Shift changes a digit's character with the layout ('!' on US, '"' on
+  // Nordic), so Shift+digit shortcuts match the number row by code (R86).
+  it('matches Shift+digit by its number-row key, and the plain digit only without Shift', () => {
+    const shifted = vi.fn();
+    const plain = vi.fn();
+    renderHook(() => useHotkey({ key: '2', shift: true }, shifted));
+    renderHook(() => useHotkey({ key: '2' }, plain));
+    press(window, { key: '"', code: 'Digit2', ctrlKey: false, altKey: false, shiftKey: true });
+    press(window, { key: '@', code: 'Digit2', ctrlKey: false, altKey: false, shiftKey: true });
+    expect(shifted).toHaveBeenCalledTimes(2);
+    expect(plain).not.toHaveBeenCalled();
+    press(window, { key: '2', code: 'Digit2', ctrlKey: false, altKey: false, shiftKey: false });
+    expect(plain).toHaveBeenCalledTimes(1);
+    expect(shifted).toHaveBeenCalledTimes(2);
+    // Another digit's key is not this one.
+    press(window, { key: '#', code: 'Digit3', ctrlKey: false, altKey: false, shiftKey: true });
+    expect(shifted).toHaveBeenCalledTimes(2);
+  });
+
   it('formats a readable label', () => {
     expect(formatHotkey(STATS)).toBe('Ctrl+Alt+Shift+D');
   });

@@ -34,9 +34,14 @@ export function isEditable(target: EventTarget | null): boolean {
 // On macOS, Option changes the character `key` reports (Option+Shift+D is
 // 'Î'), so an Alt shortcut's letter also matches by its physical key. Only
 // then: elsewhere `code` would misfire on non-QWERTY layouts.
-function matchesKey(e: KeyboardEvent, key: string, alt: boolean): boolean {
+//
+// Shift changes a digit's `key` the same way (Shift+1 is '!' on US layouts,
+// '"' on Nordic ones), so a Shift shortcut's digit also matches by its
+// physical key in the number row.
+function matchesKey(e: KeyboardEvent, key: string, alt: boolean, shift: boolean): boolean {
   const want = key.toLowerCase();
   if (e.key.toLowerCase() === want) return true;
+  if (shift && /^[0-9]$/.test(want) && e.code === `Digit${want}`) return true;
   return alt && /^[a-z]$/.test(want) && e.code === `Key${want.toUpperCase()}`;
 }
 
@@ -53,7 +58,7 @@ export function useHotkey(hotkey: Hotkey, handler: () => void): void {
     const onKey = (e: KeyboardEvent) => {
       if (e.repeat) return;
       if (isEditable(e.target)) return;
-      if (!matchesKey(e, hotkey.key, !!hotkey.alt)) return;
+      if (!matchesKey(e, hotkey.key, !!hotkey.alt, !!hotkey.shift)) return;
       if (!!hotkey.ctrl !== e.ctrlKey) return;
       if (!!hotkey.alt !== e.altKey) return;
       if (!!hotkey.shift !== e.shiftKey) return;

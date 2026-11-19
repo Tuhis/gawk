@@ -422,7 +422,7 @@
   min-width: 0;
 }
 
-/* The Grid / Fit / Focus / Hide videos segmented control. */
+/* The Grid / Fit / Focus segmented control. */
 .segment {
   display: inline-flex;
   align-items: center;
@@ -484,6 +484,227 @@
 
 .presetCaret {
   color: var(--muted);
+}
+
+/* R86 (docs/90 D8): under None the layout is kept but nothing is laid out,
+   so the chosen layout reads as set aside rather than active. */
+.segment[data-dim='true'] .segmentBtn[aria-checked='true'] {
+  color: var(--text);
+  background: var(--faint);
+}
+
+/* ── What to show (R86, docs/90 D1, D11): the pill beside the layouts and
+   its popover. ── */
+.visWrap {
+  position: relative;
+  display: inline-flex;
+  margin-left: 0.35rem;
+}
+
+.visPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.visPill:hover,
+.visPill[aria-expanded='true'] {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* The phone's short form ("All", "3/5"); see the narrow block below. */
+.visShort {
+  display: none;
+}
+
+/* A filtered stage is worth noticing at a glance: Choose in the accent,
+   None in the warning colour. */
+.visPill[data-vis='some'] {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: var(--accent-soft);
+}
+
+.visPill[data-vis='none'] {
+  border-color: color-mix(in srgb, var(--warning) 50%, transparent);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+}
+
+/* Above the voice dock and invite chip (22) and the unmute prompt (25),
+   which sit where the popover opens; still under the panel (30). */
+.footer[data-raised='true'] {
+  z-index: 26;
+}
+
+.visPopover {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 0.5rem);
+  z-index: 40;
+  width: 300px;
+  max-width: calc(100vw - 2rem);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.35rem;
+  text-align: left;
+  background: rgba(18, 19, 23, 0.94);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow);
+  animation: visIn var(--dur-fast) var(--ease);
+}
+
+@keyframes visIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.visGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.visOption {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.visOption:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.visOption:has(input:checked) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.visOption input,
+.visPick input {
+  flex: none;
+  margin: 0;
+  accent-color: var(--text);
+  cursor: pointer;
+}
+
+.visOption input {
+  margin-top: 0.1rem;
+}
+
+.visOptionText {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.visNote {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+/* The streams under Choose, indented under its radio. Scrolls past ten or
+   so, so a big room never pushes the popover off the top of the screen. */
+.visList {
+  list-style: none;
+  margin: 0.1rem 0 0.25rem 1.6rem;
+  padding: 0 0 0 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+  max-height: min(16rem, 40vh);
+  overflow-y: auto;
+  border-left: 1px solid var(--border);
+}
+
+.visPick {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.3rem 0.5rem;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.visPick:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* The stream's room number, as its tile shows it. */
+.visKey {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.3rem;
+  height: 1.3rem;
+  padding: 0 0.3rem;
+  border-radius: var(--r-sm);
+  font-size: 0.66rem;
+  font-weight: 700;
+  font-family: ui-monospace, monospace;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid var(--glass-border);
+}
+
+.visName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.visPick[data-on='false'] .visName {
+  color: var(--muted);
+}
+
+.visPick .visNote {
+  flex: none;
+  white-space: nowrap;
+}
+
+.visPick .visNote[data-live='false'] {
+  color: var(--warning);
+}
+
+.visEmpty {
+  margin: 0.1rem 0 0.25rem 2.1rem;
+}
+
+.visKeys {
+  margin: 0.2rem 0 0;
+  padding: 0.45rem 0.7rem 0.3rem;
+  border-top: 1px solid var(--border-soft);
 }
 
 .master {
@@ -1218,5 +1439,32 @@
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  /* R86: the What to show pill keeps its text (the quality pill gives way),
+     and its popover spans the footer instead of hanging off the pill, which
+     sits too far right for 300px to fit. The wrap goes static so the
+     footer is the popover's containing block. */
+  .visWrap {
+    position: static;
+    flex-shrink: 0;
+    margin-left: 0;
+  }
+
+  /* The full text would squeeze the quality pill to nothing. */
+  .visLong {
+    display: none;
+  }
+
+  .visShort {
+    display: inline;
+  }
+
+  .visPopover {
+    left: 0.75rem;
+    right: 0.75rem;
+    width: auto;
+    max-width: none;
+    bottom: calc(100% - 0.25rem);
   }
 }

@@ -158,9 +158,27 @@ export function rejectionToast(command: number, reason: number, message: string)
   return trimmed !== '' && trimmed.toLowerCase() !== why ? `${head}: ${why} (${trimmed})` : `${head}: ${why}`;
 }
 
+// R86 (docs/90): the What to show pill and its popover.
+export const VISIBILITY_TITLE = 'What to show';
+export const VISIBILITY_OPTIONS = {
+  all: { label: 'All streams', note: 'Everyone in the room, new streams too' },
+  some: { label: 'Choose', note: 'Hidden streams don’t download' },
+  // D2: the note carries the old name, so returning users find it.
+  none: { label: 'None', note: 'Hide videos · nothing downloads' },
+  preview: { label: 'Preview only', note: 'Just your own screen · nothing downloads' },
+} as const;
+export const VISIBILITY_KEYS_NOTE = 'Shift+1–4 hides or shows a stream';
+
+// None: the stage is empty on purpose.
 export const HIDDEN_CARD: Card = {
   title: 'You’re still in the room',
-  body: 'Nothing is downloading. Pick Grid or Focus to watch again.',
+  body: 'Nothing is downloading. Show every stream, or choose the ones to watch.',
+};
+
+// Choose with every stream unticked (D10).
+export const NONE_CHOSEN_CARD: Card = {
+  title: 'No streams chosen',
+  body: 'Nothing is downloading. Only you see which streams you hide.',
 };
 
 export const EMPTY_ROOM_CARD: Card = {
