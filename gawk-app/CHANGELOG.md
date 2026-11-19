@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.63.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.62.0...gawk-app/v0.63.0) (2026-11-19)
+
+
+### Features
+
+* **app:** choose which room streams to watch (R86) ([#809](https://github.com/Tuhis/gawk/issues/809)) ([3625f93](https://github.com/Tuhis/gawk/commit/3625f937a2e4e58e779b3298a925fc398b4b5664))
+
 ## [0.62.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.61.0...gawk-app/v0.62.0) (2026-11-15)
 
 
