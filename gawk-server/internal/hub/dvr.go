@@ -23,6 +23,8 @@ package hub
 // never contends with fan-out.
 
 import (
+	"context"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -532,6 +534,16 @@ func (s *Subscriber) dvrFellBehind() bool {
 // dvrResync jumps the cursor to the newest keyframe — the mode's only frame
 // loss, and the one signal operators should watch.
 func (s *Subscriber) dvrResync() {
+	// Debug, not Info: a viewer on a short link resyncs every few seconds,
+	// and fleet-wide that is noise; the counters carry the rate. What only a
+	// log can say is which connection of a striped viewer fell behind, and
+	// why (docs/91 §11).
+	if s.hub.log.Enabled(context.Background(), slog.LevelDebug) {
+		s.hub.log.Debug("dvr resync",
+			"stripe_leg", s.stripeLeg, "stripe_member", int(s.stripeMember),
+			"off_tail", s.dvr.FellOffTail(s.dvrCursor), "lag_ms", s.dvrLagMs.Load(),
+			"buffer_ms", s.dvrBufferMs, "gop_seq", s.dvrCursor.GopSeq())
+	}
 	s.retireCarrier()
 	s.dvrCursor = s.dvr.ResyncCursor()
 	s.dvrResyncs.Add(1)
