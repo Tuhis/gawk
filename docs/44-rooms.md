@@ -460,7 +460,10 @@ chosen: *the room's stage under the broadcaster's own topbar*.
   ring, muted. **Focus** with yourself focused is the plain live view.
   The third mode reads **Preview only** for a broadcaster — their own
   screen full bleed and no media sessions to the others (the same
-  persisted `hidden` mode as a viewer's hide-videos).
+  persisted `hidden` mode as a viewer's hide-videos). *(Revision
+  2026-11-19, R86: Preview only and Hide videos moved out of the layout
+  segment into a What to show pill as its None, beside All streams and
+  Choose; [docs/90](90-room-stream-visibility.md).)*
 - Dropped: the own-bar's "Change source" (Stop, then Start, re-picks the
   source; it was never on the live view).
 
@@ -584,7 +587,9 @@ viewer uses today. Concretely:
   every tile, each with its own volume pill on the tile, and the footer
   speaker is the master. Own tile muted by default.
 - **Hide videos** shows a centred card ("you are still in the room,
-  nothing is downloading") with the panel beside it.
+  nothing is downloading") with the panel beside it. *(Revision
+  2026-11-19, R86: it is now None in the footer's What to show pill, and
+  Choose hides individual streams; [docs/90](90-room-stream-visibility.md).)*
 - **States drawn**: room ended (4007), reconnecting after a home-pod
   move, attachment removed (toast), room full, wrong attach key on a
   static room, and the first-join nickname prompt.

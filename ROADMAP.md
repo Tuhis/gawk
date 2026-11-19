@@ -103,6 +103,7 @@ feature set exists).
 | R83 | [Fit: a room layout that follows the streams' shapes](#r83--fit-a-room-layout-that-follows-the-streams-shapes) | 🔧 **implemented 2026-11-10** (FL1–FL3 web, FL5 iOS; owner decisions OD1: a choice, not a replacement, and OD2: iOS too), open: FL4, the owner pass — a fourth room layout mode, **Fit**, beside Grid: tiles take each stream's decoded aspect ratio and are arranged in order-preserving rows or columns, scored by Σ ln(tile area), so two 32:9 broadcasters stack on a 16:9 viewer instead of sitting side by side. Prototype: 25 % → 100 % of a 1080p stage is video for that case; over ten mixes at four stage sizes, more of the screen is video in 32 of 40 and the same in the rest, and Grid's own geometry is a candidate, so Fit never scores below it. The web app and the iOS app's room player (one algorithm, ported to Swift and pinned to the same table): no wire, relay or Rust-core change ([docs/87](docs/87-room-fit-layout.md)) |
 | R84 | [Browser Reliable uplink](#r84--browser-reliable-uplink) | 🔧 **designed 2026-11-10** from a lab pass on Chrome's own QUIC stack (Chrome for Testing 151 and 158, the shipping viewer replayed at four presentation phases); **owner decisions taken 2026-11-10** (OD1 = K3, "get rid of the extra round trip"); **Reliable the browser's default since 2026-11-11** (OD2, owner, ahead of BR0 and BR5: the field data reviewed after a few weeks); the owner chose to build before BR0, which now gates the default, not the code; **BR1–BR4 built** (relay and wire, the browser's carrier lane and its Delivery setting, Chromium only, and the lab and e2e on the shipping code: Reliable costs nothing on a clean path at 10–100 ms on Chrome 151, 157 and 158) — the browser broadcaster gets docs/75's per-GOP carrier on RU1's relay ingest, so its *Smoother* and *Most stable* viewers stop freezing on uplink bursts and outages (99.0–100 % shown at 10 ms where today's datagrams give 71.6–80.1 %); Chrome 151–158 expose no stream priority, so docs/75's keyframe gate cost a round trip per GOP (83 against 67 ms on screen at 40 ms, 167 against 100 ms at 100 ms), and putting the keyframe at the head of the GOP's own stream removes it (67 and 100 ms) at the price of one stream type and one capability bit on the relay; that stream follows RU9's keyframe rules, because docs/75's 150 ms reset left 136 of 199 keyframes unacknowledged where Chrome's Cubic collapses; docs/75's intermittent *Smoother* dip behind the gate is the lab replay locking onto a bad presentation phase, not the uplink ([docs/88](docs/88-browser-reliable-uplink.md)) |
 | R85 | [A Mumble roster without a visible bot](#r85--a-mumble-roster-without-a-visible-bot) | 🔶 **MI1–MI4 implemented 2026-11-15**, MI5 (the owner pass on the reference deployment) open; **designed 2026-11-15** from the MI0 spike on real murmur 1.5.939 and 1.6.870, **redesigned around Ice callbacks the same day** after the reference murmur moved to 1.6.1001 (MI0b), **owner decisions OD1–OD7 taken 2026-11-15** (Ice, the first voice user creates the temporary channel, read-write allowed, the visible observer as the fallback without Ice, both modes tested, no bot on an Ice outage, callbacks rather than polling), R79's `gawkBridgeBot` observer leaves Mumble: each bridge pod registers an Ice `ServerCallback` with murmur through a minimal first-party Ice client and endpoint, keeps a mirror of the server's users and channels from the events, and re-registers and re-reads it every 30 s; a dynamic room's temporary channel is created by its first gawk voice user; without Ice the visible observer stays; no relay, wire or app change. Measured: callbacks arrive in 0.22 ms, faster than a Mumble client sees the same change; **murmur 1.6.870 segfaults when the newest callback is dead** (fixed upstream in 1.6.1001, so the bridge never registers on 1.6.870); murmur drops a registration after one refused delivery without telling the client; **an endpoint that blackholes freezes murmur's whole event loop** for about twice its timeout, 4.5 min with no timeout, so the bridge registers a 100 ms timeout (0.22 s freeze) and removes its registration on every clean exit; 1.6 numbers its default server 0, 1.5 numbers it 1; two first joins racing for one temporary channel end up in one channel; found while implementing, murmur's login channel tree leaves `temporary` out, so the temporary-channel cap counts in the Ice mirror ([docs/89](docs/89-mumble-ice-roster.md)) |
+| R86 | [Choose which streams to watch in a room](#r86--choose-which-streams-to-watch-in-a-room) | 🔧 **implemented 2026-11-19** (VS1–VS3; owner decision OD1 the same day: of five designs mocked on a design canvas, visibility as its own control), open: VS4, the owner pass — the room footer's segment keeps the layouts (Grid · Fit · Focus) and a new pill beside it says what is shown: **All streams**, **Choose** (a checkbox per stream) or **None**, the old Hide videos (a broadcaster's Preview only). An unticked stream has no tile and no media session, new streams arrive shown, numbers keep the room's order, `Shift`+`1`–`4` hide or show a stream, and the choice is remembered per room on the device; a stored `hidden` mode loads as None. Verified on a real relay by the e2e rooms pass: one stream hidden reads 0 subscribers on `/statusz` while the other keeps its own. Web app only: no relay, wire or iOS change ([docs/90](docs/90-room-stream-visibility.md)) |
 
 ---
 
@@ -5834,6 +5835,32 @@ same day; owner decisions OD1–OD7 taken 2026-11-15; no open questions;
 MI0 done; **MI1–MI4 implemented 2026-11-15** (docs/89 §10: the Ice client
 and endpoint, Ice mode, the chart and docs, the voice e2e in both modes);
 MI5, the owner pass on the reference deployment, open.
+
+---
+
+## R86 — Choose which streams to watch in a room
+
+**Goal**: a room participant can hide individual streams, not only all of
+them, and a hidden stream costs nothing.
+
+**Why**: the room footer's segment mixed two questions — the layout (Grid,
+Fit, Focus) and what to show (Hide videos) — and the second was all or
+nothing. The owner asked for a way to hide individual streams with good UX
+in the current look.
+
+**Design**: [docs/90](docs/90-room-stream-visibility.md). Two controls: the
+segment keeps Grid · Fit · Focus, and a pill beside it opens All streams ·
+Choose · None, with a checkbox per stream under Choose. Hiding is
+unsubscribing (the tile unmounts, its media session closes), the choice is
+a set of hidden broadcast IDs so new streams arrive shown, remembered per
+room by code (20 rooms, 64 IDs each); None is global and replaces Hide
+videos, migrating a stored `hidden` mode. Numbers keep the room's order;
+`Shift`+`1`–`4` hide or show; a layout pick leaves None.
+
+**Acceptance**: docs/90 §1 and §7.
+
+**Status**: 🔧 implemented 2026-11-19 (VS1–VS3, notes in docs/90 §8).
+Open: VS4, the owner pass.
 
 ---
 
