@@ -124,9 +124,13 @@ var ViewerFields = map[string]Kind{
 	// link on the client side.
 	"dvrStripeWidth":          KindNumber,
 	"connectionBytesReceived": KindNumbers,
-	"carrierStreams":          KindNumber,
-	"carrierRecords":          KindNumber,
-	"carrierStreamsAborted":   KindNumber,
+	// The client's own live rate of the video it is meant to receive in deep
+	// mode, from frame sizes over media time: what its goodput is judged
+	// against, since the relay's ingress count also carries audio and parity.
+	"dvrLiveRateBps":        KindNumber,
+	"carrierStreams":        KindNumber,
+	"carrierRecords":        KindNumber,
+	"carrierStreamsAborted": KindNumber,
 
 	// R18.
 	"viewerCount": KindNumber,

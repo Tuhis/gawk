@@ -636,6 +636,7 @@ func (f *fixture) maximalViewerFacts(t *testing.T) *rules.Facts {
 			}
 		}
 		s["dvrStripeWidth"] = float64(width)
+		s["dvrLiveRateBps"] = 3_000_000.0
 		s["videoBytesReceived"] = conns[0] + conns[1]
 		arr := make([]any, width)
 		for j := range width {

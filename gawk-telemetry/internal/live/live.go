@@ -644,6 +644,9 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 			// delta, and are ABSENT until there is a window to measure (the
 			// alternative — reporting the lifetime total for one scrape — is
 			// the very thing this change exists to stop).
+			// Rebuilt from this scrape alone, so a fact the scrape no longer
+			// supports (a path the relay stopped reporting, a window with
+			// nothing sent, a viewer out of deep mode) is gone, not stale.
 			s.relayFacts = map[string]float64{
 				"queueDepth": float64(sub.QueueDepth),
 				"dvrLagMs":   float64(sub.DVRLagMs),
@@ -724,7 +727,8 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 			s.relayFacts["ingressLossRatio"] = b.relayFacts["ingressLossRatio"]
 			// The leg-A units a viewer's rules read to tell leg A from leg B,
 			// and the stream bitrate its goodput is judged against (R87).
-			for _, k := range []string{"ingressFrameLossRatio", "ingressChunkLossRatio", "streamBitrateBps"} {
+			// framesRelayedPerSec bounds the parity in that bitrate.
+			for _, k := range []string{"ingressFrameLossRatio", "ingressChunkLossRatio", "streamBitrateBps", "framesRelayedPerSec"} {
 				if v, ok := b.relayFacts[k]; ok {
 					s.relayFacts[k] = v
 				} else {
@@ -1364,7 +1368,7 @@ var liveNumericFields = []string{
 	"stripeLargeLossPct", "stripeSmallLossPct", "stripeLargeChunks",
 	"stripeActive", "stripeNeeded",
 	// R21/R87: the deep buffer and its stripe width (docs/91 SG3).
-	"dvrBufferMs", "dvrStripeWidth",
+	"dvrBufferMs", "dvrStripeWidth", "dvrLiveRateBps",
 	"captureFps", "encoderFps", "sentFps", "encoderQueueDepth",
 	"EncoderFps", "SentFps",
 	// D17: the target, so the live row can show a shortfall too.

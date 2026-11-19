@@ -703,6 +703,11 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 	if st := row.Series["playoutOffsetMs"]; st != nil {
 		f.SetClient("playoutOffsetMs", st.P95)
 	}
+	// The live video rate a deep-buffer viewer's goodput is judged against:
+	// the session's typical rate, like the funnel's medians.
+	if st := row.Series["dvrLiveRateBps"]; st != nil {
+		f.SetClient("dvrLiveRateBps", st.Median)
+	}
 	if row.Role == "broadcaster" {
 		setUplinkLoss(f, row.Counters)
 		setMemory(f, row)

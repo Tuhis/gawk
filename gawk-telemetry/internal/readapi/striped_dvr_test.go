@@ -15,6 +15,12 @@ import (
 // entry with its path counters, and the origin's broadcast record at either
 // end of the span, ingesting streamBps.
 func dvrSession(t *testing.T, goodputBps, streamBps, srtt, minRTT float64, lost uint64) (rollup.Row, rollup.Input, [][]byte) {
+	return dvrSessionLive(t, goodputBps, streamBps-128_000, streamBps, srtt, minRTT, lost)
+}
+
+// dvrSessionLive is dvrSession with the client's own live video rate set
+// apart from the relay's ingress; 0 leaves it unreported (an older client).
+func dvrSessionLive(t *testing.T, goodputBps, liveBps, streamBps, srtt, minRTT float64, lost uint64) (rollup.Row, rollup.Input, [][]byte) {
 	t.Helper()
 	const sid = "d2d2d2d2d2d2d2d2d2d2d2d2"
 	const start, spanMs = int64(1_000_000), 120_000
@@ -28,6 +34,9 @@ func dvrSession(t *testing.T, goodputBps, streamBps, srtt, minRTT float64, lost 
 			"videoBytesReceived":      goodputBps / 8 * tMs / 1000,
 			"connectionBytesReceived": []any{goodputBps / 8 * tMs / 1000},
 		}})
+		if liveBps > 0 {
+			samples[len(samples)-1].Stats["dvrLiveRateBps"] = liveBps
+		}
 	}
 	in := rollup.Input{
 		SessionID: sid, BroadcastKey: bkey, Role: "viewer",
@@ -43,7 +52,7 @@ func dvrSession(t *testing.T, goodputBps, streamBps, srtt, minRTT float64, lost 
 	bc := func(atMs int64) []byte {
 		bytes := streamBps / 8 * float64(atMs-start+60_000) / 1000
 		return line(map[string]any{"kind": "broadcast", "atMs": atMs, "pod": "pod-a", "role": "origin",
-			"broadcastKey": bkey, "broadcast": map[string]any{"publisherActive": true, "framesRelayed": atMs,
+			"broadcastKey": bkey, "broadcast": map[string]any{"publisherActive": true, "framesRelayed": (atMs - start) * 60 / 1000,
 				"ingressDatagramBytes": uint64(bytes * 0.55), "keyframeBytesIn": uint64(bytes * 0.45)}})
 	}
 	lines := [][]byte{
@@ -126,5 +135,30 @@ func TestJoinRelayKeepsPathCounters(t *testing.T) {
 		if got, ok := row.Relay[name]; !ok || got != want {
 			t.Errorf("row.Relay[%s] = %v (%v), want %v", name, got, ok, want)
 		}
+	}
+}
+
+// Review round 1 on the stored path: a low-rate stream whose ingress is
+// mostly audio and parity is not undersupply, whichever comparison applies.
+func TestStoredLowRateSessionWithAudioIsNotUndersupply(t *testing.T) {
+	f := newFixture(t)
+	for _, c := range []struct {
+		name string
+		live float64
+	}{
+		{"client reports its live rate", 400e3},
+		{"older client: relay ingress less audio and parity", 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			// 400 kbps of video, 128 kbps of Opus and two parity symbols a
+			// frame at 60 fps in the relay's ingress.
+			row, in, lines := dvrSessionLive(t, 400e3, c.live, 400e3+128e3+2*1200*8*60, 41, 40, 0)
+			rep := f.api.DiagnoseRow(row, in, lines)
+			for _, id := range []string{"resilient-undersupply", "per-connection-ceiling"} {
+				if fd := findOne(rep, id); fd != nil {
+					t.Errorf("%s fired on a healthy low-rate stream: %+v", id, fd)
+				}
+			}
+		})
 	}
 }

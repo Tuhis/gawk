@@ -1,5 +1,7 @@
 package rules
 
+import "github.com/Tuhis/gawk/gawk-server/wire"
+
 // The docs/13 bottleneck playbook, transcribed row for row (docs/33 D6 +
 // §4.7). Each rule keeps the playbook's own verdict wording, so a report and
 // the human procedure say the same thing in the same words.
@@ -56,11 +58,21 @@ const (
 	// DEFAULT_DVR_BUFFER_MS (gawk-app config.ts): a deep-buffer viewer's
 	// floor when neither the relay nor the client reports its buffer.
 	dvrDefaultBufferMs = 3000
-	// docs/91 §2: goodput under this share of the relay's ingested bitrate is
-	// a shortfall rather than overhead. The ingress count carries audio,
-	// parity and framing a viewer's videoBytesReceived does not, so the
-	// margin is the funnel's quarter rather than a few percent.
+	// docs/91 §2: goodput under this share of the stream's VIDEO rate is a
+	// shortfall rather than measurement noise. Both sides are video (see
+	// undersupplied); the margin is the funnel's quarter, because goodput and
+	// the live rate are measured over different clocks and windows.
 	undersupplyGoodputRatio = 0.75
+	// What the relay's ingress count carries beyond the video a viewer's
+	// videoBytesReceived counts (review round 1), bounded so it can be taken
+	// off: the audio lane (128 kbps Opus, AUDIO_BITRATE_BPS in gawk-app),
+	// allowed twice over for framing and the native broadcasters' lanes...
+	audioAllowanceBps = 256_000
+	// ...and the publisher's parity: at most wire.MaxParitySymbols symbols a
+	// frame, none larger than a datagram, whatever parity the viewer itself
+	// opted down to. At 60 fps that is 1.15 Mbit/s, most of a low-rate
+	// stream, which is why the client's own live rate is preferred.
+	parityAllowanceBitsPerFrame = wire.MaxParitySymbols * wire.MaxDatagramSize * 8
 	// docs/91 §9.3 / §11.1: the loss-limited sender. Loss at or above this on
 	// the relay's own counters for the connection is present (§11.1's lossy
 	// rows read 0.16-1.07 %; a clean path reads 0)...
@@ -1194,7 +1206,9 @@ func resilientUndersupply() Rule {
 			{Name: "resilientClampMs", Value: resilientClampMs, Unit: "ms", Note: "the resilient mode's playout clamp"},
 			{Name: "dvrDefaultBufferMs", Value: dvrDefaultBufferMs, Unit: "ms", Note: "a deep-buffer viewer's clamp when neither side reports its DVR buffer"},
 			{Name: "playoutClampSlackMs", Value: playoutClampSlackMs, Unit: "ms", Note: "how close to the clamp counts as pinned"},
-			{Name: "undersupplyGoodputRatio", Value: undersupplyGoodputRatio, Unit: "ratio", Note: "goodput below this share of the stream bitrate is undersupply"},
+			{Name: "undersupplyGoodputRatio", Value: undersupplyGoodputRatio, Unit: "ratio", Note: "goodput below this share of the stream's video rate is undersupply"},
+			{Name: "audioAllowanceBps", Value: audioAllowanceBps, Unit: "bps", Note: "audio taken off the relay's ingress rate when the client reports no live rate"},
+			{Name: "parityAllowanceBitsPerFrame", Value: parityAllowanceBitsPerFrame, Unit: "bits", Note: "the most parity a frame carries (wire.MaxParitySymbols full datagrams), taken off per relayed frame"},
 		},
 		Eval: func(f *Facts) *Finding {
 			mode, _ := f.Text("deliveryMode")
@@ -1206,19 +1220,18 @@ func resilientUndersupply() Rule {
 			if offset < clamp-playoutClampSlackMs {
 				return nil
 			}
-			goodput, stream, short := undersupplied(f)
+			goodput, supply, short := undersupplied(f)
 			if !short {
 				return nil
 			}
-			ev := []Evidence{
+			ev := append([]Evidence{
 				{Signal: "videoGoodputBps", Value: goodput, Unit: "bps", From: FromClient,
 					Comparison: "video bytes received per second over the window"},
-				{Signal: "streamBitrateBps", Value: stream, Unit: "bps", From: FromRelay,
-					Comparison: "what the relay ingested for this broadcast over the same window"},
-				{Signal: "playoutOffsetMs", Value: offset, Unit: "ms", From: FromClient,
+			}, supply...)
+			ev = append(ev,
+				Evidence{Signal: "playoutOffsetMs", Value: offset, Unit: "ms", From: FromClient,
 					Comparison: "at the " + mode + " clamp"},
-				clampEv,
-			}
+				clampEv)
 			conf := 0.7
 			if share, ok := f.Client("fpsDipShare"); ok {
 				ev = append(ev, Evidence{Signal: "fpsDipShare", Value: share, Unit: "ratio", From: FromClient,
@@ -1266,16 +1279,46 @@ func playoutClamp(f *Facts, mode string) (float64, Evidence) {
 		Comparison: "the deep-buffer floor, which the offset sits on by design"}
 }
 
-// undersupplied reports the viewer's goodput, the stream's bitrate, and
-// whether the first is short of the second by more than ingest overhead
-// (audio, parity and framing ride the relay's ingress count) can explain.
-func undersupplied(f *Facts) (goodput, stream float64, short bool) {
+// undersupplied reports the viewer's goodput, the evidence for the video
+// rate it was judged against, and whether the goodput is short of it.
+//
+// Both sides must be video. videoBytesReceived counts video only, while the
+// relay's ingress count also carries audio, config and every parity symbol
+// the publisher sent, which a viewer opted down to less parity never
+// receives (review round 1). So, in order:
+//   - the client's own live video rate (dvrLiveRateBps, deep mode): frame
+//     sizes over media time, exactly what it is meant to receive;
+//   - else the relay's ingress rate with the most audio and parity it can
+//     carry taken off, which needs the stream's frame rate; a floor at or
+//     under zero (a low-rate stream) supports no verdict;
+//   - else nothing: without a frame rate the parity share is unbounded.
+func undersupplied(f *Facts) (goodput float64, supply []Evidence, short bool) {
 	goodput, okG := f.Client("videoGoodputBps")
-	stream, okS := f.Relay("streamBitrateBps")
-	if !okG || !okS || stream <= 0 {
-		return goodput, stream, false
+	if !okG {
+		return 0, nil, false
 	}
-	return goodput, stream, goodput < stream*undersupplyGoodputRatio
+	if live, ok := f.Client("dvrLiveRateBps"); ok && live > 0 {
+		return goodput, []Evidence{{Signal: "dvrLiveRateBps", Value: live, Unit: "bps", From: FromClient,
+				Comparison: "the live rate of the video this viewer is meant to receive"}},
+			goodput < live*undersupplyGoodputRatio
+	}
+	stream, okS := f.Relay("streamBitrateBps")
+	fps, okF := f.Relay("framesRelayedPerSec")
+	if !okS || !okF || stream <= 0 || fps <= 0 {
+		return goodput, nil, false
+	}
+	floor := stream - audioAllowanceBps - parityAllowanceBitsPerFrame*fps
+	if floor <= 0 {
+		return goodput, nil, false
+	}
+	return goodput, []Evidence{
+		{Signal: "streamBitrateBps", Value: stream, Unit: "bps", From: FromRelay,
+			Comparison: "what the relay ingested over the same window, audio and parity included"},
+		{Signal: "framesRelayedPerSec", Value: fps, Unit: "fps", From: FromRelay,
+			Comparison: "bounds the parity share taken off the ingress rate"},
+		{Signal: "videoFloorBps", Value: floor, Unit: "bps", From: FromDerived,
+			Comparison: "the least of the ingress that can be video, the comparison"},
+	}, goodput < floor*undersupplyGoodputRatio
 }
 
 // lossLimitedPath is docs/91 §9.3's discriminator, read from the relay's own
@@ -1326,22 +1369,23 @@ func perConnectionCeiling() Rule {
 			"connection kept roughly its single-connection goodput: on a full link the " +
 			"connections would split a fixed total instead.",
 		Thresholds: []Threshold{
-			{Name: "undersupplyGoodputRatio", Value: undersupplyGoodputRatio, Unit: "ratio", Note: "goodput below this share of the stream bitrate is a shortfall"},
+			{Name: "undersupplyGoodputRatio", Value: undersupplyGoodputRatio, Unit: "ratio", Note: "goodput below this share of the stream's video rate is a shortfall"},
+			{Name: "audioAllowanceBps", Value: audioAllowanceBps, Unit: "bps", Note: "audio taken off the relay's ingress rate when the client reports no live rate"},
+			{Name: "parityAllowanceBitsPerFrame", Value: parityAllowanceBitsPerFrame, Unit: "bits", Note: "the most parity a frame carries (wire.MaxParitySymbols full datagrams), taken off per relayed frame"},
 			{Name: "pathLossPresentRatio", Value: pathLossPresentRatio, Unit: "ratio", Note: "relay-side packet loss on the connection at which loss counts as present"},
 			{Name: "pathRttInflationMax", Value: pathRttInflationMax, Unit: "ratio", Note: "smoothed RTT within this multiple of the minimum is an unqueued path (docs/91 §9.3)"},
 			{Name: "stripeAggregateGainMin", Value: stripeAggregateGainMin, Unit: "ratio", Note: "the aggregate at the widest stripe over width 1 that counts as a rise (docs/91 §9.1)"},
 			{Name: "stripeConnectionFlatRatio", Value: stripeConnectionFlatRatio, Unit: "ratio", Note: "the slowest connection at the widest stripe keeps at least this share of width-1 goodput"},
 		},
 		Eval: func(f *Facts) *Finding {
-			goodput, stream, short := undersupplied(f)
+			goodput, supply, short := undersupplied(f)
 			if !short {
 				return nil
 			}
-			ev := []Evidence{
+			ev := append([]Evidence{
 				{Signal: "videoGoodputBps", Value: goodput, Unit: "bps", From: FromClient,
-					Comparison: "below the stream bitrate"},
-				{Signal: "streamBitrateBps", Value: stream, Unit: "bps", From: FromRelay},
-			}
+					Comparison: "below the stream's video rate"},
+			}, supply...)
 			pathEv, lossLimited := lossLimitedPath(f)
 			stripeEv, scaled := stripeScaled(f)
 			switch {

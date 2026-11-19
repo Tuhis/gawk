@@ -17,6 +17,8 @@ func section2Session() *Facts {
 	f.SetRelay("dvrBufferMs", 3000)
 	f.SetClient("videoGoodputBps", 5.05e6)
 	f.SetRelay("streamBitrateBps", 10.7e6)
+	// 1080p60: the parity allowance is per relayed frame.
+	f.SetRelay("framesRelayedPerSec", 60)
 	f.SetClient("fpsDipShare", 0.58)
 	f.SetRelay("dvrResyncs", 622)
 	return f
@@ -32,6 +34,7 @@ func healthyDVRSession() *Facts {
 	f.SetRelay("dvrBufferMs", 3000)
 	f.SetClient("videoGoodputBps", 11.2e6)
 	f.SetRelay("streamBitrateBps", 11.3e6)
+	f.SetRelay("framesRelayedPerSec", 60)
 	f.SetClient("fpsDipShare", 0)
 	f.SetRelay("dvrResyncs", 0)
 	return f
@@ -142,5 +145,72 @@ func TestResilientUndersupplyDefersToAPerConnectionCeiling(t *testing.T) {
 	}
 	if !strings.Contains(got.Action, "per-connection-ceiling") {
 		t.Errorf("action should point at the per-connection rule: %q", got.Action)
+	}
+}
+
+// Review round 1: the relay's ingress bitrate carries audio, config and every
+// parity symbol, none of which a viewer's videoBytesReceived counts. Judged
+// against it raw, a healthy viewer reads as undersupplied.
+func TestUndersupplyIsJudgedAgainstVideoOnly(t *testing.T) {
+	reliable := func(goodput, ingress, fps float64) *Facts {
+		f := viewerFacts()
+		f.SetText("deliveryMode", "reliable")
+		f.SetClient("playoutOffsetMs", 2000)
+		f.SetClient("videoGoodputBps", goodput)
+		f.SetRelay("streamBitrateBps", ingress)
+		if fps > 0 {
+			f.SetRelay("framesRelayedPerSec", fps)
+		}
+		return f
+	}
+	cases := []struct {
+		name  string
+		f     *Facts
+		fires bool
+	}{
+		// 360 kbps of video beside 128 kbps of Opus: 0.74x the ingress.
+		{"low-rate stream with audio", reliable(360e3, 488e3, 30), false},
+		// A viewer opted down to parity 0 still has the publisher's two
+		// symbols a frame in the relay's ingress: 2 Mbit/s of video, 2.7 in.
+		{"parity opted down", reliable(2.0e6, 2.0e6+2*1200*8*30+128e3, 30), false},
+		// Without a frame rate the parity share cannot be bounded: no verdict.
+		{"no frame rate, no client rate", reliable(2.0e6, 6e6, 0), false},
+		// A real shortfall still fires through the overhead allowance.
+		{"reliable, real shortfall", reliable(3e6, 8e6, 30), true},
+	}
+	// Deep mode: the client's own live video rate is the comparison.
+	dvr := func(goodput, live, ingress float64) *Facts {
+		f := healthyDVRSession()
+		f.SetClient("videoGoodputBps", goodput)
+		f.SetClient("dvrLiveRateBps", live)
+		f.SetRelay("streamBitrateBps", ingress)
+		return f
+	}
+	cases = append(cases,
+		struct {
+			name  string
+			f     *Facts
+			fires bool
+		}{"DVR keeping up with its live rate, ingress far above", dvr(4e6, 4.1e6, 6e6), false},
+		struct {
+			name  string
+			f     *Facts
+			fires bool
+		}{"DVR under its live rate", dvr(5.05e6, 10.2e6, 10.7e6), true},
+	)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			for _, id := range []string{"resilient-undersupply", "per-connection-ceiling"} {
+				f := c.f
+				if id == "per-connection-ceiling" {
+					f.SetRelay("pathSrttMs", 41)
+					f.SetRelay("pathMinRttMs", 40)
+					f.SetRelay("pathLossRatio", 0.01)
+				}
+				if got := findingByID(Evaluate(f, Playbook()), id) != nil; got != c.fires {
+					t.Errorf("%s fired = %v, want %v", id, got, c.fires)
+				}
+			}
+		})
 	}
 }

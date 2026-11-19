@@ -136,6 +136,7 @@ var fieldMeta = map[string]meta{
 	// --- viewer: delivery + audio ------------------------------------------
 	"dvrBufferMs":    gauge("ms", "Depth of the relay-side DVR ring this viewer is reading from."),
 	"dvrStripeWidth": gauge("connections", "Connections carrying this deep-buffer viewer's GOPs, the primary included (R87). 1 is unstriped; absent outside deep mode."),
+	"dvrLiveRateBps": gauge("bps", "The stream's live video rate as this deep-buffer viewer measures it (frame sizes over media time): what it should be receiving. Goodput under it is undersupply."),
 	"connectionBytesReceived": {SemObject, "bytes",
 		"Cumulative video bytes per connection in deep mode, primary first (R87). Goodput per connection is its rate; diagnose() derives it."},
 	"carrierStreams":        counter("streams", "Carrier streams opened (resilient delivery)."),

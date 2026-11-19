@@ -42,6 +42,8 @@ func TestLiveJudgesADeepBufferViewerOnGoodputAndPath(t *testing.T) {
 					samples = append(samples, ingest.Sample{TMs: tMs, Stats: map[string]any{
 						"receivedFps": 60.0, "decoderFps": 60.0, "deliveryMode": "dvr",
 						"dvrBufferMs": 3000.0, "playoutOffsetMs": 3000.0, "dvrStripeWidth": 1.0,
+						// The client's own live video rate: the stream less its audio.
+						"dvrLiveRateBps":     c.stream - 128_000,
 						"videoBytesReceived": bytes, "connectionBytesReceived": []any{bytes},
 					}})
 				}
@@ -83,5 +85,40 @@ func TestLiveJudgesADeepBufferViewerOnGoodputAndPath(t *testing.T) {
 				t.Errorf("fired %v, want undersupply %v ceiling %v", fired, c.undersupply, c.ceiling)
 			}
 		})
+	}
+}
+
+// Review round 1: a scrape that no longer supports a path or DVR fact clears
+// it. A loss reading left standing would keep lossLimitedPath() true on a
+// connection that has since gone clean, or whose relay stopped reporting.
+func TestLivePathFactsClearWhenTheScrapeNoLongerSupportsThem(t *testing.T) {
+	const sid = "f3f3f3f3f3f3f3f3f3f3f3f3"
+	p, clk := newProj()
+	sub := relayscrape.Subscriber{SessionID: sid, DVR: true, DVRBufferMs: 3000,
+		PathSRTTMs: 36, PathMinRTTMs: 33, PathPacketsSent: 10_000, PathPacketsLost: 10}
+	p.ObserveRelay(relayRound(sub))
+	clk.add(5 * time.Second)
+	sub.PathPacketsSent, sub.PathPacketsLost = 20_000, 120
+	p.ObserveRelay(relayRound(sub))
+	for _, name := range []string{"pathSrttMs", "pathMinRttMs", "pathLossRatio", "dvrBufferMs"} {
+		if _, ok := relayFact(p, sid, name); !ok {
+			t.Fatalf("%s absent after a supporting scrape", name)
+		}
+	}
+
+	// Nothing sent in the window: no loss measurement, so no loss fact.
+	clk.add(5 * time.Second)
+	p.ObserveRelay(relayRound(sub))
+	if v, ok := relayFact(p, sid, "pathLossRatio"); ok {
+		t.Errorf("pathLossRatio = %v from a window with nothing sent", v)
+	}
+
+	// The relay stops reporting the path, and the viewer left deep mode.
+	clk.add(5 * time.Second)
+	p.ObserveRelay(relayRound(relayscrape.Subscriber{SessionID: sid}))
+	for _, name := range []string{"pathSrttMs", "pathMinRttMs", "pathLossRatio", "dvrBufferMs"} {
+		if v, ok := relayFact(p, sid, name); ok {
+			t.Errorf("%s = %v left standing after a scrape without it", name, v)
+		}
 	}
 }

@@ -184,7 +184,7 @@ var viewerSeries = []string{
 	"stripeActive", "stripeNeeded", "stripeLargeLossPct", "stripeSmallLossPct",
 	"stripeLargeChunks",
 	// R87 (docs/91 SG3): the deep-buffer stripe width over the session.
-	"dvrStripeWidth",
+	"dvrStripeWidth", "dvrLiveRateBps",
 }
 
 var broadcasterSeries = []string{

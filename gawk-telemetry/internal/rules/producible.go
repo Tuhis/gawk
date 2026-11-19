@@ -82,6 +82,7 @@ var ProducibleFacts = map[string]string{
 	"client.playoutOffsetMs":        both,
 	"client.dvrBufferMs":            both,
 	"client.dvrStripeWidth":         both,
+	"client.dvrLiveRateBps":         both,
 	// R87 (docs/91 SG3), rollup.DeriveGoodput over the session (stored) or
 	// the rolling window (live): video goodput, and in a striped deep-buffer
 	// session the aggregate and slowest connection by width.
