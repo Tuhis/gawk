@@ -172,6 +172,23 @@ type Conn interface {
 	CloseWithError(code uint32, reason string) error
 }
 
+// PathStats is one subscriber connection's transport counters as the QUIC
+// stack reports them (R87 SG0, docs/91 §4). Connection-wide: a stripe leg or
+// a DVR primary each have their own.
+type PathStats struct {
+	SmoothedRTT time.Duration
+	MinRTT      time.Duration
+	BytesSent   uint64 // including retransmissions
+	PacketsSent uint64
+	PacketsLost uint64
+}
+
+// PathStatser is implemented by a Conn whose transport can report PathStats.
+// Optional, so fakes and edge plumbing need nothing.
+type PathStatser interface {
+	PathStats() (PathStats, bool)
+}
+
 // SessionCloser is the slice of a publisher's session the hub needs to depose
 // it when a newer publisher session takes over the broadcast (docs/06),
 // bound after the session upgrade via Publisher.BindConn.
@@ -422,6 +439,16 @@ type SubscriberStats struct {
 	// keyframe hand-offs move no bytes for UndeliverableVideoAfter and said
 	// so. The live half of the BUGS.md Safari wedge confirmation procedure.
 	UndeliverableNotices uint64 `json:"undeliverableNotices,omitempty"`
+
+	// The connection's own transport counters (R87 SG0, docs/91 §4): the
+	// relay's congestion controller is the sender on every viewer leg, so
+	// its RTT and loss are what bound one connection's throughput. Omitted
+	// when the transport can't report them.
+	PathSRTTMs      float64 `json:"pathSrttMs,omitempty"`
+	PathMinRTTMs    float64 `json:"pathMinRttMs,omitempty"`
+	PathBytesSent   uint64  `json:"pathBytesSent,omitempty"`
+	PathPacketsSent uint64  `json:"pathPacketsSent,omitempty"`
+	PathPacketsLost uint64  `json:"pathPacketsLost,omitempty"`
 }
 
 // Stats is a point-in-time snapshot of hub state, for logging and the
@@ -1954,7 +1981,16 @@ func (r *Registry) statsWith(key func(id string) string, ownerKeys bool) Registr
 			carDropped += s.carrierRecordsDropped.Load()
 			carOverflow += s.carrierQueueOverflow.Load()
 			egressCar += s.egressCarrierBytes.Load()
+			var ps PathStats
+			if pst, ok := s.sender.(PathStatser); ok {
+				ps, _ = pst.PathStats()
+			}
 			details = append(details, SubscriberStats{
+				PathSRTTMs:            float64(ps.SmoothedRTT.Microseconds()) / 1000,
+				PathMinRTTMs:          float64(ps.MinRTT.Microseconds()) / 1000,
+				PathBytesSent:         ps.BytesSent,
+				PathPacketsSent:       ps.PacketsSent,
+				PathPacketsLost:       ps.PacketsLost,
 				Key:                   s.statsKey,
 				SessionID:             s.sessionID,
 				QueueDepth:            len(s.queue),

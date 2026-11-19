@@ -1438,7 +1438,7 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	// A stripe leg gets no close notice: the viewer reads no streams on a
 	// leg (the relay sends legs none), and a leg's death is handled by the
 	// primary's fallback whatever its code.
-	adapter := &webtransportSessionAdapter{Session: sess, closeNotice: !isStripeLeg}
+	adapter := &webtransportSessionAdapter{Session: sess, closeNotice: !isStripeLeg, stats: pathStatsFrom(r.Context())}
 	var sub *hub.Subscriber
 	switch {
 	case isStripeLeg:
@@ -1818,6 +1818,24 @@ type webtransportSessionAdapter struct {
 	// first (closenotice.go). False on /internal/subscribe, whose edge
 	// client reads every uni stream as a keyframe.
 	closeNotice bool
+	// stats reads the QUIC connection's counters (R87 SG0); nil when the
+	// request context carried none.
+	stats connStatsFunc
+}
+
+// PathStats implements hub.PathStatser.
+func (w *webtransportSessionAdapter) PathStats() (hub.PathStats, bool) {
+	if w.stats == nil {
+		return hub.PathStats{}, false
+	}
+	cs := w.stats()
+	return hub.PathStats{
+		SmoothedRTT: cs.SmoothedRTT,
+		MinRTT:      cs.MinRTT,
+		BytesSent:   cs.BytesSent,
+		PacketsSent: cs.PacketsSent,
+		PacketsLost: cs.PacketsLost,
+	}, true
 }
 
 func (w *webtransportSessionAdapter) CloseWithError(code uint32, reason string) error {
