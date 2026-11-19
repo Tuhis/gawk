@@ -5162,8 +5162,8 @@ some screens, so the buttons can't be part of what scrolls.
 **Non-goals**: a Settings switch for window fit (OD3: a manual resize
 overrides it); growing the window on Linux (docs/66 D14: neither Wayland nor
 winit 0.30 says where the window or the work area is); remembering the
-window's position (since added on Windows as WF5, docs/66 D18, owner
-2026-11-19); changing the width.
+window's position (since added on Windows and macOS as WF5–WF6,
+docs/66 D18, owner 2026-11-19); changing the width.
 
 **Status**: 🔧 implemented 2026-10-02 (WF1–WF3) — designed the same day,
 owner decisions OD1–OD5. The layout is verified headless: at 440 × 600 the
