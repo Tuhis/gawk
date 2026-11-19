@@ -826,3 +826,193 @@ func TestStripedDVROverlappingWidths(t *testing.T) {
 		}
 	}
 }
+
+// subscribeDrainLeg dials DVR leg 1 of 2 for testOwner.
+func subscribeDrainLeg(t *testing.T, r *Registry, id string, bufferMs int) (*Subscriber, *fakeSender) {
+	t.Helper()
+	c := &fakeSender{}
+	leg, err := r.SubscribeStripeLeg(id, c, StripeLeg{N: 2, Member: 1, Owner: testOwner, BufferMs: bufferMs}, 0)
+	if err != nil {
+		t.Fatalf("SubscribeStripeLeg: %v", err)
+	}
+	return leg, c
+}
+
+// drainState is the drain datagram: StripeState with Striped false.
+var drainState = wire.StripeState{}
+
+// legClosedDrained reports that the relay ended the leg as drained.
+func legClosedDrained(c *fakeSender) bool {
+	code, closed := c.getCloseInfo()
+	return closed && code == StripeLegDrainedCloseCode
+}
+
+// assertServedUpTo fails if the leg served a GOP newer than GOP k or one
+// outside its residue, and returns the GOPs it served.
+func assertServedUpTo(t *testing.T, c *fakeSender, k int) map[uint32]bool {
+	t.Helper()
+	served := map[uint32]bool{}
+	for _, g := range servedGOPs(t, c) {
+		served[g.kf] = true
+		if g.kf > gopKeyframeID(k) {
+			t.Errorf("served GOP %d after a drain at GOP %d", g.kf, gopKeyframeID(k))
+		}
+		if wire.StripeGOPResidue(g.kf, 2) != 1 {
+			t.Errorf("served GOP %d outside its residue", g.kf)
+		}
+	}
+	return served
+}
+
+// TestStripedDVRLegDrain (review R87 round 2): a drain on a superseded DVR
+// leg stops new GOPs, still delivers every GOP of its residue it owed up to
+// the drain point, then ends the session.
+func TestStripedDVRLegDrain(t *testing.T) {
+	r := NewRegistry(discardLog, stripedDVROpts())
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	leg, c := subscribeDrainLeg(t, r, id, 30000)
+	block := make(chan struct{})
+	c.setCarBlock(block) // behind at drain time: it still owes GOPs
+	const before, after = 12, 10
+	for k := range before {
+		ingestStripeGOP(t, p, k, 2)
+	}
+	leg.ApplyStripeState(drainState)
+	if !leg.StripeDraining() {
+		t.Fatal("the leg did not record the drain")
+	}
+	for k := before; k < before+after; k++ {
+		ingestStripeGOP(t, p, k, 2)
+	}
+	close(block)
+	waitFor(t, 10*time.Second, func() bool { return legClosedDrained(c) }, "the drained leg to be closed")
+	served := assertServedUpTo(t, c, before-1)
+	for k := range before {
+		if kf := gopKeyframeID(k); wire.StripeGOPResidue(kf, 2) == 1 && !served[kf] {
+			t.Errorf("owed GOP k=%d was not delivered before the close", k)
+		}
+	}
+	for _, g := range servedGOPs(t, c) {
+		if g.kf < gopKeyframeID(before-1) && len(g.records) != 2 {
+			t.Errorf("owed GOP %d delivered %d of 2 records", g.kf, len(g.records))
+		}
+	}
+	if leg.DVRResyncs() != 0 {
+		t.Errorf("resyncs = %d on a ring that held everything", leg.DVRResyncs())
+	}
+	if bs := singleBroadcastStats(t, r); bs.StripeLegs != 0 || bs.StripeLegsReaped != 0 {
+		t.Errorf("after the drain: StripeLegs %d, StripeLegsReaped %d; want 0 and 0 (a drain is not a reap)",
+			bs.StripeLegs, bs.StripeLegsReaped)
+	}
+}
+
+// TestStripedDVRLegDrainIsIdempotent: a repeated drain datagram (the client
+// sends a burst) never moves the point.
+func TestStripedDVRLegDrainIsIdempotent(t *testing.T) {
+	r := NewRegistry(discardLog, stripedDVROpts())
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	leg, c := subscribeDrainLeg(t, r, id, 30000)
+	block := make(chan struct{})
+	c.setCarBlock(block)
+	for k := range 6 {
+		ingestStripeGOP(t, p, k, 1)
+	}
+	leg.ApplyStripeState(drainState)
+	point := leg.dvrDrainAt.Load()
+	for k := 6; k < 16; k++ {
+		ingestStripeGOP(t, p, k, 1)
+		leg.ApplyStripeState(drainState)
+	}
+	if got := leg.dvrDrainAt.Load(); got != point {
+		t.Fatalf("drain point moved from %d to %d on a repeated drain", point, got)
+	}
+	close(block)
+	waitFor(t, 10*time.Second, func() bool { return legClosedDrained(c) }, "the drained leg to be closed")
+	assertServedUpTo(t, c, 5)
+}
+
+// TestStripedDVRDrainIgnoredElsewhere: an unstriped StripeState keeps its
+// existing meaning on a primary, and is ignored on a live-mode leg.
+func TestStripedDVRDrainIgnoredElsewhere(t *testing.T) {
+	r := NewRegistry(discardLog, stripedDVROpts())
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	pconn := &fakeSender{}
+	primary, err := r.SubscribeDVR(id, pconn, 30000, 0, testOwner)
+	if err != nil {
+		t.Fatalf("SubscribeDVR: %v", err)
+	}
+	liveConn := &fakeSender{}
+	live, err := r.SubscribeStripeLeg(id, liveConn, StripeLeg{N: 2, Member: 1, Owner: testOwner}, 0)
+	if err != nil {
+		t.Fatalf("SubscribeStripeLeg(live): %v", err)
+	}
+	primary.ApplyStripeState(wire.StripeState{Striped: true, StripeN: 2})
+	primary.ApplyStripeState(drainState)
+	live.ApplyStripeState(drainState)
+	if primary.StripeDraining() || live.StripeDraining() {
+		t.Fatal("a primary or a live-mode leg recorded a drain")
+	}
+	if primary.dvrStripe.Load() != nil {
+		t.Error("the primary's unstriped state did not clear its stripe")
+	}
+	for k := range 6 {
+		ingestStripeGOP(t, p, k, 1)
+	}
+	waitFor(t, 5*time.Second, func() bool { return len(pconn.receivedKeyframes()) == 6 }, "the unstriped primary to serve every GOP")
+	time.Sleep(50 * time.Millisecond)
+	for name, c := range map[string]*fakeSender{"primary": pconn, "live leg": liveConn} {
+		if _, closed := c.getCloseInfo(); closed {
+			t.Errorf("the %s was closed by an unstriped StripeState", name)
+		}
+	}
+}
+
+// TestStripedDVRLegDrainResyncPastThePoint: a drained leg that is too far
+// behind resyncs as usual, and a resync past the point just ends the drain:
+// it closes without serving anything newer than the point.
+func TestStripedDVRLegDrainResyncPastThePoint(t *testing.T) {
+	r := NewRegistry(discardLog, stripedDVROpts())
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	leg, c := subscribeDrainLeg(t, r, id, MinDVRBufferMs)
+	block := make(chan struct{})
+	c.setCarBlock(block)
+	defer close(block)
+	const before = 4
+	for k := range before {
+		ingestStripeGOP(t, p, k, 2)
+	}
+	leg.ApplyStripeState(drainState)
+	// Keep the broadcast going until the stuck cursor is more than its
+	// buffer behind.
+	for k := before; k < before+30 && !legClosedDrained(c); k++ {
+		ingestStripeGOP(t, p, k, 2)
+		time.Sleep(100 * time.Millisecond)
+	}
+	waitFor(t, 10*time.Second, func() bool { return legClosedDrained(c) }, "the drained leg to close after its resync")
+	if leg.DVRResyncs() == 0 {
+		t.Fatal("the leg never resynced; the test proves nothing")
+	}
+	// Keyframes only: a parked carrier is cancelled and reopened on every
+	// retry, so carriers no longer pair one-to-one with GOPs here.
+	for _, msg := range c.receivedKeyframes() {
+		hdr, err := wire.ParseStreamFrameHeader(msg)
+		if err != nil {
+			t.Fatalf("keyframe: %v", err)
+		}
+		if hdr.FrameID > gopKeyframeID(before-1) {
+			t.Errorf("served GOP %d after a drain at GOP %d", hdr.FrameID, gopKeyframeID(before-1))
+		}
+	}
+}

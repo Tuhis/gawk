@@ -253,6 +253,17 @@ func (r *DVRRing) GopIdentity(c DVRCursor) (dvrGopIdentity, bool) {
 	return dvrGopIdentity{at: g.at, kfID: g.kfID, kfIDOK: g.kfIDOK}, true
 }
 
+// NewestGopSeq is the newest GOP's sequence, or one below the next one when
+// the ring is empty, so every GOP still to arrive is newer.
+func (r *DVRRing) NewestGopSeq() int64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.gops) == 0 {
+		return r.nextSeq - 1
+	}
+	return r.gops[len(r.gops)-1].seq
+}
+
 // FellOffTail reports that the cursor's GOP has been evicted.
 func (r *DVRRing) FellOffTail(c DVRCursor) bool {
 	r.mu.RLock()
@@ -389,9 +400,14 @@ func (s *Subscriber) drainDVR() {
 	defer s.retireCarrier()
 	var scratch []byte
 	s.dvrProgressAt.Store(time.Now().UnixMilli())
+	// A drain wakes a parked loop once; after that the ring's wake does.
+	drain := (<-chan struct{})(s.dvrDrainSig)
 	for {
 		if s.closed.Load() {
 			return
+		}
+		if s.dvrDrainAt.Load() != 0 {
+			drain = nil
 		}
 		// Health in this mode is progress, not position: a cursor legitimately
 		// sits seconds behind live, so the only honest question is whether it
@@ -408,11 +424,18 @@ func (s *Subscriber) drainDVR() {
 			s.dvrResync()
 			continue
 		}
+		// A draining leg past its point owes nothing more; checked before
+		// any keyframe, so it never serves a GOP newer than the point. A
+		// resync past the point lands here too.
+		if s.dvrDrainDone() {
+			go s.closeDrained()
+			return
+		}
 		if s.dvrCursor.NeedsKeyframe() {
 			if serve, known := s.dvrServesGop(); known && !serve {
 				// Another connection of this viewer's stripe serves this GOP
 				// (docs/91 D3).
-				if !s.dvrSkipGop(wake) {
+				if !s.dvrSkipGop(wake, drain) {
 					return
 				}
 				continue
@@ -425,6 +448,7 @@ func (s *Subscriber) drainDVR() {
 				_, available := s.dvr.Keyframe(s.dvrCursor)
 				select {
 				case <-wake:
+				case <-drain:
 				case <-s.dvrStop:
 					return
 				}
@@ -453,6 +477,7 @@ func (s *Subscriber) drainDVR() {
 			// next attempt opens a fresh one.
 			select {
 			case <-wake:
+			case <-drain:
 			case <-s.dvrStop:
 				return
 			case <-time.After(dvrRetryFloor):
@@ -473,6 +498,7 @@ func (s *Subscriber) drainDVR() {
 		// broadcaster's can be minutes.
 		select {
 		case <-wake:
+		case <-drain:
 		case <-s.dvrStop:
 			return
 		}

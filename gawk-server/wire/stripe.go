@@ -34,8 +34,12 @@ const (
 )
 
 // StripeState is the primary-suppression signal (R30, docs/35 §5.3):
-// client→relay, datagram, valid only on an external datagram-delivery
-// subscribe session that is not itself a leg.
+// client→relay, datagram, valid on an external subscribe session that is not
+// itself a leg: a datagram-delivery one, or since R87 a DVR one on a relay
+// advertising CapStripedDVR (docs/91 D7). On a DVR stripe leg (R87) an
+// unstriped state means drain: serve what is owed up to the ring's newest
+// GOP at that moment, nothing newer, then the relay closes the leg. Every
+// other leg ignores it.
 //
 // It is LEVEL state, not an edge: the viewer re-sends it at 1 Hz while
 // striped (plus a short burst on the unstripe transition), and the relay

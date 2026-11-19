@@ -103,13 +103,14 @@ func (s *Subscriber) dvrServesGop() (serve, known bool) {
 // last write failed: then a skip proves nothing about reachability, and
 // counting it would let a dead connection that keeps resyncing onto other
 // connections' GOPs dodge DVRProgressTimeout forever.
-func (s *Subscriber) dvrSkipGop(wake <-chan struct{}) bool {
+func (s *Subscriber) dvrSkipGop(wake, drain <-chan struct{}) bool {
 	if next, ok := s.dvr.NextGop(s.dvrCursor); ok {
 		s.dvrCursor = next
 		s.dvrNoteCursor()
 	} else {
 		select {
 		case <-wake:
+		case <-drain:
 		case <-s.dvrStop:
 			return false
 		}
@@ -129,4 +130,42 @@ func (s *Subscriber) dvrPaceBps() int {
 		return live / n
 	}
 	return live
+}
+
+// StripeLegDrainedCloseCode is the session close code of a DVR leg the
+// relay ends because its drain is complete: a plain application close, not
+// a wire close code. Nothing went wrong, so not 4005 (an orphan reap), and
+// the viewer ignores the deaths of legs it is draining anyway.
+const StripeLegDrainedCloseCode = 0
+
+// drainDVRLeg starts draining a superseded DVR leg (docs/91 D11, review R87
+// round 2): the viewer has moved to another width or unstriped, and keeps
+// the leg open only to receive what it still owes. The drain point is the
+// newest GOP in this pod's ring now; the leg serves its residue up to and
+// including it and never a newer GOP, then closes. Idempotent: only the
+// first drain records a point.
+func (s *Subscriber) drainDVRLeg() {
+	if !s.dvrStripeLeg() {
+		return
+	}
+	if s.dvrDrainAt.CompareAndSwap(0, s.dvr.NewestGopSeq()+1) {
+		close(s.dvrDrainSig)
+	}
+}
+
+// StripeDraining reports a DVR leg that is draining, for /statusz.
+func (s *Subscriber) StripeDraining() bool { return s.dvrDrainAt.Load() != 0 }
+
+// dvrDrainDone reports that a draining leg's cursor is past its drain
+// point: everything it owed has been served or skipped.
+func (s *Subscriber) dvrDrainDone() bool {
+	at := s.dvrDrainAt.Load()
+	return at != 0 && s.dvrCursor.GopSeq() > at-1
+}
+
+// closeDrained ends a leg whose drain is complete. On its own goroutine:
+// Close waits for the drain that calls this.
+func (s *Subscriber) closeDrained() {
+	_ = s.sender.CloseWithError(StripeLegDrainedCloseCode, "stripe leg drained")
+	s.Close()
 }

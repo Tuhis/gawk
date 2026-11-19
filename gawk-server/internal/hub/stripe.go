@@ -210,7 +210,15 @@ func (r *Registry) SubscribeStripeLeg(id string, conn Conn, leg StripeLeg, parit
 // state clears it immediately. Transitions count only when the level flips,
 // so the 1 Hz refresh does not inflate the counter.
 func (s *Subscriber) ApplyStripeState(st wire.StripeState) {
-	if s.internal || s.stripeLeg || s.owner == "" {
+	if s.stripeLeg {
+		// On a DVR leg an unstriped state means drain (review R87 round 2);
+		// on any other leg the message stays inert.
+		if !st.Striped {
+			s.drainDVRLeg()
+		}
+		return
+	}
+	if s.internal || s.owner == "" {
 		return
 	}
 	if s.dvr != nil {

@@ -1518,8 +1518,15 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			// Any inbound datagram renews the leg's liveness lease (the viewer's
-			// 1 Hz StripeState refresh); only TimeSync is answered.
+			// 1 Hz StripeState refresh). An unstriped StripeState drains a DVR
+			// leg (docs/91 D11) and is inert on any other; TimeSync is answered.
 			sub.NoteLegAlive()
+			if len(dgram) == wire.StripeStateSize && dgram[1] == wire.TypeStripeState {
+				if st, err := wire.ParseStripeState(dgram); err == nil {
+					sub.ApplyStripeState(st)
+				}
+				continue
+			}
 			maybeAnswerTimeSync(sess, dgram, legLimiter)
 		}
 	}

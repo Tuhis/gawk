@@ -497,3 +497,77 @@ func TestStripedDVRLegOnAnotherPod(t *testing.T) {
 		t.Error("the leg on the edge pod served no GOP")
 	}
 }
+
+// TestStripedDVRLegDrainOverQUIC: an unstriped StripeState on a DVR leg
+// session drains it. The leg serves nothing newer than the ring's newest GOP
+// when the drain arrived, and then the relay closes the leg session, while
+// the primary carries on.
+func TestStripedDVRLegDrainOverQUIC(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	port, clientTLS, r, _ := startTestServerCfg(t, ctx, stripedDVRTestConfig(15))
+	pub, id := dialPublisherAndGetID(t, ctx, port, clientTLS)
+	defer pub.CloseWithError(0, "")
+
+	const owner = "aabbccdd00112233"
+	base := fmt.Sprintf("https://127.0.0.1:%d/subscribe/%s?delivery=reliable&buffer=2500&owner=%s", port, id, owner)
+	primary := dial(t, ctx, base, clientTLS)
+	defer primary.CloseWithError(0, "")
+	leg := dial(t, ctx, base+"&stripe=2&leg=1", clientTLS)
+	defer leg.CloseWithError(0, "")
+	waitFor(t, 10*time.Second, func() bool { return r.Stats().Totals.Subscribers == 2 }, "the primary and its leg registered")
+
+	deadline := time.Now().Add(40 * time.Second)
+	readCtx, readCancel := context.WithDeadline(ctx, deadline)
+	defer readCancel()
+	sink := &gopSink{}
+	go sink.read(readCtx, leg, deadline)
+
+	const gopLen, before, after = 30, 8, 8
+	publish := func(k int) {
+		kf := uint32(1 + gopLen*k)
+		sendKeyframeStream(t, pub, buildStreamKeyframe(t, kf, "avc1.42E02A", 1024))
+		time.Sleep(60 * time.Millisecond)
+		_ = pub.SendDatagram(encodeFrame(t, kf+1, false, 1)[0])
+		time.Sleep(20 * time.Millisecond)
+	}
+	for k := range before {
+		publish(k)
+	}
+	drain, err := wire.AppendStripeState(nil, wire.StripeState{})
+	if err != nil {
+		t.Fatalf("AppendStripeState: %v", err)
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		_ = leg.SendDatagram(drain)
+		for _, d := range r.Stats().Broadcasts[r.ObfuscateID(id)].SubscriberDetails {
+			if d.StripeLeg && d.StripeDraining {
+				return true
+			}
+		}
+		return false
+	}, "the leg draining on /statusz")
+	for k := before; k < before+after; k++ {
+		publish(k)
+	}
+	select {
+	case <-leg.Context().Done():
+	case <-time.After(15 * time.Second):
+		t.Fatal("the relay never closed the drained leg")
+	}
+	select {
+	case <-primary.Context().Done():
+		t.Fatal("draining the leg closed the primary")
+	default:
+	}
+	keyframes, _, _ := sink.snapshot()
+	for _, kf := range keyframes {
+		if kf > uint32(1+gopLen*(before-1)) {
+			t.Errorf("the drained leg served GOP %d, newer than the drain point %d", kf, 1+gopLen*(before-1))
+		}
+	}
+	if len(keyframes) == 0 {
+		t.Error("the leg served nothing before its drain; the test proves nothing")
+	}
+}

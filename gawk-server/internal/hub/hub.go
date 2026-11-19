@@ -420,11 +420,14 @@ type SubscriberStats struct {
 	// on every pod of the fleet. A keyed MAC of the token
 	// (Registry.stripeOwnerKey), never the token; omitted on unowned sessions
 	// and on a relay with striping off.
-	StripeLeg             bool   `json:"stripeLeg,omitempty"`
-	StripeN               int    `json:"stripeN,omitempty"`
-	StripeMember          int    `json:"stripeMember,omitempty"`
-	Striped               bool   `json:"striped,omitempty"`
-	StripeOwner           string `json:"stripeOwner,omitempty"`
+	StripeLeg    bool   `json:"stripeLeg,omitempty"`
+	StripeN      int    `json:"stripeN,omitempty"`
+	StripeMember int    `json:"stripeMember,omitempty"`
+	Striped      bool   `json:"striped,omitempty"`
+	StripeOwner  string `json:"stripeOwner,omitempty"`
+	// StripeDraining marks a superseded DVR leg delivering what it still
+	// owes before the relay closes it (docs/91 D11).
+	StripeDraining        bool   `json:"stripeDraining,omitempty"`
 	CarrierStreams        uint64 `json:"carrierStreams,omitempty"`
 	CarrierRecords        uint64 `json:"carrierRecords,omitempty"`
 	CarrierRecordsDropped uint64 `json:"carrierRecordsDropped,omitempty"`
@@ -1825,6 +1828,7 @@ func (r *Registry) subscribeOpts(id string, conn Conn, so subscribeOpts) (*Subsc
 		s.dvrBufferMs = so.bufferMs
 		s.dvrCursor = b.dvr.NewCursor()
 		s.dvrStop = make(chan struct{})
+		s.dvrDrainSig = make(chan struct{})
 		s.dvrPace = newDVRPacer(r.opts.DVRMaxCatchup, time.Now)
 		if b.dvrAudio != nil && !so.stripeLeg {
 			s.dvrAudio = b.dvrAudio
@@ -2030,6 +2034,7 @@ func (r *Registry) statsWith(key func(id string) string, ownerKeys bool) Registr
 				StripeMember:          int(s.stripeMember),
 				Striped:               striped,
 				StripeOwner:           stripeOwner,
+				StripeDraining:        s.StripeDraining(),
 			})
 		}
 		totals.DatagramsDropped += dropped
@@ -3208,6 +3213,11 @@ type Subscriber struct {
 	// next progress. Owned by the video drain. While set, skipping another
 	// connection's GOP is not counted as idleness (dvrSkipGop).
 	dvrFailing bool
+	// dvrDrainAt is a draining DVR leg's drain point, the ring GOP seq + 1
+	// (0: not draining). Set once by drainDVRLeg, which also closes
+	// dvrDrainSig to wake a parked drain.
+	dvrDrainAt  atomic.Int64
+	dvrDrainSig chan struct{}
 
 	carrierStreams        atomic.Uint64
 	carrierRecords        atomic.Uint64
