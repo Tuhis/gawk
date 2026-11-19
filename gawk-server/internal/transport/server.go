@@ -1461,7 +1461,7 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	case mode == wire.DeliveryDVR:
 		// The owner lets a DVR primary stripe and reaps its legs with it
 		// (docs/91 D7).
-		sub, err = s.registry.SubscribeDVROwned(id, adapter, bufferMs, parityServed, owner)
+		sub, err = s.registry.SubscribeDVR(id, adapter, bufferMs, parityServed, owner)
 	case mode == wire.DeliveryReliable:
 		sub, err = s.registry.SubscribeReliable(id, adapter, parityServed)
 	default:

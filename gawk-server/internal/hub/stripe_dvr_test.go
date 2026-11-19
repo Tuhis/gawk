@@ -87,9 +87,9 @@ func subscribeStripe(t *testing.T, r *Registry, id string, n, bufferMs int) (*Su
 	for j := range conns {
 		conns[j] = &fakeSender{}
 	}
-	primary, err := r.SubscribeDVROwned(id, conns[0], bufferMs, 0, testOwner)
+	primary, err := r.SubscribeDVR(id, conns[0], bufferMs, 0, testOwner)
 	if err != nil {
-		t.Fatalf("SubscribeDVROwned: %v", err)
+		t.Fatalf("SubscribeDVR: %v", err)
 	}
 	var legs []*Subscriber
 	for j := 1; j < n; j++ {
@@ -201,7 +201,9 @@ func TestStripedDVRExpirySendsPrimaryBackToEveryGOP(t *testing.T) {
 	// A stopped refresh, compressed: the state lapses 300 ms from now
 	// instead of StripeStateTTL.
 	expiry := time.Now().Add(300 * time.Millisecond)
-	primary.stripeUntil.Store(expiry.UnixNano())
+	st := *primary.dvrStripe.Load()
+	st.until = expiry.UnixNano()
+	primary.dvrStripe.Store(&st)
 	time.Sleep(2 * time.Millisecond)
 
 	const gops = 60
@@ -322,7 +324,7 @@ func TestStripedDVRPacerShare(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartPublish: %v", err)
 	}
-	plain, err := r.SubscribeDVR(id, &fakeSender{}, 3000, 0)
+	plain, err := r.SubscribeDVR(id, &fakeSender{}, 3000, 0, "")
 	if err != nil {
 		t.Fatalf("SubscribeDVR: %v", err)
 	}
@@ -401,16 +403,16 @@ func TestApplyStripeStateOnDVRPrimary(t *testing.T) {
 			if err != nil {
 				t.Fatalf("StartPublish: %v", err)
 			}
-			s, err := r.SubscribeDVROwned(id, &fakeSender{}, 3000, 0, tc.owner)
+			s, err := r.SubscribeDVR(id, &fakeSender{}, 3000, 0, tc.owner)
 			if err != nil {
-				t.Fatalf("SubscribeDVROwned: %v", err)
+				t.Fatalf("SubscribeDVR: %v", err)
 			}
 			defer s.Close()
 			s.ApplyStripeState(wire.StripeState{Striped: true, StripeN: 2})
 			if armed := s.stripeUntil.Load() != 0; armed != tc.wantArmed {
 				t.Fatalf("armed = %v, want %v", armed, tc.wantArmed)
 			}
-			if _, n := s.dvrStripeShare(time.Now().UnixNano()); tc.wantArmed != (n == 2) {
+			if _, n, _ := s.dvrStripeShare(time.Now().UnixNano()); tc.wantArmed != (n == 2) {
 				t.Fatalf("stripe width %d with armed = %v", n, tc.wantArmed)
 			}
 		})
@@ -514,9 +516,9 @@ func TestStripedDVRPrimaryEngagingBehindServesItsBacklog(t *testing.T) {
 	pconn := &fakeSender{}
 	block := make(chan struct{})
 	pconn.setCarBlock(block) // the primary is stuck behind
-	primary, err := r.SubscribeDVROwned(id, pconn, 30000, 0, testOwner)
+	primary, err := r.SubscribeDVR(id, pconn, 30000, 0, testOwner)
 	if err != nil {
-		t.Fatalf("SubscribeDVROwned: %v", err)
+		t.Fatalf("SubscribeDVR: %v", err)
 	}
 	const backlog, more = 10, 10
 	for k := range backlog {
@@ -646,9 +648,9 @@ func TestStripedDVRWideningBehindLeavesNoHole(t *testing.T) {
 	pconn := &fakeSender{}
 	block := make(chan struct{})
 	pconn.setCarBlock(block)
-	primary, err := r.SubscribeDVROwned(id, pconn, 30000, 0, testOwner)
+	primary, err := r.SubscribeDVR(id, pconn, 30000, 0, testOwner)
 	if err != nil {
-		t.Fatalf("SubscribeDVROwned: %v", err)
+		t.Fatalf("SubscribeDVR: %v", err)
 	}
 	oldLegConn := &fakeSender{}
 	oldLeg, err := r.SubscribeStripeLeg(id, oldLegConn, StripeLeg{N: 2, Member: 1, Owner: testOwner, BufferMs: 30000}, 0)
@@ -701,6 +703,126 @@ func TestStripedDVRWideningBehindLeavesNoHole(t *testing.T) {
 	for k := range before + after + 1 {
 		if !got[gopKeyframeID(k)] {
 			t.Errorf("GOP k=%d served by nobody across the widening", k)
+		}
+	}
+}
+
+// TestDVRStripeStateIsPublishedWhole: a DVR primary's width, period start
+// and deadline are one value, so the drain can never pair a new width with
+// the old period's start (review R87 SG1, round 1). A refresh of the same
+// width keeps the start; a new width or an expiry starts a new period.
+func TestDVRStripeStateIsPublishedWhole(t *testing.T) {
+	r := NewRegistry(discardLog, stripedDVROpts())
+	id, _, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	s, err := r.SubscribeDVR(id, &fakeSender{}, 3000, 0, testOwner)
+	if err != nil {
+		t.Fatalf("SubscribeDVR: %v", err)
+	}
+	defer s.Close()
+	s.ApplyStripeState(wire.StripeState{Striped: true, StripeN: 2})
+	first := s.dvrStripe.Load()
+	if first == nil || first.n != 2 {
+		t.Fatalf("armed state = %+v, want width 2", first)
+	}
+	time.Sleep(time.Millisecond)
+	s.ApplyStripeState(wire.StripeState{Striped: true, StripeN: 2})
+	if refresh := s.dvrStripe.Load(); refresh.since != first.since || refresh.until <= first.until {
+		t.Errorf("refresh %+v after %+v: want the same start and a later deadline", refresh, first)
+	}
+	time.Sleep(time.Millisecond)
+	s.ApplyStripeState(wire.StripeState{Striped: true, StripeN: 3})
+	wider := s.dvrStripe.Load()
+	if wider.n != 3 || wider.since <= first.since {
+		t.Errorf("widened state %+v: want width 3 with a start after %d", wider, first.since)
+	}
+	if first.n != 2 {
+		t.Error("a published state was mutated in place")
+	}
+	// The drain's reader sees exactly what was published.
+	if _, n, since := s.dvrStripeShare(time.Now().UnixNano()); n != 3 || since != wider.since {
+		t.Errorf("share = (%d, %d), want (3, %d)", n, since, wider.since)
+	}
+	// After an expiry, a re-arm at the same width is a new period.
+	expired := *wider
+	expired.until = time.Now().UnixNano() - 1
+	s.dvrStripe.Store(&expired)
+	if _, n, _ := s.dvrStripeShare(time.Now().UnixNano()); n != 1 {
+		t.Errorf("expired state: width %d, want 1 (every GOP)", n)
+	}
+	time.Sleep(time.Millisecond)
+	s.ApplyStripeState(wire.StripeState{Striped: true, StripeN: 3})
+	if rearm := s.dvrStripe.Load(); rearm.since <= wider.since {
+		t.Errorf("re-arm after expiry kept the old start %d", wider.since)
+	}
+	s.ApplyStripeState(wire.StripeState{})
+	if s.dvrStripe.Load() != nil {
+		t.Error("an unstriped state left the DVR stripe state set")
+	}
+}
+
+// TestStripedDVROverlappingWidths: the viewer keeps superseded legs open
+// for buffer + 1 s after a width change, so one owner briefly holds old-N
+// and new-N legs together. Each keeps serving its own residue (duplicates,
+// no holes), the counters see every leg and one striped primary, and the
+// primary's close still reaps all of them.
+func TestStripedDVROverlappingWidths(t *testing.T) {
+	r := NewRegistry(discardLog, stripedDVROpts())
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	primary, _, conns := subscribeStripe(t, r, id, 2, 30000)
+	for j := 1; j < 3; j++ {
+		c := &fakeSender{}
+		if _, err := r.SubscribeStripeLeg(id, c, StripeLeg{N: 3, Member: j, Owner: testOwner, BufferMs: 30000}, 0); err != nil {
+			t.Fatalf("SubscribeStripeLeg(N=3, %d): %v", j, err)
+		}
+		conns = append(conns, c)
+	}
+	primary.ApplyStripeState(wire.StripeState{Striped: true, StripeN: 3})
+	time.Sleep(2 * time.Millisecond)
+	const gops = 30
+	for k := range gops {
+		ingestStripeGOP(t, p, k, 1)
+	}
+	ingestStripeGOP(t, p, gops, 0)
+	waitUntilCond(5*time.Second, func() bool {
+		kfs := map[uint32]bool{}
+		for _, c := range conns {
+			for _, g := range servedGOPs(t, c) {
+				kfs[g.kf] = true
+			}
+		}
+		return len(kfs) == gops+1
+	})
+	widths := []int{3, 2, 3, 3}
+	members := []int{0, 1, 1, 2}
+	served := map[uint32]bool{}
+	for i, c := range conns {
+		for _, g := range servedGOPs(t, c) {
+			served[g.kf] = true
+			if got := wire.StripeGOPResidue(g.kf, widths[i]); got != members[i] {
+				t.Errorf("connection %d (N=%d j=%d) served GOP %d of residue %d", i, widths[i], members[i], g.kf, got)
+			}
+		}
+	}
+	for k := range gops {
+		if !served[gopKeyframeID(k)] {
+			t.Errorf("GOP k=%d served by nobody with both widths open", k)
+		}
+	}
+	bs := singleBroadcastStats(t, r)
+	if bs.StripeLegs != 3 || bs.StripedPrimaries != 1 || bs.DVRSubscribers != 1 {
+		t.Errorf("StripeLegs %d, StripedPrimaries %d, DVRSubscribers %d; want 3, 1, 1",
+			bs.StripeLegs, bs.StripedPrimaries, bs.DVRSubscribers)
+	}
+	primary.Close()
+	for i, c := range conns[1:] {
+		if code, closed := c.getCloseInfo(); !closed || code != uint32(wire.CloseCodeStripeLegOrphaned) {
+			t.Errorf("leg %d: closed=%v code=%d, want 4005", i+1, closed, code)
 		}
 	}
 }

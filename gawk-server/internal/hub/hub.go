@@ -1699,15 +1699,10 @@ func (r *Registry) SubscribeInternal(id string, conn Conn) (*Subscriber, error) 
 // bufferMs is the viewer's *guaranteed minimum* playout offset (its profile
 // floor) and bounds how far behind the cursor may fall. parityK is the
 // already-negotiated SERVED parity level: the ring holds every symbol the
-// producer emitted, and this cursor replays its prefix (docs/75 D11).
-func (r *Registry) SubscribeDVR(id string, conn Conn, bufferMs, parityK int) (*Subscriber, error) {
-	return r.SubscribeDVROwned(id, conn, bufferMs, parityK, "")
-}
-
-// SubscribeDVROwned is SubscribeDVR with the viewer's validated ?owner=
-// token, or empty. A DVR primary needs it to stripe (docs/91 D7): it is what
-// ApplyStripeState requires and what reaps the primary's DVR legs with it.
-func (r *Registry) SubscribeDVROwned(id string, conn Conn, bufferMs, parityK int, owner string) (*Subscriber, error) {
+// producer emitted, and this cursor replays its prefix (docs/75 D11). owner
+// is the viewer's validated ?owner= token, or empty: a DVR primary needs one
+// to stripe (docs/91 D7), and it reaps the primary's DVR legs with it.
+func (r *Registry) SubscribeDVR(id string, conn Conn, bufferMs, parityK int, owner string) (*Subscriber, error) {
 	return r.subscribeOpts(id, conn, subscribeOpts{
 		reliable: true, dvr: true, bufferMs: bufferMs, parityK: parityK, parityRequested: parityK, owner: owner,
 	})
@@ -3091,10 +3086,12 @@ type Subscriber struct {
 	stripeUntil       atomic.Int64
 	stripeNInfo       atomic.Uint32
 	stripeTransitions atomic.Uint64
-	// stripeSince is when the current striped period began (UnixNano), set
-	// with stripeUntil. A striped DVR primary filters only GOPs that reached
-	// the ring after it (dvrServesGop).
-	stripeSince atomic.Int64
+	// dvrStripe is a DVR primary's striped state (docs/91 D7), nil when
+	// unstriped. One immutable value behind one pointer, because the drain
+	// must never pair a width with another period's start or deadline
+	// (dvrServesGop); stripeUntil and stripeNInfo above stay the live path's
+	// and /statusz's.
+	dvrStripe atomic.Pointer[dvrStripeState]
 	// owner is the viewer-minted session-group token, empty on unowned
 	// sessions. Read-only after subscribe — no lock.
 	owner string

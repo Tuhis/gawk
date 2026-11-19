@@ -23,21 +23,42 @@ import (
 // fan-out sends it nothing at all.
 func (s *Subscriber) dvrStripeLeg() bool { return s.stripeLeg && s.dvr != nil }
 
+// dvrStripeState is one striped period of a DVR primary: its width, when
+// the period began and when it lapses without a refresh (all UnixNano).
+// Published whole, never mutated.
+type dvrStripeState struct {
+	n            int
+	since, until int64
+}
+
+// publishDVRStripe records a striped StripeState on a DVR primary. A new
+// period starts at an arm, after an expiry, or at a new width, whose legs
+// are dialed before the state is sent (D11); a refresh of the same width
+// keeps the period's start. Only the session's read loop calls this, so
+// Load-then-Store is safe; the drain sees the old value or the new one,
+// never a mix.
+func (s *Subscriber) publishDVRStripe(n int, now, until int64) {
+	since := now
+	if old := s.dvrStripe.Load(); old != nil && old.until > now && old.n == n {
+		since = old.since
+	}
+	s.dvrStripe.Store(&dvrStripeState{n: n, since: since, until: until})
+}
+
 // dvrStripeShare is this DVR connection's residue and stripe width at
-// nowNanos. A leg's is fixed at dial. A primary's is (0, StripeN) while its
-// StripeState is fresh and (0, 1), every GOP, otherwise (D7): an expired
-// or lost state fails open toward duplicates, never holes.
-func (s *Subscriber) dvrStripeShare(nowNanos int64) (member, n int) {
+// nowNanos, and for a primary the start of its striped period. A leg's
+// share is fixed at dial. A primary's is (0, StripeN) while its StripeState
+// is fresh and (0, 1), every GOP, otherwise (D7): an expired or lost state
+// fails open toward duplicates, never holes.
+func (s *Subscriber) dvrStripeShare(nowNanos int64) (member, n int, since int64) {
 	if s.stripeLeg {
-		return int(s.stripeMember), int(s.stripeN)
+		return int(s.stripeMember), int(s.stripeN), 0
 	}
-	if !s.stripeSuppressed(nowNanos) {
-		return 0, 1
+	st := s.dvrStripe.Load()
+	if st == nil || nowNanos >= st.until || st.n < 2 {
+		return 0, 1, 0
 	}
-	if n := int(s.stripeNInfo.Load()); n > 1 {
-		return 0, n
-	}
-	return 0, 1
+	return 0, st.n, st.since
 }
 
 // dvrServesGop reports whether the GOP at the cursor is this connection's to
@@ -56,7 +77,7 @@ func (s *Subscriber) dvrStripeShare(nowNanos int64) (member, n int) {
 //     serves its backlog in full instead of skipping GOPs no leg will ever
 //     see.
 func (s *Subscriber) dvrServesGop() (serve, known bool) {
-	member, n := s.dvrStripeShare(time.Now().UnixNano())
+	member, n, since := s.dvrStripeShare(time.Now().UnixNano())
 	if n < 2 {
 		return true, true
 	}
@@ -64,7 +85,7 @@ func (s *Subscriber) dvrServesGop() (serve, known bool) {
 	if !ok {
 		return false, false
 	}
-	if !s.stripeLeg && id.at.UnixNano() < s.stripeSince.Load() {
+	if !s.stripeLeg && id.at.UnixNano() < since {
 		return true, true
 	}
 	if !id.kfIDOK {
@@ -104,7 +125,7 @@ func (s *Subscriber) dvrSkipGop(wake <-chan struct{}) bool {
 // connections together never catch up faster than one unstriped viewer.
 func (s *Subscriber) dvrPaceBps() int {
 	live := s.dvr.LiveRateBps()
-	if _, n := s.dvrStripeShare(time.Now().UnixNano()); n > 1 {
+	if _, n, _ := s.dvrStripeShare(time.Now().UnixNano()); n > 1 {
 		return live / n
 	}
 	return live

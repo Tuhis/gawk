@@ -222,17 +222,12 @@ func (s *Subscriber) ApplyStripeState(st wire.StripeState) {
 	}
 	if st.Striped {
 		now := time.Now()
-		// Width and start before the deadline: the DVR drain reads the
-		// deadline first and must never pair a fresh one with stale values.
-		// Only the session's read loop calls this, so Load-then-Store is safe.
-		prevN := s.stripeNInfo.Swap(uint32(st.StripeN))
-		prev := s.stripeUntil.Load()
-		if prev == 0 || prev <= now.UnixNano() || prevN != uint32(st.StripeN) {
-			// A new striped period: after an expiry, or at a new width, whose
-			// legs are dialed before this state is sent (docs/91 D11).
-			s.stripeSince.Store(now.UnixNano())
+		until := now.Add(StripeStateTTL).UnixNano()
+		prev := s.stripeUntil.Swap(until)
+		s.stripeNInfo.Store(uint32(st.StripeN))
+		if s.dvr != nil {
+			s.publishDVRStripe(int(st.StripeN), now.UnixNano(), until)
 		}
-		s.stripeUntil.Store(now.Add(StripeStateTTL).UnixNano())
 		if prev == 0 {
 			s.stripeTransitions.Add(1)
 		}
@@ -242,6 +237,9 @@ func (s *Subscriber) ApplyStripeState(st wire.StripeState) {
 		s.stripeTransitions.Add(1)
 	}
 	s.stripeNInfo.Store(0)
+	if s.dvr != nil {
+		s.dvrStripe.Store(nil)
+	}
 }
 
 // stripeSuppressed reports whether delta datagrams are currently suppressed
