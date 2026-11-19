@@ -518,11 +518,29 @@ describe('RoomScreen What to show', () => {
     expect(screen.getByText('No streams chosen')).toBeTruthy();
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('dialog', { name: 'What to show' })).toBeNull();
-    // Choose… opens the popover on the checklist.
-    fireEvent.click(screen.getByRole('button', { name: 'Choose…' }));
+    // Choose… opens the popover on the checklist, and Escape from the card's
+    // button, where the click left focus, closes it again.
+    const chooseBtn = screen.getByRole('button', { name: 'Choose…' });
+    fireEvent.click(chooseBtn);
     expect(screen.getAllByRole('checkbox')).toHaveLength(3);
+    fireEvent.keyDown(chooseBtn, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'What to show' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'All streams' }));
     expect(tileNumbers()).toEqual(['1', '2', '3']);
+  });
+
+  it('Choose from None dials nothing until a stream is ticked', async () => {
+    localStorage.setItem('gawk:room-videos', 'off');
+    await joinAs();
+    fireEvent.click(screen.getByRole('button', { name: 'Choose…' }));
+    expect(screen.getByText('No streams chosen')).toBeTruthy();
+    for (const box of screen.getAllByRole('checkbox')) expect((box as HTMLInputElement).checked).toBe(false);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(viewerSessions).toHaveLength(0);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'charlie' }));
+    expect(tileNumbers()).toEqual(['3']);
+    await waitFor(() => expect(activeViewerIds()).toEqual(['CCCCCC']));
+    expect(viewerSessions).toHaveLength(1);
   });
 
   it('focus skips hidden streams, and showing one again does not take focus back (D9)', async () => {

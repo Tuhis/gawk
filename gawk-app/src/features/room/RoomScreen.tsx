@@ -397,11 +397,12 @@ export function RoomView({
   if (focusedId !== null && focused !== null && roomIds.has(focusedId) && !shownIds.has(focusedId)) {
     setFocusedId(focused.broadcastId);
   }
-  // Every visibility change the user makes first pins the focus where it is,
-  // so focus nobody chose (the first stream shown) can't move when a stream
-  // ahead of it comes and goes.
+  // Every visibility change the user makes first pins focus nobody chose (the
+  // first stream shown), so it can't move when a stream ahead of it comes and
+  // goes. A chosen one is left alone: if it has left the room, its claim
+  // stands.
   const changeVis = (change: (s: VisState) => VisState) => {
-    if (focused !== null && focused.broadcastId !== focusedId) setFocusedId(focused.broadcastId);
+    if (focusedId === null && focused !== null) setFocusedId(focused.broadcastId);
     updateVis(change);
   };
   const focus = useCallback(
@@ -956,14 +957,14 @@ export function RoomView({
   const gatedCardShown = gatedOut && visibility !== 'none' && attachments.length === 0;
   // The two ways back from an empty stage the viewer chose (D10).
   const chooseOpen = () => {
-    changeVis((s) => setVisibility(s, 'some'));
+    changeVis((s) => setVisibility(s, 'some', roomIds));
     setMenu(null);
     setPresetMenu(null);
     setVisOpen(true);
   };
   const showBackActions = (
     <>
-      <Button variant="secondary" onClick={() => changeVis((s) => setVisibility(s, 'all'))}>
+      <Button variant="secondary" onClick={() => changeVis((s) => setVisibility(s, 'all', roomIds))}>
         All streams
       </Button>
       <Button variant="secondary" onClick={chooseOpen}>
@@ -1289,7 +1290,7 @@ export function RoomView({
             preview={own?.preview != null}
             open={visOpen}
             onOpenChange={setVisOpen}
-            onVisibility={(v) => changeVis((s) => setVisibility(s, v))}
+            onVisibility={(v) => changeVis((s) => setVisibility(s, v, roomIds))}
             onToggle={(id) => changeVis((s) => toggleStream(s, id, roomIds))}
           />
           <button

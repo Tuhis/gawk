@@ -1,12 +1,12 @@
 import { useEffect, type RefObject } from 'react';
+import { isEditable } from './useHotkey';
 
 // Closes an anchored popover while it is open: on a press anywhere outside
 // `ref` (the popover and the control that opened it), or on Escape. The press
 // is taken in the capture phase, so a handler inside that stops propagation
-// can't keep the popover open behind the user's back. Escape counts only from
-// inside `ref` or with nothing focused (Safari doesn't focus a clicked
-// button): one pressed in another layer, a nickname field the user tabbed
-// to, is that layer's.
+// can't keep the popover open behind the user's back. An Escape typed in a
+// text field (a nickname the user tabbed to) is the field's, and one another
+// layer already handled (defaultPrevented) is that layer's.
 export function useDismiss(
   ref: RefObject<HTMLElement | null>,
   open: boolean,
@@ -18,10 +18,8 @@ export function useDismiss(
       if (!ref.current?.contains(e.target as Node)) onClose('outside');
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || e.defaultPrevented) return;
-      const t = e.target as Node | null;
-      const nowhere = t === document || t === document.body || t === document.documentElement;
-      if (nowhere || ref.current?.contains(t)) onClose('escape');
+      if (e.key !== 'Escape' || e.defaultPrevented || isEditable(e.target)) return;
+      onClose('escape');
     };
     document.addEventListener('pointerdown', onDown, true);
     document.addEventListener('keydown', onKey);

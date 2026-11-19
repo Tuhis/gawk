@@ -37,16 +37,16 @@ describe('room visibility (docs/90)', () => {
 
   it('switches between the three, keeping the set (D5)', () => {
     const some: VisState = { videosOff: false, picks: { choose: true, hidden: ['B'] } };
-    const none = setVisibility(some, 'none');
+    const none = setVisibility(some, 'none', IN_ROOM);
     expect(none).toEqual({ videosOff: true, picks: some.picks });
     // Off None, the custom set comes back.
-    expect(setVisibility(none, 'some')).toEqual(some);
-    const all = setVisibility(none, 'all');
+    expect(setVisibility(none, 'some', IN_ROOM)).toEqual(some);
+    const all = setVisibility(none, 'all', IN_ROOM);
     expect(all).toEqual({ videosOff: false, picks: { choose: false, hidden: ['B'] } });
-    expect(setVisibility(all, 'some')).toEqual(some);
+    expect(setVisibility(all, 'some', IN_ROOM)).toEqual(some);
     // Unchanged is the same object, so nothing is saved for nothing.
-    expect(setVisibility(some, 'some')).toBe(some);
-    expect(setVisibility(none, 'none')).toBe(none);
+    expect(setVisibility(some, 'some', IN_ROOM)).toBe(some);
+    expect(setVisibility(none, 'none', IN_ROOM)).toBe(none);
   });
 
   it('Shift+number hides a stream on the stage and shows one off it (D7)', () => {
@@ -61,6 +61,23 @@ describe('room visibility (docs/90)', () => {
     // back, with the rest as they were.
     expect(toggleStream({ ...some, videosOff: true }, 'A', IN_ROOM)).toEqual(some);
     expect(toggleStream({ ...some, videosOff: true }, 'B', IN_ROOM)).toEqual({ videosOff: false, picks: { choose: true, hidden: [] } });
+  });
+
+  it('Choose from None starts with every stream unticked, unless a kept set hides one of them (D5)', () => {
+    const offEmpty: VisState = { videosOff: true, picks: { choose: false, hidden: ['GONE'] } };
+    expect(setVisibility(offEmpty, 'some', IN_ROOM)).toEqual({
+      videosOff: false,
+      picks: { choose: true, hidden: ['GONE', 'A', 'B', 'C'] },
+    });
+    const offKept: VisState = { videosOff: true, picks: { choose: false, hidden: ['B'] } };
+    expect(setVisibility(offKept, 'some', IN_ROOM)).toEqual({ videosOff: false, picks: { choose: true, hidden: ['B'] } });
+    // From All streams nothing new downloads, so the set is as it was.
+    expect(setVisibility(ALL, 'some', IN_ROOM)).toEqual({ videosOff: false, picks: { choose: true, hidden: [] } });
+  });
+
+  it('a key that only leaves None keeps a deliberate Choose', () => {
+    const offChoose: VisState = { videosOff: true, picks: { choose: true, hidden: [] } };
+    expect(toggleStreamByKey(offChoose, 'A', IN_ROOM)).toEqual({ videosOff: false, picks: { choose: true, hidden: [] } });
   });
 
   it('a key that shows the last hidden stream goes back to All streams; a checkbox stays in Choose', () => {

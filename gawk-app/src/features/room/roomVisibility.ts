@@ -37,9 +37,15 @@ export function shownStreams(streams: NumberedStream[], s: VisState): NumberedSt
   return streams.filter((n) => !hidden.has(n.attachment.broadcastId));
 }
 
-export function setVisibility(s: VisState, v: RoomVisibility): VisState {
+// `inRoom` is the room's roster. Choose from None starts with every stream
+// unticked unless a kept set hides one of them (D5): None is nothing
+// downloading, and "choose the ones to watch" must not first dial them all.
+export function setVisibility(s: VisState, v: RoomVisibility, inRoom: ReadonlySet<string>): VisState {
   if (v === 'none') return s.videosOff ? s : { ...s, videosOff: true };
   const choose = v === 'some';
+  if (choose && s.videosOff && !s.picks.hidden.some((h) => inRoom.has(h))) {
+    return { videosOff: false, picks: { choose: true, hidden: capHidden([...s.picks.hidden, ...inRoom], inRoom) } };
+  }
   if (!s.videosOff && s.picks.choose === choose) return s;
   return {
     videosOff: false,
@@ -75,11 +81,15 @@ export function toggleStream(s: VisState, id: string, inRoom: ReadonlySet<string
 
 // The Shift+number keys: as toggleStream, but a key that shows the last
 // hidden stream goes back to All streams, so a peek and its undo (Shift+2,
-// Shift+2) leave the room as it was rather than in Choose with nothing hidden
-// (D7). The checkboxes don't: the user is in Choose there, looking at it.
+// Shift+2) end on All streams rather than in Choose with nothing hidden (D7).
+// The peek started a new set (toggleStream), so what was kept under All
+// streams before it is not restored. Only a key that unhid this stream: one
+// that merely left None keeps a deliberate Choose. The checkboxes don't do
+// this: the user is in Choose there, looking at it.
 export function toggleStreamByKey(s: VisState, id: string, inRoom: ReadonlySet<string>): VisState {
   const next = toggleStream(s, id, inRoom);
-  if (next === s || !s.picks.choose || next.videosOff || !next.picks.choose || next.picks.hidden.length > 0) return next;
+  const unhidLast = s.picks.choose && s.picks.hidden.includes(id) && next.picks.hidden.length === 0;
+  if (next === s || next.videosOff || !next.picks.choose || !unhidLast) return next;
   return { videosOff: false, picks: { choose: false, hidden: [] } };
 }
 

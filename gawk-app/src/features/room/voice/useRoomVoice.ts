@@ -6,8 +6,6 @@
 // refs.
 
 import { useEffect, useMemo, useRef, type RefObject } from 'react';
-// Typing in a field is not talking; a focused checkbox (R86's What to show)
-// or slider is not typing, so the room's keys and push-to-talk agree.
 import { isEditable } from '../../../lib/useHotkey';
 import { webTransportInit } from '../../../transport/connection';
 import { selectCertHashList, useTransportStore } from '../../../state/transportStore';
@@ -68,6 +66,17 @@ export function roomVoiceReadiness(): RoomVoiceReadiness {
   if (status === 'reconnecting' || status === 'connecting') return 'waiting';
   if (status === 'joined') return roomHasVoice(snapshot) ? 'ready' : 'gone';
   return 'gone';
+}
+
+// Typing in a field is not talking (isEditable). A focused checkbox or slider
+// is not typing — R86's What to show leaves focus on one — so the PTT key
+// talks there, except a key the control uses itself: Space ticks a checkbox
+// or radio, the arrows, Page and Home/End move a slider.
+function controlKey(target: EventTarget | null, code: string): boolean {
+  const el = target as HTMLInputElement | null;
+  if (!el || el.tagName !== 'INPUT') return false;
+  if (el.type === 'range') return /^(Arrow|Page|Home|End)/.test(code);
+  return (el.type === 'checkbox' || el.type === 'radio') && code === 'Space';
 }
 
 function speakerName(session: number): string | null {
@@ -145,7 +154,7 @@ export function useRoomVoice({
   useEffect(() => {
     if (!pttLive) return;
     const down = (e: KeyboardEvent) => {
-      if (e.code !== pttKey || isEditable(e.target)) return;
+      if (e.code !== pttKey || isEditable(e.target) || controlKey(e.target, e.code)) return;
       e.preventDefault();
       if (!e.repeat) ctrlRef.current?.setPttHeld(true);
     };

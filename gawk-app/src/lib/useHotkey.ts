@@ -36,7 +36,7 @@ export function isEditable(target: EventTarget | null): boolean {
 // 'Î'), so an Alt shortcut's letter also matches by its physical key. Only
 // then: elsewhere `code` would misfire on non-QWERTY layouts.
 //
-// Shift changes a digit's `key` the same way (Shift+1 is '!' on US layouts,
+// Shift changes a digit's `key` the same way (Shift+2 is '@' on US layouts,
 // '"' on Nordic ones), so a Shift shortcut's digit matches by its physical
 // key in the number row instead — unless Shift typed the digit itself, as on
 // AZERTY, where that is the user typing "1", not asking for Shift+1: the
