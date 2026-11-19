@@ -309,6 +309,18 @@ pub fn launch_position(saved: (f32, f32), width: f32, works: &[Rect]) -> Option<
     Some((x, y))
 }
 
+/// [`launch_position`] for a platform that remembers the client area's
+/// top-left rather than the frame's (macOS, D18): `title_h` above it is the
+/// title bar, which is what has to be on a screen.
+pub fn launch_content_position(
+    saved: (f32, f32),
+    title_h: f32,
+    width: f32,
+    works: &[Rect],
+) -> Option<(f32, f32)> {
+    launch_position((saved.0, saved.1 - title_h), width, works).map(|(x, y)| (x, y + title_h))
+}
+
 /// Your position across ticks (D18): the last one the platform reported,
 /// saved [`SAVE_DELAY`] after it stops changing, and at quit.
 #[derive(Clone, Debug, Default)]
@@ -936,6 +948,28 @@ mod tests {
         assert_eq!(
             launch_position((-1200.0, -150.0), 520.0, &[left, WORK]),
             Some((-1200.0, -150.0))
+        );
+    }
+
+    #[test]
+    fn a_client_area_position_keeps_its_title_bar_on_the_screen() {
+        // A 1440 × 900 Mac: the menu bar takes the top 25 points.
+        let mac = Rect::new(0.0, 25.0, 1440.0, 875.0);
+        // Client top 28 below the frame's: kept as it was.
+        assert_eq!(
+            launch_content_position((200.0, 53.0), 28.0, 520.0, &[mac]),
+            Some((200.0, 53.0))
+        );
+        // A client top at the menu bar's edge would hide the title bar
+        // under it: pushed down by the title bar's height.
+        assert_eq!(
+            launch_content_position((200.0, 25.0), 28.0, 520.0, &[mac]),
+            Some((200.0, 53.0))
+        );
+        // On a screen that is gone.
+        assert_eq!(
+            launch_content_position((2000.0, 100.0), 28.0, 520.0, &[mac]),
+            None
         );
     }
 
