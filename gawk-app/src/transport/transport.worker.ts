@@ -30,7 +30,7 @@ ctx.onmessage = (e: MessageEvent) => {
       core.connect(cmd.url, cmd.connectOpts);
       break;
     case 'stripe':
-      core.setStripe(cmd.n);
+      core.setStripe(cmd.n, cmd.layout);
       break;
     case 'close':
       core.close();

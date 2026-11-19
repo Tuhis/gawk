@@ -32,9 +32,14 @@ export interface TransportClosedInfo {
   message: string;
 }
 
+// Which connection delivered something: 0 (or absent) is the primary, a leg
+// is 1 + its position. In the deep-buffer layout a leg's member index already
+// starts at 1, so the connection index IS the member there (docs/91 D6).
+export type ConnectionIndex = number;
+
 export interface ViewerTransportCallbacks {
-  onDatagram: (dgram: Uint8Array) => void;
-  onKeyframe: (kf: KeyframeStreamFrame) => void;
+  onDatagram: (dgram: Uint8Array, conn?: ConnectionIndex) => void;
+  onKeyframe: (kf: KeyframeStreamFrame, conn?: ConnectionIndex) => void;
   // This session's telemetry identity. The transport is where it arrives (it
   // rides a server uni stream), but nothing here acts on it — it is forwarded
   // to the pipeline and out to the main thread, which is the only place
@@ -85,11 +90,35 @@ export interface ViewerTransport {
   // Ask for a stripe of n legs (0 disengages). The transport owns the whole
   // transition — dial-before-suppress, the 0x10 level protocol, leg-death
   // fallback — so the caller only ever states a target. Optional so fakes
-  // without striping keep compiling.
-  setStripe?(n: number): void;
+  // without striping keep compiling. The layout is fixed while legs are up.
+  setStripe?(n: number, layout?: StripeLayout): void;
   // The live stripe tallies for stats (null before connect).
   sampleStripe?(): StripeTransportStats | null;
   close(): void;
+}
+
+// How legs split the stream.
+//   live  R30 (docs/35): legs 0 … n−1 carry live-edge delta chunks, the
+//         primary is suppressed to keyframes, StripeN on the wire = n.
+//   dvr   R87 (docs/91 D6): a deep-buffer session; the primary keeps GOP share
+//         0, legs 1 … n carry the other shares whole (keyframe stream +
+//         carrier), StripeN on the wire = n + 1, the width with the primary.
+export type StripeLayout = 'live' | 'dvr';
+
+// The most legs a layout may dial. Both keep one viewer at MAX_STRIPE_LEGS
+// connections beside the primary's role: in dvr the primary is one of them
+// (docs/91 D12).
+export function maxLegs(layout: StripeLayout): number {
+  return layout === 'dvr' ? MAX_STRIPE_LEGS - 1 : MAX_STRIPE_LEGS;
+}
+
+// A leg dials the primary's URL — delivery, buffer, owner, parity and the
+// client identity included — plus its place in the stripe.
+export function stripeLegUrl(primaryUrl: string, member: number, stripeN: number): string {
+  const u = new URL(primaryUrl);
+  u.searchParams.set('stripe', String(stripeN));
+  u.searchParams.set('leg', String(member));
+  return u.toString();
 }
 
 // Stripe state as the overlay/controller sees it.
@@ -153,6 +182,7 @@ export class LocalViewerTransport implements ViewerTransport {
   private legs: StripeLegSession[] = [];
   private stripeTarget = 0;
   private stripeActive = 0;
+  private stripeLayout: StripeLayout = 'live';
   private stripeGeneration = 0; // bumps per transition; stale dials discard
   private liveStripeGeneration = -1; // the committed leg set's generation
   private stripeRefresh: ReturnType<typeof setInterval> | null = null;
@@ -265,8 +295,11 @@ export class LocalViewerTransport implements ViewerTransport {
 
   // --- Striping --------------------------------------------------------------
 
-  setStripe(n: number): void {
-    const target = Math.max(0, Math.min(MAX_STRIPE_LEGS, Math.floor(n)));
+  setStripe(n: number, layout: StripeLayout = 'live'): void {
+    // A layout belongs to the delivery mode, which is fixed per session; it
+    // can only change while no legs are up.
+    if (this.stripeActive === 0) this.stripeLayout = layout;
+    const target = Math.max(0, Math.min(maxLegs(this.stripeLayout), Math.floor(n)));
     this.stripeTarget = target;
     this.stripeStats.target = target;
     if (this.closing || target === this.stripeActive) return;
@@ -291,9 +324,12 @@ export class LocalViewerTransport implements ViewerTransport {
   private async transitionStripe(target: number): Promise<void> {
     const generation = ++this.stripeGeneration;
     const dials: Promise<StripeLegSession>[] = [];
-    for (let j = 0; j < target; j++) {
+    // The deep-buffer primary keeps share 0, so its legs are 1 … target
+    // (docs/91 D6); a relay answers 400 to leg=0 there.
+    const first = this.stripeLayout === 'dvr' ? 1 : 0;
+    for (let j = first; j < first + target; j++) {
       this.stripeStats.legDials++;
-      dials.push(this.dialLeg(j, target));
+      dials.push(this.dialLeg(j, this.wireStripeN(target)));
     }
     const settled = await Promise.allSettled(dials);
     const fresh = settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
@@ -316,7 +352,7 @@ export class LocalViewerTransport implements ViewerTransport {
     this.stripeActive = target;
     // Suppress only once the new set is complete; on a grow the suppression
     // is already armed and the width rides the next 1 Hz refresh.
-    this.sendStripeState(true, target);
+    this.sendStripeState(true, this.wireStripeN(target));
     // First heartbeat immediately: the relay armed each leg's liveness lease at
     // subscribe, and the 1 Hz refresh below is what keeps renewing it.
     this.sendLegHeartbeats();
@@ -348,20 +384,44 @@ export class LocalViewerTransport implements ViewerTransport {
     if (wasActive > 0) this.cb?.onStripeChange?.(0);
   }
 
+  // StripeN as the relay reads it: the leg count in live mode, the width with
+  // the primary in the deep-buffer layout (docs/91 D7).
+  private wireStripeN(legs: number): number {
+    return this.stripeLayout === 'dvr' ? legs + 1 : legs;
+  }
+
   private async dialLeg(member: number, stripeN: number): Promise<StripeLegSession> {
-    const u = new URL(this.url);
-    u.searchParams.set('stripe', String(stripeN));
-    u.searchParams.set('leg', String(member));
     const generation = this.stripeGeneration;
-    const wt = await connectWebTransport(u.toString(), this.opts, this.abort.signal);
+    const dvr = this.stripeLayout === 'dvr';
+    const conn: ConnectionIndex = dvr ? member : member + 1;
+    const wt = await connectWebTransport(stripeLegUrl(this.url, member, stripeN), this.opts, this.abort.signal);
     const leg = new StripeLegSession(wt, member);
-    // A leg carries this viewer's delta share and nothing else: same datagram
-    // handler, same receive-queue raise (the buffer is the whole point), no
-    // TimeSync, no server-stream reader (the relay sends legs no streams).
+    // A live leg carries this viewer's delta share and nothing else: same
+    // datagram handler, same receive-queue raise (the buffer is the whole
+    // point), no TimeSync, no server-stream reader (the relay sends live legs
+    // no streams).
     applyIncomingDatagramBuffer((wt as { datagrams?: unknown }).datagrams);
-    void readDatagrams(wt, (d) => this.cb?.onDatagram(d), leg.abort.signal)
+    void readDatagrams(wt, (d) => this.cb?.onDatagram(d, conn), leg.abort.signal)
       .then(() => this.handleLegDeath(generation))
       .catch(() => this.handleLegDeath(generation));
+    // A deep-buffer leg is served its GOPs exactly as the primary is, a
+    // keyframe stream and a carrier each (docs/91 D3), so it gets the same
+    // stream reader feeding the same pipeline. It carries no audio, control or
+    // telemetry (D5): only the media callbacks are wired. Carrier tallies are
+    // shared, so the overlay's carrier rows count every connection.
+    if (dvr) {
+      void readServerStreams(
+        wt,
+        {
+          onKeyframe: (kf) => this.cb?.onKeyframe(kf, conn),
+          onCarrierRecord: (record) => this.cb?.onDatagram(record, conn),
+        },
+        this.carrier,
+        leg.abort.signal,
+      ).catch((e) => {
+        if (!this.closing) log.warn(`stripe leg ${member} stream loop ended:`, e);
+      });
+    }
     void wt.closed.then(
       () => this.handleLegDeath(generation),
       () => this.handleLegDeath(generation),
@@ -402,7 +462,7 @@ export class LocalViewerTransport implements ViewerTransport {
   // what the lease is for).
   private sendLegHeartbeats(): void {
     if (this.stripeActive === 0) return;
-    for (const leg of this.legs) leg.heartbeat(this.stripeActive);
+    for (const leg of this.legs) leg.heartbeat(this.wireStripeN(this.stripeActive));
   }
 
   private startStripeRefresh(): void {
@@ -413,7 +473,7 @@ export class LocalViewerTransport implements ViewerTransport {
     // signalling.
     this.stripeRefresh = setInterval(() => {
       if (this.stripeActive > 0) {
-        this.sendStripeState(true, this.stripeActive);
+        this.sendStripeState(true, this.wireStripeN(this.stripeActive));
         this.sendLegHeartbeats();
       }
     }, 1000);
@@ -518,8 +578,10 @@ export class LocalViewerTransport implements ViewerTransport {
 }
 
 // One stripe leg's session handle. Deliberately minimal: a leg has no
-// sampler, no TimeSync, no carrier counters — it is a datagram pipe with a
-// member number, and everything interesting about it lives on the primary.
+// sampler, no TimeSync, no carrier counters of its own — it is a media pipe
+// with a member number (datagrams; in the deep-buffer layout also its GOP
+// streams, read in dialLeg), and everything interesting about it lives on the
+// primary.
 // Its one outbound concern is the liveness heartbeat the relay's leg lease is
 // renewed by.
 class StripeLegSession {

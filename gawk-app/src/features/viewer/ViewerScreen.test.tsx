@@ -701,6 +701,30 @@ describe('ViewerScreen menu button (touch reachability)', () => {
     expect(screen.getByText(/already handles bursts/)).toBeTruthy();
   });
 
+  // R87 (docs/91 §7): on Most stable, striping is enabled exactly when the
+  // relay says it can stripe a ring, with its own hint.
+  it('enables striping on Most stable when the relay advertises striped DVR', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onConnected());
+
+    tap(screen.getByLabelText(/^Playback quality:/));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Most stable' }));
+    await waitFor(() => expect(sessions).toHaveLength(2));
+    act(() => sessions[1].cbs.onConnected());
+
+    act(() => sessions[1].cbs.onStats({ viewerCount: 1, framesCompleted: 0, stripeDvrCapable: false }));
+    openSettings();
+    openAdvanced();
+    expect((advancedSelect(/Striping/) as HTMLSelectElement).disabled).toBe(true);
+    expect(screen.getByText(/already handles bursts/)).toBeTruthy();
+
+    act(() => sessions[1].cbs.onStats({ viewerCount: 1, framesCompleted: 0, stripeDvrCapable: true }));
+    expect((advancedSelect(/Striping/) as HTMLSelectElement).disabled).toBe(false);
+    expect(screen.getByText(/several connections when one can.t carry it/)).toBeTruthy();
+    expect(screen.queryByText(/already handles bursts/)).toBeNull();
+  });
+
   // Custom appears only once something advanced is off its default, applying
   // a preset is a complete configuration, and Reset advanced undoes the
   // deviation without touching the preset.

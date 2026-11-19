@@ -65,6 +65,14 @@ export interface ReassemblerCallbacks {
   // once its raced stragglers can be credited. The stripe detector's only
   // input.
   onFrameAccounting?: (expectedChunks: number, arrivedChunks: number) => void;
+  // Read live: true while frames may legitimately complete out of frameId
+  // order — a striped deep-buffer session, where GOP k+1 can arrive whole on
+  // one connection before GOP k on another (docs/91 D9). The late-delta
+  // watermark would then drop all of GOP k, so ordering is left to the
+  // reorder buffer and only exact duplicates of recently emitted frames are
+  // dropped here (D7: an expired StripeState or a width transition serves a
+  // GOP twice). Absent: false, the watermark policy above.
+  framesOutOfOrder?: () => boolean;
 }
 
 export interface ReassemblerStats {
@@ -121,6 +129,11 @@ interface Assembly {
   frameBytes: number;
 }
 
+// Emitted frameIds remembered for duplicate detection while frames arrive out
+// of order. A duplicate GOP trails its first copy by at most a width
+// transition or a StripeState TTL (5 s); 512 frames is 8.5 s at 60 fps.
+const RECENTLY_EMITTED_FRAMES = 512;
+
 // How far (in emitted frames) a RECOVERED frame's arrival accounting is
 // deferred, waiting for the chunks the recovery raced. Half a GOP at the
 // 500 ms cadence — far beyond any leg skew, far short of the detector's
@@ -140,6 +153,10 @@ export class Reassembler {
   private recoveredLedger = new Map<number, { expected: number; arrived: number }>();
   // Recent frameIds with at least one delta datagram (insertion ordered).
   private deltaEvidence = new Set<number>();
+  // Out-of-order mode only (framesOutOfOrder): what was emitted recently, and
+  // how many completed frames were dropped as duplicates of it.
+  private recentlyEmitted = new Set<number>();
+  private duplicateFrames = 0;
 
   private stats: ReassemblerStats = {
     datagramsReceived: 0,
@@ -166,6 +183,24 @@ export class Reassembler {
     return { ...this.stats };
   }
 
+  // Completed frames dropped as duplicates while frames arrive out of order.
+  // Kept off ReassemblerStats: it is a striped deep-buffer counter, and the
+  // viewer reports it beside the reorder buffer's own duplicate count.
+  duplicateFramesDropped(): number {
+    return this.duplicateFrames;
+  }
+
+  private outOfOrder(): boolean {
+    return this.cb.framesOutOfOrder?.() ?? false;
+  }
+
+  // Whether a frame is already done with: behind the emit watermark in order,
+  // or emitted recently when frames arrive out of order.
+  private alreadyEmitted(frameId: number): boolean {
+    if (this.outOfOrder()) return this.recentlyEmitted.has(frameId);
+    return this.lastEmittedFrameId !== null && !frameIdAhead(frameId, this.lastEmittedFrameId);
+  }
+
   // True when a datagram of this frame (data chunk or parity) arrived, which
   // makes it a delta: keyframes ride streams. The reorder buffer's loss
   // allowance must not skip a frame that could be a keyframe still in flight.
@@ -188,6 +223,14 @@ export class Reassembler {
   // leaves the watermark at the old session's high frameId and every
   // new-session delta is dropped as "late" — keyframe-only playback.
   noteStreamKeyframe(frameId: number): void {
+    // Out of order, an earlier GOP's keyframe is not a restart; the reorder
+    // buffer tells the two apart, and this watermark only feeds the ledger.
+    if (this.outOfOrder()) {
+      if (this.lastEmittedFrameId === null || frameIdAhead(frameId, this.lastEmittedFrameId)) {
+        this.lastEmittedFrameId = frameId;
+      }
+      return;
+    }
     // Unconditional: a backwards jump here is exactly the restart signal the
     // watermark must follow. Mid-session it's a no-op (keyframe ids track the
     // delta sequence), and a racing stale keyframe merely re-admits at most a
@@ -323,11 +366,7 @@ export class Reassembler {
       // assembly — the delta-chunk mirror of pushParity's guard. Keyframes
       // bypass (a datagram keyframe resets the watermark by design); frames
       // with a LIVE assembly behind the watermark still fill and late-drop.
-      if (
-        !header.keyframe &&
-        this.lastEmittedFrameId !== null &&
-        !frameIdAhead(header.frameId, this.lastEmittedFrameId)
-      ) {
+      if (!header.keyframe && this.alreadyEmitted(header.frameId)) {
         this.stats.staleChunks++;
         // If the frame completed by recovery, this straggler is the
         // delivery the solve raced — credit it before accounting reports.
@@ -405,11 +444,7 @@ export class Reassembler {
     // Serial comparison (wrap-aware), the same rule pushChunk uses. Keyed on
     // the emitted watermark rather than on "have I seen this frame", because
     // parity legitimately outruns its own data chunks under reorder.
-    if (
-      !assembly &&
-      this.lastEmittedFrameId !== null &&
-      !frameIdAhead(header.frameId, this.lastEmittedFrameId)
-    ) {
+    if (!assembly && this.alreadyEmitted(header.frameId)) {
       return;
     }
     if (!assembly) {
@@ -498,12 +533,10 @@ export class Reassembler {
     // superseded); keyframes are self-contained and always emitted. "Late"
     // is serial (wrap-aware): a frameId just past the uint32 rollover is
     // AHEAD of the watermark, not 4 billion frames behind it.
-    if (
-      !assembly.keyframe &&
-      this.lastEmittedFrameId !== null &&
-      !frameIdAhead(frameId, this.lastEmittedFrameId)
-    ) {
-      this.stats.framesDroppedLate++;
+    const outOfOrder = this.outOfOrder();
+    if (!assembly.keyframe && this.alreadyEmitted(frameId)) {
+      if (outOfOrder) this.duplicateFrames++;
+      else this.stats.framesDroppedLate++;
       return;
     }
     const data = new Uint8Array(assembly.bytes);
@@ -513,9 +546,20 @@ export class Reassembler {
       data.set(payload!, offset);
       offset += payload!.length;
     }
-    this.lastEmittedFrameId = frameId;
+    if (outOfOrder) {
+      this.recentlyEmitted.add(frameId);
+      if (this.recentlyEmitted.size > RECENTLY_EMITTED_FRAMES) {
+        const oldest = this.recentlyEmitted.values().next().value;
+        if (oldest !== undefined) this.recentlyEmitted.delete(oldest);
+      }
+      if (this.lastEmittedFrameId === null || frameIdAhead(frameId, this.lastEmittedFrameId)) {
+        this.lastEmittedFrameId = frameId;
+      }
+    } else {
+      this.lastEmittedFrameId = frameId;
+    }
     this.stats.framesCompleted++;
-    this.rollRecoveredLedger(frameId);
+    this.rollRecoveredLedger(this.lastEmittedFrameId ?? frameId);
     this.cb.onFrame({
       frameId,
       keyframe: assembly.keyframe,
