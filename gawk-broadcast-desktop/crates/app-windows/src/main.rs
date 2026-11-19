@@ -144,6 +144,17 @@ impl Platform for Windows {
         place::placement(ui)
     }
 
+    /// The window's restore position, physical px (docs/66 D18).
+    #[cfg(windows)]
+    fn window_position(&self, ui: &MainWindow) -> Option<(i32, i32)> {
+        place::window_position(ui)
+    }
+
+    #[cfg(windows)]
+    fn place_window(&self, ui: &MainWindow, saved: (i32, i32), width: f32) {
+        place::place_window(ui, saved, width);
+    }
+
     /// A second launch or a link (docs/68 D6): restore a minimized window
     /// and bring it to the front. The second launch passed its foreground
     /// right on with `AllowSetForegroundWindow` (D8), which is what lets

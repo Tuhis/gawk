@@ -220,6 +220,18 @@ pub trait Platform: 'static {
     fn placement(&self, _ui: &MainWindow) -> Option<fit::Placement> {
         None
     }
+    /// Where the window would restore to — its frame's top-left, in the
+    /// platform's own units — even while maximized, snapped or minimized,
+    /// so the next launch can open there (docs/66 D18). `None` — the
+    /// default — remembers nothing.
+    fn window_position(&self, _ui: &MainWindow) -> Option<(i32, i32)> {
+        None
+    }
+    /// Before the window shows: open it at `saved`, a
+    /// [`Platform::window_position`] from an earlier launch, if that is
+    /// still on a screen ([`fit::launch_position`]); `width` is the
+    /// window's logical client width. The default leaves it to the system.
+    fn place_window(&self, _ui: &MainWindow, _saved: (i32, i32), _width: f32) {}
     /// Brings the window to the front for a second launch or a link (R66,
     /// docs/68 D6). `activation` is the Wayland activation token the
     /// launcher gave the second launch (D8). The default shows the window
@@ -452,6 +464,8 @@ pub struct Shell {
     reclaim_refused: Option<u16>,
     /// Window fit and your size (R64, docs/66 D8–D13).
     fit: fit::FitState,
+    /// Your position (docs/66 D18).
+    position: fit::PositionMemory,
     /// Second launches and links, from the single-instance endpoint or the
     /// macOS Apple Event handler (R66, docs/68 D6).
     inbox: Option<mpsc::Receiver<Incoming>>,
@@ -602,6 +616,7 @@ fn build_shell(
 
     let (msg_tx, msg_rx) = mpsc::channel();
     let fit = fit::FitState::new((cfg.window_width, cfg.window_height));
+    let position = fit::PositionMemory::new(cfg.window_position);
     let local = crate::localswitch::LocalSwitch::new(
         cfg.local_relay_opt_outs.clone(),
         cfg!(target_os = "macos"),
@@ -664,6 +679,7 @@ fn build_shell(
         build_gen: 0,
         reclaim_refused: None,
         fit,
+        position,
         inbox: None,
         pending_link: None,
         link_card: None,
@@ -848,6 +864,10 @@ pub fn run(
     if (w, h) != fit::DEFAULT_SIZE {
         ui.window().set_size(slint::LogicalSize::new(w, h));
     }
+    // docs/66 D18: and where you left it, while that is still on a screen.
+    if let Some(saved) = shell.borrow().cfg.window_position {
+        shell.borrow().platform.place_window(&ui, saved, w);
+    }
     {
         let ui_weak = ui.as_weak();
         let shell = shell.clone();
@@ -859,7 +879,7 @@ pub fn run(
     }
 
     ui.run().expect("run event loop");
-    save_window_size(&shell);
+    save_window(&shell);
     // ⌘Q (macOS) ends the event loop without the close dialog: never leave
     // a capture or a publisher session behind the window.
     shutdown_now(&shell);
@@ -888,6 +908,11 @@ fn fit_tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
     if let Some((w, h)) = sh.fit.take_save(seen.now) {
         store_window_size(&mut sh, w, h);
     }
+    let pos = sh.platform.window_position(ui);
+    sh.position.observe(pos, seen.now);
+    if let Some(pos) = sh.position.take_save(seen.now) {
+        store_window_position(&mut sh, pos);
+    }
     drop(sh);
     let Some(mv) = mv else {
         return;
@@ -906,12 +931,23 @@ fn fit_tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
     }
 }
 
-/// Your size, as it stands at quit, if a manual resize hasn't been saved yet.
-fn save_window_size(shell: &Rc<RefCell<Shell>>) {
+/// Your size and position, as they stand at quit, if a manual resize or a
+/// move hasn't been saved yet.
+fn save_window(shell: &Rc<RefCell<Shell>>) {
     let mut sh = shell.borrow_mut();
     let due = std::time::Instant::now() + fit::SAVE_DELAY;
     if let Some((w, h)) = sh.fit.take_save(due) {
         store_window_size(&mut sh, w, h);
+    }
+    if let Some(pos) = sh.position.take_save(due) {
+        store_window_position(&mut sh, pos);
+    }
+}
+
+fn store_window_position(sh: &mut Shell, pos: (i32, i32)) {
+    if sh.cfg.window_position != Some(pos) {
+        sh.cfg.window_position = Some(pos);
+        save_config(sh);
     }
 }
 
