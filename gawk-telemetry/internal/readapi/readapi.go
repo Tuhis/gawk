@@ -703,11 +703,6 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 	if st := row.Series["playoutOffsetMs"]; st != nil {
 		f.SetClient("playoutOffsetMs", st.P95)
 	}
-	// The live video rate a deep-buffer viewer's goodput is judged against:
-	// the session's typical rate, like the funnel's medians.
-	if st := row.Series["dvrLiveRateBps"]; st != nil {
-		f.SetClient("dvrLiveRateBps", st.Median)
-	}
 	if row.Role == "broadcaster" {
 		setUplinkLoss(f, row.Counters)
 		setMemory(f, row)
@@ -808,9 +803,10 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 	// The stream's bitrate as the origin ingested it over this session's
 	// span (docs/91 SG3): the supply a viewer's goodput is judged against.
 	if first != nil && last != nil && first.Pod == last.Pod {
-		if bps, ok := relayscrape.StreamBitrateBps(first.Broadcast.ingress(), last.Broadcast.ingress(),
+		if bps, fps, ok := relayscrape.StreamRates(first.Broadcast.ingress(), last.Broadcast.ingress(),
 			first.AtMs, last.AtMs); ok {
 			f.SetRelay("streamBitrateBps", bps)
+			f.SetRelay("streamFramesPerSec", fps)
 		}
 	}
 	if first != nil && last != nil && last.AtMs > first.AtMs &&
@@ -888,9 +884,10 @@ type relayBroadcast struct {
 	SubscriberDetails         []relaySubscriber `json:"subscriberDetails"`
 }
 
-// ingress is the slice relayscrape.StreamBitrateBps reads.
+// ingress is the slice relayscrape.StreamRates reads.
 func (b *relayBroadcast) ingress() relayscrape.Broadcast {
-	return relayscrape.Broadcast{IngressDatagramBytes: b.IngressDatagramBytes, KeyframeBytesIn: b.KeyframeBytesIn}
+	return relayscrape.Broadcast{IngressDatagramBytes: b.IngressDatagramBytes, KeyframeBytesIn: b.KeyframeBytesIn,
+		FramesRelayed: b.FramesRelayed}
 }
 
 // relaySubscriber is the slice of a stored subscriberDetails entry the read

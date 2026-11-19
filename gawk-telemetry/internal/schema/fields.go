@@ -127,7 +127,10 @@ var ViewerFields = map[string]Kind{
 	// The client's own live rate of the video it is meant to receive in deep
 	// mode, from frame sizes over media time: what its goodput is judged
 	// against, since the relay's ingress count also carries audio and parity.
-	"dvrLiveRateBps":        KindNumber,
+	"dvrLiveRateBps": KindNumber,
+	// Same meter, the last 2 s: what this viewer actually received. 0 during
+	// a broadcaster pause.
+	"dvrGoodputBps":         KindNumber,
 	"carrierStreams":        KindNumber,
 	"carrierRecords":        KindNumber,
 	"carrierStreamsAborted": KindNumber,

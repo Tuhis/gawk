@@ -139,3 +139,63 @@ func TestDeriveGoodput(t *testing.T) {
 		}
 	})
 }
+
+// Review round 2: the client's (dvrGoodputBps, dvrLiveRateBps) pair, compared
+// sample by sample over the samples where frames were flowing.
+func TestDeriveSupplyRatio(t *testing.T) {
+	type smp struct{ goodput, live float64 } // live < 0: omitted
+	build := func(ss []smp) []Sample {
+		out := make([]Sample, len(ss))
+		for i, s := range ss {
+			st := map[string]any{"dvrGoodputBps": s.goodput}
+			if s.live >= 0 {
+				st["dvrLiveRateBps"] = s.live
+			}
+			out[i] = Sample{TMs: float64(i * 2000), Stats: st}
+		}
+		return out
+	}
+	rep := func(n int, s smp) []smp {
+		out := make([]smp, n)
+		for i := range out {
+			out[i] = s
+		}
+		return out
+	}
+	cases := []struct {
+		name  string
+		ss    []smp
+		ratio float64 // 0: absent
+	}{
+		{"keeping up", rep(10, smp{9.8e6, 10e6}), 0.98},
+		// The broadcaster paused: goodput reads 0, the live rate holds its
+		// last value. Those samples say nothing about supply.
+		{"a pause is not undersupply", append(rep(10, smp{9.8e6, 10e6}), rep(30, smp{0, 10e6})...), 0.98},
+		// After a restart the rate is absent until re-measured.
+		{"restart: no rate, no comparison", append(rep(6, smp{5e6, 10e6}), rep(10, smp{9e6, -1})...), 0.5},
+		{"§2", rep(20, smp{5.05e6, 10.7e6}), 5.05 / 10.7},
+		{"too few flowing samples", append(rep(4, smp{5e6, 10e6}), rep(20, smp{0, 10e6})...), 0},
+		{"not in deep mode", nil, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			facts := DeriveGoodput(build(c.ss)).Facts()
+			got, ok := facts["dvrSupplyRatio"]
+			if c.ratio == 0 {
+				if ok {
+					t.Errorf("dvrSupplyRatio = %v, want absent", got)
+				}
+				return
+			}
+			if !ok || !near(got, c.ratio) {
+				t.Errorf("dvrSupplyRatio = %v (%v), want %v", got, ok, c.ratio)
+			}
+			if _, ok := facts["dvrGoodputBps"]; !ok {
+				t.Error("dvrGoodputBps (flowing median) absent beside the ratio")
+			}
+			if _, ok := facts["dvrLiveRateBps"]; !ok {
+				t.Error("dvrLiveRateBps (flowing median) absent beside the ratio")
+			}
+		})
+	}
+}

@@ -18,7 +18,7 @@ func section2Session() *Facts {
 	f.SetClient("videoGoodputBps", 5.05e6)
 	f.SetRelay("streamBitrateBps", 10.7e6)
 	// 1080p60: the parity allowance is per relayed frame.
-	f.SetRelay("framesRelayedPerSec", 60)
+	f.SetRelay("streamFramesPerSec", 60)
 	f.SetClient("fpsDipShare", 0.58)
 	f.SetRelay("dvrResyncs", 622)
 	return f
@@ -34,7 +34,7 @@ func healthyDVRSession() *Facts {
 	f.SetRelay("dvrBufferMs", 3000)
 	f.SetClient("videoGoodputBps", 11.2e6)
 	f.SetRelay("streamBitrateBps", 11.3e6)
-	f.SetRelay("framesRelayedPerSec", 60)
+	f.SetRelay("streamFramesPerSec", 60)
 	f.SetClient("fpsDipShare", 0)
 	f.SetRelay("dvrResyncs", 0)
 	return f
@@ -159,7 +159,7 @@ func TestUndersupplyIsJudgedAgainstVideoOnly(t *testing.T) {
 		f.SetClient("videoGoodputBps", goodput)
 		f.SetRelay("streamBitrateBps", ingress)
 		if fps > 0 {
-			f.SetRelay("framesRelayedPerSec", fps)
+			f.SetRelay("streamFramesPerSec", fps)
 		}
 		return f
 	}
@@ -178,11 +178,13 @@ func TestUndersupplyIsJudgedAgainstVideoOnly(t *testing.T) {
 		// A real shortfall still fires through the overhead allowance.
 		{"reliable, real shortfall", reliable(3e6, 8e6, 30), true},
 	}
-	// Deep mode: the client's own live video rate is the comparison.
+	// Deep mode: the client's own pair is the comparison.
 	dvr := func(goodput, live, ingress float64) *Facts {
 		f := healthyDVRSession()
 		f.SetClient("videoGoodputBps", goodput)
+		f.SetClient("dvrGoodputBps", goodput)
 		f.SetClient("dvrLiveRateBps", live)
+		f.SetClient("dvrSupplyRatio", goodput/live)
 		f.SetRelay("streamBitrateBps", ingress)
 		return f
 	}
@@ -212,5 +214,74 @@ func TestUndersupplyIsJudgedAgainstVideoOnly(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Review round 2: in deep mode the client reports goodput and the live rate
+// from ONE meter, and diagnose() reduces the pair to dvrSupplyRatio over the
+// samples where frames were flowing. When it is present it decides, whatever
+// the byte-counter goodput and the relay's ingress say — a paused
+// broadcaster dilutes the one, and the other counts audio and parity.
+func TestUndersupplyPrefersTheClientPair(t *testing.T) {
+	pair := func(ratio float64) *Facts {
+		f := section2Session() // byte goodput 5.05 against a 10.7 ingress: the fallback alone fires
+		f.SetClient("dvrSupplyRatio", ratio)
+		f.SetClient("dvrGoodputBps", 10e6*ratio)
+		f.SetClient("dvrLiveRateBps", 10e6)
+		return f
+	}
+	cases := []struct {
+		name  string
+		f     *Facts
+		fires bool
+	}{
+		{"paused broadcaster: flowing samples kept up", pair(0.98), false},
+		{"§2 measured by the pair", pair(0.47), true},
+		{"just above the bound", pair(0.76), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := ruleByID(t, "resilient-undersupply").Eval(c.f)
+			if (got != nil) != c.fires {
+				t.Fatalf("fired = %v, want %v", got != nil, c.fires)
+			}
+			if got == nil {
+				return
+			}
+			var cites bool
+			for _, e := range got.Evidence {
+				if e.Signal == "dvrSupplyRatio" {
+					cites = true
+				}
+				if e.Signal == "streamBitrateBps" {
+					t.Errorf("judged on the pair but cites the relay ingress: %+v", got.Evidence)
+				}
+			}
+			if !cites {
+				t.Errorf("evidence does not cite dvrSupplyRatio: %+v", got.Evidence)
+			}
+		})
+	}
+}
+
+// The fallback's frame rate is the one measured over the SAME window as the
+// ingress bitrate (streamFramesPerSec), never a single scrape's.
+func TestUndersupplyFallbackUsesTheAlignedFrameRate(t *testing.T) {
+	f := viewerFacts()
+	f.SetText("deliveryMode", "reliable")
+	f.SetClient("playoutOffsetMs", 2000)
+	f.SetClient("videoGoodputBps", 3e6)
+	f.SetRelay("streamBitrateBps", 8e6)
+	// A scrape that caught a burst: 120 fps in one window, 30 over the span.
+	f.SetRelay("framesRelayedPerSec", 120)
+	f.SetRelay("streamFramesPerSec", 30)
+	got := ruleByID(t, "resilient-undersupply").Eval(f)
+	if got == nil {
+		t.Fatal("a real shortfall did not fire against the aligned frame rate")
+	}
+	for _, e := range got.Evidence {
+		if e.Signal == "framesRelayedPerSec" {
+			t.Errorf("cites the single-scrape frame rate: %+v", got.Evidence)
+		}
 	}
 }

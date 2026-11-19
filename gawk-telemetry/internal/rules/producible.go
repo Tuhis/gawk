@@ -59,7 +59,8 @@ var ProducibleFacts = map[string]string{
 	// The broadcast's ingested bitrate — the stream a viewer's goodput is
 	// compared against — over the session's span stored, and over the
 	// origin's recent rounds live.
-	"relay.streamBitrateBps": both,
+	"relay.streamBitrateBps":   both,
+	"relay.streamFramesPerSec": both,
 
 	// --- client, viewer ------------------------------------------------------
 	"client.receivedFps": both,
@@ -83,6 +84,8 @@ var ProducibleFacts = map[string]string{
 	"client.dvrBufferMs":            both,
 	"client.dvrStripeWidth":         both,
 	"client.dvrLiveRateBps":         both,
+	"client.dvrGoodputBps":          both,
+	"client.dvrSupplyRatio":         both,
 	// R87 (docs/91 SG3), rollup.DeriveGoodput over the session (stored) or
 	// the rolling window (live): video goodput, and in a striped deep-buffer
 	// session the aggregate and slowest connection by width.

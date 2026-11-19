@@ -419,7 +419,12 @@ func (p *Projection) ObserveClient(a ingest.Accepted, browser, os, appVersion st
 	if n := len(a.Samples); n > 0 {
 		stats := a.Samples[n-1].Stats
 		for _, f := range liveNumericFields {
-			if v, ok := schema.Number(stats, f); ok {
+			v, ok := schema.Number(stats, f)
+			if !ok && liveClearedWhenAbsent[f] {
+				delete(s.clientFacts, f)
+				continue
+			}
+			if ok {
 				// #376: an old tab's clock fault reads as a 48-minute latency
 				// in the row's cap→render column. Absent, and the previous
 				// reading cleared rather than left standing as "now".
@@ -580,6 +585,7 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 			pv.role, pv.cur, pv.at = o.Role, *o.Broadcast, now
 			pv.ingress = append(pv.ingress, ingressPoint{atMs: now.UnixMilli(), b: relayscrape.Broadcast{
 				IngressDatagramBytes: o.Broadcast.IngressDatagramBytes, KeyframeBytesIn: o.Broadcast.KeyframeBytesIn,
+				FramesRelayed: o.Broadcast.FramesRelayed,
 			}})
 			if n := len(pv.ingress); n > IngressHistoryRounds {
 				pv.ingress = append([]ingressPoint(nil), pv.ingress[n-IngressHistoryRounds:]...)
@@ -727,8 +733,8 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 			s.relayFacts["ingressLossRatio"] = b.relayFacts["ingressLossRatio"]
 			// The leg-A units a viewer's rules read to tell leg A from leg B,
 			// and the stream bitrate its goodput is judged against (R87).
-			// framesRelayedPerSec bounds the parity in that bitrate.
-			for _, k := range []string{"ingressFrameLossRatio", "ingressChunkLossRatio", "streamBitrateBps", "framesRelayedPerSec"} {
+			// streamFramesPerSec bounds the parity in that bitrate.
+			for _, k := range []string{"ingressFrameLossRatio", "ingressChunkLossRatio", "streamBitrateBps", "streamFramesPerSec"} {
 				if v, ok := b.relayFacts[k]; ok {
 					s.relayFacts[k] = v
 				} else {
@@ -958,11 +964,14 @@ func (b *broadcastState) aggregateLocked() {
 			}
 		}
 		// R87 (docs/91 SG3): the stream's ingested bitrate over the origin's
-		// recent rounds — the supply a viewer's goodput is judged against.
+		// recent rounds — the supply a viewer's goodput is judged against —
+		// and the frame rate over the SAME rounds, which bounds the parity in
+		// it (framesRelayedPerSec above is one scrape's).
 		if n := len(origin.ingress); n > 1 {
 			first, last := origin.ingress[0], origin.ingress[n-1]
-			if bps, ok := relayscrape.StreamBitrateBps(first.b, last.b, first.atMs, last.atMs); ok {
+			if bps, fps, ok := relayscrape.StreamRates(first.b, last.b, first.atMs, last.atMs); ok {
 				f["streamBitrateBps"] = bps
+				f["streamFramesPerSec"] = fps
 			}
 		}
 		b.pod, b.role = origin.pod, origin.role
@@ -1368,7 +1377,9 @@ var liveNumericFields = []string{
 	"stripeLargeLossPct", "stripeSmallLossPct", "stripeLargeChunks",
 	"stripeActive", "stripeNeeded",
 	// R21/R87: the deep buffer and its stripe width (docs/91 SG3).
-	"dvrBufferMs", "dvrStripeWidth", "dvrLiveRateBps",
+	// Cleared when a sample omits them (liveClearedWhenAbsent). The client's
+	// rate pair is not read here: it is derived over the goodput window.
+	"dvrBufferMs", "dvrStripeWidth",
 	"captureFps", "encoderFps", "sentFps", "encoderQueueDepth",
 	"EncoderFps", "SentFps",
 	// D17: the target, so the live row can show a shortfall too.
@@ -1381,6 +1392,13 @@ var liveNumericFields = []string{
 	// growth fact is stored-session only: a live window cannot see hours.
 	"memFootprintBytes", "memFootprintPeakBytes", "memHeapBytes", "memGpuBytes",
 }
+
+// liveClearedWhenAbsent are the live fields whose ABSENCE from the latest
+// sample is itself a statement (R87, review round 2): the deep-mode fields
+// are omitted outside deep mode, so the last value kept would describe a
+// mode the viewer has left. The older fields keep their last value, as they
+// always have.
+var liveClearedWhenAbsent = map[string]bool{"dvrBufferMs": true, "dvrStripeWidth": true}
 
 var liveTextFields = []string{
 	// docs/77 D14: the native broadcaster's uplink, live.

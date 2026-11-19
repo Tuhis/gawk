@@ -44,6 +44,7 @@ func TestLiveJudgesADeepBufferViewerOnGoodputAndPath(t *testing.T) {
 						"dvrBufferMs": 3000.0, "playoutOffsetMs": 3000.0, "dvrStripeWidth": 1.0,
 						// The client's own live video rate: the stream less its audio.
 						"dvrLiveRateBps":     c.stream - 128_000,
+						"dvrGoodputBps":      c.goodput,
 						"videoBytesReceived": bytes, "connectionBytesReceived": []any{bytes},
 					}})
 				}
@@ -119,6 +120,83 @@ func TestLivePathFactsClearWhenTheScrapeNoLongerSupportsThem(t *testing.T) {
 	for _, name := range []string{"pathSrttMs", "pathMinRttMs", "pathLossRatio", "dvrBufferMs"} {
 		if v, ok := relayFact(p, sid, name); ok {
 			t.Errorf("%s = %v left standing after a scrape without it", name, v)
+		}
+	}
+}
+
+// Review round 2 on the live path: the broadcaster pauses, the client's
+// goodput reads 0 and its live rate holds — not undersupply.
+func TestLivePausedBroadcasterIsNotUndersupply(t *testing.T) {
+	const sid = "f4f4f4f4f4f4f4f4f4f4f4f4"
+	p, clk := newProj()
+	bytes, tMs := 0.0, 0.0
+	for r := range 6 {
+		var samples []ingest.Sample
+		for range 5 {
+			tMs += 2000
+			goodput := 10e6
+			if r >= 1 {
+				goodput = 0 // paused from the second batch on
+			} else {
+				bytes += 10e6 / 8 * 2
+			}
+			samples = append(samples, ingest.Sample{TMs: tMs, Stats: map[string]any{
+				"receivedFps": 60.0, "deliveryMode": "dvr", "dvrBufferMs": 3000.0,
+				"playoutOffsetMs": 3000.0, "videoBytesReceived": bytes,
+				"dvrGoodputBps": goodput, "dvrLiveRateBps": 10.2e6,
+			}})
+		}
+		b := batch(sid, "viewer", nil)
+		b.Samples = samples
+		p.ObserveClient(b, "Firefox 161", "Windows", "0.40.0")
+		obs := relayObs(relayscrape.Subscriber{SessionID: sid, DVR: true, DVRBufferMs: 3000})
+		obs[0].Broadcast.IngressDatagramBytes = uint64(1_000_000 + r*13_000_000)
+		obs[0].Broadcast.FramesRelayed = uint64(10_000 + r*600)
+		p.ObserveRelay(round(obs))
+		clk.add(10 * time.Second)
+	}
+	v := findSession(p.Snapshot(), sid)
+	if v == nil {
+		t.Fatal("session not in the snapshot")
+	}
+	for _, f := range v.Findings {
+		if f.ID == "resilient-undersupply" {
+			t.Errorf("a paused broadcaster read as undersupply: %+v", f)
+		}
+	}
+}
+
+// Review round 2: a client fact this branch added is cleared when a sample
+// omits it — the client omits dvrLiveRateBps after a broadcaster restart
+// until it is re-measured, and every deep-mode field when it leaves deep mode.
+func TestLiveDeepModeClientFactsClearWhenOmitted(t *testing.T) {
+	const sid = "f5f5f5f5f5f5f5f5f5f5f5f5"
+	p, _ := newProj()
+	deep := map[string]any{"receivedFps": 60.0, "deliveryMode": "dvr",
+		"dvrBufferMs": 3000.0, "dvrStripeWidth": 2.0, "dvrLiveRateBps": 10e6, "dvrGoodputBps": 9e6}
+	b := batch(sid, "viewer", nil)
+	for i := range 6 {
+		b.Samples = append(b.Samples, ingest.Sample{TMs: float64(i * 2000), Stats: deep})
+	}
+	p.ObserveClient(b, "Firefox 161", "Windows", "0.40.0")
+	v := findSession(p.Snapshot(), sid)
+	for _, name := range []string{"dvrBufferMs", "dvrStripeWidth", "dvrLiveRateBps", "dvrGoodputBps", "dvrSupplyRatio"} {
+		if _, ok := v.Metrics[name]; !ok {
+			t.Fatalf("%s absent while in deep mode: %v", name, v.Metrics)
+		}
+	}
+
+	// Out of deep mode, long enough that the window holds no deep sample.
+	plain := map[string]any{"receivedFps": 60.0, "deliveryMode": "reliable"}
+	b = batch(sid, "viewer", nil)
+	for i := range DipWindowSamples {
+		b.Samples = append(b.Samples, ingest.Sample{TMs: float64(20_000 + i*2000), Stats: plain})
+	}
+	p.ObserveClient(b, "Firefox 161", "Windows", "0.40.0")
+	v = findSession(p.Snapshot(), sid)
+	for _, name := range []string{"dvrBufferMs", "dvrStripeWidth", "dvrLiveRateBps", "dvrGoodputBps", "dvrSupplyRatio"} {
+		if got, ok := v.Metrics[name]; ok {
+			t.Errorf("%s = %v left standing after samples that omit it", name, got)
 		}
 	}
 }

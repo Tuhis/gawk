@@ -1156,6 +1156,8 @@ func TestLiveEmitsExactlyItsShareOfTheInventory(t *testing.T) {
 			}
 			st := b.Samples[j].Stats
 			st["dvrStripeWidth"] = float64(width)
+			st["dvrLiveRateBps"] = 3_000_000.0
+			st["dvrGoodputBps"] = 2_900_000.0
 			st["videoBytesReceived"] = conns[0] + conns[1]
 			arr := make([]any, width)
 			for k := range width {

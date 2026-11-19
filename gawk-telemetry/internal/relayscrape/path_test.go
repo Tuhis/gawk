@@ -105,3 +105,17 @@ func TestPathLossRatioAndStreamBitrate(t *testing.T) {
 		t.Error("a relay that reports no ingress bytes measured a bitrate of 0")
 	}
 }
+
+// Review round 2: the stream's bitrate and frame rate over ONE window, so
+// the parity allowance (per frame) is taken at the rate the bytes came in.
+func TestStreamRatesShareAWindow(t *testing.T) {
+	prev := Broadcast{IngressDatagramBytes: 1_000_000, KeyframeBytesIn: 500_000, FramesRelayed: 600}
+	cur := Broadcast{IngressDatagramBytes: 5_000_000, KeyframeBytesIn: 3_000_000, FramesRelayed: 900}
+	bps, fps, ok := StreamRates(prev, cur, 0, 5000)
+	if !ok || bps != 10.4e6 || fps != 60 {
+		t.Errorf("StreamRates = %v, %v, %v; want 10.4e6, 60", bps, fps, ok)
+	}
+	if _, _, ok := StreamRates(cur, prev, 0, 5000); ok {
+		t.Error("counters that went backwards measured a rate")
+	}
+}

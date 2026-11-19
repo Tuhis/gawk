@@ -1189,7 +1189,6 @@ func resilientUndersupply() Rule {
 		Scope: "viewer",
 		Requires: []string{
 			"client.playoutOffsetMs", "text.deliveryMode",
-			"client.videoGoodputBps", "relay.streamBitrateBps",
 		},
 		Verdict: "Sustained undersupply, not loss — the link cannot carry the stream bitrate",
 		Action: "Reliable delivery cannot create bandwidth (docs/24). Lower the rung or bitrate. " +
@@ -1220,14 +1219,10 @@ func resilientUndersupply() Rule {
 			if offset < clamp-playoutClampSlackMs {
 				return nil
 			}
-			goodput, supply, short := undersupplied(f)
+			ev, short := undersupplied(f)
 			if !short {
 				return nil
 			}
-			ev := append([]Evidence{
-				{Signal: "videoGoodputBps", Value: goodput, Unit: "bps", From: FromClient,
-					Comparison: "video bytes received per second over the window"},
-			}, supply...)
 			ev = append(ev,
 				Evidence{Signal: "playoutOffsetMs", Value: offset, Unit: "ms", From: FromClient,
 					Comparison: "at the " + mode + " clamp"},
@@ -1279,43 +1274,59 @@ func playoutClamp(f *Facts, mode string) (float64, Evidence) {
 		Comparison: "the deep-buffer floor, which the offset sits on by design"}
 }
 
-// undersupplied reports the viewer's goodput, the evidence for the video
-// rate it was judged against, and whether the goodput is short of it.
+// undersupplied reports whether the viewer received less video than the
+// stream carries, with the evidence it was judged on. Two ways, in order:
 //
-// Both sides must be video. videoBytesReceived counts video only, while the
-// relay's ingress count also carries audio, config and every parity symbol
-// the publisher sent, which a viewer opted down to less parity never
-// receives (review round 1). So, in order:
-//   - the client's own live video rate (dvrLiveRateBps, deep mode): frame
-//     sizes over media time, exactly what it is meant to receive;
-//   - else the relay's ingress rate with the most audio and parity it can
-//     carry taken off, which needs the stream's frame rate; a floor at or
-//     under zero (a low-rate stream) supports no verdict;
-//   - else nothing: without a frame rate the parity share is unbounded.
-func undersupplied(f *Facts) (goodput float64, supply []Evidence, short bool) {
+//   - Deep mode: the client's own pair (review round 2). dvrGoodputBps and
+//     dvrLiveRateBps come from ONE meter — complete-frame video bytes,
+//     deduplicated, no parity, audio or framing — so both sides count the
+//     same thing. rollup.DeriveGoodput reduces them to dvrSupplyRatio, the
+//     median per-sample ratio over the samples where frames were flowing, so
+//     a paused broadcaster (goodput 0, rate held) and a restart (rate absent)
+//     say nothing about supply. When the pair is present it decides.
+//   - Otherwise (reliable mode, older clients): the byte counter's goodput
+//     against a floor under the relay's ingress. The two count different
+//     things, so the comparison is made one-sided rather than equal:
+//     videoGoodputBps is an UPPER bound on the video received (it also
+//     counts received parity, carrier framing and duplicates), and
+//     streamBitrateBps less the most audio and parity it can carry, at the
+//     frame rate measured over the SAME window (streamFramesPerSec), is a
+//     LOWER bound on the stream's video. Goodput under 0.75 of the floor
+//     therefore means received video under 0.75 of the stream's, whatever
+//     the true parity, audio and duplicates were; every mismatch errs toward
+//     silence. A floor at or under zero (a low-rate stream) supports no
+//     verdict, nor does a window with no frame rate.
+func undersupplied(f *Facts) (ev []Evidence, short bool) {
+	if ratio, ok := f.Client("dvrSupplyRatio"); ok {
+		ev = []Evidence{{Signal: "dvrSupplyRatio", Value: ratio, Unit: "ratio", From: FromClient,
+			Comparison: "median of goodput over the live rate, sample by sample, while frames flowed"}}
+		if g, ok := f.Client("dvrGoodputBps"); ok {
+			ev = append(ev, Evidence{Signal: "dvrGoodputBps", Value: g, Unit: "bps", From: FromClient,
+				Comparison: "video received, frames flowing (median)"})
+		}
+		if l, ok := f.Client("dvrLiveRateBps"); ok {
+			ev = append(ev, Evidence{Signal: "dvrLiveRateBps", Value: l, Unit: "bps", From: FromClient,
+				Comparison: "the live rate of the video it is meant to receive, same meter (median)"})
+		}
+		return ev, ratio < undersupplyGoodputRatio
+	}
 	goodput, okG := f.Client("videoGoodputBps")
-	if !okG {
-		return 0, nil, false
-	}
-	if live, ok := f.Client("dvrLiveRateBps"); ok && live > 0 {
-		return goodput, []Evidence{{Signal: "dvrLiveRateBps", Value: live, Unit: "bps", From: FromClient,
-				Comparison: "the live rate of the video this viewer is meant to receive"}},
-			goodput < live*undersupplyGoodputRatio
-	}
 	stream, okS := f.Relay("streamBitrateBps")
-	fps, okF := f.Relay("framesRelayedPerSec")
-	if !okS || !okF || stream <= 0 || fps <= 0 {
-		return goodput, nil, false
+	fps, okF := f.Relay("streamFramesPerSec")
+	if !okG || !okS || !okF || stream <= 0 || fps <= 0 {
+		return nil, false
 	}
 	floor := stream - audioAllowanceBps - parityAllowanceBitsPerFrame*fps
 	if floor <= 0 {
-		return goodput, nil, false
+		return nil, false
 	}
-	return goodput, []Evidence{
+	return []Evidence{
+		{Signal: "videoGoodputBps", Value: goodput, Unit: "bps", From: FromClient,
+			Comparison: "video bytes received per second, parity and framing included: an upper bound"},
 		{Signal: "streamBitrateBps", Value: stream, Unit: "bps", From: FromRelay,
 			Comparison: "what the relay ingested over the same window, audio and parity included"},
-		{Signal: "framesRelayedPerSec", Value: fps, Unit: "fps", From: FromRelay,
-			Comparison: "bounds the parity share taken off the ingress rate"},
+		{Signal: "streamFramesPerSec", Value: fps, Unit: "fps", From: FromRelay,
+			Comparison: "frames relayed over the same window: bounds the parity taken off"},
 		{Signal: "videoFloorBps", Value: floor, Unit: "bps", From: FromDerived,
 			Comparison: "the least of the ingress that can be video, the comparison"},
 	}, goodput < floor*undersupplyGoodputRatio
@@ -1354,9 +1365,12 @@ func lossLimitedPath(f *Facts) ([]Evidence, bool) {
 // "every added connection brings its own share").
 func perConnectionCeiling() Rule {
 	return Rule{
-		ID:       "per-connection-ceiling",
-		Scope:    "viewer",
-		Requires: []string{"client.videoGoodputBps", "relay.streamBitrateBps"},
+		ID:    "per-connection-ceiling",
+		Scope: "viewer",
+		// The relay's broadcast record: signature (a) and the fallback read
+		// it, and a session with no relay coverage cannot be told apart from
+		// a full link. The supply comparison's two ways are in undersupplied.
+		Requires: []string{"relay.streamBitrateBps"},
 		Verdict:  "A per-connection ceiling, not a full link — one connection carries less than the stream while the path has room for more",
 		Action: "Most stable with Striping on Auto spreads the GOPs over more connections, each needing a " +
 			"share of the bitrate (docs/91). Without striping, a lower rung is the only fix.",
@@ -1378,14 +1392,10 @@ func perConnectionCeiling() Rule {
 			{Name: "stripeConnectionFlatRatio", Value: stripeConnectionFlatRatio, Unit: "ratio", Note: "the slowest connection at the widest stripe keeps at least this share of width-1 goodput"},
 		},
 		Eval: func(f *Facts) *Finding {
-			goodput, supply, short := undersupplied(f)
+			ev, short := undersupplied(f)
 			if !short {
 				return nil
 			}
-			ev := append([]Evidence{
-				{Signal: "videoGoodputBps", Value: goodput, Unit: "bps", From: FromClient,
-					Comparison: "below the stream's video rate"},
-			}, supply...)
 			pathEv, lossLimited := lossLimitedPath(f)
 			stripeEv, scaled := stripeScaled(f)
 			switch {

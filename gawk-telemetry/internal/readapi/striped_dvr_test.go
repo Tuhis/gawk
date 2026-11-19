@@ -35,7 +35,9 @@ func dvrSessionLive(t *testing.T, goodputBps, liveBps, streamBps, srtt, minRTT f
 			"connectionBytesReceived": []any{goodputBps / 8 * tMs / 1000},
 		}})
 		if liveBps > 0 {
+			// A current client reports the pair, from one meter.
 			samples[len(samples)-1].Stats["dvrLiveRateBps"] = liveBps
+			samples[len(samples)-1].Stats["dvrGoodputBps"] = goodputBps
 		}
 	}
 	in := rollup.Input{
@@ -101,7 +103,7 @@ func TestStoredDVRSessionVerdicts(t *testing.T) {
 			}
 			var cited bool
 			for _, e := range under.Evidence {
-				if e.Signal == "videoGoodputBps" && e.Value > c.goodput*0.99 && e.Value < c.goodput*1.01 {
+				if (e.Signal == "videoGoodputBps" || e.Signal == "dvrGoodputBps") && e.Value > c.goodput*0.99 && e.Value < c.goodput*1.01 {
 					cited = true
 				}
 			}
@@ -160,5 +162,45 @@ func TestStoredLowRateSessionWithAudioIsNotUndersupply(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Review round 2: a deep-buffer viewer whose broadcaster paused for most of
+// the session. The byte counter's session goodput is diluted by the pause
+// while the client's live rate holds its last value; the pair, compared over
+// the samples where frames flowed, shows a viewer that kept up.
+func TestStoredDVRSessionWithAPauseIsNotUndersupply(t *testing.T) {
+	f := newFixture(t)
+	row, in, lines := dvrSessionLive(t, 10e6, 10.2e6, 10.7e6, 41, 40, 0)
+	bytes := 0.0
+	for i := range in.Samples {
+		st := in.Samples[i].Stats
+		paused := i >= 15
+		goodput := 10e6
+		if paused {
+			goodput = 0
+		} else if i > 0 {
+			bytes += 10e6 / 8 * 2
+		}
+		st["videoBytesReceived"] = bytes
+		st["connectionBytesReceived"] = []any{bytes}
+		st["dvrGoodputBps"] = goodput
+		st["dvrLiveRateBps"] = 10.2e6
+	}
+	row = rollup.Compute(in)
+	rep := f.api.DiagnoseRow(row, in, lines)
+	if fd := findOne(rep, "resilient-undersupply"); fd != nil {
+		t.Errorf("a paused broadcaster read as undersupply: %+v", fd)
+	}
+
+	// The same session genuinely short while frames flowed still fires.
+	for i := range in.Samples {
+		if i < 15 {
+			in.Samples[i].Stats["dvrGoodputBps"] = 5e6
+		}
+	}
+	row = rollup.Compute(in)
+	if findOne(f.api.DiagnoseRow(row, in, lines), "resilient-undersupply") == nil {
+		t.Error("a real shortfall while frames flowed did not fire")
 	}
 }

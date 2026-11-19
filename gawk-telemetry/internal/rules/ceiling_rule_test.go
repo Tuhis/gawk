@@ -12,7 +12,7 @@ func TestPerConnectionCeiling(t *testing.T) {
 	short := func(f *Facts) {
 		f.SetClient("videoGoodputBps", 6.1e6)
 		f.SetRelay("streamBitrateBps", 11.3e6)
-		f.SetRelay("framesRelayedPerSec", 60)
+		f.SetRelay("streamFramesPerSec", 60)
 	}
 	path := func(srtt, minRTT, loss float64) func(*Facts) {
 		return func(f *Facts) {
@@ -93,7 +93,7 @@ func TestPerConnectionCeilingProvenance(t *testing.T) {
 	f := viewerFacts()
 	f.SetClient("videoGoodputBps", 6.1e6)
 	f.SetRelay("streamBitrateBps", 11.3e6)
-	f.SetRelay("framesRelayedPerSec", 60)
+	f.SetRelay("streamFramesPerSec", 60)
 	f.SetClient("dvrStripeWidthMax", 3)
 	f.SetClient("stripeWidth1GoodputBps", 6.1e6)
 	f.SetClient("stripeMaxWidthGoodputBps", 18.6e6)

@@ -226,10 +226,21 @@ func (b Broadcast) IngressBytes() uint64 { return b.IngressDatagramBytes + b.Key
 // observations of the SAME pod. ok is false across a counter that went
 // backwards (a re-created hub) or an empty interval.
 func StreamBitrateBps(prev, cur Broadcast, prevAtMs, curAtMs int64) (float64, bool) {
-	if curAtMs <= prevAtMs || cur.IngressBytes() < prev.IngressBytes() || prev.IngressBytes() == 0 {
-		return 0, false
+	bps, _, ok := StreamRates(prev, cur, prevAtMs, curAtMs)
+	return bps, ok
+}
+
+// StreamRates is the ingested bitrate and the relayed frame rate over ONE
+// window, so a per-frame allowance taken off the bitrate is taken at the
+// rate those bytes came in (docs/91 SG3, review round 2).
+func StreamRates(prev, cur Broadcast, prevAtMs, curAtMs int64) (bps, fps float64, ok bool) {
+	if curAtMs <= prevAtMs || cur.IngressBytes() < prev.IngressBytes() || prev.IngressBytes() == 0 ||
+		cur.FramesRelayed < prev.FramesRelayed {
+		return 0, 0, false
 	}
-	return float64(cur.IngressBytes()-prev.IngressBytes()) * 8 / (float64(curAtMs-prevAtMs) / 1000), true
+	secs := float64(curAtMs-prevAtMs) / 1000
+	return float64(cur.IngressBytes()-prev.IngressBytes()) * 8 / secs,
+		float64(cur.FramesRelayed-prev.FramesRelayed) / secs, true
 }
 
 // IsAudience reports whether a /statusz subscriber entry is a viewer rather

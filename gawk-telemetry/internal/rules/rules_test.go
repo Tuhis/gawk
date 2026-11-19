@@ -243,7 +243,7 @@ func TestEveryPlaybookRowFiresAndDoesNot(t *testing.T) {
 			quiet: func() *Facts {
 				f := bcastFacts()
 				f.SetRelay("publisherActive", 1)
-				f.SetRelay("framesRelayedPerSec", 30)
+				f.SetRelay("streamFramesPerSec", 30)
 				return f
 			},
 		},
@@ -255,7 +255,7 @@ func TestEveryPlaybookRowFiresAndDoesNot(t *testing.T) {
 				f.SetClient("playoutOffsetMs", 2000)
 				f.SetClient("videoGoodputBps", 3e6)
 				f.SetRelay("streamBitrateBps", 6e6)
-				f.SetRelay("framesRelayedPerSec", 30)
+				f.SetRelay("streamFramesPerSec", 30)
 				return f
 			},
 			quiet: func() *Facts {
@@ -265,7 +265,7 @@ func TestEveryPlaybookRowFiresAndDoesNot(t *testing.T) {
 				f.SetClient("playoutOffsetMs", 2000)
 				f.SetClient("videoGoodputBps", 3e6)
 				f.SetRelay("streamBitrateBps", 6e6)
-				f.SetRelay("framesRelayedPerSec", 30)
+				f.SetRelay("streamFramesPerSec", 30)
 				return f
 			},
 		},
@@ -276,7 +276,7 @@ func TestEveryPlaybookRowFiresAndDoesNot(t *testing.T) {
 				f := viewerFacts()
 				f.SetClient("videoGoodputBps", 6.1e6)
 				f.SetRelay("streamBitrateBps", 11.3e6)
-				f.SetRelay("framesRelayedPerSec", 60)
+				f.SetRelay("streamFramesPerSec", 60)
 				f.SetRelay("pathSrttMs", 41)
 				f.SetRelay("pathMinRttMs", 40)
 				f.SetRelay("pathLossRatio", 0.01)
@@ -287,7 +287,7 @@ func TestEveryPlaybookRowFiresAndDoesNot(t *testing.T) {
 				f := viewerFacts()
 				f.SetClient("videoGoodputBps", 7.6e6)
 				f.SetRelay("streamBitrateBps", 11.3e6)
-				f.SetRelay("framesRelayedPerSec", 60)
+				f.SetRelay("streamFramesPerSec", 60)
 				f.SetRelay("pathSrttMs", 180)
 				f.SetRelay("pathMinRttMs", 40)
 				f.SetRelay("pathLossRatio", 0.0195)

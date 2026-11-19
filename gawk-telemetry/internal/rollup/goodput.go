@@ -1,6 +1,10 @@
 package rollup
 
-import "github.com/Tuhis/gawk/gawk-telemetry/internal/schema"
+import (
+	"sort"
+
+	"github.com/Tuhis/gawk/gawk-telemetry/internal/schema"
+)
 
 // Goodput derivation (R87, docs/91 §8 SG3): what a viewer actually received
 // per second, overall and per connection by stripe width. One function for
@@ -10,14 +14,22 @@ import "github.com/Tuhis/gawk/gawk-telemetry/internal/schema"
 
 // GoodputFields are the stats fields the derivation reads. The live window
 // keeps only these.
-var GoodputFields = []string{"videoBytesReceived", "dvrStripeWidth", "connectionBytesReceived"}
+var GoodputFields = []string{
+	"videoBytesReceived", "dvrStripeWidth", "connectionBytesReceived",
+	"dvrGoodputBps", "dvrLiveRateBps",
+}
 
 // GoodputFactNames are every fact Goodput.Facts can emit, so a producer can
 // clear the ones a later window cannot support.
 var GoodputFactNames = []string{
 	"videoGoodputBps",
 	"dvrStripeWidthMax", "stripeWidth1GoodputBps", "stripeMaxWidthGoodputBps", "stripeMaxWidthConnMinBps",
+	"dvrSupplyRatio", "dvrGoodputBps", "dvrLiveRateBps",
 }
+
+// MinSupplySamples is the least number of flowing samples the client's pair
+// is judged over: ten seconds at the default 2 s report interval.
+const MinSupplySamples = 5
 
 // MinGoodputSpanMs is the least measured time a rate is reported over. A
 // 0.5 s GOP's keyframe is about half a GOP's bytes, so a rate over a couple
@@ -38,6 +50,20 @@ type Goodput struct {
 	// at WidthMax, and MaxWidthConnMinBps its slowest connection's rate.
 	Width1Bps, MaxWidthBps, MaxWidthConnMinBps float64
 	StripeOK                                   bool
+	// The deep-mode client's own pair (review round 2): dvrGoodputBps and
+	// dvrLiveRateBps come from one meter (complete-frame video bytes,
+	// deduplicated, no parity, audio or framing), so they are compared
+	// sample by sample. Only samples where frames were FLOWING count:
+	// dvrGoodputBps > 0, read off the same meter as the rate it is compared
+	// with. A paused broadcaster reads 0 there while dvrLiveRateBps holds its
+	// last value, and a sample with no rate (a restart, not yet re-measured)
+	// has nothing to compare against. A viewer receiving nothing at all is
+	// not judged here either: no frame at all is a stall, and the stall rules
+	// own it. SupplyRatio is the median per-sample ratio, so one keyframe
+	// landing in a 2 s window does not swing it; the two rates are the
+	// medians over the same samples, for evidence.
+	SupplyRatio, FlowGoodputBps, FlowLiveRateBps float64
+	SupplyOK                                     bool
 }
 
 type widthBucket struct {
@@ -96,6 +122,7 @@ func DeriveGoodput(samples []Sample) Goodput {
 	if videoMs >= MinGoodputSpanMs {
 		g.VideoBps, g.VideoOK = videoBytes*8/(videoMs/1000), true
 	}
+	g.deriveSupply(samples)
 
 	one := buckets[1]
 	if one == nil || one.ms < MinGoodputSpanMs {
@@ -122,6 +149,35 @@ func DeriveGoodput(samples []Sample) Goodput {
 	return g
 }
 
+func (g *Goodput) deriveSupply(samples []Sample) {
+	var ratios, goodputs, lives []float64
+	for _, s := range samples {
+		goodput, okG := schema.Number(s.Stats, "dvrGoodputBps")
+		live, okL := schema.Number(s.Stats, "dvrLiveRateBps")
+		if !okG || !okL || goodput <= 0 || live <= 0 {
+			continue
+		}
+		ratios = append(ratios, goodput/live)
+		goodputs = append(goodputs, goodput)
+		lives = append(lives, live)
+	}
+	if len(ratios) < MinSupplySamples {
+		return
+	}
+	g.SupplyRatio, g.FlowGoodputBps, g.FlowLiveRateBps = medianOf(ratios), medianOf(goodputs), medianOf(lives)
+	g.SupplyOK = true
+}
+
+func medianOf(v []float64) float64 {
+	s := append([]float64(nil), v...)
+	sort.Float64s(s)
+	n := len(s)
+	if n%2 == 1 {
+		return s[n/2]
+	}
+	return (s[n/2-1] + s[n/2]) / 2
+}
+
 // Facts renders the rates under their fact names, absent parts omitted.
 func (g Goodput) Facts() map[string]float64 {
 	out := map[string]float64{}
@@ -133,6 +189,11 @@ func (g Goodput) Facts() map[string]float64 {
 		out["stripeWidth1GoodputBps"] = g.Width1Bps
 		out["stripeMaxWidthGoodputBps"] = g.MaxWidthBps
 		out["stripeMaxWidthConnMinBps"] = g.MaxWidthConnMinBps
+	}
+	if g.SupplyOK {
+		out["dvrSupplyRatio"] = g.SupplyRatio
+		out["dvrGoodputBps"] = g.FlowGoodputBps
+		out["dvrLiveRateBps"] = g.FlowLiveRateBps
 	}
 	return out
 }
