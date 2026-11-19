@@ -29,8 +29,9 @@
 //                             a real relay with -rooms and two gawk-pubsim
 //                             publishers (one mints the room, one attaches):
 //                             the grid shows both tiles advancing, a number
-//                             key focuses one, Hide videos closes every
-//                             /subscribe session (asserted on the relay's
+//                             key focuses one, hiding one under Choose
+//                             closes its /subscribe sessions only and None
+//                             closes every one (R86, asserted on the relay's
 //                             per-broadcast subscriber count while the room's
 //                             control session stays), Leave. Skips cleanly
 //                             when the pubsim binary predates -room-new.
@@ -1908,8 +1909,10 @@ async function assertRelaySide(opsUrl, expectedActive = 1) {
 // control and media sessions. What only real processes can show is the
 // contract BETWEEN them — that a browser participant's tiles are ordinary
 // /subscribe sessions the relay counts like any other, that focus is a gain
-// change rather than a re-dial, and that Hide videos really does close every
-// media session while the room keeps the participant. The subscriber count
+// change rather than a re-dial, that a stream hidden under Choose loses its
+// subscriber while the other keeps its own, and that None (the old Hide
+// videos, R86) really does close every media session while the room keeps
+// the participant. The subscriber count
 // on /statusz is the load-bearing number: it is the relay's own view, not
 // the page's claim about itself.
 
@@ -2098,11 +2101,32 @@ async function roomsPass({ relayUrl, certHash, opsUrl }) {
     log('focus ok: key 2 focused tile 2 and it kept advancing');
     writeFileSync(join(OUT, 'room-focus.png'), await page.screenshot());
 
-    // Hide videos: no tiles, and — the relay's word for it — zero
-    // subscribers on both broadcasts, while the room still counts the
-    // browser's control session among its participants.
+    // R86 (docs/90): hide bravo under Choose. Its tile goes and the relay
+    // counts no subscriber on its broadcast, while alpha keeps its own: a
+    // hidden stream is unsubscribed, not just not drawn. /statusz keys
+    // broadcasts by an HMAC, so the check is "one at zero, one not".
     const participantsBefore = relayFocus.rooms.find((r) => r.attachments === 2)?.participants ?? 0;
-    await page.getByRole('radio', { name: 'Hide videos' }).click();
+    await page.getByRole('button', { name: /^What to show:/ }).click();
+    await page.getByRole('radio', { name: 'Choose' }).click();
+    await page.getByRole('checkbox', { name: 'bravo' }).click();
+    await pollFor(async () => (await readTiles(page)).length === 1, 5_000, 200, "bravo's tile to unmount");
+    await pollFor(
+      async () => {
+        const { active } = await relayRooms(opsUrl);
+        const subs = active.map((b) => b.subscribers).sort((a, b) => a - b);
+        return active.length === 2 && subs[0] === 0 && subs[1] >= 1;
+      },
+      15_000,
+      500,
+      'the relay to count zero subscribers on the hidden broadcast and at least one on the other',
+    );
+    log('choose ok: bravo hidden, its broadcast has no subscriber, alpha kept its own');
+    writeFileSync(join(OUT, 'room-choose.png'), await page.screenshot());
+
+    // None (the old Hide videos): no tiles, and — the relay's word for it —
+    // zero subscribers on both broadcasts, while the room still counts the
+    // browser's control session among its participants.
+    await page.getByRole('radio', { name: 'None' }).click();
     await pollFor(async () => (await readTiles(page)).length === 0, 5_000, 200, 'the tiles to unmount');
     await pollFor(
       async () => {
@@ -2111,16 +2135,16 @@ async function roomsPass({ relayUrl, certHash, opsUrl }) {
       },
       15_000,
       500,
-      'the relay to count zero subscribers on both broadcasts after Hide videos',
+      'the relay to count zero subscribers on both broadcasts after None',
     );
     const { rooms: roomsHidden } = await relayRooms(opsUrl);
     const room = roomsHidden.find((r) => r.attachments === 2);
     if (!room) fail('the room disappeared from /statusz while a participant was in it');
     if (room.participants !== participantsBefore) {
-      fail(`Hide videos changed the room's participant count (${participantsBefore} → ${room.participants}); the control session must stay`);
+      fail(`None changed the room's participant count (${participantsBefore} → ${room.participants}); the control session must stay`);
     }
     if (room.participants < 1) fail('the room counts no participants while the browser is in it');
-    log(`hide videos ok: zero subscribers on both broadcasts, room still holds ${room.participants} participant(s) (2 are the publishers)`);
+    log(`none ok: zero subscribers on both broadcasts, room still holds ${room.participants} participant(s) (2 are the publishers)`);
     writeFileSync(join(OUT, 'room-hidden.png'), await page.screenshot());
 
     // Leave: the participant count drops by exactly one.
