@@ -713,6 +713,12 @@ Add to it when a new gotcha lands in `docs/`.
   *enter* animation mid-exit, which is worth sampling whenever an exit
   animation "does not play". ([docs/40](40-relay-server-picker.md) §4.3)
 
+- **Shift changes a digit's `KeyboardEvent.key`, and differently per
+  layout**: Shift+2 is `@` on US and `"` on Nordic keyboards, so a
+  `{ key: '2', shift: true }` shortcut never matched by `key`. `useHotkey`
+  matches a Shift shortcut's digit by its number-row `code` (`Digit2`)
+  instead. ([docs/90](90-room-stream-visibility.md) §8)
+
 **Media pipeline**
 
 - **A canvas player gets no free display wake lock — take one explicitly.**

@@ -391,6 +391,20 @@ describe('room voice UI', () => {
     expect(useVoiceStore.getState().pttHeld).toBe(true);
     act(() => window.dispatchEvent(new Event('blur')));
     expect(useVoiceStore.getState().pttHeld).toBe(false);
+    // R86: a focused checkbox is not typing, so the key talks there — but
+    // Space is the checkbox's own key, so a Space PTT leaves it to it.
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    document.body.appendChild(box);
+    fireEvent.keyDown(box, { code: 'KeyT' });
+    expect(useVoiceStore.getState().pttHeld).toBe(true);
+    fireEvent.keyUp(box, { code: 'KeyT' });
+    fireEvent.click(within(panel).getByRole('button', { name: 'Change the push-to-talk key' }));
+    fireEvent.keyDown(within(panel).getByRole('button', { name: 'Press a key…' }), { code: 'Space', key: ' ' });
+    expect(localStorage.getItem('gawk:voice-ptt-key')).toBe('Space');
+    fireEvent.keyDown(box, { code: 'Space' });
+    expect(useVoiceStore.getState().pttHeld).toBe(false);
+    box.remove();
   });
 
   it('4015: "You were removed from voice", the mic released, no rejoin', async () => {
