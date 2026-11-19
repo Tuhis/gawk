@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.17.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.16.1...gawk-broadcast-desktop/v2.17.0) (2026-11-19)
+
+
+### Features
+
+* **broadcast-desktop:** remember the window's position on macOS ([#813](https://github.com/Tuhis/gawk/issues/813)) ([adb3632](https://github.com/Tuhis/gawk/commit/adb36322e855ab2b08e8b43aeee3acf1e65caaac))
+* **broadcast-desktop:** remember the window's position on Windows ([#811](https://github.com/Tuhis/gawk/issues/811)) ([e877325](https://github.com/Tuhis/gawk/commit/e8773252e2b67c9918c6217a7ebfa366b50c1a1d))
+
 ## [2.16.1](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.16.0...gawk-broadcast-desktop/v2.16.1) (2026-11-15)
 
 
