@@ -177,6 +177,35 @@ describe('ReorderBuffer with GOPs out of order (docs/91 D9)', () => {
     expect(h.restarts()).toBe(1);
   });
 
+  // Review round 2, finding 5: a restart starts a new frameId space, so what
+  // the old session released says nothing about the new one's late frames.
+  it('forgets the old session\'s released frames on a broadcaster restart', () => {
+    const h = harness();
+    // An old session, 100 s in, plays frames 0–11.
+    for (let k = 0; k < 3; k++) {
+      h.runTo(complete(k));
+      h.pushGop(k, 0, 100_000_000);
+    }
+    h.runTo(due(11) + 50);
+    expect(h.ids()).toEqual(range(0, 12));
+    // The broadcaster restarts: frameIds from 0, its clock from 0. Its first
+    // keyframe arrives and plays, then its GOP 1 loses the race to GOP 2 and
+    // is skipped. (Arrival at t0 for media time 0 makes t0 the new baseline,
+    // so new-session frame n is due at t0 + due(n).)
+    const t0 = h.clock.t;
+    h.rb.pushKeyframe({ frameId: 0, timestampUs: 0n, config: null, data: new Uint8Array([0]) });
+    expect(h.restarts()).toBe(1);
+    h.runTo(t0 + due(0));
+    for (const id of [1, 2, 3]) {
+      h.rb.pushDelta({ frameId: id, timestampUs: BigInt(id * FRAME_MS * 1000), data: new Uint8Array([id]) });
+    }
+    h.pushGop(2);
+    h.runTo(t0 + due(9));
+    expect(h.ids().slice(12, 17)).toEqual([0, 1, 2, 3, 8]);
+    h.pushGop(1); // late, and ids 4–7 were last released by the OLD session
+    expect(h.rb.getStats()).toMatchObject({ lateFramesDropped: GOP, duplicateFrames: 0 });
+  });
+
   it('leaves the unstriped path alone: a buffered later keyframe still ends the wait at once', () => {
     const h = harness(false);
     h.runTo(complete(0));

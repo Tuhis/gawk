@@ -19,9 +19,11 @@ import {
 
 class FakeWT {
   static instances: FakeWT[] = [];
+  static autoReady = true;
 
   url: string;
-  ready = Promise.resolve();
+  ready: Promise<void>;
+  readyResolve!: () => void;
   closedResolve!: (info?: unknown) => void;
   closed: Promise<unknown>;
   written: Uint8Array[] = [];
@@ -33,6 +35,10 @@ class FakeWT {
   constructor(url: string) {
     this.url = url;
     FakeWT.instances.push(this);
+    this.ready = new Promise((r) => {
+      this.readyResolve = r;
+    });
+    if (FakeWT.autoReady) this.readyResolve();
     this.closed = new Promise((r) => {
       this.closedResolve = (info?: unknown) => r(info ?? {});
     });
@@ -99,6 +105,7 @@ async function connect(url = PRIMARY): Promise<void> {
 
 beforeEach(() => {
   FakeWT.instances = [];
+  FakeWT.autoReady = true;
   datagrams = [];
   keyframes = [];
   stripeChanges = [];
@@ -204,6 +211,41 @@ describe('LocalViewerTransport in the deep-buffer layout (docs/91)', () => {
     ]);
   });
 
+  // Review round 2, finding 2: asking for the width already up cancels a
+  // transition still dialing, so it cannot commit later and leave the
+  // transport wider than asked.
+  it('a request for the active width cancels a transition still in flight', async () => {
+    await connect();
+    transport.setStripe(1, 'dvr');
+    await flush();
+    FakeWT.autoReady = false;
+    transport.setStripe(2, 'dvr');
+    await flush();
+    const pending = FakeWT.legs().slice(1);
+    expect(pending).toHaveLength(2);
+    transport.setStripe(1, 'dvr');
+    for (const l of pending) l.readyResolve();
+    await flush();
+    expect(transport.sampleStripe()).toMatchObject({ active: 1, target: 1 });
+    expect(pending.every((l) => l.closeCalled)).toBe(true);
+    expect(stripeStates(FakeWT.instances[0])).toEqual([{ striped: true, stripeN: 2 }]);
+    expect(stripeChanges).toEqual([1]);
+  });
+
+  it('a disengage cancels a first engage still in flight', async () => {
+    await connect();
+    FakeWT.autoReady = false;
+    transport.setStripe(1, 'dvr');
+    await flush();
+    const [pending] = FakeWT.legs();
+    transport.setStripe(0, 'dvr');
+    pending.readyResolve();
+    await flush();
+    expect(transport.sampleStripe()).toMatchObject({ active: 0 });
+    expect(pending.closeCalled).toBe(true);
+    expect(stripeChanges).toEqual([]);
+  });
+
   it('a leg death hands every GOP back to the primary', async () => {
     await connect();
     transport.setStripe(1, 'dvr');
@@ -267,14 +309,68 @@ describe('LocalViewerTransport in the deep-buffer layout (docs/91)', () => {
         const beats = stripeStates(old[0]).length;
         await tick(2000);
         expect(stripeStates(old[0]).length).toBeGreaterThan(beats);
-        // Old legs keep their own width in the heartbeat.
-        expect(stripeStates(old[0]).at(-1)).toEqual({ striped: true, stripeN: t.from + 1 });
+        // A draining leg's heartbeat is the drain signal itself (round 2).
+        expect(stripeStates(old[0]).at(-1)).toEqual({ striped: false, stripeN: 0 });
 
         await tick(DRAIN_MS);
         expect(old.every((l) => l.closeCalled)).toBe(true);
         expect(stripeChanges.at(-1)).toBe(t.to);
       });
     }
+
+    // Review round 2, finding 3: the relay's drain signal is Striped=false on
+    // the superseded leg itself; it then serves the leg's backlog and closes
+    // it. Sent a few times, since a datagram can be lost.
+    it('tells a superseded leg to drain, three times, and never the live legs', async () => {
+      await connect();
+      transport.setStripe(1, 'dvr');
+      await tick();
+      const [old] = FakeWT.legs();
+      transport.setStripe(2, 'dvr');
+      await tick(350);
+      const drains = stripeStates(old).filter((st) => !st.striped);
+      expect(drains.length).toBeGreaterThanOrEqual(3);
+      expect(drains.every((st) => st.stripeN === 0)).toBe(true);
+      for (const leg of FakeWT.legs().slice(1)) {
+        expect(stripeStates(leg).every((st) => st.striped)).toBe(true);
+      }
+      // The primary is never told to unstripe by a grow.
+      expect(stripeStates(FakeWT.instances[0]).every((st) => st.striped)).toBe(true);
+    });
+
+    it('stops with a leg the relay closed after draining it: not a leg death', async () => {
+      await connect();
+      transport.setStripe(1, 'dvr');
+      await tick();
+      const [old] = FakeWT.legs();
+      transport.setStripe(2, 'dvr');
+      await tick(500);
+      old.closedResolve({ reason: 'drained' });
+      await tick();
+      const writes = old.written.length;
+      await tick(DRAIN_MS);
+      expect(old.written.length).toBe(writes);
+      expect(transport.sampleStripe()).toMatchObject({ active: 2, legDeaths: 0 });
+      expect(stripeChanges).toEqual([1, 2]);
+    });
+
+    // Review round 2, finding 4: a leg-death disengage stops the stripe
+    // refresh, but legs still draining from an earlier transition keep their
+    // own heartbeat, or the relay's lease reaps them mid-drain.
+    it('keeps draining legs heartbeating through a leg-death disengage', async () => {
+      await connect();
+      transport.setStripe(1, 'dvr');
+      await tick();
+      const [old] = FakeWT.legs();
+      transport.setStripe(2, 'dvr');
+      await tick();
+      FakeWT.legs()[1].closedResolve({ reason: 'gone' }); // a live leg dies
+      await tick();
+      expect(transport.sampleStripe()).toMatchObject({ active: 0, legDeaths: 1 });
+      const beats = stripeStates(old).length;
+      await tick(2500);
+      expect(stripeStates(old).length).toBeGreaterThanOrEqual(beats + 2);
+    });
 
     it("ignores a draining leg's death: it is no longer part of the cover", async () => {
       await connect();

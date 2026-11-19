@@ -21,7 +21,7 @@ import { setStripeMode, type StripeMode } from './stripe';
 import { CAP_PARITY_CHUNKS, CAP_STRIPED_DELIVERY, CAP_STRIPED_DVR } from './parity';
 import type { StripeLayout, ViewerTransport, ViewerTransportCallbacks } from './viewer-transport';
 import { encodeDeliveryAck, type DeliveryServedMode } from './wire';
-import { DVR_STRIPE_REENGAGE_BACKOFF_MS } from './dvr-stripe';
+import { DVR_STRIPE_DIAL_TIMEOUT_MS, DVR_STRIPE_REENGAGE_BACKOFF_MS } from './dvr-stripe';
 import type { ViewerDeliveryMode } from './resilient';
 
 interface Harness {
@@ -48,6 +48,8 @@ async function startPipeline(delivery: ViewerDeliveryMode): Promise<Harness> {
     sampleTimeSync: () => null,
     setStripe: (n, layout) => {
       stripeCalls.push([n, layout]);
+      // Like the real transport: the sample's target is the last request.
+      stripeSample.target = n;
     },
     close: () => {},
   };
@@ -257,6 +259,40 @@ describe('ViewerPipeline striped deep-buffer gate (docs/91 SG2)', () => {
     const s = h.stats.at(-1)!;
     expect(s.dvrLiveRateBps).toBeCloseTo(80_000, -2);
     expect(s.dvrGoodputBps).toBeGreaterThan(0);
+    await h.pipeline.stop();
+  });
+
+  // Review round 2, finding 2: the viewer reconciles the transport's actual
+  // legs against the desired width whenever they differ — not only after a
+  // dial failure — without restarting a transition that is still dialing.
+  it('re-requests when the transport ends up at a width the policy did not ask for', async () => {
+    setStripeMode('on');
+    const h = await startPipeline('deep');
+    h.cb.onRelayCapabilities?.({ flags: CAP_STRIPED_DVR, parityLevel: 0 });
+    h.cb.onDatagram(encodeDeliveryAck('dvr', 3000));
+    await vi.advanceTimersByTimeAsync(500);
+    expect(h.stripeCalls).toEqual([[1, 'dvr']]);
+
+    // A stale transition commits two legs.
+    Object.assign(h.stripeSample, { active: 2, target: 2 });
+    h.cb.onStripeChange?.(2);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(h.stripeCalls).toEqual([[1, 'dvr'], [1, 'dvr']]);
+    await h.pipeline.stop();
+  });
+
+  it('leaves a transition that is still dialing alone, until the dial timeout', async () => {
+    setStripeMode('on');
+    const h = await startPipeline('deep');
+    h.cb.onRelayCapabilities?.({ flags: CAP_STRIPED_DVR, parityLevel: 0 });
+    h.cb.onDatagram(encodeDeliveryAck('dvr', 3000));
+    await vi.advanceTimersByTimeAsync(500);
+    // Working toward the right width, nothing up yet, nothing failed.
+    Object.assign(h.stripeSample, { active: 0, target: 1 });
+    await vi.advanceTimersByTimeAsync(DVR_STRIPE_DIAL_TIMEOUT_MS - 1000);
+    expect(h.stripeCalls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(h.stripeCalls).toEqual([[1, 'dvr'], [1, 'dvr']]);
     await h.pipeline.stop();
   });
 });

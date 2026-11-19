@@ -37,6 +37,10 @@ export const DVR_STRIPE_SETTLE_MS = 3_000;
 export const DVR_STRIPE_EVAL_MS = 10_000;
 // A step whose legs never come up (caps pressure, dial errors) did not help.
 export const DVR_STRIPE_DIAL_TIMEOUT_MS = 10_000;
+// A broadcaster pause restarts a step's evaluation, but only until this long
+// past when the evaluation would first have ended; then the step is judged on
+// every frame-bearing sample since its legs came up.
+export const DVR_STRIPE_MAX_EVAL_POSTPONE_MS = 60_000;
 // After a leg death forced a fallback, as stripe.ts: a flapping path must not
 // burn dials at the stats cadence.
 export const DVR_STRIPE_REENGAGE_BACKOFF_MS = 5_000;
@@ -82,12 +86,26 @@ export class DvrGoodputMeter {
   private frames = new Map<number, FrameSample>(); // insertion = arrival order
   private firstAtMs: number | null = null;
   private lastLiveRateBps: number | null = null;
+  private lastBytesAtMs: number | null = null;
 
   constructor(now: () => number = () => performance.now()) {
     this.now = now;
   }
 
+  // Raw video bytes from any connection (chunk and parity datagrams, carrier
+  // records, keyframe streams), complete or not: what tells a starved link
+  // from a broadcaster that stopped sending.
+  observeBytes(bytes: number): void {
+    if (bytes > 0) this.lastBytesAtMs = this.now();
+  }
+
+  // No video bytes at all in the goodput window.
+  idle(): boolean {
+    return this.lastBytesAtMs === null || this.now() - this.lastBytesAtMs >= DVR_GOODPUT_WINDOW_MS;
+  }
+
   observeFrame(frameId: number, timestampUs: bigint, bytes: number, keyframe: boolean): void {
+    this.lastBytesAtMs = this.now();
     if (this.frames.has(frameId)) return;
     const atMs = this.now();
     this.firstAtMs ??= atMs;
@@ -99,6 +117,7 @@ export class DvrGoodputMeter {
   // describes it.
   reset(): void {
     this.frames.clear();
+    this.lastBytesAtMs = null;
     this.firstAtMs = null;
     this.lastLiveRateBps = null;
   }
@@ -171,6 +190,10 @@ export interface DvrStripeInput {
   // Cumulative missing-frame skips to a newer keyframe (ReorderStats
   // holeSkips): the client's view of a relay resync.
   resyncs: number;
+  // No video bytes at all, on any connection, in the goodput window
+  // (DvrGoodputMeter.idle): the broadcaster stopped sending. Bytes without a
+  // complete frame are not idle — that is a starved link mid-keyframe.
+  idle: boolean;
 }
 
 export type DvrStripePhase = 'idle' | 'stepping' | 'engaged' | 'held';
@@ -203,6 +226,8 @@ export class DvrStripePolicy {
   private phase: DvrStripePhase = 'idle';
   private stepAt = 0;
   private activeAt: number | null = null;
+  // When this step's legs first came up: the bound on postponing its judgement.
+  private firstActiveAt = 0;
   private baselineBps = 0;
   private active = 1;
   private backoffUntil = 0;
@@ -231,6 +256,7 @@ export class DvrStripePolicy {
     this.active = width;
     if (this.phase === 'stepping' && this.activeAt === null && width >= this.target) {
       this.activeAt = now;
+      this.firstActiveAt = now;
     }
   }
 
@@ -295,18 +321,20 @@ export class DvrStripePolicy {
     // there, and goodput against it would read as starvation. An idle tick
     // records no sample (so it never sets a baseline), resets the undersupply
     // hold, and restarts a step's evaluation, which is judged on frames only.
-    if (input.goodputBps === null || input.goodputBps <= 0) {
+    if (input.idle) {
       this.undersupplied = false;
       this.undersuppliedSince = null;
-      if (this.phase === 'stepping' && this.activeAt !== null) this.activeAt = now;
+      if (this.phase === 'stepping' && this.activeAt !== null && now < this.evalDeadline()) {
+        this.activeAt = now;
+      }
       return;
     }
-    this.samples.push({ atMs: now, bps: input.goodputBps });
+    // Bytes are arriving but no frame completed: starvation, zero goodput.
+    const goodputBps = input.goodputBps ?? 0;
+    this.samples.push({ atMs: now, bps: goodputBps });
 
     const starved =
-      this.liveRateBps !== null &&
-      input.goodputBps !== null &&
-      input.goodputBps < DVR_STRIPE_UNDERSUPPLY_RATIO * this.liveRateBps;
+      this.liveRateBps !== null && goodputBps < DVR_STRIPE_UNDERSUPPLY_RATIO * this.liveRateBps;
     const resynced = this.lastResyncAt !== null && now - this.lastResyncAt < DVR_STRIPE_RESYNC_WINDOW_MS;
     this.undersupplied = starved || resynced;
     if (!this.undersupplied) this.undersuppliedSince = null;
@@ -324,6 +352,7 @@ export class DvrStripePolicy {
     this.phase = 'stepping';
     this.stepAt = now;
     this.activeAt = this.active >= this.target ? now : null;
+    this.firstActiveAt = now;
     this.undersuppliedSince = null;
   }
 
@@ -332,8 +361,11 @@ export class DvrStripePolicy {
       if (now - this.stepAt >= DVR_STRIPE_DIAL_TIMEOUT_MS) this.stepBack();
       return;
     }
-    const from = this.activeAt + DVR_STRIPE_SETTLE_MS;
-    if (now < from + DVR_STRIPE_EVAL_MS) return;
+    let from = this.activeAt + DVR_STRIPE_SETTLE_MS;
+    if (now < from + DVR_STRIPE_EVAL_MS) {
+      if (now < this.evalDeadline()) return;
+      from = this.firstActiveAt + DVR_STRIPE_SETTLE_MS;
+    }
     const after = this.meanGoodput(from, now);
     const shortfallGone =
       this.liveRateBps !== null &&
@@ -353,6 +385,10 @@ export class DvrStripePolicy {
       this.step(now, this.target + 1);
       this.baselineBps = after;
     }
+  }
+
+  private evalDeadline(): number {
+    return this.firstActiveAt + DVR_STRIPE_SETTLE_MS + DVR_STRIPE_EVAL_MS + DVR_STRIPE_MAX_EVAL_POSTPONE_MS;
   }
 
   private stepBack(): void {

@@ -38,6 +38,7 @@ import {
   DvrGoodputMeter,
   DvrStripePolicy,
   dvrStripeAllowed,
+  DVR_STRIPE_DIAL_TIMEOUT_MS,
   DVR_STRIPE_REENGAGE_BACKOFF_MS,
   type DvrStripePhase,
 } from './dvr-stripe';
@@ -67,6 +68,8 @@ import {
   TYPE_AUDIO_FRAME,
   TYPE_DELIVERY_ACK,
   TYPE_VIDEO_UNDELIVERABLE,
+  TYPE_VIDEO_CHUNK,
+  TYPE_PARITY_CHUNK,
   frameIdAhead,
   parseDeliveryAck,
   parseVideoUndeliverable,
@@ -81,6 +84,10 @@ import { appendClientIdentity } from './client-identity';
 // How often the reorder buffer is advanced (its bounded waits and the
 // decoder-backpressure resync are time-based). ~1 frame at 60 fps.
 const REORDER_TICK_MS = 16;
+
+// How long after a stripe request the transport's sampled target may still
+// show the previous one: the worker path pushes its sample every 500 ms.
+const DVR_RECONCILE_SAMPLE_LAG_MS = 1000;
 
 // Keyframe-stall watchdog. A viewer's stream path can wedge (seen on Safari)
 // while datagrams keep flowing — QUIC datagrams are not flow-controlled,
@@ -199,6 +206,13 @@ const MAPPINGS_PROVING_LIVE = 2;
 // reassembler's strict parsing.
 function isAudioDatagram(dgram: Uint8Array): boolean {
   return dgram.length >= 2 && (dgram[1] === TYPE_AUDIO_FRAME || dgram[1] === TYPE_AUDIO_CONFIG);
+}
+
+// Video media proper — chunks and their parity, whether or not they ever
+// complete a frame. Control datagrams (counts, clock mappings) keep flowing
+// while a broadcaster is paused, so they must not read as video arriving.
+function isVideoMediaDatagram(dgram: Uint8Array): boolean {
+  return dgram.length >= 2 && (dgram[1] === TYPE_VIDEO_CHUNK || dgram[1] === TYPE_PARITY_CHUNK);
 }
 
 // The worker muxer's counters as merged into stats by the worker shell.
@@ -654,6 +668,8 @@ export class ViewerPipeline {
   // is due (null: none pending).
   private dvrDialFailuresSeen = 0;
   private dvrRetryAt: number | null = null;
+  private dvrRequestedAt = 0;
+  private dvrKeyframeBytesSeen = 0;
   // The audio lane. Built lazily on the first audio message —
   // a video-only stream never constructs it, so nothing about this pipeline
   // changes for broadcasts without audio.
@@ -850,6 +866,7 @@ export class ViewerPipeline {
             this.videoBytesReceived += dgram.byteLength;
             this.addConnectionBytes(conn, dgram.byteLength);
           }
+          if (this.deep && isVideoMediaDatagram(dgram)) this.dvrMeter.observeBytes(dgram.byteLength);
           this.reassembler?.push(dgram);
         },
         onKeyframe: (kf, conn) => this.handleKeyframeStream(kf, conn),
@@ -1570,6 +1587,11 @@ export class ViewerPipeline {
   // the same backoff a leg death takes.
   private decideDvrStripe(reorder: ReorderStats | undefined): { goodputBps: number | null; liveRateBps: number | null } {
     const mode = getStripeMode();
+    // Keyframe bytes still arriving count as video arriving: a big keyframe on
+    // a starved link is starvation, not a pause.
+    const kfBytes = this.transport?.sampleCarrierStats?.()?.keyframeBytesReceived ?? 0;
+    if (kfBytes > this.dvrKeyframeBytesSeen) this.dvrMeter.observeBytes(kfBytes - this.dvrKeyframeBytesSeen);
+    this.dvrKeyframeBytesSeen = Math.max(this.dvrKeyframeBytesSeen, kfBytes);
     const goodputBps = this.dvrMeter.goodputBps();
     const liveRateBps = this.dvrMeter.liveRateBps();
     const width = this.dvrPolicy.decide({
@@ -1583,20 +1605,38 @@ export class ViewerPipeline {
       goodputBps,
       liveRateBps,
       resyncs: reorder?.holeSkips ?? 0,
+      idle: this.dvrMeter.idle(),
     });
     const legs = width - 1;
     const now = performance.now();
-    const failures = this.transport?.sampleStripe?.()?.legDialFailures ?? 0;
+    const sample = this.transport?.sampleStripe?.() ?? null;
+    const failures = sample?.legDialFailures ?? 0;
     if (failures > this.dvrDialFailuresSeen) {
       this.dvrDialFailuresSeen = failures;
       this.dvrRetryAt = now + DVR_STRIPE_REENGAGE_BACKOFF_MS;
     }
+    // Reconcile what is up against what is wanted. A mismatch is re-requested
+    // when the transport is not working toward the wanted width (a stale
+    // transition committed; checked only once its sample has had time to show
+    // the last request), after a failed dial's backoff, or once a transition
+    // has been dialing longer than the policy's own dial timeout. A
+    // transition still dialing toward the right width is left alone:
+    // re-requesting it would restart its dials.
     const changed = legs !== this.lastStripeRequested;
-    const retry = !changed && this.dvrRetryAt !== null && now >= this.dvrRetryAt && legs !== this.stripeActive;
-    if (this.dvrRetryAt !== null && (changed || retry || legs === this.stripeActive)) this.dvrRetryAt = null;
-    if ((changed || retry) && this.transport?.setStripe) {
+    const mismatch = legs !== this.stripeActive;
+    const sinceRequest = now - this.dvrRequestedAt;
+    const reconcile =
+      !changed &&
+      mismatch &&
+      ((sample !== null && sample.target !== legs && sinceRequest >= DVR_RECONCILE_SAMPLE_LAG_MS) ||
+        (this.dvrRetryAt !== null && now >= this.dvrRetryAt) ||
+        (this.dvrRetryAt === null && sinceRequest >= DVR_STRIPE_DIAL_TIMEOUT_MS));
+    if (!mismatch) this.dvrRetryAt = null;
+    if ((changed || reconcile) && this.transport?.setStripe) {
       if (legs > 0) this.dvrStriped = true;
       this.lastStripeRequested = legs;
+      this.dvrRequestedAt = now;
+      this.dvrRetryAt = null;
       this.transport.setStripe(legs, 'dvr');
     }
     return { goodputBps, liveRateBps };

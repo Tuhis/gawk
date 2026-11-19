@@ -96,6 +96,24 @@ describe('DvrGoodputMeter', () => {
     expect(twice.goodputBps()).toBeCloseTo(single!, 0);
   });
 
+  // Review round 2, finding 1: idle is no video bytes at all, on any
+  // connection; bytes without a complete frame are starvation.
+  it('is idle only when no video bytes arrived in the window', () => {
+    const clock = { t: 0 };
+    const meter = new DvrGoodputMeter(() => clock.t);
+    feedGops(meter, clock, 4, 500);
+    expect(meter.idle()).toBe(false);
+    // A big keyframe trickling in: bytes, no complete frame.
+    for (let i = 0; i < 6; i++) {
+      clock.t += 500;
+      meter.observeBytes(1200);
+    }
+    expect(meter.idle()).toBe(false);
+    expect(meter.goodputBps()).toBe(0);
+    clock.t += 2500;
+    expect(meter.idle()).toBe(true);
+  });
+
   it('keeps the last live rate through a window with no keyframe-to-keyframe run', () => {
     const clock = { t: 0 };
     const meter = new DvrGoodputMeter(() => clock.t);
@@ -127,6 +145,8 @@ function simulate(opts: {
   seconds: number;
   goodput: (width: number, tMs: number) => number;
   resyncAt?: (tMs: number, width: number) => boolean;
+  // No video bytes at all on any connection: a broadcaster pause.
+  idle?: (tMs: number) => boolean;
 }): Run {
   const clock = { t: 0 };
   const policy = new DvrStripePolicy(() => clock.t);
@@ -142,6 +162,7 @@ function simulate(opts: {
       goodputBps: opts.goodput(active, t),
       liveRateBps: LIVE,
       resyncs,
+      idle: opts.idle?.(t) ?? false,
     });
     widths.push(width);
     if (width !== active) {
@@ -206,7 +227,12 @@ describe('DvrStripePolicy (docs/91 D10)', () => {
   // undersupply, an evaluation must not be judged on it, and it must not set
   // a step's baseline.
   it('never engages through a broadcaster pause', () => {
-    const r = simulate({ mode: 'auto', seconds: 120, goodput: (_w, t) => (t < 20_000 ? LIVE : 0) });
+    const r = simulate({
+      mode: 'auto',
+      seconds: 120,
+      goodput: (_w, t) => (t < 20_000 ? LIVE : 0),
+      idle: (t) => t >= 20_000,
+    });
     expect(Math.max(...r.widths)).toBe(1);
     expect(r.phase).toBe('idle');
   });
@@ -219,6 +245,7 @@ describe('DvrStripePolicy (docs/91 D10)', () => {
       mode: 'auto',
       seconds: 150,
       goodput: (w, t) => (paused(t) ? 0 : Math.min(LIVE, w * 4_000_000)),
+      idle: paused,
     });
     expect(r.final).toBe(3);
     expect(r.phase).toBe('engaged');
@@ -229,7 +256,40 @@ describe('DvrStripePolicy (docs/91 D10)', () => {
     // the 4 Mbit/s actually measured, not an average with the pause's zeros
     // (which would make a step that did nothing look like it helped).
     const paused = (t: number) => t >= 5_000 && t < 9_000;
-    const r = simulate({ mode: 'auto', seconds: 120, goodput: (_w, t) => (paused(t) ? 0 : 4_000_000) });
+    const r = simulate({
+      mode: 'auto',
+      seconds: 120,
+      goodput: (_w, t) => (paused(t) ? 0 : 4_000_000),
+      idle: paused,
+    });
+    expect(r.final).toBe(1);
+    expect(r.phase).toBe('held');
+  });
+
+  // Review round 2, finding 1: on a starved link a window with no COMPLETE
+  // frame (a big keyframe or a stalled GOP still arriving) is starvation, not
+  // a pause — bytes are still coming in. It must count as zero goodput.
+  it('engages on a starved link whose windows often hold no complete frame', () => {
+    const r = simulate({
+      mode: 'auto',
+      seconds: 60,
+      goodput: (w, t) => (w > 1 ? LIVE : t % 3000 < 2000 ? 0 : 3_000_000),
+    });
+    expect(Math.max(...r.widths)).toBe(2);
+    expect(r.final).toBe(2);
+  });
+
+  it('does not postpone a step\'s evaluation forever: a flickering pause still gets judged', () => {
+    // A full link (the step cannot help); once engaged, a one-tick pause
+    // every 4 s keeps restarting the evaluation.
+    const flicker = (t: number) => t > 12_000 && t % 4000 === 0;
+    const r = simulate({
+      mode: 'auto',
+      seconds: 240,
+      goodput: (_w, t) => (flicker(t) ? 0 : 5_000_000),
+      idle: flicker,
+    });
+    expect(Math.max(...r.widths)).toBe(2);
     expect(r.final).toBe(1);
     expect(r.phase).toBe('held');
   });
@@ -293,7 +353,7 @@ describe('DvrStripePolicy (docs/91 D10)', () => {
   it('backs off after a leg death, then asks for the same width again', () => {
     const clock = { t: 0 };
     const policy = new DvrStripePolicy(() => clock.t);
-    const input = { allowed: true, mode: 'on' as const, goodputBps: LIVE, liveRateBps: LIVE, resyncs: 0 };
+    const input = { allowed: true, mode: 'on' as const, goodputBps: LIVE, liveRateBps: LIVE, resyncs: 0, idle: false };
     expect(policy.decide(input)).toBe(2);
     policy.noteActive(2);
     clock.t = 1000;
@@ -308,7 +368,7 @@ describe('DvrStripePolicy (docs/91 D10)', () => {
     const policy = new DvrStripePolicy(() => clock.t);
     let width = 1;
     for (clock.t = 0; clock.t <= 40_000; clock.t += TICK_MS) {
-      width = policy.decide({ allowed: true, mode: 'auto', goodputBps: 4_000_000, liveRateBps: LIVE, resyncs: 0 });
+      width = policy.decide({ allowed: true, mode: 'auto', goodputBps: 4_000_000, liveRateBps: LIVE, resyncs: 0, idle: false });
       // The transport never reports the legs up.
     }
     expect(width).toBe(1);
@@ -318,7 +378,7 @@ describe('DvrStripePolicy (docs/91 D10)', () => {
   it('returns to ×1 when the gate closes, and re-engages under On when it opens', () => {
     const clock = { t: 0 };
     const policy = new DvrStripePolicy(() => clock.t);
-    const base = { mode: 'on' as const, goodputBps: LIVE, liveRateBps: LIVE, resyncs: 0 };
+    const base = { mode: 'on' as const, goodputBps: LIVE, liveRateBps: LIVE, resyncs: 0, idle: false };
     expect(policy.decide({ ...base, allowed: true })).toBe(2);
     expect(policy.decide({ ...base, allowed: false })).toBe(1);
     expect(policy.decide({ ...base, allowed: true })).toBe(2);

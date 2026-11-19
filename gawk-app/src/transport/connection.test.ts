@@ -239,6 +239,39 @@ describe('readServerStreams — keyframes', () => {
   });
 });
 
+// R87 review round 2, finding 1: on a starved deep-buffer link a keyframe can
+// take seconds to arrive, and only its bytes so far tell that apart from a
+// broadcaster pause. They are counted as they arrive, complete or not.
+describe('readServerStreams — keyframe bytes in progress (docs/91)', () => {
+  it('counts every keyframe-stream byte as it is read, before the frame completes', async () => {
+    const msg = encodeStreamFrame({ keyframe: true, frameId: 1, timestampUs: 0n }, new Uint8Array(0), new Uint8Array(3000).fill(7));
+    const carrier = newCarrierCounters();
+    const keyframes: unknown[] = [];
+    // Two thirds of the message, then the stream errors: no keyframe.
+    const parts = [msg.subarray(0, 1000), msg.subarray(1000, 2000)];
+    const partial = new ReadableStream<Uint8Array>({
+      pull(c) {
+        const next = parts.shift();
+        if (next) c.enqueue(next);
+        else c.error(new Error('reset'));
+      },
+    });
+    const incoming = new ReadableStream<ReadableStream<Uint8Array>>({
+      start(c) {
+        c.enqueue(partial);
+        c.close();
+      },
+    });
+    await readServerStreams(
+      { incomingUnidirectionalStreams: incoming } as unknown as WebTransport,
+      { onKeyframe: (kf) => keyframes.push(kf), onCarrierRecord: () => {} },
+      carrier,
+    );
+    expect(keyframes).toHaveLength(0);
+    expect(carrier.keyframeBytesReceived).toBe(2000);
+  });
+});
+
 describe('readServerStreams — in-flight task pruning (INGEST-1)', () => {
   it('keeps the working set proportional to open streams, not session length', async () => {
     // A long mobile session accepts thousands of short-lived server streams

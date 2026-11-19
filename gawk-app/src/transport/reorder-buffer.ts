@@ -373,6 +373,8 @@ export class ReorderBuffer {
       // oldest waiting frames.
       for (const e of this.buffer.values()) if (!e.keyframe) this.stats.deltasDropped++;
       this.buffer.clear();
+      // A new frameId space: the old session's releases are not the new one's.
+      this.recentlyReleased.clear();
       this.arrivalBaseline.reset();
       this.arrivalQuantile.reset();
       this.onRestart?.();
