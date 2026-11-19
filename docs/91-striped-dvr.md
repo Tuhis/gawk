@@ -534,6 +534,45 @@ session's `videoBytesReceived` from telemetry. The relay-side RTT and loss
 (§9.3) need this branch's `/statusz` change deployed first. The tunnel
 question (§9.5) has to be answered first.
 
+### 11.2 SG4 lab: the production viewer under loss, 2026-11-20
+
+`tools/dvrlab/app-run.sh` runs `gawk-app/dist` (Chromium, Playwright
+1.65.1) in Most stable against the lab relay. "Relay resyncs" is
+`gawk_relay_dvr_resyncs_total`. The client's gap-resync count is inflated
+in this harness by headless software decode (about 7 per 120 s on a clean
+unstriped path), so the relay's count is the one that matters. Stream and
+paths as in §11.1; runs of 300 s unless noted.
+
+| Path | Striping | Code | Engaged | Widths | Relay resyncs | Delivered |
+|---|---|---|---|---|---|---|
+| 1 % loss | Off | review round 0 | – | ×1 | 54 (47 after 30 s) | 6.0 Mbit/s, 15 fps |
+| 1 % loss | Auto | review round 0 | 13.6 s | ×2 → ×3 → back to ×2, held | 16 (14 after engaging) | 10.45 Mbit/s, 29 fps |
+| 1 % loss | Auto | review round 0 | 13.7 s | ×2 → ×3 → ×4 | 8 (5 after engaging) | 11.1 Mbit/s, 30 fps |
+| 1 % loss | Auto | after review round 2 | 13.1 s | ×2 at 13 s → ×3 at 27 s → ×4 at 41–54 s | 6: 5 in the first 60 s while growing, **1 in the 245 s at ×4** | 29 fps |
+| 8 Mbit/s link | Off, 180 s | review round 0 | – | ×1 | 22 | – |
+| 8 Mbit/s link | Auto, 180 s | review round 0 | 13.2 s | ×2, back to ×1 at 27 s, held | 25 | – |
+| clean | Auto, 120 s | review round 0 | – | ×1, no leg dialed | 0 | 30 fps |
+
+**What it shows:**
+- On the loss-limited path, Auto engages within about 13 s and grows to
+  ×4. Resyncs fall from about 10 a minute to about one every 4 minutes,
+  and the frame rate doubles.
+- On a full link Auto tries ×2, sees no gain, and returns to ×1 and holds
+  (G4).
+- On a clean path it dials nothing (G3).
+- The first run's step back from ×3 was review round 1's finding: a step
+  from just below the live rate could never show a 20 % gain. The fixed
+  rule (§12) grew to ×4.
+
+**SG4's first criterion, "0 resyncs over 10 minutes with Auto", is not
+met.** Each remaining resync is logged (§12, resync log) as `off_tail` at
+a lag of 2.5–3.0 s. The connection's GOP left the ring, whose window
+(`-dvr-window`, 3 s) equals the viewer's buffer (3,000 ms), so a cursor
+gets no slack between the two. That is docs/26's sizing, not striping, and
+it is left open here: a window a GOP or two longer than the largest buffer
+viewers ask for is the likely remedy, and it costs relay memory per
+broadcast.
+
 ## 12. Where the code differs from the plan (2026-11-20)
 
 **Relay (SG1)**
@@ -567,6 +606,22 @@ question (§9.5) has to be answered first.
   of a second at the ceiling wedged the cursor forever. That was possible
   unstriped, and dividing the rate by N made it likely, for example a
   low-motion 2 Mbit/s stream with a 2 s GOP at N = 4. Found test-first.
+- **D7, published whole.** A DVR primary's striped state (width, period
+  start, deadline) is one immutable value behind an atomic pointer, so the
+  drain sees the old state or the new one, never a mix of the two.
+- **D11, the drain signal (added in review).** A StripeState with
+  Striped=false on a deep-buffer *leg's* own session drains that leg. Its
+  drain point is the newest GOP in its pod's ring at that moment. It keeps
+  serving its share up to that point, never a newer GOP, and then the relay
+  closes it with code 0 ("stripe leg drained"). A resync past the point ends
+  the drain too. Repeats don't move the point, and `/statusz` shows
+  `stripeDraining`. Without this, a superseded leg either lost its backlog
+  (closed at once) or kept taking new GOPs at its old width (left open),
+  spending the short link on duplicates while the new width was being
+  judged.
+- **Resync log.** Each DVR resync logs at Debug which connection fell
+  behind (leg, member), why (off the ring's tail, or lag over the buffer)
+  and by how much.
 - **Counters.** `dvrSubscribers` and `reliableSubscribers` count viewers,
   so they exclude legs. `dvrResyncs` includes leg resyncs, and
   `gawk_broadcast_stripe_legs` counts deep-buffer legs.
@@ -588,20 +643,43 @@ question (§9.5) has to be answered first.
     broadcaster restart.
   - The reassembler drops duplicates through a set of the last 512 frames
     it emitted, instead of dropping late deltas against its watermark.
+  - A re-arrival of a frame already released counts as a duplicate. A
+    frame counts as late only if it was skipped as a hole. The
+    released-frame memory (2,048 frameIDs) is cleared at a broadcaster
+    restart.
 - **D10, as built.** The policy is a pure module (`dvr-stripe.ts`). Its
   constants, none of which D10 named:
   - Undersupply means complete-*frame* goodput (not GOP goodput) below 90 %
     of the live rate, measured over 2 s, or a hole skip in the last 10 s.
     It must hold for 10 s before ×2 engages.
+  - A window with no video bytes on any connection is *idle*, a broadcaster
+    pause: it neither engages, sets a baseline nor judges a step. A window
+    with bytes but no complete frame is starvation, and counts as goodput 0.
+    A pause restarts a step's evaluation, but only up to 60 s past when it
+    would first have ended; after that the step is judged on what it has.
   - The live rate is bytes over media time across runs of consecutive
     frames between keyframes. A skipped GOP cannot drag the live rate down
     to the goodput.
   - A step is judged 3 s after its legs are up, by mean goodput over 10 s
-    against the 10 s before the step.
+    against the 10 s before the step. It *helped* if goodput rose 20 %, or
+    if the shortfall is gone: goodput at least 95 % of the live rate with no
+    hole skip in the evaluation. Goodput cannot exceed the live rate for
+    long, so a 20 % gain alone would fail every step taken from just below
+    the live rate.
   - The policy grows only while still undersupplied. A step whose legs are
     not up within 10 s counts as not helping. After a leg dies, it waits
     5 s and asks for the same width again.
+  - The viewer reconciles the transport's actual legs against the wanted
+    width. It re-requests after a failed dial's 5 s backoff, after a
+    transition has dialed for more than 10 s, or when the transport's
+    target differs. A request at the current width cancels a transition
+    still dialing.
   - *On* never drops below ×2.
+- **D11, as built.** A superseded deep-buffer leg (width change or
+  disengage) gets the drain signal three times at 100 ms intervals, then
+  once a second as its heartbeat, on its own timer. It is read until the
+  relay closes it, with the buffer plus 1 s as the backstop. Its close is
+  not a leg death. A leg death still drops the whole set at once.
 - **The resync signal is the client's own hole-skip count.** In striped
   mode it also counts GOPs that nobody served during a width transition.
 - **Stats.**
@@ -610,7 +688,9 @@ question (§9.5) has to be answered first.
     leg keeps adding to its slot, and the array's length always equals the
     width.
   - Also added: `stripeDvrCapable`, `dvrStripePhase` (`held` means a step
-    was undone), `dvrDuplicateFrames` and `dvrLateFramesDropped`.
+    was undone), `dvrDuplicateFrames`, `dvrLateFramesDropped`, and from the
+    policy's own meter `dvrLiveRateBps` and `dvrGoodputBps` (complete-frame
+    video, deduplicated, no parity or audio; goodput over 2 s).
 - **The undeliverable-video watch** counts only the primary's keyframes. The
   notice is about the primary, and leg keyframes arrive out of order.
 - **Known risk.** A broadcaster restart could be read as a late GOP and
@@ -622,16 +702,27 @@ question (§9.5) has to be answered first.
 - **`resilient-undersupply`** compares the offset against the mode's own
   clamp. That is 2,000 ms for reliable, and `max(2000, dvrBufferMs)` for
   DVR, with the relay's buffer, then the client's, then 3,000 ms as the
-  source. It also requires goodput below 0.75 × the stream bitrate. The
-  reliable mode had the same flaw in a milder form: its stated
-  "while cadence stays bad" was never checked.
-  - Without relay coverage, or without 10 s of goodput span, the rule is
-    unavailable rather than firing.
-  - When the path is loss-limited, its verdict says "on this connection, not
-    a full link".
+  source. It also requires a supply shortfall. The reliable mode had the
+  same flaw in a milder form: its stated "while cadence stays bad" was
+  never checked. When the path is loss-limited, its verdict says "on this
+  connection, not a full link".
+- **The supply shortfall** (both rules), as revised in review:
+  - *Deep mode:* `dvrSupplyRatio` is the median of `dvrGoodputBps /
+    dvrLiveRateBps` over samples where frames flow (`dvrGoodputBps > 0`),
+    at least 5 of them. A paused broadcaster, or a restart before the rate
+    is re-measured, drops out. A shortfall is a ratio below 0.75. Both sides
+    come from one client meter, so they count the same bytes.
+  - *Otherwise:* goodput from `videoBytesReceived` against a video floor.
+    The floor is the relay's ingress bitrate minus a 256 kbit/s audio
+    allowance and the maximum parity per frame. The bitrate and frame rate
+    come from one window (`relay.streamBitrateBps`,
+    `relay.streamFramesPerSec`). The comparison errs toward silence: the
+    goodput can only overstate the video and the floor can only understate
+    it.
+  - With neither the client's pair nor a usable floor, both rules stay
+    silent.
 - **The stream bitrate** is derived from the relay's ingress byte counters,
-  which `relayscrape` now mirrors. Nothing exported one before. It includes
-  audio, parity and framing, hence the quarter margin.
+  which `relayscrape` now mirrors; nothing exported one before.
 - **`per-connection-ceiling`** needs the same goodput shortfall, and then
   one of two signatures:
   - (a) relay loss ≥ 0.1 % with `pathSrttMs` ≤ 1.25 × `pathMinRttMs`
@@ -645,6 +736,7 @@ question (§9.5) has to be answered first.
   path for now.
 
 **End to end (SG4)**
+- **The production viewer under loss** is §11.2.
 - **Tier-1 browser e2e.** A `deep-striped` pass: Most stable with Striping
   On on the clean loopback, asserting the capability, width ≥ 2, legs
   dialed, no leg deaths and bytes on every connection. It passed on
