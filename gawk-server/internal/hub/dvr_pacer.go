@@ -61,10 +61,15 @@ func (p *dvrPacer) allow(n int, liveBps int) bool {
 	rate := p.multiple * float64(liveBps)
 	p.tokens += rate * now.Sub(p.last).Seconds()
 	p.last = now
-	if max := p.burst(liveBps); p.tokens > max {
-		p.tokens = max
+	full := p.burst(liveBps)
+	if p.tokens > full {
+		p.tokens = full
 	}
-	if p.tokens < float64(n) {
+	// A write larger than the whole burst passes once the bucket is full,
+	// and the debt is repaid at the ceiling's rate. Otherwise a keyframe
+	// bigger than a quarter second at the ceiling could never pass, and a
+	// striped connection's ceiling is 1/N of an unstriped one (docs/91 D4).
+	if p.tokens < float64(n) && p.tokens < full {
 		return false
 	}
 	p.tokens -= float64(n)

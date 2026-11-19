@@ -106,6 +106,39 @@ func validateStripeState(s StripeState) error {
 	return nil
 }
 
+// StripeGOPResidue returns which connection of an n-wide striped DVR viewer
+// serves the GOP whose keyframe carries keyframeFrameID (R87, docs/91 D2):
+// fmix32(keyframeFrameID) mod n, where connection 0 is the primary and
+// j = 1…n−1 are the legs (D6). n < 2 means unstriped: residue 0.
+//
+// The publisher's frameID, not a ring sequence, because legs land on any pod
+// (docs/35 §5.7) and only the frameID is the same on every pod. Hashed,
+// because a fixed GOP length makes frameID mod n collapse onto a few
+// residues (30 mod 4 alternates between 0 and 2).
+//
+// Relay-only: no client ever computes a residue (it reorders by frameID,
+// D9), so unlike every other export here this has no wire.ts or crates/wire
+// mirror. The golden vectors in stripe_test.go pin it across pods of
+// different versions, which is what a cross-pod leg needs.
+func StripeGOPResidue(keyframeFrameID uint32, n int) int {
+	if n < 2 {
+		return 0
+	}
+	return int(fmix32(keyframeFrameID) % uint32(n))
+}
+
+// fmix32 is MurmurHash3's 32-bit finalizer: a bijective mixer whose every
+// input bit affects every output bit, so consecutive or evenly spaced
+// frameIDs spread evenly over any small modulus.
+func fmix32(h uint32) uint32 {
+	h ^= h >> 16
+	h *= 0x85ebca6b
+	h ^= h >> 13
+	h *= 0xc2b2ae35
+	h ^= h >> 16
+	return h
+}
+
 // StripeOrdinal returns the stripe ordinal of a delta datagram: data chunk i
 // has ordinal i, parity symbol r over an n-chunk frame has ordinal n+r. Leg j
 // of stripe N carries the datagrams with StripeOrdinal % N == j.

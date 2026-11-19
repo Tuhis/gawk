@@ -106,8 +106,10 @@ func startClusteredPod(t *testing.T, ctx context.Context, cs *fake.Clientset, po
 	}
 
 	r := hub.NewRegistry(discardLog, hub.Options{
-		MaxSubscribers: cfg.MaxSubscribers,
-		BroadcastGrace: cfg.BroadcastGrace,
+		MaxSubscribers:  cfg.MaxSubscribers,
+		BroadcastGrace:  cfg.BroadcastGrace,
+		StripedDelivery: cfg.StripedDelivery,
+		StripedDVR:      cfg.StripedDVR,
 	})
 	srv = New(cfg, r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &cert, nil }, discardLog,
 		metrics.NewServerMetrics(prometheus.NewRegistry()))

@@ -50,6 +50,11 @@ type dvrGop struct {
 	keyframe []byte
 	records  [][]byte
 	bytes    int
+	// kfID is the frameID in the keyframe's StreamFrame header, the GOP's
+	// identity on every pod (docs/91 D2); kfIDOK is false when the keyframe
+	// did not parse.
+	kfID   uint32
+	kfIDOK bool
 	// complete is set when the next keyframe arrives: no more records will
 	// ever be appended to this GOP.
 	complete bool
@@ -133,6 +138,9 @@ func (r *DVRRing) AppendKeyframe(msg []byte, at time.Time) {
 		at:       at,
 		keyframe: append([]byte(nil), msg...),
 		bytes:    len(msg),
+	}
+	if hdr, err := wire.ParseStreamFrameHeader(msg); err == nil {
+		g.kfID, g.kfIDOK = hdr.FrameID, true
 	}
 	r.nextSeq++
 	r.gops = append(r.gops, g)
@@ -223,6 +231,26 @@ func (r *DVRRing) NextGop(c DVRCursor) (DVRCursor, bool) {
 		}
 	}
 	return c, false
+}
+
+// dvrGopIdentity is what a striped connection needs to decide whether the
+// cursor's GOP is its own (dvrServesGop).
+type dvrGopIdentity struct {
+	at     time.Time
+	kfID   uint32
+	kfIDOK bool
+}
+
+// GopIdentity returns the cursor's GOP's arrival time and keyframe frameID.
+// ok is false when the GOP has been evicted or does not exist yet.
+func (r *DVRRing) GopIdentity(c DVRCursor) (dvrGopIdentity, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	g := r.findLocked(c.gopSeq)
+	if g == nil {
+		return dvrGopIdentity{}, false
+	}
+	return dvrGopIdentity{at: g.at, kfID: g.kfID, kfIDOK: g.kfIDOK}, true
 }
 
 // FellOffTail reports that the cursor's GOP has been evicted.
@@ -381,6 +409,14 @@ func (s *Subscriber) drainDVR() {
 			continue
 		}
 		if s.dvrCursor.NeedsKeyframe() {
+			if serve, known := s.dvrServesGop(); known && !serve {
+				// Another connection of this viewer's stripe serves this GOP
+				// (docs/91 D3).
+				if !s.dvrSkipGop(wake) {
+					return
+				}
+				continue
+			}
 			if !s.dvrSendKeyframe() {
 				// Either the ring has no keyframe for this cursor yet (a
 				// joiner on an away broadcast sits here for as long as the
@@ -496,7 +532,7 @@ func (s *Subscriber) dvrSendKeyframe() bool {
 	// The ceiling covers keyframes too: they are the largest single thing a
 	// recovering cursor sends, so exempting them would leave the biggest
 	// bursts unbounded. Not-yet is a wait, not a drop — the caller retries.
-	if !s.dvrPace.allow(len(msg), s.dvr.LiveRateBps()) {
+	if !s.dvrPace.allow(len(msg), s.dvrPaceBps()) {
 		return false
 	}
 	if !s.hub.registry.consumeBandwidth(len(msg)) {
@@ -523,6 +559,7 @@ func (s *Subscriber) dvrSendKeyframe() bool {
 		s.noteKeyframeOutcome(handedAt, false)
 		s.noteKeyframeOpenFailed()
 		s.kfDroppedOpenFailed.Add(1)
+		s.dvrFailing = true
 		s.dvrCursor = s.dvrCursor.AtFirstRecord()
 		s.dvrNoteCursor()
 		return true
@@ -534,13 +571,16 @@ func (s *Subscriber) dvrSendKeyframe() bool {
 	if err != nil {
 		st.CancelWrite()
 		s.kfDroppedSlow.Add(1)
+		s.dvrFailing = true
 	} else if err := st.Close(); err != nil {
 		st.CancelWrite()
 		s.kfDroppedSlow.Add(1)
+		s.dvrFailing = true
 	} else {
 		s.keyframesSent.Add(1)
 		s.egressKeyframeBytes.Add(uint64(len(msg)))
 		s.dvrNoteProgress()
+		s.dvrFailing = false
 	}
 	s.dvrCursor = s.dvrCursor.AtFirstRecord()
 	s.dvrNoteCursor()
@@ -564,7 +604,7 @@ func (s *Subscriber) dvrWriteRecord(rec []byte, scratch *[]byte) bool {
 	}
 	// Catch-up ceiling (see dvrPacer). Checked before the global cap so a
 	// throttled record is a retry rather than a charged drop.
-	if !s.dvrPace.allow(n, s.dvr.LiveRateBps()) {
+	if !s.dvrPace.allow(n, s.dvrPaceBps()) {
 		return false
 	}
 	if !s.hub.registry.consumeBandwidth(n) {
@@ -574,9 +614,11 @@ func (s *Subscriber) dvrWriteRecord(rec []byte, scratch *[]byte) bool {
 	}
 	deadline := time.Now().Add(s.hub.registry.opts.carrierWriteTimeout())
 	if needsOpen && !s.openCarrier(deadline) {
+		s.dvrFailing = true
 		return false
 	}
 	if !s.writeCarrier(framed, deadline) {
+		s.dvrFailing = true
 		return false
 	}
 	s.carrierRecords.Add(1)
@@ -584,6 +626,7 @@ func (s *Subscriber) dvrWriteRecord(rec []byte, scratch *[]byte) bool {
 	s.noteCarrierParity(rec, len(framed))
 	s.dvrCursor = s.dvrCursor.Next()
 	s.dvrNoteProgress()
+	s.dvrFailing = false
 	return true
 }
 

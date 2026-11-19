@@ -48,7 +48,7 @@ var (
 		"TelemetryAdvertiseURL", "ServerName", "ReleaseVersion",
 		"QuietProbeLogs", "DVRWindow", "DVRMaxBytes", "DVRMaxCatchup",
 		"DVRAudio", "LiveEdgeAudioOnReliableStream", "ParityDefault",
-		"StripedDelivery", "UplinkCarriers", "UplinkMaxBitrateBytes", "ModerationSource", "AdminOIDCIssuer",
+		"StripedDelivery", "StripedDVR", "UplinkCarriers", "UplinkMaxBitrateBytes", "ModerationSource", "AdminOIDCIssuer",
 		"AdminOIDCAudience", "AdminOIDCRolesClaim", "AdminOIDCRole",
 		"MaxIdleTimeout", "KeepAlivePeriod", "BroadcastGrace", "PublisherStallTimeout", "PublisherStallEnds",
 		"Rooms", "RoomEmptyGrace", "MaxRooms", "MaxRoomBroadcasts",

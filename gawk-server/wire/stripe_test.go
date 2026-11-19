@@ -163,3 +163,84 @@ func TestStripeStateFuzzNeverPanics(t *testing.T) {
 		_, _ = ParseStripeState(buf[:rnd.Intn(len(buf)+1)])
 	}
 }
+
+// TestStripeGOPResidueGoldenVectors pins R87's GOP assignment (docs/91 D2).
+// Pods of different versions must agree on it, because a leg on one pod and
+// its primary on another split one viewer's GOPs between them by this
+// function alone. The fmix32 column is MurmurHash3's finalizer as published
+// (fmix32(1) = 0x514e28b7), computed independently of this code.
+func TestStripeGOPResidueGoldenVectors(t *testing.T) {
+	for _, tc := range []struct {
+		frameID    uint32
+		fmix       uint32
+		n2, n3, n4 int
+	}{
+		{0x00000000, 0x00000000, 0, 0, 0},
+		{0x00000001, 0x514e28b7, 1, 1, 3},
+		{0x00000002, 0x30f4c306, 0, 1, 2},
+		{0x0000001e, 0xe93e3fcd, 1, 2, 1},
+		{0x0000003c, 0x23887f93, 1, 1, 3},
+		{0x01020304, 0x924bf7ad, 1, 2, 1},
+		{0x075bcd15, 0xba60d89a, 0, 1, 2},
+		{0xffffffff, 0x81f16f39, 1, 1, 1},
+	} {
+		if got := fmix32(tc.frameID); got != tc.fmix {
+			t.Errorf("fmix32(%#08x) = %#08x, want %#08x", tc.frameID, got, tc.fmix)
+		}
+		for n, want := range map[int]int{2: tc.n2, 3: tc.n3, 4: tc.n4} {
+			if got := StripeGOPResidue(tc.frameID, n); got != want {
+				t.Errorf("StripeGOPResidue(%#08x, %d) = %d, want %d", tc.frameID, n, got, want)
+			}
+		}
+		for _, n := range []int{-1, 0, 1} {
+			if got := StripeGOPResidue(tc.frameID, n); got != 0 {
+				t.Errorf("StripeGOPResidue(%#08x, %d) = %d, want 0 (unstriped)", tc.frameID, n, got)
+			}
+		}
+	}
+}
+
+// TestStripeGOPResidueSpreadsFixedLengthGOPs is why the residue is hashed
+// (docs/91 D2): with a fixed 30-frame GOP, frameID mod 4 only ever lands on
+// 0 and 2. The hashed residue must use every connection, close to evenly.
+func TestStripeGOPResidueSpreadsFixedLengthGOPs(t *testing.T) {
+	const gops = 6000
+	for n := 2; n <= MaxStripeLegs; n++ {
+		counts := make([]int, n)
+		for k := range gops {
+			counts[StripeGOPResidue(uint32(1+30*k), n)]++
+		}
+		for j, c := range counts {
+			if want := gops / n; c < want*9/10 || c > want*11/10 {
+				t.Errorf("n=%d: residue %d got %d of %d GOPs, want %d ±10%%", n, j, c, gops, want)
+			}
+		}
+	}
+}
+
+// TestRelayCapabilitiesStripedDVRGoldenVector pins R87's bit (docs/91 D8):
+// the same 5-byte shape with bit 4 set. The TS and Rust mirrors assert the
+// identical hex.
+func TestRelayCapabilitiesStripedDVRGoldenVector(t *testing.T) {
+	if CapStripedDVR != 1<<4 {
+		t.Fatalf("CapStripedDVR = %#x, the mirrors pin 1<<4", CapStripedDVR)
+	}
+	dgram, err := AppendRelayCapabilities(nil, RelayCapabilities{
+		Flags:       CapParityChunks | CapStripedDelivery | CapStripedDVR,
+		ParityLevel: 2,
+	})
+	if err != nil {
+		t.Fatalf("AppendRelayCapabilities: %v", err)
+	}
+	const want = "010f001302"
+	if got := hex.EncodeToString(dgram); got != want {
+		t.Fatalf("golden vector mismatch:\n got %s\nwant %s", got, want)
+	}
+	c, err := ParseRelayCapabilities(dgram)
+	if err != nil {
+		t.Fatalf("ParseRelayCapabilities: %v", err)
+	}
+	if c.Flags&CapStripedDVR == 0 || c.Flags&CapStripedDelivery == 0 {
+		t.Fatalf("flags = %#04x, want the striped and striped-DVR bits", c.Flags)
+	}
+}

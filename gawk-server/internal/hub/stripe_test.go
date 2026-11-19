@@ -15,6 +15,10 @@ import (
 // (docs/35 §14), and a primary needs one before ApplyStripeState will arm.
 const testOwner = "aabbccdd00112233"
 
+// dvrOn is a DVR leg dial on a relay that stripes DVR: delivery=reliable with
+// a buffer that negotiated DVR at 3000 ms.
+var dvrOn = StripeDVRDial{Enabled: true, Mode: wire.DeliveryDVR, BufferMs: 3000}
+
 // TestNegotiateStripe pins the dial-validation rules: strict, because a
 // mis-striped leg cannot degrade to anything useful (docs/35 §5.3).
 func TestNegotiateStripe(t *testing.T) {
@@ -24,6 +28,7 @@ func TestNegotiateStripe(t *testing.T) {
 		owner       string
 		enabled     bool
 		reliable    bool
+		dvr         StripeDVRDial
 		wantLeg     StripeLeg
 		wantIsLeg   bool
 		wantErr     bool
@@ -51,9 +56,23 @@ func TestNegotiateStripe(t *testing.T) {
 		{name: "member negative", stripe: "2", leg: "-1", owner: testOwner, enabled: true, wantErr: true},
 		{name: "garbage width", stripe: "banana", leg: "0", owner: testOwner, enabled: true, wantErr: true},
 		{name: "garbage member", stripe: "2", leg: "x", owner: testOwner, enabled: true, wantErr: true},
+		// R87 (docs/91 D8): with striped DVR on, a leg whose delivery
+		// negotiated DVR is accepted as one of j = 1…N−1; leg 0 is the
+		// primary's residue (D6), and plain reliable legs stay refused (OD4).
+		{name: "dvr leg", stripe: "3", leg: "1", owner: testOwner, enabled: true, reliable: true, dvr: dvrOn, wantLeg: StripeLeg{N: 3, Member: 1, Owner: testOwner, BufferMs: 3000}, wantIsLeg: true},
+		{name: "dvr leg at max width", stripe: "4", leg: "3", owner: testOwner, enabled: true, reliable: true, dvr: dvrOn, wantLeg: StripeLeg{N: 4, Member: 3, Owner: testOwner, BufferMs: 3000}, wantIsLeg: true},
+		{name: "dvr leg zero rejects", stripe: "2", leg: "0", owner: testOwner, enabled: true, reliable: true, dvr: dvrOn, wantErr: true},
+		{name: "dvr width one rejects", stripe: "1", leg: "0", owner: testOwner, enabled: true, reliable: true, dvr: dvrOn, wantErr: true},
+		{name: "dvr leg rejects with striped dvr off", stripe: "2", leg: "1", owner: testOwner, enabled: true, reliable: true, dvr: StripeDVRDial{Mode: wire.DeliveryDVR, BufferMs: 3000}, wantErr: true},
+		{name: "dvr leg rejects on a disabled fleet", stripe: "2", leg: "1", owner: testOwner, reliable: true, dvr: dvrOn, wantErr: true},
+		{name: "plain reliable leg rejects with striped dvr on", stripe: "2", leg: "1", owner: testOwner, enabled: true, reliable: true, dvr: StripeDVRDial{Enabled: true, Mode: wire.DeliveryReliable}, wantErr: true},
+		{name: "buffer without reliable rejects with striped dvr on", stripe: "2", leg: "1", owner: testOwner, enabled: true, reliable: true, dvr: StripeDVRDial{Enabled: true, Mode: wire.DeliveryDatagrams}, wantErr: true},
+		{name: "dvr leg without owner rejects", stripe: "2", leg: "1", enabled: true, reliable: true, dvr: dvrOn, wantErr: true},
+		{name: "dvr leg member out of range", stripe: "2", leg: "2", owner: testOwner, enabled: true, reliable: true, dvr: dvrOn, wantErr: true},
+		{name: "datagram leg ignores dvr settings", stripe: "2", leg: "0", owner: testOwner, enabled: true, dvr: dvrOn, wantLeg: StripeLeg{N: 2, Member: 0, Owner: testOwner}, wantIsLeg: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			leg, isLeg, err := NegotiateStripe(tc.stripe, tc.leg, tc.owner, tc.enabled, tc.reliable)
+			leg, isLeg, err := NegotiateStripe(tc.stripe, tc.leg, tc.owner, tc.enabled, tc.reliable, tc.dvr)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("accepted, want error")

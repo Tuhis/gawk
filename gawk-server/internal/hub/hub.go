@@ -242,6 +242,11 @@ type Options struct {
 	// dial gate and capability bit; the hub reads it only to publish
 	// stripeOwner on /statusz (R36), which it omits with striping off.
 	StripedDelivery bool
+	// StripedDVR extends striping to DVR delivery (R87, docs/91). Effective
+	// only beside StripedDelivery. The transport owns the dial gate and the
+	// capability bit; the hub reads it so a DVR primary honours StripeState
+	// and a DVR leg is admitted only on a relay that advertised the bit.
+	StripedDVR bool
 
 	// UplinkCarriers accepts reliable carrier streams from publishers (R73,
 	// docs/75 D2). The transport owns the capability bit and the stream
@@ -1696,8 +1701,15 @@ func (r *Registry) SubscribeInternal(id string, conn Conn) (*Subscriber, error) 
 // already-negotiated SERVED parity level: the ring holds every symbol the
 // producer emitted, and this cursor replays its prefix (docs/75 D11).
 func (r *Registry) SubscribeDVR(id string, conn Conn, bufferMs, parityK int) (*Subscriber, error) {
+	return r.SubscribeDVROwned(id, conn, bufferMs, parityK, "")
+}
+
+// SubscribeDVROwned is SubscribeDVR with the viewer's validated ?owner=
+// token, or empty. A DVR primary needs it to stripe (docs/91 D7): it is what
+// ApplyStripeState requires and what reaps the primary's DVR legs with it.
+func (r *Registry) SubscribeDVROwned(id string, conn Conn, bufferMs, parityK int, owner string) (*Subscriber, error) {
 	return r.subscribeOpts(id, conn, subscribeOpts{
-		reliable: true, dvr: true, bufferMs: bufferMs, parityK: parityK, parityRequested: parityK,
+		reliable: true, dvr: true, bufferMs: bufferMs, parityK: parityK, parityRequested: parityK, owner: owner,
 	})
 }
 
@@ -1795,7 +1807,8 @@ func (r *Registry) subscribeOpts(id string, conn Conn, so subscribeOpts) (*Subsc
 	// only when opted in. Never for an edge session (the second hop makes its
 	// own delivery choice), a stripe leg (audio rides the primary) or a PoP
 	// leg, whose audio stays a datagram (docs/76 item 18).
-	if (reliable && !so.legCarrier) || (r.opts.LiveEdgeAudioOnReliableStream && !internal && !so.stripeLeg) {
+	// A DVR stripe leg is reliable, and still gets none (docs/91 D5).
+	if (reliable && !so.legCarrier && !so.stripeLeg) || (r.opts.LiveEdgeAudioOnReliableStream && !internal && !so.stripeLeg) {
 		s.audioQueue = make(chan []byte, AudioSidebandQueueDepth)
 		s.audioDone = make(chan struct{})
 	}
@@ -1818,7 +1831,7 @@ func (r *Registry) subscribeOpts(id string, conn Conn, so subscribeOpts) (*Subsc
 		s.dvrCursor = b.dvr.NewCursor()
 		s.dvrStop = make(chan struct{})
 		s.dvrPace = newDVRPacer(r.opts.DVRMaxCatchup, time.Now)
-		if b.dvrAudio != nil {
+		if b.dvrAudio != nil && !so.stripeLeg {
 			s.dvrAudio = b.dvrAudio
 			s.dvrAudioCur = b.dvrAudio.Newest()
 		}
@@ -1950,11 +1963,16 @@ func (r *Registry) statsWith(key func(id string) string, ownerKeys bool) Registr
 			if s.internal {
 				edgeSessions++
 			}
-			if s.reliable && !s.internal {
+			// These count viewers: a DVR stripe leg is not one, as it is not
+			// in the viewer count (docs/91). Its resyncs still count, since
+			// each is a GOP its viewer lost.
+			if s.reliable && !s.internal && !s.stripeLeg {
 				reliableSubs++
 			}
 			if s.dvr != nil {
-				dvrSubs++
+				if !s.stripeLeg {
+					dvrSubs++
+				}
 				dvrResyncs += s.dvrResyncs.Load()
 			}
 			striped := s.stripeSuppressed(statsNow)
@@ -2960,6 +2978,9 @@ func (b *broadcastHub) fanOutLocked(dgram []byte) {
 	// the relay computes nothing, one comparison per subscriber (docs/34).
 	if idx := parityIndexIfParity(dgram); idx >= 0 {
 		for s := range b.subs {
+			if s.dvrStripeLeg() {
+				continue
+			}
 			// An EDGE session is exempt: the prefix belongs at the pod that
 			// SERVES the viewer. The origin cannot know an edge's subscribers'
 			// k, and clamping here would silently strip parity from every
@@ -2968,7 +2989,7 @@ func (b *broadcastHub) fanOutLocked(dgram []byte) {
 				// A leg forwards only its share of the prefix, a striped
 				// primary none; only the primary's withheld symbols count
 				// as suppressed (a leg's are routing).
-				if s.stripeLeg || s.stripeUntil.Load() != 0 {
+				if s.dvr == nil && (s.stripeLeg || s.stripeUntil.Load() != 0) {
 					classify()
 					if stripeIsDelta && !s.wantsDeltaLocked(stripeOrd, stripeNow) {
 						if !s.stripeLeg {
@@ -2986,9 +3007,14 @@ func (b *broadcastHub) fanOutLocked(dgram []byte) {
 		return
 	}
 	for s := range b.subs {
+		if s.dvrStripeLeg() {
+			continue
+		}
 		// A leg receives only its share of delta datagrams and nothing else;
-		// a striped primary skips deltas but keeps everything else.
-		if s.stripeLeg || s.stripeUntil.Load() != 0 {
+		// a striped primary skips deltas but keeps everything else. A striped
+		// DVR primary takes the plain path: its media comes from the ring, and
+		// enqueueLocked already keeps it out of the queue.
+		if s.dvr == nil && (s.stripeLeg || s.stripeUntil.Load() != 0) {
 			classify()
 			if s.stripeLeg && !stripeIsDelta {
 				continue
@@ -3065,6 +3091,10 @@ type Subscriber struct {
 	stripeUntil       atomic.Int64
 	stripeNInfo       atomic.Uint32
 	stripeTransitions atomic.Uint64
+	// stripeSince is when the current striped period began (UnixNano), set
+	// with stripeUntil. A striped DVR primary filters only GOPs that reached
+	// the ring after it (dvrServesGop).
+	stripeSince atomic.Int64
 	// owner is the viewer-minted session-group token, empty on unowned
 	// sessions. Read-only after subscribe — no lock.
 	owner string
@@ -3177,6 +3207,10 @@ type Subscriber struct {
 	dvrAudioCur   DVRAudioCursor
 	dvrAudioCar   KeyframeStream
 	dvrGopSeq     atomic.Int64
+	// dvrFailing is set by a failed stream open or write and cleared by the
+	// next progress. Owned by the video drain. While set, skipping another
+	// connection's GOP is not counted as idleness (dvrSkipGop).
+	dvrFailing bool
 
 	carrierStreams        atomic.Uint64
 	carrierRecords        atomic.Uint64
@@ -3298,8 +3332,11 @@ func (s *Subscriber) drain() {
 	defer close(s.done)
 	if s.dvr != nil {
 		// The queue still carries this subscriber's control traffic; a
-		// separate goroutine drains it so neither can stall the other.
-		go s.drainControlSideband()
+		// separate goroutine drains it so neither can stall the other. A DVR
+		// leg's queue stays empty: control rides the primary (docs/91 D5).
+		if !s.stripeLeg {
+			go s.drainControlSideband()
+		}
 		if s.dvrAudio != nil {
 			go s.drainDVRAudio()
 		}
