@@ -51,7 +51,7 @@ script for what counts as a dependency here and why.
 | `postcss-value-parser` | 4.2.0 | `MIT` | Copyright (c) Bogdan Chadkin <trysound@yandex.ru> |
 | `react` | 19.3.1 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
 | `react-dom` | 19.3.1 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
-| `react-router` | 8.5.1 | `MIT` | Copyright (c) React Training LLC 2015-2019<br>Copyright (c) Remix Software Inc. 2020-2021<br>Copyright (c) Shopify Inc. 2022-2023 |
+| `react-router` | 8.5.2 | `MIT` | Copyright (c) React Training LLC 2015-2019<br>Copyright (c) Remix Software Inc. 2020-2021<br>Copyright (c) Shopify Inc. 2022-2023 |
 | `redoc` | 3.1.0 | `MIT` | Copyright (c) 2015-present, Rebilly, Inc<br>Copyright (c) 2021-present, Redocly Inc |
 | `scheduler` | 0.28.0 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
 | `styled-components` | 6.6.0 | `MIT` | Copyright (c) 2016-present Glen Maddern and Maximilian Stoiber |
