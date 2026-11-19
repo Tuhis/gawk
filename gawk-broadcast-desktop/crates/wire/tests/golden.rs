@@ -2442,6 +2442,8 @@ fn golden_session_closing_capacity_refusals() {
     assert_eq!(CLOSE_CODE_BROADCAST_FULL, 4018);
     assert_eq!(CLOSE_CODE_BROADCAST_FULL, CLOSE_CODE_PUBLISH_MINTED + 1);
     assert_eq!(CLOSE_CODE_RELAY_FULL, 4019);
+    assert_eq!(CLOSE_CODE_STRIPE_LEG_DRAINED, 4020);
+    assert!(!terminal_for_viewer(CLOSE_CODE_STRIPE_LEG_DRAINED));
     for (code, golden) in [
         (
             CLOSE_CODE_BROADCAST_FULL,

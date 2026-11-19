@@ -5,9 +5,13 @@ package hub
 // GOPs of its residue, whole and in order.
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,6 +25,8 @@ func stripedDVROpts() Options {
 		StripedDelivery: true,
 		StripedDVR:      true,
 		DVR:             DVROptions{Window: 10 * time.Minute, MaxBytes: 256 << 20},
+		// A drained leg's linger, short so the drain tests stay quick.
+		StripeDrainLinger: 50 * time.Millisecond,
 	}
 }
 
@@ -844,7 +850,7 @@ var drainState = wire.StripeState{}
 // legClosedDrained reports that the relay ended the leg as drained.
 func legClosedDrained(c *fakeSender) bool {
 	code, closed := c.getCloseInfo()
-	return closed && code == StripeLegDrainedCloseCode
+	return closed && code == uint32(wire.CloseCodeStripeLegDrained)
 }
 
 // assertServedUpTo fails if the leg served a GOP newer than GOP k or one
@@ -924,13 +930,13 @@ func TestStripedDVRLegDrainIsIdempotent(t *testing.T) {
 		ingestStripeGOP(t, p, k, 1)
 	}
 	leg.ApplyStripeState(drainState)
-	point := leg.dvrDrainAt.Load()
+	point := leg.dvrDrain.Load()
 	for k := 6; k < 16; k++ {
 		ingestStripeGOP(t, p, k, 1)
 		leg.ApplyStripeState(drainState)
 	}
-	if got := leg.dvrDrainAt.Load(); got != point {
-		t.Fatalf("drain point moved from %d to %d on a repeated drain", point, got)
+	if got := leg.dvrDrain.Load(); got != point {
+		t.Fatalf("drain point moved from %+v to %+v on a repeated drain", *point, *got)
 	}
 	close(block)
 	waitFor(t, 10*time.Second, func() bool { return legClosedDrained(c) }, "the drained leg to be closed")
@@ -976,10 +982,11 @@ func TestStripedDVRDrainIgnoredElsewhere(t *testing.T) {
 	}
 }
 
-// TestStripedDVRLegDrainResyncPastThePoint: a drained leg that is too far
-// behind resyncs as usual, and a resync past the point just ends the drain:
-// it closes without serving anything newer than the point.
-func TestStripedDVRLegDrainResyncPastThePoint(t *testing.T) {
+// TestStripedDVRLegDrainFallingBehind (review R87 round 3): a draining leg
+// whose cursor falls more than its buffer behind ends its drain there. It
+// does not resync: the backlog it abandons was a superseded leg's, not frame
+// loss of the viewer, so it must not count in dvrResyncs.
+func TestStripedDVRLegDrainFallingBehind(t *testing.T) {
 	r := NewRegistry(discardLog, stripedDVROpts())
 	id, p, err := r.StartPublish("")
 	if err != nil {
@@ -1000,9 +1007,12 @@ func TestStripedDVRLegDrainResyncPastThePoint(t *testing.T) {
 		ingestStripeGOP(t, p, k, 2)
 		time.Sleep(100 * time.Millisecond)
 	}
-	waitFor(t, 10*time.Second, func() bool { return legClosedDrained(c) }, "the drained leg to close after its resync")
-	if leg.DVRResyncs() == 0 {
-		t.Fatal("the leg never resynced; the test proves nothing")
+	waitFor(t, 10*time.Second, func() bool { return legClosedDrained(c) }, "the drained leg to close once it fell behind")
+	if n := leg.DVRResyncs(); n != 0 {
+		t.Errorf("dvrResyncs = %d: a draining leg that fell behind counted a resync", n)
+	}
+	if n := singleBroadcastStats(t, r).DVRResyncs; n != 0 {
+		t.Errorf("broadcast dvrResyncs = %d, want 0", n)
 	}
 	// Keyframes only: a parked carrier is cancelled and reopened on every
 	// retry, so carriers no longer pair one-to-one with GOPs here.
@@ -1015,4 +1025,174 @@ func TestStripedDVRLegDrainResyncPastThePoint(t *testing.T) {
 			t.Errorf("served GOP %d after a drain at GOP %d", hdr.FrameID, gopKeyframeID(before-1))
 		}
 	}
+}
+
+// TestStripedDVRLegDrainOnEmptyRing (review R87 round 3): a leg drained
+// before its pod's ring ever held a GOP owes nothing. Repeated drains must
+// neither panic nor spin, it must close once its linger passes, and GOPs
+// that arrive after the drain are never served.
+func TestStripedDVRLegDrainOnEmptyRing(t *testing.T) {
+	opts := stripedDVROpts()
+	opts.StripeDrainLinger = 300 * time.Millisecond
+	r := NewRegistry(discardLog, opts)
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	leg, c := subscribeDrainLeg(t, r, id, 30000)
+	for range 3 {
+		leg.ApplyStripeState(drainState)
+	}
+	if !leg.StripeDraining() {
+		t.Fatal("a drain on an empty ring was not recorded")
+	}
+	for k := range 6 {
+		ingestStripeGOP(t, p, k, 1)
+		leg.ApplyStripeState(drainState)
+	}
+	waitFor(t, 5*time.Second, func() bool { return legClosedDrained(c) }, "the drained leg to close")
+	if n := len(c.receivedKeyframes()); n != 0 {
+		t.Errorf("a leg drained on an empty ring served %d GOPs", n)
+	}
+	// A drained leg's drain goroutine has ended: Close returns at once
+	// rather than waiting on a spinning loop.
+	done := make(chan struct{})
+	go func() { leg.Close(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close hung on the drained leg")
+	}
+}
+
+// TestStripedDVRLegDrainLingers (review R87 round 3): once the last owed
+// GOP is handed to QUIC, the leg finishes its carrier normally (FIN, not a
+// reset) and lingers before closing, so the tail still in flight on a lossy
+// link is delivered instead of being aborted by the session close.
+func TestStripedDVRLegDrainLingers(t *testing.T) {
+	opts := stripedDVROpts()
+	opts.StripeDrainLinger = 400 * time.Millisecond
+	r := NewRegistry(discardLog, opts)
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	leg, c := subscribeDrainLeg(t, r, id, 30000)
+	const gops = 6
+	for k := range gops {
+		ingestStripeGOP(t, p, k, 2)
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		gs := servedGOPs(t, c)
+		return len(gs) > 0 && len(gs[len(gs)-1].records) == 2 && gs[len(gs)-1].kf == lastOwnGOP(gops, 1)
+	}, "the leg to serve its residue")
+	leg.ApplyStripeState(drainState)
+	drainedAt := time.Now()
+	ingestStripeGOP(t, p, gops, 1) // completes the point GOP; the leg must not serve it
+	waitFor(t, 5*time.Second, func() bool {
+		cars := c.carrierStreams()
+		closed, _ := cars[len(cars)-1].state()
+		return closed
+	}, "the last carrier to be finished")
+	for i, car := range c.carrierStreams() {
+		if closed, cancelled := car.state(); !closed || cancelled {
+			t.Errorf("carrier %d: closed=%v cancelled=%v, want a clean FIN", i, closed, cancelled)
+		}
+	}
+	if legClosedDrained(c) {
+		t.Fatal("the leg closed without lingering")
+	}
+	waitFor(t, 5*time.Second, func() bool { return legClosedDrained(c) }, "the drained leg to close after its linger")
+	if since := time.Since(drainedAt); since < 350*time.Millisecond {
+		t.Errorf("closed %v after the drain, want the 400 ms linger", since)
+	}
+	assertServedUpTo(t, c, gops-1)
+}
+
+// lastOwnGOP is the newest of GOPs 0…gops−1 whose residue of 2 is member.
+func lastOwnGOP(gops, member int) uint32 {
+	for k := gops - 1; k >= 0; k-- {
+		if kf := gopKeyframeID(k); wire.StripeGOPResidue(kf, 2) == member {
+			return kf
+		}
+	}
+	return 0
+}
+
+// TestStripeDrainLingerDefault pins the production linger: four smoothed
+// RTTs (enough for a lost tail packet's retransmit to land), at least 1 s,
+// at most 5 s.
+func TestStripeDrainLingerDefault(t *testing.T) {
+	for _, tc := range []struct {
+		srtt, want time.Duration
+	}{
+		{0, time.Second},
+		{40 * time.Millisecond, time.Second},
+		{400 * time.Millisecond, 1600 * time.Millisecond},
+		{3 * time.Second, 5 * time.Second},
+	} {
+		if got := stripeDrainLinger(tc.srtt); got != tc.want {
+			t.Errorf("stripeDrainLinger(%v) = %v, want %v", tc.srtt, got, tc.want)
+		}
+	}
+}
+
+// TestDVRResyncLogNamesTheSubscriber: the debug resync line carries the
+// subscriber's /statusz key and the lag at the moment of the resync, which
+// is not the stale published one when the cursor fell off the tail.
+func TestDVRResyncLogNamesTheSubscriber(t *testing.T) {
+	var buf syncBuffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	r := NewRegistry(log, Options{DVR: DVROptions{Window: 30 * time.Second, MaxBytes: 512}})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{}
+	block := make(chan struct{})
+	f.setCarBlock(block)
+	defer close(block)
+	sub, err := r.SubscribeDVR(id, f, 3000, 0, "")
+	if err != nil {
+		t.Fatalf("SubscribeDVR: %v", err)
+	}
+	for g := range 12 {
+		ingestKeyframe(t, p, keyframeMsg(t, uint32(g*100), "vp8", "KEY"))
+		for i := range 8 {
+			p.HandleDatagram(chunkDgram(t, false, uint32(g*100+i+1), 0, 1, fmt.Sprintf("g%02d-d%d", g, i)))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	waitFor(t, 10*time.Second, func() bool { return sub.DVRResyncs() > 0 }, "a resync")
+	var line string
+	for _, l := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(l, "msg=\"dvr resync\"") {
+			line = l
+			break
+		}
+	}
+	if !strings.Contains(line, "subscriber="+sub.statsKey) {
+		t.Errorf("resync line %q does not name subscriber %s", line, sub.statsKey)
+	}
+	if strings.Contains(line, "lag_ms=0 ") || !strings.Contains(line, "lag_ms=") {
+		t.Errorf("resync line %q carries no fresh lag", line)
+	}
+}
+
+// syncBuffer is a bytes.Buffer safe for a logger and a test reading it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

@@ -132,40 +132,77 @@ func (s *Subscriber) dvrPaceBps() int {
 	return live
 }
 
-// StripeLegDrainedCloseCode is the session close code of a DVR leg the
-// relay ends because its drain is complete: a plain application close, not
-// a wire close code. Nothing went wrong, so not 4005 (an orphan reap), and
-// the viewer ignores the deaths of legs it is draining anyway.
-const StripeLegDrainedCloseCode = 0
-
-// drainDVRLeg starts draining a superseded DVR leg (docs/91 D11, review R87
-// round 2): the viewer has moved to another width or unstriped, and keeps
-// the leg open only to receive what it still owes. The drain point is the
-// newest GOP in this pod's ring now; the leg serves its residue up to and
-// including it and never a newer GOP, then closes. Idempotent: only the
-// first drain records a point.
+// drainDVRLeg starts draining a superseded DVR leg (docs/91 D11): the
+// viewer has moved to another width or unstriped, and keeps the leg open
+// only to receive what it still owes. The drain point is the newest GOP in
+// this pod's ring now; the leg serves its residue up to and including it
+// and never a newer GOP, then finishes its streams, lingers and closes. On a
+// ring that has never held a GOP the point is below every GOP to come, so
+// nothing is owed. Idempotent: only the first drain records a point and
+// wakes the drain loop.
 func (s *Subscriber) drainDVRLeg() {
 	if !s.dvrStripeLeg() {
 		return
 	}
-	if s.dvrDrainAt.CompareAndSwap(0, s.dvr.NewestGopSeq()+1) {
+	if s.dvrDrain.CompareAndSwap(nil, &dvrDrainPoint{gopSeq: s.dvr.NewestGopSeq()}) {
 		close(s.dvrDrainSig)
 	}
 }
 
+// dvrDrainPoint is a draining leg's drain point: the last ring GOP it owes.
+type dvrDrainPoint struct{ gopSeq int64 }
+
 // StripeDraining reports a DVR leg that is draining, for /statusz.
-func (s *Subscriber) StripeDraining() bool { return s.dvrDrainAt.Load() != 0 }
+func (s *Subscriber) StripeDraining() bool { return s.dvrDrain.Load() != nil }
 
 // dvrDrainDone reports that a draining leg's cursor is past its drain
 // point: everything it owed has been served or skipped.
 func (s *Subscriber) dvrDrainDone() bool {
-	at := s.dvrDrainAt.Load()
-	return at != 0 && s.dvrCursor.GopSeq() > at-1
+	d := s.dvrDrain.Load()
+	return d != nil && s.dvrCursor.GopSeq() > d.gopSeq
 }
 
-// closeDrained ends a leg whose drain is complete. On its own goroutine:
-// Close waits for the drain that calls this.
-func (s *Subscriber) closeDrained() {
-	_ = s.sender.CloseWithError(StripeLegDrainedCloseCode, "stripe leg drained")
+// stripeDrainLinger is how long a drained leg stays open after its last
+// stream is finished. quic-go cannot report when a stream's data has been
+// acknowledged, and closing the session resets streams whose tail is still
+// in flight, which loses exactly what the drain exists to deliver. So the
+// leg waits out the time a lost tail packet needs to be retransmitted: four
+// smoothed RTTs (loss detection plus one retransmit, with margin), at least
+// 1 s for paths without an RTT sample yet, at most 5 s so a superseded leg
+// never holds its subscriber slot for long.
+func stripeDrainLinger(srtt time.Duration) time.Duration {
+	return min(max(4*srtt, time.Second), 5*time.Second)
+}
+
+// finishDrain ends a drained leg's service: its carrier is finished
+// normally (FIN), then the session lingers and closes with
+// CloseCodeStripeLegDrained. The drain loop returns after calling this, so
+// the leg serves nothing during the linger; its lease still applies.
+func (s *Subscriber) finishDrain() {
+	s.retireCarrier()
+	linger := s.hub.registry.opts.StripeDrainLinger
+	if linger <= 0 {
+		var srtt time.Duration
+		if ps, ok := s.sender.(PathStatser); ok {
+			if st, ok := ps.PathStats(); ok {
+				srtt = st.SmoothedRTT
+			}
+		}
+		linger = stripeDrainLinger(srtt)
+	}
+	go s.closeDrained(linger)
+}
+
+// closeDrained closes a drained leg after its linger, unless something else
+// closed it first. On its own goroutine: Close waits for the drain loop.
+func (s *Subscriber) closeDrained(linger time.Duration) {
+	t := time.NewTimer(linger)
+	defer t.Stop()
+	select {
+	case <-t.C:
+	case <-s.dvrStop:
+		return
+	}
+	_ = s.sender.CloseWithError(uint32(wire.CloseCodeStripeLegDrained), "stripe leg drained")
 	s.Close()
 }

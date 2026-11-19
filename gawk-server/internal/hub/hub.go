@@ -262,6 +262,10 @@ type Options struct {
 	// datagram before it is reaped as orphaned. Defaults to
 	// DefaultStripeLegLease; for tests only, deliberately no flag.
 	StripeLegLease time.Duration
+	// StripeDrainLinger overrides how long a drained DVR leg lingers before
+	// the relay closes it (stripeDrainLinger). For tests only, deliberately
+	// no flag (the StripeLegLease precedent).
+	StripeDrainLinger time.Duration
 
 	// UndeliverableAfter overrides UndeliverableVideoAfter. For tests only,
 	// deliberately no flag (the StripeLegLease precedent).
@@ -3213,10 +3217,10 @@ type Subscriber struct {
 	// next progress. Owned by the video drain. While set, skipping another
 	// connection's GOP is not counted as idleness (dvrSkipGop).
 	dvrFailing bool
-	// dvrDrainAt is a draining DVR leg's drain point, the ring GOP seq + 1
-	// (0: not draining). Set once by drainDVRLeg, which also closes
-	// dvrDrainSig to wake a parked drain.
-	dvrDrainAt  atomic.Int64
+	// dvrDrain is a draining DVR leg's drain point, nil while not draining.
+	// Set once by drainDVRLeg, whose winning CompareAndSwap alone closes
+	// dvrDrainSig to wake a parked drain loop.
+	dvrDrain    atomic.Pointer[dvrDrainPoint]
 	dvrDrainSig chan struct{}
 
 	carrierStreams        atomic.Uint64

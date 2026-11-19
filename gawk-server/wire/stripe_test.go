@@ -244,3 +244,14 @@ func TestRelayCapabilitiesStripedDVRGoldenVector(t *testing.T) {
 		t.Fatalf("flags = %#04x, want the striped and striped-DVR bits", c.Flags)
 	}
 }
+
+// TestCloseCodeStripeLegDrainedIsPinned (R87, docs/91 D11): the drained-leg
+// close follows 4019 and is pinned in the TS and Rust mirrors.
+func TestCloseCodeStripeLegDrainedIsPinned(t *testing.T) {
+	if CloseCodeStripeLegDrained != 4020 {
+		t.Fatalf("CloseCodeStripeLegDrained = %d, the mirrors pin 4020", CloseCodeStripeLegDrained)
+	}
+	if CloseCodeStripeLegDrained != CloseCodeRelayFull+1 {
+		t.Fatal("4020 must follow 4019")
+	}
+}

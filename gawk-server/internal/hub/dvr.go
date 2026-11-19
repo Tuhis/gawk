@@ -408,7 +408,7 @@ func (s *Subscriber) drainDVR() {
 		if s.closed.Load() {
 			return
 		}
-		if s.dvrDrainAt.Load() != 0 {
+		if s.StripeDraining() {
 			drain = nil
 		}
 		// Health in this mode is progress, not position: a cursor legitimately
@@ -422,16 +422,18 @@ func (s *Subscriber) drainDVR() {
 		// Take the wake channel BEFORE reading; see DVRRing.Wait.
 		wake := s.dvr.Wait()
 
+		// A draining leg past its point owes nothing more; checked before
+		// any keyframe, so it never serves a GOP newer than the point. One
+		// that falls behind ends its drain there instead of resyncing: the
+		// backlog it abandons was a superseded leg's, not the viewer's
+		// frame loss, so it must not count as a resync.
+		if s.dvrDrainDone() || (s.StripeDraining() && s.dvrFellBehind()) {
+			s.finishDrain()
+			return
+		}
 		if s.dvrFellBehind() {
 			s.dvrResync()
 			continue
-		}
-		// A draining leg past its point owes nothing more; checked before
-		// any keyframe, so it never serves a GOP newer than the point. A
-		// resync past the point lands here too.
-		if s.dvrDrainDone() {
-			go s.closeDrained()
-			return
 		}
 		if s.dvrCursor.NeedsKeyframe() {
 			if serve, known := s.dvrServesGop(); known && !serve {
@@ -540,14 +542,27 @@ func (s *Subscriber) dvrResync() {
 	// why (docs/91 §11).
 	if s.hub.log.Enabled(context.Background(), slog.LevelDebug) {
 		s.hub.log.Debug("dvr resync",
+			"subscriber", s.statsKey,
 			"stripe_leg", s.stripeLeg, "stripe_member", int(s.stripeMember),
-			"off_tail", s.dvr.FellOffTail(s.dvrCursor), "lag_ms", s.dvrLagMs.Load(),
+			"off_tail", s.dvr.FellOffTail(s.dvrCursor), "lag_ms", s.dvrResyncLagMs(),
 			"buffer_ms", s.dvrBufferMs, "gop_seq", s.dvrCursor.GopSeq())
 	}
 	s.retireCarrier()
 	s.dvrCursor = s.dvr.ResyncCursor()
 	s.dvrResyncs.Add(1)
 	s.dvrNoteCursor()
+}
+
+// dvrResyncLagMs is the cursor's lag behind the newest GOP right now. It
+// reads the cursor's published GOP time, because a cursor that fell off the
+// tail has no GOP left in the ring to measure from.
+func (s *Subscriber) dvrResyncLagMs() int64 {
+	at := s.dvrCursorAtMs.Load()
+	newest := s.dvr.GopAt(DVRCursor{gopSeq: s.dvr.NewestGopSeq()})
+	if at == 0 || newest.IsZero() {
+		return 0
+	}
+	return newest.UnixMilli() - at
 }
 
 // dvrNoteCursor publishes the cursor's observable position as atomics.
