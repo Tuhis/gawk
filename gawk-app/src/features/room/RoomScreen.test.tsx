@@ -433,8 +433,10 @@ describe('RoomScreen What to show', () => {
     shift('2');
     expect(tileNumbers()).toEqual(['1', '3']);
     expect(screen.getByRole('button', { name: 'What to show: 2 of 3' })).toBeTruthy();
+    // A peek and its undo leave the room as it was: All streams.
     shift('2');
     expect(tileNumbers()).toEqual(['1', '2', '3']);
+    expect(screen.getByRole('button', { name: 'What to show: All streams' })).toBeTruthy();
     shift('2');
     fireEvent.keyDown(window, { key: '2' });
     expect(tileNumbers()).toEqual(['1', '2', '3']);
@@ -535,6 +537,38 @@ describe('RoomScreen What to show', () => {
     expect(variants()).toEqual(['small', 'focus', 'small']);
   });
 
+  it('moves focus nobody chose for good too, and a stream that left keeps its claim (D9)', async () => {
+    localStorage.setItem('gawk:room-mode', 'focus');
+    const room = await joinAs();
+    expect(variants()).toEqual(['focus', 'small', 'small']);
+    shift('1');
+    expect(variants()).toEqual(['focus', 'small']);
+    shift('1');
+    expect(variants()).toEqual(['small', 'focus', 'small']);
+
+    // Bravo, focused, drops out of a snapshot and comes back: focus returns.
+    const full = state().attachments;
+    act(() => room.cbs.onState(state({ seq: 4, attachments: [full[0], full[2]] })));
+    expect(variants()).toEqual(['focus', 'small']);
+    act(() => room.cbs.onState(state({ seq: 5 })));
+    expect(variants()).toEqual(['small', 'focus', 'small']);
+  });
+
+  it('reads the room’s picks whatever the case of the code in the link', async () => {
+    localStorage.setItem('gawk:room-picks', JSON.stringify([{ code: 'ab2cd3', choose: true, hidden: ['BBBBBB'] }]));
+    await joinAs();
+    expect(tileNumbers()).toEqual(['1', '3']);
+  });
+
+  it('leaves an Escape pressed in another layer to that layer', async () => {
+    await joinAs();
+    openWhatToShow();
+    fireEvent.click(screen.getByRole('button', { name: 'People and chat' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit nickname' }));
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'New nickname' }), { key: 'Escape' });
+    expect(screen.getByRole('dialog', { name: 'What to show' })).toBeTruthy();
+  });
+
   it('keeps the keys working while a checkbox in the popover has focus', async () => {
     await joinAs();
     choose();
@@ -557,7 +591,7 @@ describe('RoomScreen What to show', () => {
     fireEvent.click(screen.getByRole('radio', { name: 'Choose' }));
     act(() => roomSessions[0].cbs.onState(state()));
     expect(screen.getByRole('button', { name: 'What to show: 3 of 3' })).toBeTruthy();
-    expect(JSON.parse(localStorage.getItem('gawk:room-picks')!)).toEqual([{ code: 'AB2CD3', choose: true, hidden: [] }]);
+    expect(JSON.parse(localStorage.getItem('gawk:room-picks')!)).toEqual([{ code: 'ab2cd3', choose: true, hidden: [] }]);
   });
 
   it('closes on Escape back onto the pill, and on a press outside', async () => {

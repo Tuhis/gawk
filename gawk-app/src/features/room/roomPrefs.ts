@@ -33,7 +33,8 @@ export interface RoomPicks {
   hidden: string[];
 }
 
-export const NO_PICKS: RoomPicks = { choose: false, hidden: [] };
+// Frozen: it is every unknown room's answer, so nothing may change it in place.
+export const NO_PICKS: RoomPicks = Object.freeze({ choose: false, hidden: Object.freeze([]) as unknown as string[] });
 
 const NICKNAME_KEY = 'gawk:nickname';
 const MODE_KEY = 'gawk:room-mode';

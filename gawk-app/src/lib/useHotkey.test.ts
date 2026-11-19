@@ -95,11 +95,19 @@ describe('useHotkey', () => {
   });
 
   // AZERTY types a digit with Shift: that is the digit, not Shift+digit.
-  it('does not take a digit Shift typed (AZERTY) for the Shift shortcut', () => {
+  it('takes a digit Shift typed (AZERTY) for the plain digit, not the Shift shortcut', () => {
     const shifted = vi.fn();
+    const plain = vi.fn();
     renderHook(() => useHotkey({ key: '1', shift: true }, shifted));
+    renderHook(() => useHotkey({ key: '1' }, plain));
     press(window, { key: '1', code: 'Digit1', ctrlKey: false, altKey: false, shiftKey: true });
     expect(shifted).not.toHaveBeenCalled();
+    expect(plain).toHaveBeenCalledTimes(1);
+    // A letter's Shift is still a modifier.
+    const letter = vi.fn();
+    renderHook(() => useHotkey({ key: 'f' }, letter));
+    press(window, { key: 'F', code: 'KeyF', ctrlKey: false, altKey: false, shiftKey: true });
+    expect(letter).not.toHaveBeenCalled();
   });
 
   // A checkbox or radio takes no typing, so keys stay commands there (R86).

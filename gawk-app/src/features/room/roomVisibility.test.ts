@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { numberStreams, revealStream, setVisibility, shownStreams, toggleStream, visibilityOf, type VisState } from './roomVisibility';
+import {
+  numberStreams,
+  revealStream,
+  setVisibility,
+  shownStreams,
+  toggleStream,
+  toggleStreamByKey,
+  visibilityOf,
+  type VisState,
+} from './roomVisibility';
 import { MAX_HIDDEN_PER_ROOM } from './roomPrefs';
 import type { RoomAttachment } from '../../transport/wire';
 
@@ -52,6 +61,16 @@ describe('room visibility (docs/90)', () => {
     // back, with the rest as they were.
     expect(toggleStream({ ...some, videosOff: true }, 'A', IN_ROOM)).toEqual(some);
     expect(toggleStream({ ...some, videosOff: true }, 'B', IN_ROOM)).toEqual({ videosOff: false, picks: { choose: true, hidden: [] } });
+  });
+
+  it('a key that shows the last hidden stream goes back to All streams; a checkbox stays in Choose', () => {
+    const peek = toggleStreamByKey(ALL, 'B', IN_ROOM);
+    expect(peek).toEqual({ videosOff: false, picks: { choose: true, hidden: ['B'] } });
+    expect(toggleStreamByKey(peek, 'B', IN_ROOM)).toEqual(ALL);
+    expect(toggleStream(peek, 'B', IN_ROOM)).toEqual({ videosOff: false, picks: { choose: true, hidden: [] } });
+    // Others still hidden: still Choose.
+    const two: VisState = { videosOff: false, picks: { choose: true, hidden: ['A', 'B'] } };
+    expect(toggleStreamByKey(two, 'B', IN_ROOM)).toEqual({ videosOff: false, picks: { choose: true, hidden: ['A'] } });
   });
 
   it('past the cap, forgets streams that left the room first, so one hidden long ago and still here stays (D5)', () => {

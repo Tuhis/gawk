@@ -6,6 +6,9 @@
 // refs.
 
 import { useEffect, useMemo, useRef, type RefObject } from 'react';
+// Typing in a field is not talking; a focused checkbox (R86's What to show)
+// or slider is not typing, so the room's keys and push-to-talk agree.
+import { isEditable } from '../../../lib/useHotkey';
 import { webTransportInit } from '../../../transport/connection';
 import { selectCertHashList, useTransportStore } from '../../../state/transportStore';
 import { roomHasVoice, useRoomStore } from '../../../state/roomStore';
@@ -69,13 +72,6 @@ export function roomVoiceReadiness(): RoomVoiceReadiness {
 
 function speakerName(session: number): string | null {
   return useRoomStore.getState().voiceRoster?.find((e) => e.session === session)?.name ?? null;
-}
-
-// Typing in a field is not talking.
-function isEditable(target: EventTarget | null): boolean {
-  const el = target as HTMLElement | null;
-  if (!el || typeof el.tagName !== 'string') return false;
-  return el.isContentEditable || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT';
 }
 
 export function useRoomVoice({

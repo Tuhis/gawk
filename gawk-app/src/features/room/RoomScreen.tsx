@@ -84,7 +84,6 @@ import {
   saveRoomPicks,
   saveRoomPreset,
   saveVideosOff,
-  NO_PICKS,
   type RoomAllMode,
   type RoomMode,
   type RoomVisibility,
@@ -95,6 +94,7 @@ import {
   setVisibility,
   shownStreams,
   toggleStream,
+  toggleStreamByKey,
   visibilityOf,
   type VisState,
 } from './roomVisibility';
@@ -320,34 +320,39 @@ export function RoomView({
     status === 'error' && attachSecret !== null && (errorKind === 'refused' || errorKind === 'forbidden');
 
   // R86 (docs/90): what is shown — None (global, as Hide videos was) and
-  // this room's picks, with the code they belong to (D5). One state, changed
+  // this room's picks, with the room they belong to (D5). One state, changed
   // only through roomVisibility's transitions, so two in one event (a layout
   // pick, then a reveal) compose; each fact is saved from the state, so once
-  // per change whatever made it. When the code becomes known or changes, the
-  // room's picks are loaded (adjusted during render, like the fit result
-  // below) — except a choice made before a mint's first state, which is this
-  // room's and carries over.
+  // per change whatever made it. When the room becomes known or changes, its
+  // picks are loaded (adjusted during render, like the fit result below) —
+  // except a choice made before a mint's first state, which is this room's
+  // and carries over. Keyed by the code in lower case, as the grant handoff
+  // is: a link's code may be typed in either case before the relay's own
+  // form of it arrives.
   const code = snapshot?.code ?? (target.kind === 'join' ? target.code : '');
-  const [visState, setVisState] = useState<VisState & { code: string }>(() => ({
-    code,
+  const picksKey = code.toLowerCase();
+  const [visState, setVisState] = useState<VisState & { key: string; touched: boolean }>(() => ({
+    key: picksKey,
+    touched: false,
     videosOff: loadVideosOff(),
-    picks: loadRoomPicks(code),
+    picks: loadRoomPicks(picksKey),
   }));
   let vis = visState;
-  if (visState.code !== code) {
-    const carried = visState.code === '' && visState.picks !== NO_PICKS;
-    vis = { ...visState, code, picks: carried ? visState.picks : loadRoomPicks(code) };
+  if (visState.key !== picksKey) {
+    const carried = visState.key === '' && visState.touched;
+    vis = { ...visState, key: picksKey, picks: carried ? visState.picks : loadRoomPicks(picksKey) };
     setVisState(vis);
   }
   const visibility: RoomVisibility = visibilityOf(vis);
   const updateVis = useCallback((change: (s: VisState) => VisState) => {
     setVisState((prev) => {
       const next = change(prev);
-      return next === prev ? prev : { code: prev.code, videosOff: next.videosOff, picks: next.picks };
+      if (next === prev) return prev;
+      return { key: prev.key, touched: prev.touched || next.picks !== prev.picks, videosOff: next.videosOff, picks: next.picks };
     });
   }, []);
   useEffect(() => saveVideosOff(vis.videosOff), [vis.videosOff]);
-  useEffect(() => saveRoomPicks(vis.code, vis.picks), [vis.code, vis.picks]);
+  useEffect(() => saveRoomPicks(vis.key, vis.picks), [vis.key, vis.picks]);
   const [visOpen, setVisOpen] = useState(false);
 
   // Layout mode, persisted; grid and fit degrade to focus on a narrow screen.
@@ -381,12 +386,24 @@ export function RoomView({
   const shown = useMemo(() => shownStreams(numbered, vis), [numbered, vis]);
   const shownIds = useMemo(() => new Set(shown.map((s) => s.attachment.broadcastId)), [shown]);
   const [focusedId, setFocusedId] = useState<string | null>(null);
-  // D9: focus skips hidden streams, and moves for good, so showing the
-  // hidden one again doesn't pull focus (and audio) back from the stream
-  // being watched. Adjusted during render, like the fit result below.
+  // D9: focus skips hidden streams.
   const focused =
     shown.find((s) => s.attachment.broadcastId === focusedId)?.attachment ?? shown[0]?.attachment ?? null;
-  if (focusedId !== null && focused !== null && focused.broadcastId !== focusedId) setFocusedId(focused.broadcastId);
+  // ...and moves for good when the user hides the focused stream, so showing
+  // it again doesn't pull focus (and audio) back from the stream being
+  // watched. Only a hidden one: a stream that left the room keeps its claim,
+  // and focus returns when it is attached again. Adjusted during render, like
+  // the fit result below.
+  if (focusedId !== null && focused !== null && roomIds.has(focusedId) && !shownIds.has(focusedId)) {
+    setFocusedId(focused.broadcastId);
+  }
+  // Every visibility change the user makes first pins the focus where it is,
+  // so focus nobody chose (the first stream shown) can't move when a stream
+  // ahead of it comes and goes.
+  const changeVis = (change: (s: VisState) => VisState) => {
+    if (focused !== null && focused.broadcastId !== focusedId) setFocusedId(focused.broadcastId);
+    updateVis(change);
+  };
   const focus = useCallback(
     (id: string) => {
       setFocusedId(id);
@@ -404,13 +421,10 @@ export function RoomView({
     },
     [attachments, focus],
   );
-  const toggleIndex = useCallback(
-    (i: number) => {
-      const a = attachments[i];
-      if (a) updateVis((s) => toggleStream(s, a.broadcastId, roomIds));
-    },
-    [attachments, roomIds, updateVis],
-  );
+  const toggleIndex = (i: number) => {
+    const a = attachments[i];
+    if (a) changeVis((s) => toggleStreamByKey(s, a.broadcastId, roomIds));
+  };
   useHotkey({ key: '1' }, () => focusIndex(0));
   useHotkey({ key: '2' }, () => focusIndex(1));
   useHotkey({ key: '3' }, () => focusIndex(2));
@@ -942,14 +956,14 @@ export function RoomView({
   const gatedCardShown = gatedOut && visibility !== 'none' && attachments.length === 0;
   // The two ways back from an empty stage the viewer chose (D10).
   const chooseOpen = () => {
-    updateVis((s) => setVisibility(s, 'some'));
+    changeVis((s) => setVisibility(s, 'some'));
     setMenu(null);
     setPresetMenu(null);
     setVisOpen(true);
   };
   const showBackActions = (
     <>
-      <Button variant="secondary" onClick={() => updateVis((s) => setVisibility(s, 'all'))}>
+      <Button variant="secondary" onClick={() => changeVis((s) => setVisibility(s, 'all'))}>
         All streams
       </Button>
       <Button variant="secondary" onClick={chooseOpen}>
@@ -1275,8 +1289,8 @@ export function RoomView({
             preview={own?.preview != null}
             open={visOpen}
             onOpenChange={setVisOpen}
-            onVisibility={(v) => updateVis((s) => setVisibility(s, v))}
-            onToggle={(id) => updateVis((s) => toggleStream(s, id, roomIds))}
+            onVisibility={(v) => changeVis((s) => setVisibility(s, v))}
+            onToggle={(id) => changeVis((s) => toggleStream(s, id, roomIds))}
           />
           <button
             ref={presetButtonRef}

@@ -39,12 +39,20 @@ export function isEditable(target: EventTarget | null): boolean {
 // Shift changes a digit's `key` the same way (Shift+1 is '!' on US layouts,
 // '"' on Nordic ones), so a Shift shortcut's digit matches by its physical
 // key in the number row instead — unless Shift typed the digit itself, as on
-// AZERTY, where that is the user typing "1", not asking for Shift+1.
+// AZERTY, where that is the user typing "1", not asking for Shift+1: the
+// plain digit's shortcut takes it (shiftTypedDigit).
 function matchesKey(e: KeyboardEvent, key: string, alt: boolean, shift: boolean): boolean {
   const want = key.toLowerCase();
   if (shift && /^[0-9]$/.test(want)) return e.code === `Digit${want}` && !/^[0-9]$/.test(e.key);
   if (e.key.toLowerCase() === want) return true;
   return alt && /^[a-z]$/.test(want) && e.code === `Key${want.toUpperCase()}`;
+}
+
+// A digit typed with Shift because the layout puts digits there (AZERTY's
+// number row is &é"'… unshifted). For a plain digit shortcut that Shift is
+// part of typing the digit, not a modifier.
+function shiftTypedDigit(e: KeyboardEvent, key: string, shift: boolean): boolean {
+  return !shift && e.shiftKey && /^[0-9]$/.test(key) && e.key === key;
 }
 
 // A global keyboard shortcut. Exact modifier match, ignores key repeat, and
@@ -63,7 +71,7 @@ export function useHotkey(hotkey: Hotkey, handler: () => void): void {
       if (!matchesKey(e, hotkey.key, !!hotkey.alt, !!hotkey.shift)) return;
       if (!!hotkey.ctrl !== e.ctrlKey) return;
       if (!!hotkey.alt !== e.altKey) return;
-      if (!!hotkey.shift !== e.shiftKey) return;
+      if (!!hotkey.shift !== e.shiftKey && !shiftTypedDigit(e, hotkey.key, !!hotkey.shift)) return;
       if (!!hotkey.meta !== e.metaKey) return;
       e.preventDefault();
       handlerRef.current();

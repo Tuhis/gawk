@@ -1174,7 +1174,8 @@ export function BroadcasterScreen({
   // The preview <video> stays mounted (hidden) so its srcObject survives the
   // hop back; the own tile paints the same stream. No own-tile glass bar —
   // Stop / Settings / Stats are in the topbar, Detach is in the panel — and
-  // the room's footer carries the layout modes (grid, focus, preview only).
+  // the room's footer carries the layout modes (grid, fit, focus) and What to
+  // show, whose None reads Preview only (R86).
   if (roomTarget) {
     const own =
       broadcastId && resumeTokenRef.current && !ownDetached

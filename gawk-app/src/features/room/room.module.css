@@ -1487,10 +1487,10 @@
     text-overflow: ellipsis;
   }
 
-  /* R86: the What to show pill keeps its text (the quality pill gives way),
-     and its popover spans the footer instead of hanging off the pill, which
-     sits too far right for 300px to fit. The wrap goes static so the
-     footer is the popover's containing block. */
+  /* R86: the What to show pill never shrinks (the quality pill gives way),
+     but shows its short form, below; its popover spans the footer instead
+     of hanging off the pill, which sits too far right for 300px to fit. The
+     wrap goes static so the footer is the popover's containing block. */
   .visWrap {
     position: static;
     flex-shrink: 0;

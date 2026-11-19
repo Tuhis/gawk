@@ -2002,10 +2002,13 @@ async function roomsPass({ relayUrl, certHash, opsUrl }) {
   try {
     const context = await newAppContext(browser, { relayUrl, certHash });
     // The nickname prompt is unit-tested; the pass seeds one so the room
-    // dials on load, and pins grid so a stale mode preference cannot steer it.
+    // dials on load, and pins grid and every stream shown so a stale
+    // preference cannot steer it (R86: None and the per-room picks).
     await context.addInitScript(() => {
       localStorage.setItem('gawk:nickname', 'e2e');
       localStorage.setItem('gawk:room-mode', 'grid');
+      localStorage.removeItem('gawk:room-videos');
+      localStorage.removeItem('gawk:room-picks');
     });
     const page = await context.newPage();
     wirePageLogs(page, 'console-rooms');

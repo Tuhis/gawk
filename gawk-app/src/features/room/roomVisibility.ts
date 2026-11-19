@@ -33,7 +33,8 @@ export function shownStreams(streams: NumberedStream[], s: VisState): NumberedSt
   const visibility = visibilityOf(s);
   if (visibility === 'none') return [];
   if (visibility === 'all') return streams;
-  return streams.filter((n) => !s.picks.hidden.includes(n.attachment.broadcastId));
+  const hidden = new Set(s.picks.hidden);
+  return streams.filter((n) => !hidden.has(n.attachment.broadcastId));
 }
 
 export function setVisibility(s: VisState, v: RoomVisibility): VisState {
@@ -70,6 +71,16 @@ export function toggleStream(s: VisState, id: string, inRoom: ReadonlySet<string
     videosOff: false,
     picks: { choose: true, hidden: visibility === 'all' ? [id] : capHidden([...s.picks.hidden, id], inRoom) },
   };
+}
+
+// The Shift+number keys: as toggleStream, but a key that shows the last
+// hidden stream goes back to All streams, so a peek and its undo (Shift+2,
+// Shift+2) leave the room as it was rather than in Choose with nothing hidden
+// (D7). The checkboxes don't: the user is in Choose there, looking at it.
+export function toggleStreamByKey(s: VisState, id: string, inRoom: ReadonlySet<string>): VisState {
+  const next = toggleStream(s, id, inRoom);
+  if (next === s || !s.picks.choose || next.videosOff || !next.picks.choose || next.picks.hidden.length > 0) return next;
+  return { videosOff: false, picks: { choose: false, hidden: [] } };
 }
 
 // D5's cap, past which the oldest IDs go — but streams that have left the
