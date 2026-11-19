@@ -253,6 +253,8 @@ func TestEveryPlaybookRowFiresAndDoesNot(t *testing.T) {
 				f := viewerFacts()
 				f.SetText("deliveryMode", "reliable")
 				f.SetClient("playoutOffsetMs", 2000)
+				f.SetClient("videoGoodputBps", 3e6)
+				f.SetRelay("streamBitrateBps", 6e6)
 				return f
 			},
 			quiet: func() *Facts {
@@ -260,6 +262,31 @@ func TestEveryPlaybookRowFiresAndDoesNot(t *testing.T) {
 				f := viewerFacts()
 				f.SetText("deliveryMode", "datagrams")
 				f.SetClient("playoutOffsetMs", 2000)
+				f.SetClient("videoGoodputBps", 3e6)
+				f.SetRelay("streamBitrateBps", 6e6)
+				return f
+			},
+		},
+		{
+			// docs/91 §11.1: 1 % random loss at 40 ms, one connection.
+			id: "per-connection-ceiling",
+			fires: func() *Facts {
+				f := viewerFacts()
+				f.SetClient("videoGoodputBps", 6.1e6)
+				f.SetRelay("streamBitrateBps", 11.3e6)
+				f.SetRelay("pathSrttMs", 41)
+				f.SetRelay("pathMinRttMs", 40)
+				f.SetRelay("pathLossRatio", 0.01)
+				return f
+			},
+			// …and its 8 Mbit/s link, where the queue inflates the RTT.
+			quiet: func() *Facts {
+				f := viewerFacts()
+				f.SetClient("videoGoodputBps", 7.6e6)
+				f.SetRelay("streamBitrateBps", 11.3e6)
+				f.SetRelay("pathSrttMs", 180)
+				f.SetRelay("pathMinRttMs", 40)
+				f.SetRelay("pathLossRatio", 0.0195)
 				return f
 			},
 		},

@@ -1,0 +1,87 @@
+package live
+
+import (
+	"math"
+	"testing"
+	"time"
+
+	"github.com/Tuhis/gawk/gawk-telemetry/internal/ingest"
+	"github.com/Tuhis/gawk/gawk-telemetry/internal/relayscrape"
+)
+
+// R87 (docs/91 SG3) on the live path: goodput over the rolling window, the
+// stream bitrate over the origin's recent rounds, the connection's path as
+// scraped and its loss over the scrape window — and the two rules reading
+// them, on §2's numbers.
+func TestLiveJudgesADeepBufferViewerOnGoodputAndPath(t *testing.T) {
+	const sid = "f2f2f2f2f2f2f2f2f2f2f2f2"
+	cases := []struct {
+		name                 string
+		goodput, stream      float64
+		srtt                 float64
+		lostPerRound         uint64
+		undersupply, ceiling bool
+	}{
+		{"§2: loss-limited", 5.05e6, 10.7e6, 36, 110, true, true},
+		{"healthy deep buffer", 11.2e6, 11.3e6, 34, 0, false, false},
+		{"full link", 7.6e6, 11.3e6, 170, 200, true, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p, clk := newProj()
+			sub := relayscrape.Subscriber{SessionID: sid, DVR: true, DVRBufferMs: 3000,
+				PathSRTTMs: c.srtt, PathMinRTTMs: 33}
+			var ingress uint64 = 1_000_000
+			tMs := 0.0
+			for r := range 6 {
+				// 10 s of client samples per round, 2 s apart.
+				var samples []ingest.Sample
+				for range 5 {
+					tMs += 2000
+					bytes := c.goodput / 8 * tMs / 1000
+					samples = append(samples, ingest.Sample{TMs: tMs, Stats: map[string]any{
+						"receivedFps": 60.0, "decoderFps": 60.0, "deliveryMode": "dvr",
+						"dvrBufferMs": 3000.0, "playoutOffsetMs": 3000.0, "dvrStripeWidth": 1.0,
+						"videoBytesReceived": bytes, "connectionBytesReceived": []any{bytes},
+					}})
+				}
+				b := batch(sid, "viewer", nil)
+				b.Samples = samples
+				p.ObserveClient(b, "Firefox 161", "Windows", "0.40.0")
+
+				sub.PathPacketsSent += 10_000
+				sub.PathPacketsLost += c.lostPerRound
+				obs := relayObs(sub)
+				obs[0].Broadcast.IngressDatagramBytes = ingress
+				p.ObserveRelay(round(obs))
+				ingress += uint64(c.stream / 8 * 10)
+				if r < 5 {
+					clk.add(10 * time.Second)
+				}
+			}
+
+			stream, ok := relayFact(p, sid, "streamBitrateBps")
+			if !ok || math.Abs(stream-c.stream) > c.stream*0.01 {
+				t.Errorf("streamBitrateBps = %v (%v), want %v", stream, ok, c.stream)
+			}
+			if loss, ok := relayFact(p, sid, "pathLossRatio"); !ok || loss != float64(c.lostPerRound)/10_000 {
+				t.Errorf("pathLossRatio = %v (%v), want the window's %v", loss, ok, float64(c.lostPerRound)/10_000)
+			}
+			snap := p.Snapshot()
+			v := findSession(snap, sid)
+			if v == nil {
+				t.Fatal("session not in the snapshot")
+			}
+			if g := v.Metrics["videoGoodputBps"]; math.Abs(g-c.goodput) > c.goodput*0.01 {
+				t.Errorf("videoGoodputBps = %v, want %v", g, c.goodput)
+			}
+			fired := map[string]bool{}
+			for _, f := range v.Findings {
+				fired[f.ID] = true
+			}
+			if fired["resilient-undersupply"] != c.undersupply || fired["per-connection-ceiling"] != c.ceiling {
+				t.Errorf("fired %v, want undersupply %v ceiling %v", fired, c.undersupply, c.ceiling)
+			}
+		})
+	}
+}

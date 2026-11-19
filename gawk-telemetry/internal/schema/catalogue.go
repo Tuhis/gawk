@@ -134,7 +134,10 @@ var fieldMeta = map[string]meta{
 	"stripeLegDeaths":              counter("legs", "Striped connections that died."),
 
 	// --- viewer: delivery + audio ------------------------------------------
-	"dvrBufferMs":           gauge("ms", "Depth of the relay-side DVR ring this viewer is reading from."),
+	"dvrBufferMs":    gauge("ms", "Depth of the relay-side DVR ring this viewer is reading from."),
+	"dvrStripeWidth": gauge("connections", "Connections carrying this deep-buffer viewer's GOPs, the primary included (R87). 1 is unstriped; absent outside deep mode."),
+	"connectionBytesReceived": {SemObject, "bytes",
+		"Cumulative video bytes per connection in deep mode, primary first (R87). Goodput per connection is its rate; diagnose() derives it."},
 	"carrierStreams":        counter("streams", "Carrier streams opened (resilient delivery)."),
 	"carrierRecords":        counter("records", "Records delivered over carrier streams."),
 	"carrierStreamsAborted": counter("streams", "Carrier streams aborted."),
@@ -346,7 +349,7 @@ func semanticFor(k Kind) Semantic {
 		return SemBool
 	case KindString:
 		return SemText
-	case KindObject, KindAny:
+	case KindObject, KindAny, KindNumbers:
 		return SemObject
 	default:
 		return SemGauge

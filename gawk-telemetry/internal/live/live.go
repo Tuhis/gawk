@@ -83,6 +83,12 @@ const (
 	// fact cannot hold for EscalateSamples consecutive evaluations, which is
 	// precisely why intermittent collapses never lit the dashboard up before.
 	DipWindowSamples = 60
+	// IngressHistoryRounds is how many of the origin's scrapes the stream
+	// bitrate is measured over (docs/91 SG3): ~2 minutes at the default 5 s
+	// interval, matching the goodput window it is compared against. One
+	// interval holds two or three keyframes, so a bitrate over it alone
+	// swings with where they fell.
+	IngressHistoryRounds = 24
 )
 
 // SessionView is one row in the broadcast detail table — a broadcaster or a
@@ -203,6 +209,11 @@ type sessionState struct {
 	// the middle of a batch is exactly what the last-sample-only fold used to
 	// throw away.
 	dipWindow []rollup.Sample
+	// goodputWindow is the same rolling window trimmed to what
+	// rollup.DeriveGoodput reads (R87, docs/91 SG3), so the live goodput is
+	// measured over the stretch the stored session's would be, not over one
+	// batch.
+	goodputWindow []rollup.Sample
 	// spark is the two-minute fps tail GET /live/sparks serves (R36 TU7):
 	// the other bounded history this projection keeps.
 	spark sparkRing
@@ -261,6 +272,14 @@ type podView struct {
 	have   bool // a previous answer exists, so a delta is meaningful
 	at     time.Time
 	prevAt time.Time
+	// ingress is the last IngressHistoryRounds observations' ingress bytes,
+	// oldest first: what the stream bitrate is measured over.
+	ingress []ingressPoint
+}
+
+type ingressPoint struct {
+	atMs int64
+	b    relayscrape.Broadcast
 }
 
 // legState is one stripe leg's latest /statusz entry and the one before it,
@@ -392,6 +411,9 @@ func (p *Projection) ObserveClient(a ingest.Accepted, browser, os, appVersion st
 			delete(s.clientFacts, k)
 		}
 	}
+	if a.Role == "viewer" {
+		s.foldGoodputLocked(a.Samples)
+	}
 
 	// The LAST sample in the batch is "now" for this session.
 	if n := len(a.Samples); n > 0 {
@@ -444,6 +466,26 @@ func (p *Projection) ObserveClient(a ingest.Accepted, browser, os, appVersion st
 			}
 		}
 		s.foldUplinkLocked(a.Samples)
+	}
+}
+
+// foldGoodputLocked keeps the goodput window and re-derives its facts (R87,
+// docs/91 SG3). Like the dip facts, a window that can no longer support one
+// clears it rather than leaving the last reading standing.
+func (s *sessionState) foldGoodputLocked(samples []ingest.Sample) {
+	for _, smp := range samples {
+		s.goodputWindow = append(s.goodputWindow, rollup.TrimGoodputSample(rollup.Sample{TMs: smp.TMs, Stats: smp.Stats}))
+	}
+	if n := len(s.goodputWindow); n > DipWindowSamples {
+		s.goodputWindow = append([]rollup.Sample(nil), s.goodputWindow[n-DipWindowSamples:]...)
+	}
+	g := rollup.DeriveGoodput(s.goodputWindow).Facts()
+	for _, k := range rollup.GoodputFactNames {
+		if v, ok := g[k]; ok {
+			s.clientFacts[k] = v
+		} else {
+			delete(s.clientFacts, k)
+		}
 	}
 }
 
@@ -536,6 +578,12 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 				pv.prev, pv.prevAt, pv.have = pv.cur, pv.at, true
 			}
 			pv.role, pv.cur, pv.at = o.Role, *o.Broadcast, now
+			pv.ingress = append(pv.ingress, ingressPoint{atMs: now.UnixMilli(), b: relayscrape.Broadcast{
+				IngressDatagramBytes: o.Broadcast.IngressDatagramBytes, KeyframeBytesIn: o.Broadcast.KeyframeBytesIn,
+			}})
+			if n := len(pv.ingress); n > IngressHistoryRounds {
+				pv.ingress = append([]ingressPoint(nil), pv.ingress[n-IngressHistoryRounds:]...)
+			}
 
 			// The publisher's session is named on the broadcast record
 			// (`publisherSessionId`), not in subscriberDetails — it is the same
@@ -606,6 +654,22 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 			setDelta(s.relayFacts, "carrierQueueOverflow", sub.CarrierQueueOverflow, prev.CarrierQueueOverflow, have)
 			setDelta(s.relayFacts, "carrierRecordsDropped", sub.CarrierRecordsDropped, prev.CarrierRecordsDropped, have)
 			setDelta(s.relayFacts, "dvrResyncs", sub.DVRResyncs, prev.DVRResyncs, have)
+			if sub.DVR && sub.DVRBufferMs > 0 {
+				s.relayFacts["dvrBufferMs"] = float64(sub.DVRBufferMs)
+			}
+			// R87 (docs/91 §9.3): the connection's own path, as scraped; its
+			// loss over this window, like every other live counter.
+			if sub.PathSRTTMs > 0 {
+				s.relayFacts["pathSrttMs"] = sub.PathSRTTMs
+			}
+			if sub.PathMinRTTMs > 0 {
+				s.relayFacts["pathMinRttMs"] = sub.PathMinRTTMs
+			}
+			if have {
+				if loss, ok := sub.PathLossRatio(prev); ok {
+					s.relayFacts["pathLossRatio"] = loss
+				}
+			}
 			s.prevSub, s.havePrevSub = *sub, true
 		}
 	}
@@ -658,8 +722,9 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 				continue
 			}
 			s.relayFacts["ingressLossRatio"] = b.relayFacts["ingressLossRatio"]
-			// The leg-A units a viewer's rules read to tell leg A from leg B.
-			for _, k := range []string{"ingressFrameLossRatio", "ingressChunkLossRatio"} {
+			// The leg-A units a viewer's rules read to tell leg A from leg B,
+			// and the stream bitrate its goodput is judged against (R87).
+			for _, k := range []string{"ingressFrameLossRatio", "ingressChunkLossRatio", "streamBitrateBps"} {
 				if v, ok := b.relayFacts[k]; ok {
 					s.relayFacts[k] = v
 				} else {
@@ -886,6 +951,14 @@ func (b *broadcastState) aggregateLocked() {
 			}
 			if chunkOK {
 				f["ingressChunkLossRatio"] = chunk
+			}
+		}
+		// R87 (docs/91 SG3): the stream's ingested bitrate over the origin's
+		// recent rounds — the supply a viewer's goodput is judged against.
+		if n := len(origin.ingress); n > 1 {
+			first, last := origin.ingress[0], origin.ingress[n-1]
+			if bps, ok := relayscrape.StreamBitrateBps(first.b, last.b, first.atMs, last.atMs); ok {
+				f["streamBitrateBps"] = bps
 			}
 		}
 		b.pod, b.role = origin.pod, origin.role
@@ -1290,6 +1363,8 @@ var liveNumericFields = []string{
 	// R30 (docs/35 §7): the burst-threshold-loss rule's inputs, live.
 	"stripeLargeLossPct", "stripeSmallLossPct", "stripeLargeChunks",
 	"stripeActive", "stripeNeeded",
+	// R21/R87: the deep buffer and its stripe width (docs/91 SG3).
+	"dvrBufferMs", "dvrStripeWidth",
 	"captureFps", "encoderFps", "sentFps", "encoderQueueDepth",
 	"EncoderFps", "SentFps",
 	// D17: the target, so the live row can show a shortfall too.

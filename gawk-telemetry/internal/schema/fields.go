@@ -115,11 +115,18 @@ var ViewerFields = map[string]Kind{
 	"decodeJitterMs":        KindNumber,
 
 	// R19/R21 delivery.
-	"deliveryMode":          KindString,
-	"dvrBufferMs":           KindNumber,
-	"carrierStreams":        KindNumber,
-	"carrierRecords":        KindNumber,
-	"carrierStreamsAborted": KindNumber,
+	"deliveryMode": KindString,
+	"dvrBufferMs":  KindNumber,
+	// R87 striped deep-buffer delivery (docs/91 §8 SG3): the stripe width
+	// including the primary (1 when a deep-buffer session is unstriped,
+	// absent outside deep mode) and each connection's cumulative video
+	// bytes, primary first — what tells a per-connection ceiling from a full
+	// link on the client side.
+	"dvrStripeWidth":          KindNumber,
+	"connectionBytesReceived": KindNumbers,
+	"carrierStreams":          KindNumber,
+	"carrierRecords":          KindNumber,
+	"carrierStreamsAborted":   KindNumber,
 
 	// R18.
 	"viewerCount": KindNumber,

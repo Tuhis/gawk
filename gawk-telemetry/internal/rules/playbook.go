@@ -53,6 +53,28 @@ const (
 	// A playout offset pinned within this of its clamp is not adapting.
 	playoutClampSlackMs = 50
 	resilientClampMs    = 2000
+	// DEFAULT_DVR_BUFFER_MS (gawk-app config.ts): a deep-buffer viewer's
+	// floor when neither the relay nor the client reports its buffer.
+	dvrDefaultBufferMs = 3000
+	// docs/91 §2: goodput under this share of the relay's ingested bitrate is
+	// a shortfall rather than overhead. The ingress count carries audio,
+	// parity and framing a viewer's videoBytesReceived does not, so the
+	// margin is the funnel's quarter rather than a few percent.
+	undersupplyGoodputRatio = 0.75
+	// docs/91 §9.3 / §11.1: the loss-limited sender. Loss at or above this on
+	// the relay's own counters for the connection is present (§11.1's lossy
+	// rows read 0.16-1.07 %; a clean path reads 0)...
+	pathLossPresentRatio = 0.001
+	// ...while the smoothed RTT stays within 25 % of its minimum. A full link
+	// read 150-220 ms over a 40 ms minimum: it queues before it drops.
+	pathRttInflationMax = 1.25
+	// docs/91 §9.1: K = 2 below 1.5x K = 1 means extra connections buy
+	// nothing; at or above it they do.
+	stripeAggregateGainMin = 1.5
+	// "Each connection's goodput stayed roughly flat": the slowest connection
+	// at the widest stripe keeps this share of one connection's goodput. On
+	// a full link N connections split one total and each falls to ~1/N.
+	stripeConnectionFlatRatio = 0.75
 	// D16: where an intermittent collapse stops being "degraded" and becomes
 	// "broken from a viewer's point of view". Mirrors of the rollup's
 	// DipShareBad/DipCountBad — kept as rule-side constants for the same reason
@@ -101,6 +123,7 @@ func Playbook() []Rule {
 		burstThresholdLoss(),
 		configOrLimits(),
 		resilientUndersupply(),
+		perConnectionCeiling(),
 		carrierQueueOverflow(),
 		viewerCountGap(),
 		dvrRingOutlived(),
@@ -1140,44 +1163,230 @@ func configOrLimits() Rule {
 }
 
 // Row 11: resilient-mode viewer (R19) stutters anyway.
+//
+// docs/91 §2: the clamp is the MODE's own. A deep-buffer (DVR) viewer's
+// playout floor is its DVR buffer — the deep profile's min and max are both
+// that buffer (DVR_PLAYOUT_PROFILE, playout.ts) — so its offset sits at the
+// clamp by design, healthy or not, and the 2000 ms resilient clamp this rule
+// used to compare every mode against fired on every DVR viewer. The pin alone
+// therefore says nothing there; what makes this undersupply is the goodput
+// below the stream bitrate, and the rule now requires it in both modes.
 func resilientUndersupply() Rule {
 	return Rule{
-		ID:       "resilient-undersupply",
-		Scope:    "viewer",
-		Requires: []string{"client.playoutOffsetMs", "text.deliveryMode"},
-		Verdict:  "Sustained undersupply, not loss — the link cannot carry the stream bitrate",
+		ID:    "resilient-undersupply",
+		Scope: "viewer",
+		Requires: []string{
+			"client.playoutOffsetMs", "text.deliveryMode",
+			"client.videoGoodputBps", "relay.streamBitrateBps",
+		},
+		Verdict: "Sustained undersupply, not loss — the link cannot carry the stream bitrate",
 		Action: "Reliable delivery cannot create bandwidth (docs/24). Lower the rung or bitrate. " +
 			"If the mode reads 'reliable requested / datagrams served', the relay predates R19 X2.",
-		Why: "An R19 resilient viewer stuttering anyway. The signature is the playout buffer " +
-			"PINNED at its clamp while cadence stays bad: the mode has spent everything it has. " +
-			"Reliable delivery cannot create bandwidth (docs/24), so this is a bitrate problem " +
-			"wearing a delivery problem's clothes.",
+		Why: "An R19 resilient or R21 deep-buffer viewer stuttering anyway. The signature is the " +
+			"playout buffer PINNED at its mode's clamp while the viewer receives less than the " +
+			"stream carries: the mode has spent everything it has. Reliable delivery cannot create " +
+			"bandwidth (docs/24), so this is a bitrate problem wearing a delivery problem's clothes. " +
+			"A deep-buffer viewer's offset sits at its clamp by design (its floor IS its DVR " +
+			"buffer), so there the goodput alone decides; a pin without the shortfall is a healthy " +
+			"buffer. When the relay's path stats show a loss-limited sender rather than a full " +
+			"link, the verdict names the connection, not the link (per-connection-ceiling).",
 		Thresholds: []Threshold{
 			{Name: "resilientClampMs", Value: resilientClampMs, Unit: "ms", Note: "the resilient mode's playout clamp"},
+			{Name: "dvrDefaultBufferMs", Value: dvrDefaultBufferMs, Unit: "ms", Note: "a deep-buffer viewer's clamp when neither side reports its DVR buffer"},
 			{Name: "playoutClampSlackMs", Value: playoutClampSlackMs, Unit: "ms", Note: "how close to the clamp counts as pinned"},
+			{Name: "undersupplyGoodputRatio", Value: undersupplyGoodputRatio, Unit: "ratio", Note: "goodput below this share of the stream bitrate is undersupply"},
 		},
 		Eval: func(f *Facts) *Finding {
 			mode, _ := f.Text("deliveryMode")
 			if mode != "reliable" && mode != "dvr" {
 				return nil
 			}
+			clamp, clampEv := playoutClamp(f, mode)
 			offset, _ := f.Client("playoutOffsetMs")
-			// The signature is the buffer pinned at its clamp while cadence
-			// stays bad: the mode has spent everything it has.
-			if offset < resilientClampMs-playoutClampSlackMs {
+			if offset < clamp-playoutClampSlackMs {
+				return nil
+			}
+			goodput, stream, short := undersupplied(f)
+			if !short {
 				return nil
 			}
 			ev := []Evidence{
-				{Signal: "playoutOffsetMs", Value: offset, Unit: "ms", From: FromClient, Comparison: "pinned at the resilient clamp"},
+				{Signal: "videoGoodputBps", Value: goodput, Unit: "bps", From: FromClient,
+					Comparison: "video bytes received per second over the window"},
+				{Signal: "streamBitrateBps", Value: stream, Unit: "bps", From: FromRelay,
+					Comparison: "what the relay ingested for this broadcast over the same window"},
+				{Signal: "playoutOffsetMs", Value: offset, Unit: "ms", From: FromClient,
+					Comparison: "at the " + mode + " clamp"},
+				clampEv,
 			}
-			conf := 0.6
+			conf := 0.7
+			if share, ok := f.Client("fpsDipShare"); ok {
+				ev = append(ev, Evidence{Signal: "fpsDipShare", Value: share, Unit: "ratio", From: FromClient,
+					Comparison: "share of the window the frame rate spent under half its baseline"})
+			}
 			if dropped, ok := f.Relay("carrierRecordsDropped"); ok && dropped > 0 {
 				ev = append(ev, Evidence{Signal: "carrierRecordsDropped", Value: dropped, From: FromRelay})
 				conf = 0.85
 			}
-			return &Finding{Severity: SeverityWarn, Confidence: conf, Evidence: ev}
+			if resyncs, ok := f.Relay("dvrResyncs"); ok && resyncs > 0 {
+				ev = append(ev, Evidence{Signal: "dvrResyncs", Value: resyncs, From: FromRelay,
+					Comparison: "the ring outran the viewer"})
+				conf = 0.85
+			}
+			finding := &Finding{Severity: SeverityWarn, Confidence: conf, Evidence: ev}
+			if pathEv, ok := lossLimitedPath(f); ok {
+				finding.Evidence = append(finding.Evidence, pathEv...)
+				finding.Verdict = "Sustained undersupply on this connection, not a full link — the " +
+					"relay's sender is loss-limited below the stream bitrate"
+				finding.Action = "See per-connection-ceiling: on this path one connection carries less " +
+					"than the link does, so a lower rung or Most stable's striping helps where waiting does not."
+			}
+			return finding
 		},
 	}
+}
+
+// playoutClamp is the playout offset's ceiling in the viewer's mode, with
+// the evidence naming where it came from. The deep profile's clamp is
+// max(resilient clamp, DVR buffer) (DVR_PLAYOUT_PROFILE, playout.ts); the
+// buffer is the relay's figure when it reports one (the anchor), else the
+// client's, else the default every client starts from.
+func playoutClamp(f *Facts, mode string) (float64, Evidence) {
+	if mode != "dvr" {
+		return resilientClampMs, Evidence{Signal: "resilientClampMs", Value: resilientClampMs, Unit: "ms",
+			From: FromDerived, Comparison: "the resilient profile's clamp"}
+	}
+	buf, from := float64(dvrDefaultBufferMs), FromDerived
+	if v, ok := f.Relay("dvrBufferMs"); ok && v > 0 {
+		buf, from = v, FromRelay
+	} else if v, ok := f.Client("dvrBufferMs"); ok && v > 0 {
+		buf, from = v, FromClient
+	}
+	return max(buf, resilientClampMs), Evidence{Signal: "dvrBufferMs", Value: buf, Unit: "ms", From: from,
+		Comparison: "the deep-buffer floor, which the offset sits on by design"}
+}
+
+// undersupplied reports the viewer's goodput, the stream's bitrate, and
+// whether the first is short of the second by more than ingest overhead
+// (audio, parity and framing ride the relay's ingress count) can explain.
+func undersupplied(f *Facts) (goodput, stream float64, short bool) {
+	goodput, okG := f.Client("videoGoodputBps")
+	stream, okS := f.Relay("streamBitrateBps")
+	if !okG || !okS || stream <= 0 {
+		return goodput, stream, false
+	}
+	return goodput, stream, goodput < stream*undersupplyGoodputRatio
+}
+
+// lossLimitedPath is docs/91 §9.3's discriminator, read from the relay's own
+// QUIC counters for this viewer's connection: loss present while the
+// smoothed RTT stays near its minimum. A full link fills its queue first, so
+// its RTT climbs 4-5x before it loses anything (§11.1's 8 Mbit/s row);
+// random loss on an unqueued path leaves the RTT where it was and caps a
+// loss-based sender per connection.
+func lossLimitedPath(f *Facts) ([]Evidence, bool) {
+	srtt, okS := f.Relay("pathSrttMs")
+	minRTT, okM := f.Relay("pathMinRttMs")
+	loss, okL := f.Relay("pathLossRatio")
+	if !okS || !okM || !okL || minRTT <= 0 {
+		return nil, false
+	}
+	if loss < pathLossPresentRatio || srtt > minRTT*pathRttInflationMax {
+		return nil, false
+	}
+	return []Evidence{
+		{Signal: "pathLossRatio", Value: loss, Unit: "ratio", From: FromRelay,
+			Comparison: "packets the relay declared lost on this connection"},
+		{Signal: "pathSrttMs", Value: srtt, Unit: "ms", From: FromRelay,
+			Comparison: "smoothed RTT under load, within reach of its minimum: no queue"},
+		{Signal: "pathMinRttMs", Value: minRTT, Unit: "ms", From: FromRelay},
+	}, true
+}
+
+// R87 (docs/91 §8 SG3): one connection carries less than the stream while
+// the link has room for more. Two signatures, either suffices, both behind
+// the same shortfall: (a) the relay's path stats show a loss-limited sender
+// (§9.3), or (b) a striped deep-buffer session's aggregate rose with its
+// width while each connection's own goodput stayed where it was (§11.1's
+// "every added connection brings its own share").
+func perConnectionCeiling() Rule {
+	return Rule{
+		ID:       "per-connection-ceiling",
+		Scope:    "viewer",
+		Requires: []string{"client.videoGoodputBps", "relay.streamBitrateBps"},
+		Verdict:  "A per-connection ceiling, not a full link — one connection carries less than the stream while the path has room for more",
+		Action: "Most stable with Striping on Auto spreads the GOPs over more connections, each needing a " +
+			"share of the bitrate (docs/91). Without striping, a lower rung is the only fix.",
+		Why: "docs/91 §2 and §11.1. quic-go's Cubic on the relay is the sender, and a loss-based " +
+			"sender on a path with random (not queue) loss settles near 1.22·MSS/(RTT·√p) per " +
+			"connection, below the stream on an ordinary mobile link. Two signatures say so. The " +
+			"relay's own path stats show loss while the smoothed RTT stays near its minimum: a " +
+			"full link instead queues first and pushes the RTT up 4-5x before it loses anything. " +
+			"Or, in a striped deep-buffer session, the aggregate rose with the width while each " +
+			"connection kept roughly its single-connection goodput: on a full link the " +
+			"connections would split a fixed total instead.",
+		Thresholds: []Threshold{
+			{Name: "undersupplyGoodputRatio", Value: undersupplyGoodputRatio, Unit: "ratio", Note: "goodput below this share of the stream bitrate is a shortfall"},
+			{Name: "pathLossPresentRatio", Value: pathLossPresentRatio, Unit: "ratio", Note: "relay-side packet loss on the connection at which loss counts as present"},
+			{Name: "pathRttInflationMax", Value: pathRttInflationMax, Unit: "ratio", Note: "smoothed RTT within this multiple of the minimum is an unqueued path (docs/91 §9.3)"},
+			{Name: "stripeAggregateGainMin", Value: stripeAggregateGainMin, Unit: "ratio", Note: "the aggregate at the widest stripe over width 1 that counts as a rise (docs/91 §9.1)"},
+			{Name: "stripeConnectionFlatRatio", Value: stripeConnectionFlatRatio, Unit: "ratio", Note: "the slowest connection at the widest stripe keeps at least this share of width-1 goodput"},
+		},
+		Eval: func(f *Facts) *Finding {
+			goodput, stream, short := undersupplied(f)
+			if !short {
+				return nil
+			}
+			ev := []Evidence{
+				{Signal: "videoGoodputBps", Value: goodput, Unit: "bps", From: FromClient,
+					Comparison: "below the stream bitrate"},
+				{Signal: "streamBitrateBps", Value: stream, Unit: "bps", From: FromRelay},
+			}
+			pathEv, lossLimited := lossLimitedPath(f)
+			stripeEv, scaled := stripeScaled(f)
+			switch {
+			case lossLimited && scaled:
+				return &Finding{Severity: SeverityWarn, Confidence: 0.9,
+					Evidence: append(append(ev, pathEv...), stripeEv...)}
+			case lossLimited:
+				return &Finding{Severity: SeverityWarn, Confidence: 0.8, Evidence: append(ev, pathEv...)}
+			case scaled:
+				return &Finding{
+					Severity: SeverityWarn, Confidence: 0.6, Evidence: append(ev, stripeEv...),
+					Verdict: "A per-connection ceiling — striping added throughput connection by connection " +
+						"and the stream still did not fit",
+					Action: "Striping is working as designed and is not wide enough for this stream on this " +
+						"path: a lower rung fits it, or the width cap is the limit to look at.",
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// stripeScaled is signature (b): over a striped deep-buffer session, the
+// aggregate at the widest stripe rose over width 1 while the slowest
+// connection at that width kept close to the width-1 goodput.
+func stripeScaled(f *Facts) ([]Evidence, bool) {
+	width, okW := f.Client("dvrStripeWidthMax")
+	one, ok1 := f.Client("stripeWidth1GoodputBps")
+	agg, okA := f.Client("stripeMaxWidthGoodputBps")
+	slowest, okC := f.Client("stripeMaxWidthConnMinBps")
+	if !okW || !ok1 || !okA || !okC || width < 2 || one <= 0 {
+		return nil, false
+	}
+	if agg < one*stripeAggregateGainMin || slowest < one*stripeConnectionFlatRatio {
+		return nil, false
+	}
+	return []Evidence{
+		{Signal: "dvrStripeWidthMax", Value: width, Unit: "connections", From: FromClient},
+		{Signal: "stripeWidth1GoodputBps", Value: one, Unit: "bps", From: FromClient,
+			Comparison: "one connection's goodput"},
+		{Signal: "stripeMaxWidthGoodputBps", Value: agg, Unit: "bps", From: FromClient,
+			Comparison: "the aggregate at the widest stripe: it rose with the width"},
+		{Signal: "stripeMaxWidthConnMinBps", Value: slowest, Unit: "bps", From: FromClient,
+			Comparison: "the slowest connection at that width: still about one connection's share"},
+	}, true
 }
 
 // Row 12: resilient viewer freezes to keyframes repeatedly (docs/24 finding 11).

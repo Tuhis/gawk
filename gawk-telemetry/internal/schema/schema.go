@@ -85,6 +85,11 @@ const (
 	// KindAny accepts whatever shape arrives, still subject to the structural
 	// bounds. For fields whose type genuinely varies.
 	KindAny
+	// KindNumbers is an array of finite numbers, at most MaxFieldsPerObject
+	// long — a per-connection counter list (docs/91 SG3). One bad element
+	// drops the whole array: a list whose positions mean connections cannot
+	// lose one and keep its order's meaning.
+	KindNumbers
 )
 
 // Anomalies is the per-session data-quality tally that rides the rollup row
@@ -283,6 +288,20 @@ func sanitizeTyped(v any, kind Kind, depth int, an *Anomalies) (any, fieldStatus
 			return nil, fieldBad
 		}
 		return sanitizeObject(m, nil, depth+1, an), fieldOK
+	case KindNumbers:
+		arr, ok := v.([]any)
+		if !ok || len(arr) > MaxFieldsPerObject {
+			return nil, fieldBad
+		}
+		out := make([]any, len(arr))
+		for i, e := range arr {
+			f, ok := toNumber(e)
+			if !ok {
+				return nil, fieldBad
+			}
+			out[i] = f
+		}
+		return out, fieldOK
 	default:
 		cleaned, ok := sanitizeAny(v, depth, an)
 		if !ok {
@@ -402,6 +421,23 @@ func Number(stats map[string]any, field string) (float64, bool) {
 		return 0, false
 	}
 	return toNumber(v)
+}
+
+// Numbers reads a known number-array field from a sanitized stats object.
+func Numbers(stats map[string]any, field string) ([]float64, bool) {
+	arr, ok := stats[field].([]any)
+	if !ok {
+		return nil, false
+	}
+	out := make([]float64, len(arr))
+	for i, e := range arr {
+		f, ok := toNumber(e)
+		if !ok {
+			return nil, false
+		}
+		out[i] = f
+	}
+	return out, true
 }
 
 // String reads a known-string field from a sanitized stats object.

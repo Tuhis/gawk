@@ -625,7 +625,23 @@ func (f *fixture) maximalViewerFacts(t *testing.T) *rules.Facts {
 	// last, because that is the one the per-signal "last observed value" facts
 	// are read from.
 	samples := make([]rollup.Sample, 0, 13)
+	// R87 (docs/91 SG3): a deep-buffer session striping from width 1 to 2
+	// halfway, so every goodput fact has a 10 s span to stand on.
+	var conns [2]float64
 	for i, s := range stutteringViewerStats(12) {
+		width := 1 + i/6
+		if i > 0 {
+			for j := range width {
+				conns[j] += 750_000
+			}
+		}
+		s["dvrStripeWidth"] = float64(width)
+		s["videoBytesReceived"] = conns[0] + conns[1]
+		arr := make([]any, width)
+		for j := range width {
+			arr[j] = conns[j]
+		}
+		s["connectionBytesReceived"] = arr
 		samples = append(samples, rollup.Sample{TMs: float64(i) * 2000, Stats: s})
 	}
 	samples = append(samples, rollup.Sample{TMs: 24000, Stats: stats})
@@ -1039,14 +1055,18 @@ func maximalRelayLines(t *testing.T, sessionID string) [][]byte {
 		line(map[string]any{"kind": "subscriber", "atMs": 2000, "pod": "pod-a", "role": "origin",
 			"broadcastKey": bkey, "sessionId": sessionID,
 			"subscriber": map[string]any{"dropped": 3, "queueDepth": 2, "keyframesDropped": 1,
-				"carrierQueueOverflow": 1, "carrierRecordsDropped": 2, "dvrResyncs": 1, "dvrLagMs": 800}}),
+				"carrierQueueOverflow": 1, "carrierRecordsDropped": 2, "dvrResyncs": 1, "dvrLagMs": 800,
+				"dvr": true, "dvrBufferMs": 3000,
+				"pathSrttMs": 36.5, "pathMinRttMs": 33, "pathBytesSent": 9_000_000,
+				"pathPacketsSent": 7600, "pathPacketsLost": 84}}),
 		line(map[string]any{"kind": "broadcast", "atMs": 2000, "pod": "pod-a", "role": "origin",
 			"broadcastKey": bkey,
 			"broadcast": map[string]any{"publisherActive": true, "framesRelayed": 100,
 				"ingressFramesLost": 2, "subscribers": 3, "viewersGlobal": 3,
 				"ingressFramesDamaged": 1, "ingressFramesExpected": 90,
 				"ingressChunksLost": 2, "ingressChunksExpected": 800,
-				"datagramsDropped": 4, "bandwidthDroppedDatagrams": 1, "keyframeStreamsIn": 5}}),
+				"datagramsDropped": 4, "bandwidthDroppedDatagrams": 1, "keyframeStreamsIn": 5,
+				"ingressDatagramBytes": 1_000_000, "keyframeBytesIn": 500_000}}),
 		line(map[string]any{"kind": "broadcast", "atMs": 12000, "pod": "pod-a", "role": "origin",
 			"broadcastKey": bkey,
 			"broadcast": map[string]any{"publisherActive": true, "framesRelayed": 400,
@@ -1054,6 +1074,7 @@ func maximalRelayLines(t *testing.T, sessionID string) [][]byte {
 				"ingressFramesDamaged": 4, "ingressFramesExpected": 390,
 				"ingressChunksLost": 9, "ingressChunksExpected": 3500,
 				"datagramsDropped": 6, "bandwidthDroppedDatagrams": 2, "keyframeStreamsIn": 9,
+				"ingressDatagramBytes": 8_000_000, "keyframeBytesIn": 6_000_000,
 				"subscriberDetails": []map[string]any{
 					{"sessionId": sessionID, "dropped": 3},
 					{"sessionId": "cc33cc33cc33cc33cc33cc33", "dropped": 1},

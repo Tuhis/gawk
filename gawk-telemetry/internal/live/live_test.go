@@ -1106,6 +1106,8 @@ func TestLiveEmitsExactlyItsShareOfTheInventory(t *testing.T) {
 		KeyframesSent: 9, KeyframesDropped: 2, Reliable: true, CarrierStreams: 4,
 		CarrierRecords: 100, CarrierRecordsDropped: 3, CarrierQueueOverflow: 1,
 		DVR: true, DVRBufferMs: 2000, DVRLagMs: 900, DVRGopSeq: 12, DVRResyncs: 1,
+		// R87 (docs/91 §4): the connection's QUIC path.
+		PathSRTTMs: 36, PathMinRTTMs: 33, PathBytesSent: 9_000_000, PathPacketsSent: 7600, PathPacketsLost: 84,
 	}
 	// Bools are listed by hand: liveNumericFields cannot carry them, and the
 	// emitter reads each one explicitly.
@@ -1127,6 +1129,8 @@ func TestLiveEmitsExactlyItsShareOfTheInventory(t *testing.T) {
 			c.add(5 * time.Second)
 			full.Dropped += 3
 			full.CarrierQueueOverflow++
+			full.PathPacketsSent += 5000
+			full.PathPacketsLost += 50
 		}
 		// The native broadcaster's cumulative QUIC counters (docs/75 D8).
 		stats["uplinkPacketsSent"] = float64(1000 * (i + 1))
@@ -1140,8 +1144,30 @@ func TestLiveEmitsExactlyItsShareOfTheInventory(t *testing.T) {
 		// The maximal sample stays LAST, because it is the one the
 		// instantaneous gauges are read from.
 		b.Samples = append(dippingSamples(), ingest.Sample{TMs: 24000, Stats: stats})
+		// R87 (docs/91 SG3): a deep-buffer session going from width 1 to 2
+		// mid-batch, so every goodput fact has a span to stand on.
+		var conns [2]float64
+		for j := range 12 {
+			width := 1 + j/6
+			if j > 0 {
+				for k := range width {
+					conns[k] += 750_000
+				}
+			}
+			st := b.Samples[j].Stats
+			st["dvrStripeWidth"] = float64(width)
+			st["videoBytesReceived"] = conns[0] + conns[1]
+			arr := make([]any, width)
+			for k := range width {
+				arr[k] = conns[k]
+			}
+			st["connectionBytesReceived"] = arr
+		}
 		p.ObserveClient(b, "Chrome 152", "Windows", "0.33.2")
-		p.ObserveRelay(relayRound(full))
+		obs := relayObs(full)
+		obs[0].Broadcast.IngressDatagramBytes = uint64(4_000_000 * (i + 1))
+		obs[0].Broadcast.KeyframeBytesIn = uint64(2_000_000 * (i + 1))
+		p.ObserveRelay(round(obs))
 	}
 
 	emitted := map[string]bool{}

@@ -48,6 +48,18 @@ var ProducibleFacts = map[string]string{
 	"relay.dvrResyncs":            both,
 	"relay.dvrLagMs":              both,
 	"relay.peerMedianDropped":     both,
+	// R87 (docs/91 §2, §9.3): the deep buffer the relay granted, and the
+	// viewer connection's own QUIC path — the smoothed RTT (median over the
+	// stored session; as scraped, live), its minimum, and packets lost per
+	// packet sent (the session's lifetime stored; the scrape window live).
+	"relay.dvrBufferMs":   both,
+	"relay.pathSrttMs":    both,
+	"relay.pathMinRttMs":  both,
+	"relay.pathLossRatio": both,
+	// The broadcast's ingested bitrate — the stream a viewer's goodput is
+	// compared against — over the session's span stored, and over the
+	// origin's recent rounds live.
+	"relay.streamBitrateBps": both,
 
 	// --- client, viewer ------------------------------------------------------
 	"client.receivedFps": both,
@@ -59,18 +71,28 @@ var ProducibleFacts = map[string]string{
 	// today, which is why a backgrounded viewer has never produced a false
 	// verdict — the exposure this closes is the permanent rollup row, and any
 	// rule added later.
-	"client.documentHidden":          both,
-	"client.documentHiddenMs":        both,
-	"client.decoderQueueDepth":       both,
-	"client.timeSinceLastFrameMs":    both,
-	"client.timeSinceLastInboundMs":  both,
-	"client.lastKeyframeAgeMs":       live,
-	"client.capToRenderMs":           live,
-	"client.liveEdgeDriftMs":         live,
-	"client.playoutOffsetMs":         both,
-	"client.arrivalJitterMs":         live,
-	"client.reorderGapResyncs":       both,
-	"client.keyframeStreamsReceived": both,
+	"client.documentHidden":         both,
+	"client.documentHiddenMs":       both,
+	"client.decoderQueueDepth":      both,
+	"client.timeSinceLastFrameMs":   both,
+	"client.timeSinceLastInboundMs": both,
+	"client.lastKeyframeAgeMs":      live,
+	"client.capToRenderMs":          live,
+	"client.liveEdgeDriftMs":        live,
+	"client.playoutOffsetMs":        both,
+	"client.dvrBufferMs":            both,
+	"client.dvrStripeWidth":         both,
+	// R87 (docs/91 SG3), rollup.DeriveGoodput over the session (stored) or
+	// the rolling window (live): video goodput, and in a striped deep-buffer
+	// session the aggregate and slowest connection by width.
+	"client.videoGoodputBps":          both,
+	"client.dvrStripeWidthMax":        both,
+	"client.stripeWidth1GoodputBps":   both,
+	"client.stripeMaxWidthGoodputBps": both,
+	"client.stripeMaxWidthConnMinBps": both,
+	"client.arrivalJitterMs":          live,
+	"client.reorderGapResyncs":        both,
+	"client.keyframeStreamsReceived":  both,
 	// R29 forward parity (docs/34 §7.3). Both surfaces: the live dashboard
 	// needs them to explain a lossy viewer in the moment, and the stored
 	// rollup needs them so a past session's verdict can say whether parity
