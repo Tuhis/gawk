@@ -1281,9 +1281,10 @@ func playoutClamp(f *Facts, mode string) (float64, Evidence) {
 //     dvrLiveRateBps come from ONE meter — complete-frame video bytes,
 //     deduplicated, no parity, audio or framing — so both sides count the
 //     same thing. rollup.DeriveGoodput reduces them to dvrSupplyRatio, the
-//     median per-sample ratio over the samples where frames were flowing, so
-//     a paused broadcaster (goodput 0, rate held) and a restart (rate absent)
-//     say nothing about supply. When the pair is present it decides.
+//     share of the live rate delivered over the samples that are not idle:
+//     a starved window (bytes arriving, no frame completing) counts as 0,
+//     while a paused broadcaster (dvrIdle) and a restart (rate absent) say
+//     nothing about supply. When the pair is present it decides.
 //   - Otherwise (reliable mode, older clients): the byte counter's goodput
 //     against a floor under the relay's ingress. The two count different
 //     things, so the comparison is made one-sided rather than equal:
@@ -1299,14 +1300,14 @@ func playoutClamp(f *Facts, mode string) (float64, Evidence) {
 func undersupplied(f *Facts) (ev []Evidence, short bool) {
 	if ratio, ok := f.Client("dvrSupplyRatio"); ok {
 		ev = []Evidence{{Signal: "dvrSupplyRatio", Value: ratio, Unit: "ratio", From: FromClient,
-			Comparison: "median of goodput over the live rate, sample by sample, while frames flowed"}}
+			Comparison: "share of the live rate delivered, starved windows counted, pauses not"}}
 		if g, ok := f.Client("dvrGoodputBps"); ok {
 			ev = append(ev, Evidence{Signal: "dvrGoodputBps", Value: g, Unit: "bps", From: FromClient,
-				Comparison: "video received, frames flowing (median)"})
+				Comparison: "video received, over the same windows (mean)"})
 		}
 		if l, ok := f.Client("dvrLiveRateBps"); ok {
 			ev = append(ev, Evidence{Signal: "dvrLiveRateBps", Value: l, Unit: "bps", From: FromClient,
-				Comparison: "the live rate of the video it is meant to receive, same meter (median)"})
+				Comparison: "the live rate of the video it is meant to receive, same meter (mean)"})
 		}
 		return ev, ratio < undersupplyGoodputRatio
 	}

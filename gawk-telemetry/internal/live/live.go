@@ -465,6 +465,13 @@ func (p *Projection) ObserveClient(a ingest.Accepted, browser, os, appVersion st
 		if hidden, ok := schema.Bool(stats, "documentHidden"); ok {
 			s.clientFacts["documentHidden"] = boolToF(hidden)
 		}
+		// A deep-mode fact (R87): cleared when the sample omits it, like
+		// liveClearedWhenAbsent.
+		if idle, ok := schema.Bool(stats, "dvrIdle"); ok {
+			s.clientFacts["dvrIdle"] = boolToF(idle)
+		} else {
+			delete(s.clientFacts, "dvrIdle")
+		}
 		for _, f := range liveTextFields {
 			if v, ok := schema.String(stats, f); ok {
 				s.textFacts[f] = v

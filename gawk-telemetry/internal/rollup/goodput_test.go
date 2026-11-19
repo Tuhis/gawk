@@ -199,3 +199,57 @@ func TestDeriveSupplyRatio(t *testing.T) {
 		})
 	}
 }
+
+// Review round 3: a starved window (bytes arriving, no complete frame) reads
+// goodput 0 and is the viewer's real supply; only a PAUSE (dvrIdle) says
+// nothing. An older client without dvrIdle keeps the old exclusion.
+func TestDeriveSupplyRatioCountsStarvedWindows(t *testing.T) {
+	series := func(n int, idle func(i int) any, goodput func(i int) float64) []Sample {
+		out := make([]Sample, n)
+		for i := range out {
+			st := map[string]any{"dvrGoodputBps": goodput(i), "dvrLiveRateBps": 10e6}
+			if v := idle(i); v != nil {
+				st["dvrIdle"] = v
+			}
+			out[i] = Sample{TMs: float64(i * 2000), Stats: st}
+		}
+		return out
+	}
+	alternating := func(i int) float64 {
+		if i%2 == 0 {
+			return 0 // a keyframe still crawling in
+		}
+		return 8e6
+	}
+	cases := []struct {
+		name    string
+		samples []Sample
+		ratio   float64 // 0: absent
+	}{
+		{"starved windows count", series(20, func(int) any { return false }, alternating), 0.4},
+		// Odd count: a median would land on 0 or 0.8; the share does not.
+		{"starved windows count, odd count", series(21, func(int) any { return false }, alternating), 80e6 / 210e6},
+		{"a pause does not", series(40, func(i int) any { return i >= 10 }, func(i int) float64 {
+			if i >= 10 {
+				return 0
+			}
+			return 9.8e6
+		}), 0.98},
+		{"older client: zero windows excluded as before", series(20, func(int) any { return nil }, alternating), 0.8},
+		{"all paused", series(20, func(int) any { return true }, func(int) float64 { return 0 }), 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := DeriveGoodput(c.samples).Facts()["dvrSupplyRatio"]
+			if c.ratio == 0 {
+				if ok {
+					t.Errorf("dvrSupplyRatio = %v, want absent", got)
+				}
+				return
+			}
+			if !ok || !near(got, c.ratio) {
+				t.Errorf("dvrSupplyRatio = %v (%v), want %v", got, ok, c.ratio)
+			}
+		})
+	}
+}

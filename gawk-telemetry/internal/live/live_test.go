@@ -1111,7 +1111,7 @@ func TestLiveEmitsExactlyItsShareOfTheInventory(t *testing.T) {
 	}
 	// Bools are listed by hand: liveNumericFields cannot carry them, and the
 	// emitter reads each one explicitly.
-	stats := map[string]any{"isHardwareAccelerated": true, "documentHidden": true}
+	stats := map[string]any{"isHardwareAccelerated": true, "documentHidden": true, "dvrIdle": false}
 	for _, f := range liveNumericFields {
 		stats[f] = 1.0
 	}

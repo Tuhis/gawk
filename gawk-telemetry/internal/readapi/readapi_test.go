@@ -603,7 +603,7 @@ func (f *fixture) maximalViewerFacts(t *testing.T) *rules.Facts {
 	t.Helper()
 	// Bools are listed by hand: factClientFields cannot carry them, and the
 	// emitter reads each one explicitly.
-	stats := map[string]any{"isHardwareAccelerated": true, "documentHidden": true,
+	stats := map[string]any{"isHardwareAccelerated": true, "documentHidden": true, "dvrIdle": false,
 		"audioBuffer": map[string]any{"overflowDrops": 1.0, "gapsConcealed": 2.0},
 		// R29 finding 3: the receive-buffer verdict is nested, like audioBuffer.
 		"datagramBuffer": map[string]any{

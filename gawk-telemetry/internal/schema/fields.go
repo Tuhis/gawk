@@ -130,7 +130,10 @@ var ViewerFields = map[string]Kind{
 	"dvrLiveRateBps": KindNumber,
 	// Same meter, the last 2 s: what this viewer actually received. 0 during
 	// a broadcaster pause.
-	"dvrGoodputBps":         KindNumber,
+	"dvrGoodputBps": KindNumber,
+	// True when the last window had no video bytes on any connection (the
+	// broadcaster paused); false otherwise, starvation included.
+	"dvrIdle":               KindBool,
 	"carrierStreams":        KindNumber,
 	"carrierRecords":        KindNumber,
 	"carrierStreamsAborted": KindNumber,

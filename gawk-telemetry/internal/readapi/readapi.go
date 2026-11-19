@@ -643,6 +643,9 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 		if hidden, ok := schema.Bool(last, "documentHidden"); ok {
 			f.SetClient("documentHidden", boolF(hidden))
 		}
+		if idle, ok := schema.Bool(last, "dvrIdle"); ok {
+			f.SetClient("dvrIdle", boolF(idle))
+		}
 		if hw, ok := schema.Bool(last, "isHardwareAccelerated"); ok {
 			f.SetClient("isHardwareAccelerated", boolF(hw))
 		}

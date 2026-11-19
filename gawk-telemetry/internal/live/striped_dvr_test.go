@@ -200,3 +200,20 @@ func TestLiveDeepModeClientFactsClearWhenOmitted(t *testing.T) {
 		}
 	}
 }
+
+// Review round 3: dvrIdle is a deep-mode fact like the others — read off the
+// latest sample, cleared when a sample omits it.
+func TestLiveDvrIdleClearsWhenOmitted(t *testing.T) {
+	const sid = "f6f6f6f6f6f6f6f6f6f6f6f6"
+	p, _ := newProj()
+	b := batch(sid, "viewer", map[string]any{"receivedFps": 60.0, "deliveryMode": "dvr", "dvrIdle": true})
+	p.ObserveClient(b, "Firefox 161", "Windows", "0.40.0")
+	if v := findSession(p.Snapshot(), sid).Metrics["dvrIdle"]; v != 1 {
+		t.Fatalf("dvrIdle = %v, want 1", v)
+	}
+	p.ObserveClient(batch(sid, "viewer", map[string]any{"receivedFps": 60.0, "deliveryMode": "reliable"}),
+		"Firefox 161", "Windows", "0.40.0")
+	if v, ok := findSession(p.Snapshot(), sid).Metrics["dvrIdle"]; ok {
+		t.Errorf("dvrIdle = %v left standing after a sample without it", v)
+	}
+}

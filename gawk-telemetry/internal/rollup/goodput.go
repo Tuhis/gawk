@@ -1,10 +1,6 @@
 package rollup
 
-import (
-	"sort"
-
-	"github.com/Tuhis/gawk/gawk-telemetry/internal/schema"
-)
+import "github.com/Tuhis/gawk/gawk-telemetry/internal/schema"
 
 // Goodput derivation (R87, docs/91 §8 SG3): what a viewer actually received
 // per second, overall and per connection by stripe width. One function for
@@ -16,7 +12,7 @@ import (
 // keeps only these.
 var GoodputFields = []string{
 	"videoBytesReceived", "dvrStripeWidth", "connectionBytesReceived",
-	"dvrGoodputBps", "dvrLiveRateBps",
+	"dvrGoodputBps", "dvrLiveRateBps", "dvrIdle",
 }
 
 // GoodputFactNames are every fact Goodput.Facts can emit, so a producer can
@@ -50,18 +46,13 @@ type Goodput struct {
 	// at WidthMax, and MaxWidthConnMinBps its slowest connection's rate.
 	Width1Bps, MaxWidthBps, MaxWidthConnMinBps float64
 	StripeOK                                   bool
-	// The deep-mode client's own pair (review round 2): dvrGoodputBps and
-	// dvrLiveRateBps come from one meter (complete-frame video bytes,
-	// deduplicated, no parity, audio or framing), so they are compared
-	// sample by sample. Only samples where frames were FLOWING count:
-	// dvrGoodputBps > 0, read off the same meter as the rate it is compared
-	// with. A paused broadcaster reads 0 there while dvrLiveRateBps holds its
-	// last value, and a sample with no rate (a restart, not yet re-measured)
-	// has nothing to compare against. A viewer receiving nothing at all is
-	// not judged here either: no frame at all is a stall, and the stall rules
-	// own it. SupplyRatio is the median per-sample ratio, so one keyframe
-	// landing in a 2 s window does not swing it; the two rates are the
-	// medians over the same samples, for evidence.
+	// The deep-mode client's own pair: dvrGoodputBps and dvrLiveRateBps come
+	// from one meter (complete-frame video bytes, deduplicated, no parity,
+	// audio or framing). SupplyRatio is the share of the live rate delivered
+	// over the samples that say something about supply — not idle (a pause),
+	// with a rate to compare against (a restart has none until re-measured);
+	// see deriveSupply. The two rates are their means over the same samples,
+	// for evidence.
 	SupplyRatio, FlowGoodputBps, FlowLiveRateBps float64
 	SupplyOK                                     bool
 }
@@ -149,33 +140,45 @@ func DeriveGoodput(samples []Sample) Goodput {
 	return g
 }
 
+// deriveSupply compares the pair over the samples that say something about
+// supply (review round 3). The client's dvrIdle separates the two kinds of
+// zero goodput: idle (no video bytes on any connection — the broadcaster
+// paused) says nothing and is skipped; not idle with goodput 0 is a STARVED
+// window, bytes arriving and no frame completing, and is the viewer's real
+// supply, so it counts. An older client sends no dvrIdle and cannot tell the
+// two apart, so there every zero is skipped as before — which overstates a
+// starving viewer's supply, the price of not mistaking a pause for one.
+//
+// The supply is the share Σgoodput / Σlive over the counted samples, not a
+// median of per-sample ratios: starvation alternates whole windows of 0 with
+// windows of frames, a bimodal series whose median lands on either mode by
+// sample count, while the share is the fraction actually delivered.
 func (g *Goodput) deriveSupply(samples []Sample) {
-	var ratios, goodputs, lives []float64
+	var sumGoodput, sumLive float64
+	n := 0
 	for _, s := range samples {
 		goodput, okG := schema.Number(s.Stats, "dvrGoodputBps")
 		live, okL := schema.Number(s.Stats, "dvrLiveRateBps")
-		if !okG || !okL || goodput <= 0 || live <= 0 {
+		if !okG || !okL || live <= 0 || goodput < 0 {
 			continue
 		}
-		ratios = append(ratios, goodput/live)
-		goodputs = append(goodputs, goodput)
-		lives = append(lives, live)
+		if idle, ok := schema.Bool(s.Stats, "dvrIdle"); ok {
+			if idle {
+				continue
+			}
+		} else if goodput == 0 {
+			continue
+		}
+		sumGoodput += goodput
+		sumLive += live
+		n++
 	}
-	if len(ratios) < MinSupplySamples {
+	if n < MinSupplySamples {
 		return
 	}
-	g.SupplyRatio, g.FlowGoodputBps, g.FlowLiveRateBps = medianOf(ratios), medianOf(goodputs), medianOf(lives)
+	g.SupplyRatio = sumGoodput / sumLive
+	g.FlowGoodputBps, g.FlowLiveRateBps = sumGoodput/float64(n), sumLive/float64(n)
 	g.SupplyOK = true
-}
-
-func medianOf(v []float64) float64 {
-	s := append([]float64(nil), v...)
-	sort.Float64s(s)
-	n := len(s)
-	if n%2 == 1 {
-		return s[n/2]
-	}
-	return (s[n/2-1] + s[n/2]) / 2
 }
 
 // Facts renders the rates under their fact names, absent parts omitted.

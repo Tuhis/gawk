@@ -310,6 +310,7 @@ sessions.stats.duplicateChunks number
 sessions.stats.duplicateConfigs number
 sessions.stats.dvrBufferMs number
 sessions.stats.dvrGoodputBps number
+sessions.stats.dvrIdle boolean
 sessions.stats.dvrLiveRateBps number
 sessions.stats.dvrStripeWidth number
 sessions.stats.encodedFrames number

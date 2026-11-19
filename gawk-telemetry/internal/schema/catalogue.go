@@ -298,6 +298,7 @@ var fieldMeta = map[string]meta{
 	"acceleration":     {SemText, "", "Hardware-acceleration preference the encoder was configured with."},
 
 	// --- bools --------------------------------------------------------------
+	"dvrIdle":                   {SemBool, "", "Whether this deep-buffer viewer's last window carried no video bytes on any connection — a broadcaster pause, not starvation (R87)."},
 	"documentHidden":            {SemBool, "", "Whether the tab was in the background at this sample. renderedFps means nothing without it."},
 	"isHardwareAccelerated":     {SemBool, "", "Whether the decoder reported itself hardware-accelerated."},
 	"stripeCapable":             {SemBool, "", "Whether this client can stripe at all."},

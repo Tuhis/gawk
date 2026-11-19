@@ -204,3 +204,34 @@ func TestStoredDVRSessionWithAPauseIsNotUndersupply(t *testing.T) {
 		t.Error("a real shortfall while frames flowed did not fire")
 	}
 }
+
+// Review round 3 on the stored path: a starving deep-buffer viewer whose
+// every other window completed no frame fires; the same series marked idle
+// (a pause) does not.
+func TestStoredStarvedDVRSessionFires(t *testing.T) {
+	f := newFixture(t)
+	for _, c := range []struct {
+		name  string
+		idle  bool
+		fires bool
+	}{
+		{"starved", false, true},
+		{"paused", true, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, in, lines := dvrSessionLive(t, 8e6, 10e6, 10.7e6, 41, 40, 0)
+			for i := range in.Samples {
+				st := in.Samples[i].Stats
+				st["dvrIdle"] = false
+				if i%2 == 0 {
+					st["dvrGoodputBps"] = 0.0
+					st["dvrIdle"] = c.idle
+				}
+			}
+			rep := f.api.DiagnoseRow(rollup.Compute(in), in, lines)
+			if got := findOne(rep, "resilient-undersupply") != nil; got != c.fires {
+				t.Errorf("resilient-undersupply fired = %v, want %v", got, c.fires)
+			}
+		})
+	}
+}
