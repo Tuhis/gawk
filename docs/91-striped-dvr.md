@@ -549,13 +549,14 @@ paths as in §11.1; runs of 300 s unless noted.
 | 1 % loss | Auto | review round 0 | 13.6 s | ×2 → ×3 → back to ×2, held | 16 (14 after engaging) | 10.45 Mbit/s, 29 fps |
 | 1 % loss | Auto | review round 0 | 13.7 s | ×2 → ×3 → ×4 | 8 (5 after engaging) | 11.1 Mbit/s, 30 fps |
 | 1 % loss | Auto | after review round 2 | 13.1 s | ×2 at 13 s → ×3 at 27 s → ×4 at 41–54 s | 6: 5 in the first 60 s while growing, **1 in the 245 s at ×4** | 29 fps |
+| 1 % loss | Auto | after review round 3 | 13.6 s | ×2 → ×3 → ×4 at 41 s; ×4 judged no help, back to ×3 at 55 s, held | 8: 5 in the first 55 s while growing, **3 in the 245 s at ×3** | 27 fps; every superseded leg closed by the relay's drain, none died |
 | 8 Mbit/s link | Off, 180 s | review round 0 | – | ×1 | 22 | – |
 | 8 Mbit/s link | Auto, 180 s | review round 0 | 13.2 s | ×2, back to ×1 at 27 s, held | 25 | – |
 | clean | Auto, 120 s | review round 0 | – | ×1, no leg dialed | 0 | 30 fps |
 
 **What it shows:**
 - On the loss-limited path, Auto engages within about 13 s and grows to
-  ×4. Resyncs fall from about 10 a minute to about one every 4 minutes,
+  ×3 or ×4 (run to run, the ×4 step sits at the noise of the 20 % rule). Resyncs fall from about 10 a minute to about one every 4 minutes,
   and the frame rate doubles.
 - On a full link Auto tries ×2, sees no gain, and returns to ×1 and holds
   (G4).
@@ -611,17 +612,26 @@ broadcast.
   drain sees the old state or the new one, never a mix of the two.
 - **D11, the drain signal (added in review).** A StripeState with
   Striped=false on a deep-buffer *leg's* own session drains that leg. Its
-  drain point is the newest GOP in its pod's ring at that moment. It keeps
-  serving its share up to that point, never a newer GOP, and then the relay
-  closes it with code 0 ("stripe leg drained"). A resync past the point ends
-  the drain too. Repeats don't move the point, and `/statusz` shows
-  `stripeDraining`. Without this, a superseded leg either lost its backlog
+  drain point is the newest GOP in its pod's ring at that moment. On a ring
+  that never held a GOP, the drain owes nothing. The leg keeps serving its
+  share up to the point and never serves a newer GOP. Once done, it finishes
+  its carrier normally and *lingers*: 4 × the connection's smoothed RTT,
+  between 1 s and 5 s. The relay can't tell when stream data has been
+  acknowledged, and closing at once would cut off the tail of the last GOP
+  the drain exists to deliver. Then it closes with the new close code
+  **4020 `CloseCodeStripeLegDrained`** (non-terminal, leg-only, mirrored in
+  `wire.ts` and `crates/wire`). Other rules:
+  - A draining leg that falls behind its buffer ends its drain without a
+    resync, so a superseded leg's abandoned duplicates never count as
+    viewer loss in `dvrResyncs`.
+  - Repeated drains don't move the point.
+  - `/statusz` shows `stripeDraining`. Without this, a superseded leg either lost its backlog
   (closed at once) or kept taking new GOPs at its old width (left open),
   spending the short link on duplicates while the new width was being
   judged.
 - **Resync log.** Each DVR resync logs at Debug which connection fell
-  behind (leg, member), why (off the ring's tail, or lag over the buffer)
-  and by how much.
+  behind: subscriber key, leg and member, why (off the ring's tail, or lag
+  over the buffer), and the lag at that moment.
 - **Counters.** `dvrSubscribers` and `reliableSubscribers` count viewers,
   so they exclude legs. `dvrResyncs` includes leg resyncs, and
   `gawk_broadcast_stripe_legs` counts deep-buffer legs.
@@ -656,7 +666,9 @@ broadcast.
     pause: it neither engages, sets a baseline nor judges a step. A window
     with bytes but no complete frame is starvation, and counts as goodput 0.
     A pause restarts a step's evaluation, but only up to 60 s past when it
-    would first have ended; after that the step is judged on what it has.
+    would first have ended. After that the step is judged on what it has,
+    and never on fewer than 10 frame-bearing samples, so a long pause
+    cannot condemn a step.
   - The live rate is bytes over media time across runs of consecutive
     frames between keyframes. A skipped GOP cannot drag the live rate down
     to the goodput.
@@ -675,11 +687,18 @@ broadcast.
     target differs. A request at the current width cancels a transition
     still dialing.
   - *On* never drops below ×2.
-- **D11, as built.** A superseded deep-buffer leg (width change or
-  disengage) gets the drain signal three times at 100 ms intervals, then
-  once a second as its heartbeat, on its own timer. It is read until the
-  relay closes it, with the buffer plus 1 s as the backstop. Its close is
-  not a leg death. A leg death still drops the whole set at once.
+- **D11, as built.**
+  - **Order of signals.** On a width change, the primary's new StripeState
+    goes out as a burst (0, 100 and 200 ms). Only after that does the drain
+    go to the superseded legs (from 250 ms, then +100 and +200, then 1 Hz
+    as their heartbeat on their own timer). So the primary switches width
+    before the old legs stop taking new GOPs. A lone, lost StripeState could
+    otherwise leave GOPs that no connection serves.
+  - **End of a drain.** A draining leg is read until its streams end, even
+    if its session's close arrives first, with the buffer plus 1 s as the
+    backstop. Its close (4020) is not a leg death.
+  - **Leg death.** The primary still unstripes at once and the dead leg is
+    closed, but the surviving legs drain instead of being dropped.
 - **The resync signal is the client's own hole-skip count.** In striped
   mode it also counts GOPs that nobody served during a width transition.
 - **Stats.**
@@ -690,7 +709,9 @@ broadcast.
   - Also added: `stripeDvrCapable`, `dvrStripePhase` (`held` means a step
     was undone), `dvrDuplicateFrames`, `dvrLateFramesDropped`, and from the
     policy's own meter `dvrLiveRateBps` and `dvrGoodputBps` (complete-frame
-    video, deduplicated, no parity or audio; goodput over 2 s).
+    video, deduplicated, no parity or audio; goodput over 2 s), and
+    `dvrIdle` (no video bytes on any connection in that window: a pause,
+    not starvation).
 - **The undeliverable-video watch** counts only the primary's keyframes. The
   notice is about the primary, and leg keyframes arrive out of order.
 - **Known risk.** A broadcaster restart could be read as a late GOP and
@@ -707,11 +728,14 @@ broadcast.
   never checked. When the path is loss-limited, its verdict says "on this
   connection, not a full link".
 - **The supply shortfall** (both rules), as revised in review:
-  - *Deep mode:* `dvrSupplyRatio` is the median of `dvrGoodputBps /
-    dvrLiveRateBps` over samples where frames flow (`dvrGoodputBps > 0`),
-    at least 5 of them. A paused broadcaster, or a restart before the rate
-    is re-measured, drops out. A shortfall is a ratio below 0.75. Both sides
-    come from one client meter, so they count the same bytes.
+  - *Deep mode:* `dvrSupplyRatio` is Σ`dvrGoodputBps` / Σ`dvrLiveRateBps`
+    over the samples that count: not idle (`dvrIdle` false, so starved
+    windows count as 0) and with a live rate, at least 5 of them. A paused
+    broadcaster, or a restart before the rate is re-measured, drops out. A
+    shortfall is a ratio below 0.75. Both sides come from one client meter,
+    so they count the same bytes. A sum, not a median: once starved windows
+    count, the series is bimodal and its median jumps between the modes.
+    Older clients without `dvrIdle` skip zero-goodput samples instead.
   - *Otherwise:* goodput from `videoBytesReceived` against a video floor.
     The floor is the relay's ingress bitrate minus a 256 kbit/s audio
     allowance and the maximum parity per frame. The bitrate and frame rate
