@@ -72,7 +72,7 @@ script for what counts as a dependency here and why.
 | `arrayref` | 0.3.9 | `BSD-2-Clause` | Copyright (c) 2015 David Roundy <roundyd@physics.oregonstate.edu> |
 | `arrayvec` | 0.7.8 | `MIT OR Apache-2.0` | Copyright (c) Ulrik Sverdrup "bluss" 2015-2023 |
 | `as-raw-xcb-connection` | 1.0.1 | `MIT OR Apache-2.0` | Copyright 2019 as-raw-xcb-connection Contributers |
-| `ashpd` | 0.14.0 | `MIT` | Copyright (c) 2020 Bilal Elmoussaoui |
+| `ashpd` | 0.14.1 | `MIT` | Copyright (c) 2020 Bilal Elmoussaoui |
 | `asn1-rs` | 0.7.2 | `MIT OR Apache-2.0` | Copyright (c) 2017 Pierre Chifflier |
 | `async-broadcast` | 0.7.2 | `MIT OR Apache-2.0` | Copyright 2020 Yoshua Wuyts<br>Copyright (c) 2020 Yoshua Wuyts |
 | `async-channel` | 2.5.0 | `Apache-2.0 OR MIT` | — |
