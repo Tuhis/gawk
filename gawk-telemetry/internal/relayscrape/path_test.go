@@ -78,7 +78,8 @@ func TestPathLossRatioAndStreamBitrate(t *testing.T) {
 		want      float64
 		ok        bool
 	}{
-		{"lifetime", Subscriber{PathPacketsSent: 1000, PathPacketsLost: 10}, Subscriber{}, 0.01, true},
+		{"lifetime", Subscriber{PathPacketsSent: 2000, PathPacketsLost: 20}, Subscriber{}, 0.01, true},
+		{"too few packets", Subscriber{PathPacketsSent: 1100, PathPacketsLost: 2}, Subscriber{PathPacketsSent: 1000}, 0, false},
 		{"window", Subscriber{PathPacketsSent: 3000, PathPacketsLost: 25}, Subscriber{PathPacketsSent: 1000, PathPacketsLost: 5}, 0.01, true},
 		{"nothing sent", Subscriber{PathPacketsSent: 1000}, Subscriber{PathPacketsSent: 1000}, 0, false},
 		{"not reported", Subscriber{}, Subscriber{}, 0, false},

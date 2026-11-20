@@ -107,11 +107,17 @@ func TestLivePathFactsClearWhenTheScrapeNoLongerSupportsThem(t *testing.T) {
 		}
 	}
 
-	// Nothing sent in the window: no loss measurement, so no loss fact.
+	// Nothing sent since: the loss window reaches back to what was, but no
+	// further than pathLossMaxWindow; after that there is no measurement.
 	clk.add(5 * time.Second)
 	p.ObserveRelay(relayRound(sub))
+	if _, ok := relayFact(p, sid, "pathLossRatio"); !ok {
+		t.Error("pathLossRatio absent within the loss window")
+	}
+	clk.add(pathLossMaxWindow)
+	p.ObserveRelay(relayRound(sub))
 	if v, ok := relayFact(p, sid, "pathLossRatio"); ok {
-		t.Errorf("pathLossRatio = %v from a window with nothing sent", v)
+		t.Errorf("pathLossRatio = %v with nothing sent for the whole loss window", v)
 	}
 
 	// The relay stops reporting the path, and the viewer left deep mode.
@@ -215,5 +221,33 @@ func TestLiveDvrIdleClearsWhenOmitted(t *testing.T) {
 		"Firefox 161", "Windows", "0.40.0")
 	if v, ok := findSession(p.Snapshot(), sid).Metrics["dvrIdle"]; ok {
 		t.Errorf("dvrIdle = %v left standing after a sample without it", v)
+	}
+}
+
+// PR review round 1: a near-idle connection sends a few keepalives per
+// scrape, and one lost packet among them is not a loss rate. The window
+// grows until it holds relayscrape.PathLossMinPackets.
+func TestLivePathLossNeedsEnoughPackets(t *testing.T) {
+	const sid = "f5f5f5f5f5f5f5f5f5f5f5f5"
+	p, clk := newProj()
+	sub := relayscrape.Subscriber{SessionID: sid, DVR: true, DVRBufferMs: 3000,
+		PathSRTTMs: 34, PathMinRTTMs: 33, PathPacketsSent: 50_000, PathPacketsLost: 0}
+	p.ObserveRelay(relayRound(sub))
+	// 40 packets, one lost: 2.5 % on its face.
+	clk.add(5 * time.Second)
+	sub.PathPacketsSent, sub.PathPacketsLost = 50_040, 1
+	p.ObserveRelay(relayRound(sub))
+	if v, ok := relayFact(p, sid, "pathLossRatio"); ok {
+		t.Errorf("pathLossRatio = %v over 40 packets", v)
+	}
+	// A slow stream: 1000 packets a scrape, so two scrapes make a window.
+	for i := range 2 {
+		clk.add(5 * time.Second)
+		sub.PathPacketsSent += 1000
+		sub.PathPacketsLost += uint64(3 * i)
+		p.ObserveRelay(relayRound(sub))
+		if v, ok := relayFact(p, sid, "pathLossRatio"); ok != (i == 1) || (ok && v != 3.0/2000) {
+			t.Errorf("scrape %d: pathLossRatio = %v (%v), want 3/2000 once two scrapes hold enough packets", i, v, ok)
+		}
 	}
 }

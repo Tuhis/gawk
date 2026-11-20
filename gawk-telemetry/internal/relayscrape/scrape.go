@@ -207,12 +207,19 @@ type Subscriber struct {
 	PathPacketsLost uint64  `json:"pathPacketsLost,omitempty"`
 }
 
+// PathLossMinPackets is the fewest packets sent a loss ratio is reported
+// over. Loss counts as present at 0.1 % (docs/91 §9.3), so fewer packets
+// make one lost packet — a keepalive in a near-idle window — read as several
+// percent (PR review round 1).
+const PathLossMinPackets = 2000
+
 // PathLossRatio is the connection's packets lost per packet sent, over the
 // window prev → s (pass a zero prev for the connection's lifetime). ok is
-// false when nothing was sent in the window, the relay does not report the
-// counters, or a counter went backwards (a different connection).
+// false when fewer than PathLossMinPackets were sent in the window, the relay
+// does not report the counters, or a counter went backwards (a different
+// connection).
 func (s Subscriber) PathLossRatio(prev Subscriber) (float64, bool) {
-	if s.PathPacketsSent <= prev.PathPacketsSent || s.PathPacketsLost < prev.PathPacketsLost {
+	if s.PathPacketsSent < prev.PathPacketsSent+PathLossMinPackets || s.PathPacketsLost < prev.PathPacketsLost {
 		return 0, false
 	}
 	return float64(s.PathPacketsLost-prev.PathPacketsLost) / float64(s.PathPacketsSent-prev.PathPacketsSent), true

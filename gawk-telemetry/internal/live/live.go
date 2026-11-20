@@ -195,6 +195,10 @@ type sessionState struct {
 	// can only ratchet upward.
 	prevSub     relayscrape.Subscriber
 	havePrevSub bool
+	// lossHist is this connection's recent scrapes, oldest first, for a loss
+	// window long enough to count (relayscrape.PathLossMinPackets) but no
+	// older than pathLossMaxWindow.
+	lossHist []lossPoint
 	// stripeOwner is the relay's owner key on this viewer's primary
 	// subscriber entry as last scraped: what its stripe legs are joined by
 	// (R36 TU5). Per connection attempt, so it changes on a reconnect.
@@ -681,10 +685,8 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 			if sub.PathMinRTTMs > 0 {
 				s.relayFacts["pathMinRttMs"] = sub.PathMinRTTMs
 			}
-			if have {
-				if loss, ok := sub.PathLossRatio(prev); ok {
-					s.relayFacts["pathLossRatio"] = loss
-				}
+			if loss, ok := s.pathLoss(*sub, now); ok {
+				s.relayFacts["pathLossRatio"] = loss
 			}
 			s.prevSub, s.havePrevSub = *sub, true
 		}
@@ -1416,4 +1418,38 @@ var liveTextFields = []string{
 	// at a broadcaster delivering half its target wants to know whether it is
 	// encoding in software before they look anywhere else.
 	"acceleration", "codec",
+}
+
+// pathLossMaxWindow bounds how far back the loss window reaches: a slow
+// stream's window grows until it holds enough packets, and a connection that
+// went quiet stops reporting the loss it had once this has passed.
+const pathLossMaxWindow = 60 * time.Second
+
+type lossPoint struct {
+	at  time.Time
+	sub relayscrape.Subscriber
+}
+
+// pathLoss is the connection's loss over the shortest recent window that
+// sent at least relayscrape.PathLossMinPackets: one ~5 s scrape for a stream
+// of a few Mbit/s, longer for a slow or near-idle one, and nothing when even
+// pathLossMaxWindow did not send enough. Counters that went backwards are a
+// different connection, so the history starts over.
+func (s *sessionState) pathLoss(sub relayscrape.Subscriber, now time.Time) (float64, bool) {
+	if n := len(s.lossHist); n > 0 {
+		last := s.lossHist[n-1].sub
+		if sub.PathPacketsSent < last.PathPacketsSent || sub.PathPacketsLost < last.PathPacketsLost {
+			s.lossHist = nil
+		}
+	}
+	for len(s.lossHist) > 0 && now.Sub(s.lossHist[0].at) > pathLossMaxWindow {
+		s.lossHist = s.lossHist[1:]
+	}
+	var loss float64
+	var ok bool
+	for i := len(s.lossHist) - 1; i >= 0 && !ok; i-- {
+		loss, ok = sub.PathLossRatio(s.lossHist[i].sub)
+	}
+	s.lossHist = append(s.lossHist, lossPoint{at: now, sub: sub})
+	return loss, ok
 }
