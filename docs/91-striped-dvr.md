@@ -568,11 +568,50 @@ paths as in §11.1; runs of 300 s unless noted.
 **SG4's first criterion, "0 resyncs over 10 minutes with Auto", is not
 met.** Each remaining resync is logged (§12, resync log) as `off_tail` at
 a lag of 2.5–3.0 s. The connection's GOP left the ring, whose window
-(`-dvr-window`, 3 s) equals the viewer's buffer (3,000 ms), so a cursor
-gets no slack between the two. That is docs/26's sizing, not striping, and
-it is left open here: a window a GOP or two longer than the largest buffer
-viewers ask for is the likely remedy, and it costs relay memory per
-broadcast.
+(`-dvr-window`, 3 s) equals the viewer's buffer (3,000 ms).
+*Revised 2026-11-20:* the remedy this paragraph first proposed, a longer
+window, moves those resyncs instead of removing them (§11.3).
+
+### 11.3 Ring window and viewer buffer, 2026-11-20
+
+Same path (1 % loss, 40 ms) and Auto, 300 s each, with the resync log on.
+
+| Run | Window / buffer | Width it settled on | Relay resyncs (after engaging) | How each resync was cut |
+|---|---|---|---|---|
+| §11.2, after round 3 | 3 s / 3,000 ms | ×3, held | 8 (4) | all `off_tail`, lag 2.5–3.0 s |
+| window + 1 s | 4 s / 3,000 ms | ×2, held | 15 (13) | all by the lag check, lag 3.0–3.5 s |
+| window + 3 s, buffer 5 s requested | 6 s / *3,000 ms* | ×2, held | 15 (12) | all by the lag check, lag 3.0–3.5 s |
+
+**What it shows:**
+1. **The ring cut GOPs too early.** It evicted a GOP once the GOP's *start*
+   left the window, while lag is measured between GOP starts. So a GOP whose
+   first frame was due, but whose remaining half-second a viewer's buffer
+   still covered, was dropped from under its cursor. Fixed: a GOP now leaves
+   only once its successor's start has left the window, so the ring holds
+   the window plus at most one GOP, whatever the GOP length. That is the
+   same effect as a window one GOP longer than the buffer, without a
+   setting to keep in step with every broadcaster's GOP.
+2. **The fix moves resyncs; it does not remove them.** With slack, every
+   resync came from the lag check instead, at 3.0–3.5 s. A connection that
+   falls behind keeps falling behind, and the extra slack only changes when
+   it is cut. The fix is still right, because the viewer no longer loses a
+   GOP it could have partly played, but it is not a resync remedy.
+3. **Width dominates.** The run that settled at ×3 had 4 resyncs after
+   engaging; the two that settled at ×2 had 12–13. Both ×2 runs tried ×3,
+   judged that it didn't help (goodput was already near the live rate, so
+   no 20 % gain, and the hole skips continued), and held ×2 for the
+   session. D10's step test reads goodput, not the resync rate. At ×2 a
+   1 %-loss link sits at about 12 Mbit/s against a 10.7 Mbit/s stream, so a
+   connection's backoff after a loss is enough to resync it. That is the
+   larger lever, and it is open.
+4. **The 5 s buffer was never tested, because the viewer cannot ask for
+   one.** A bug from R21: the subscribe URL's `buffer` comes from
+   `DVR_BUFFER_MS`, a module constant computed from
+   `window.__GAWK_CONFIG__.dvrBufferMs` when the module loads. In Chromium
+   and Firefox that module runs in the viewer's Web Worker, which has no
+   `window`, so every deep-buffer viewer asks for the 3,000 ms default
+   whatever the deployment sets. Separate from R87, and open: a
+   larger-buffer measurement needs that fix first.
 
 ## 12. Where the code differs from the plan (2026-11-20)
 
@@ -632,6 +671,9 @@ broadcast.
 - **Resync log.** Each DVR resync logs at Debug which connection fell
   behind: subscriber key, leg and member, why (off the ring's tail, or lag
   over the buffer), and the lag at that moment.
+- **The ring's eviction (docs/26).** A GOP is evicted once its successor's
+  start is older than the window, not its own start. A GOP whose first frame
+  is due but whose rest a buffer still covers stays (§11.3).
 - **Counters.** `dvrSubscribers` and `reliableSubscribers` count viewers,
   so they exclude legs. `dvrResyncs` includes leg resyncs, and
   `gawk_broadcast_stripe_legs` counts deep-buffer legs.
