@@ -313,7 +313,7 @@ services:
   # database is a PREREQUISITE — here the stack is the operator, so it brings
   # its own).
   admin-pg:
-    image: postgres:18-alpine
+    image: postgres:19-alpine
     environment:
       POSTGRES_USER: gawk
       POSTGRES_PASSWORD: gawk
