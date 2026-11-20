@@ -35,7 +35,6 @@ import { getDeepBuffer } from './resilient';
 import { StripeController, getStripeMode, type StripeMode } from './stripe';
 import { CAP_STRIPED_DELIVERY } from './parity';
 import {
-  DVR_BUFFER_MS,
   setDvrGranted,
   getPlayoutMode,
   getPlayoutOffsetMs,
@@ -69,7 +68,7 @@ import {
   type DeliveryServedMode,
   type TelemetryHelloMessage,
 } from './wire';
-import { getMaxDecoderQueueSize } from '../config';
+import { getDvrBufferMs, getMaxDecoderQueueSize } from '../config';
 import { appendClientIdentity } from './client-identity';
 
 // How often the reorder buffer is advanced (its bounded waits and the
@@ -744,7 +743,7 @@ export class ViewerPipeline {
       // ends disagreeing about how far behind the viewer is. A relay that
       // does not know the parameter ignores it and serves plain carriers,
       // which is the degradation we want.
-      if (getDeepBuffer()) url.searchParams.set('buffer', String(DVR_BUFFER_MS));
+      if (getDeepBuffer()) url.searchParams.set('buffer', String(getDvrBufferMs()));
     }
     // Only an explicit opt-DOWN travels: omitting the parameter is what lets
     // the fleet default apply.

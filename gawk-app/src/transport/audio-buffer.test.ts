@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AudioJitterBuffer,
   DEFAULT_AUDIO_PROFILE,
-  DVR_AUDIO_PROFILE,
+  getDvrAudioProfile,
   MAX_ALIGNMENT_HOLD_MS,
   RESILIENT_AUDIO_PROFILE,
   audioProfileForDeliveryMode,
@@ -849,7 +849,7 @@ describe('AudioJitterBuffer gap lead budget', () => {
   });
 });
 
-// Deep buffer. In deep mode the video playhead sits DVR_BUFFER_MS (`B`) behind
+// Deep buffer. In deep mode the video playhead sits getDvrBufferMs() (`B`) behind
 // live while audio still arrives ~live (audio is NOT in the relay ring), so
 // the audio buffer must hold the full `B` depth or audio plays ~B ahead of its
 // video (video is the master clock, and alignment is a start-time decision
@@ -879,7 +879,7 @@ describe('AudioJitterBuffer deep-buffer alignment', () => {
     // be B, not 500 ms.
     const emitted: AudioChunk[] = [];
     const B = getDvrBufferMs();
-    const buffer = new AudioJitterBuffer((c) => void emitted.push(c), DVR_AUDIO_PROFILE, {
+    const buffer = new AudioJitterBuffer((c) => void emitted.push(c), getDvrAudioProfile(), {
       now: () => 1000,
       schedule: () => null,
     });
@@ -941,7 +941,7 @@ describe('AudioJitterBuffer deep-buffer alignment', () => {
     // Schedule due LATER than the depth floor would release, so a lost
     // schedule alignment is observable: depth is ready at 3000 ms of audio but
     // the video frame is not due until t = 6000.
-    const buffer = new AudioJitterBuffer((c) => void emitted.push(c), DVR_AUDIO_PROFILE, {
+    const buffer = new AudioJitterBuffer((c) => void emitted.push(c), getDvrAudioProfile(), {
       now: () => clock.t,
       schedule: () => (ts: number) => 6000 + ts / 1000,
     });
@@ -995,5 +995,25 @@ describe('AudioJitterBuffer deep-buffer alignment', () => {
     const hold = buffer.getStats().alignmentHoldMs!;
     expect(hold).toBeLessThan(B - LEAD / 2); // clearly short of the full B
     expect(hold).toBeGreaterThan(B - LEAD - 100); // ≈ B − LEAD
+  });
+});
+
+// The audio floor must match the video one, which is read from the runtime
+// config when used (see playout.test.ts). A floor frozen at import time would
+// put audio and video at different depths whenever the config arrives later.
+describe('Deep buffer audio floor follows the runtime config', () => {
+  const scope = globalThis as { __GAWK_CONFIG__?: unknown };
+
+  it('takes dvrBufferMs from the config read at use, not at import', () => {
+    scope.__GAWK_CONFIG__ = { dvrBufferMs: 4000 };
+    try {
+      const deep = audioProfileForDeliveryMode('deep');
+      expect(deep.seedMs).toBe(4000);
+      expect(deep.minMs).toBe(4000);
+      expect(deep.maxMs).toBeGreaterThanOrEqual(4000);
+      expect(audioProfileForDeliveryMode('deep')).toBe(deep);
+    } finally {
+      delete scope.__GAWK_CONFIG__;
+    }
   });
 });

@@ -184,6 +184,13 @@ const MAX_VIEWER_RETRIES = 5;
 // needs that long again of *decoded* samples before the fps floors mean
 // anything. Sized to fill medianRecent's ≤6-sample (3 s) window twice over.
 const DEEP_BUFFER_SETTLE_MS = 6000;
+// The deep-buffer pass's deployment config.dvrBufferMs: deliberately not the
+// app's 3000 ms default, so the pass proves the configured value reaches the
+// relay from the viewer worker (a worker has no window; it gets the page's
+// config at init). The local relay's -dvr-window is raised above it, or the
+// grant would clamp to the 3 s default window and hide a wrong request.
+const DEEP_BUFFER_CONFIG_MS = 4000;
+const DEEP_BUFFER_DVR_WINDOW = '5s';
 // The R19 resilient-mode pass (below) runs only in the plain tier-1 mode: the
 // relay and publisher are already up there, so it costs one browser session.
 // External/cluster mode and the browser-broadcast step spend their budget
@@ -709,10 +716,10 @@ function assertStripeFlow(d1, d2) {
 // dev environments, where the prompt defaults on) — all before any app code
 // runs. `resilient` seeds R19's persisted toggle, which is the only way in:
 // the mode is negotiated at connect, so it has to be set before the app runs.
-async function newAppContext(browser, { relayUrl, certHash, delivery = null, telemetryUrl = null, parity = null, stripe = null }) {
+async function newAppContext(browser, { relayUrl, certHash, delivery = null, telemetryUrl = null, parity = null, stripe = null, dvrBufferMs = null }) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   await context.addInitScript(
-    ({ serverUrl, hash, deliveryMode, tmUrl, parityLevel, stripeMode }) => {
+    ({ serverUrl, hash, deliveryMode, tmUrl, parityLevel, stripeMode, bufferMs }) => {
       // R37 (docs/40): the test relay is configured the way a real
       // deployment's is — config.relayUrl — so the app resolves it as the
       // pinned DEFAULT server rather than a migrated custom entry. (The
@@ -748,6 +755,8 @@ async function newAppContext(browser, { relayUrl, certHash, delivery = null, tel
       // telemetry pass — every other pass leaves it unset, which is what makes
       // the zero-request assertion below a real check rather than a tautology.
       if (tmUrl) window.__GAWK_CONFIG__.telemetryUrl = tmUrl;
+      // The deep-buffer pass's non-default buffer (DEEP_BUFFER_CONFIG_MS).
+      if (bufferMs != null) window.__GAWK_CONFIG__.dvrBufferMs = bufferMs;
       localStorage.setItem('gawk:terms-accepted', 'e2e');
       window.__gawkClipboard = [];
       Object.defineProperty(Navigator.prototype, 'clipboard', {
@@ -760,7 +769,7 @@ async function newAppContext(browser, { relayUrl, certHash, delivery = null, tel
         }),
       });
     },
-    { serverUrl: relayUrl, hash: certHash, deliveryMode: delivery, tmUrl: telemetryUrl, parityLevel: parity, stripeMode: stripe },
+    { serverUrl: relayUrl, hash: certHash, deliveryMode: delivery, tmUrl: telemetryUrl, parityLevel: parity, stripeMode: stripe, bufferMs: dvrBufferMs },
   );
   return context;
 }
@@ -793,7 +802,7 @@ function wirePageLogs(page, name) {
 // tell was the ratio: keyframes arriving at ~2x the carrier-rotation rate.
 // assertFlow would have failed on the frozen decoder, but the ratio names the
 // cause instead of just the symptom.
-function assertDvrFlow(d1, d2) {
+function assertDvrFlow(d1, d2, expectBufferMs) {
   const problems = [];
   const check = (ok, msg) => {
     if (!ok) problems.push(msg);
@@ -809,6 +818,13 @@ function assertDvrFlow(d1, d2) {
     `deliveryMode = ${s2.deliveryMode}, want "dvr" (the ?buffer= negotiation did not take)`,
   );
   check(s2.dvrBufferMs > 0, `dvrBufferMs = ${s2.dvrBufferMs}, want > 0 (the ack carried no buffer)`);
+  // The grant echoes what the viewer asked for (the relay's window is wider).
+  // 3000 here means the viewer worker asked with the default, not the
+  // deployment's config.dvrBufferMs.
+  check(
+    s2.dvrBufferMs === expectBufferMs,
+    `dvrBufferMs = ${s2.dvrBufferMs}, want ${expectBufferMs} (config.dvrBufferMs did not reach the relay)`,
+  );
 
   const growth = (key) => s2[key] - s1[key];
   const carriers = growth('carrierStreams');
@@ -946,11 +962,11 @@ function assertCarrierFlow(d1, d2) {
 async function browserScenario({
   relayUrl, certHash, id, attempt, expectedCodec, delivery = null, telemetryUrl = null,
   dwellMs = 0, duringDwell = null, expectAudio = false, parity = null, expectParity = null,
-  stripe = null, expectStripe = false,
+  stripe = null, expectStripe = false, dvrBufferMs = null,
 }) {
   const browser = await launchBrowser();
   try {
-    const context = await newAppContext(browser, { relayUrl, certHash, delivery, telemetryUrl, parity, stripe });
+    const context = await newAppContext(browser, { relayUrl, certHash, delivery, telemetryUrl, parity, stripe, dvrBufferMs });
     const page = await context.newPage();
     wirePageLogs(page, `console-${attempt}`);
 
@@ -1030,7 +1046,7 @@ async function browserScenario({
     const diag2 = await captureDiagnostics(page, `diagnostics-${attempt}-2`);
     assertFlow(diag1, diag2, expectedCodec);
     if (delivery === 'resilient') assertCarrierFlow(diag1, diag2);
-    if (delivery === 'deep') assertDvrFlow(diag1, diag2);
+    if (delivery === 'deep') assertDvrFlow(diag1, diag2, dvrBufferMs);
     if (expectAudio) assertAudioFlow(diag1, diag2);
     if (expectParity != null) assertParityFlow(diag1, diag2, { expectParity });
     if (expectStripe) assertStripeFlow(diag1, diag2);
@@ -2340,6 +2356,9 @@ async function main() {
     if (TELEMETRY_CHECK) relayArgs.push('-telemetry-key', TELEMETRY_KEY);
     // R42: the room routes exist only with the flag on (docs/44 D17).
     if (ROOMS_CHECK || ROOMS_GATED_CHECK) relayArgs.push('-rooms');
+    // The deep-buffer pass asks for DEEP_BUFFER_CONFIG_MS, above the 3 s
+    // default window.
+    if (RESILIENT_VIEWER_PASS) relayArgs.push('-dvr-window', DEEP_BUFFER_DVR_WINDOW);
     // R40: the screening notice is off unless asked for; every other pass is
     // its control.
     if (SCREENING_NOTICE_CHECK) relayArgs.push('-screening-notice');
@@ -2590,7 +2609,7 @@ async function main() {
       // 1) was catchable by the assertions already here — the mode simply was
       // never run. A mode with no pass is a mode nobody tests.
       log('running the deep-buffer viewer pass (R21 DVR ring)');
-      await runViewer('deep', MAX_RESILIENT_RETRIES, { delivery: 'deep' });
+      await runViewer('deep', MAX_RESILIENT_RETRIES, { delivery: 'deep', dvrBufferMs: DEEP_BUFFER_CONFIG_MS });
     }
 
     // R29 (docs/34 FP8): the parity pass, behind a link that actually loses
