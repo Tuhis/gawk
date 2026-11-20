@@ -81,6 +81,21 @@ func TestDeriveGoodput(t *testing.T) {
 			t.Errorf("rates = %+v", g)
 		}
 	})
+	// PR review round 1: a broadcaster pause at width 1 must not deflate the
+	// width-1 rate, or a full link's ×2 split reads as stripe scaling.
+	t.Run("a pause is not part of a width's rate", func(t *testing.T) {
+		steps := append(repeat(10, 1, 6e6), repeat(20, 1, 0)...)
+		steps = append(steps, repeat(10, 2, 3e6, 3e6)...)
+		s := goodputTimeline(steps)
+		// Samples 11–30 end the paused intervals: no video bytes at all.
+		for i := 11; i <= 30; i++ {
+			s[i].Stats["dvrIdle"] = true
+		}
+		g := DeriveGoodput(s)
+		if !g.StripeOK || !near(g.Width1Bps, 6e6) || !near(g.MaxWidthBps, 6e6) || !near(g.MaxWidthConnMinBps, 3e6) {
+			t.Errorf("rates with a paused width-1 period = %+v, want 6e6 / 6e6 / 3e6", g)
+		}
+	})
 	t.Run("a width held under the minimum span is not the widest", func(t *testing.T) {
 		steps := append(repeat(10, 1, 6e6), repeat(2, 2, 6e6, 6e6)...)
 		g := DeriveGoodput(goodputTimeline(steps))

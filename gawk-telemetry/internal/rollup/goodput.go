@@ -40,7 +40,8 @@ type Goodput struct {
 	VideoBps float64
 	VideoOK  bool
 	// The striped deep-buffer view: intervals bucketed by the width in force
-	// at both ends, with the same number of connections reporting.
+	// at both ends, with the same number of connections reporting, and
+	// neither end idle (dvrIdle: a broadcaster pause).
 	WidthMax int
 	// Width1Bps is the aggregate while unstriped; MaxWidthBps the aggregate
 	// at WidthMax, and MaxWidthConnMinBps its slowest connection's rate.
@@ -80,6 +81,16 @@ func DeriveGoodput(samples []Sample) Goodput {
 			videoMs += dt
 		}
 
+		// A pause at either end is not the width's rate: deriveSupply skips
+		// idle samples, and the stripe comparison must average the same kind
+		// of time at every width, or a paused width-1 period reads a full
+		// link's ×2 split as stripe scaling (PR review round 1).
+		if idleA, _ := schema.Bool(a.Stats, "dvrIdle"); idleA {
+			continue
+		}
+		if idleB, _ := schema.Bool(b.Stats, "dvrIdle"); idleB {
+			continue
+		}
 		wa, okWA := schema.Number(a.Stats, "dvrStripeWidth")
 		wb, okWB := schema.Number(b.Stats, "dvrStripeWidth")
 		ca, okCA := schema.Numbers(a.Stats, "connectionBytesReceived")
