@@ -7,6 +7,9 @@
 # outputs (samples.csv, timeline.csv, summary.json, …) plus the relay's log.
 #
 #   tools/dvrlab/app-run.sh out/app/loss1-auto "delay 40ms loss 1% rate 50mbit limit 400" auto 300
+#
+# DVR_BUFFER_MS sets the viewer's Deep buffer and RELAY_ARGS adds relay flags,
+# e.g. RELAY_ARGS="-dvr-window 6s" DVR_BUFFER_MS=5000.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 H=$ROOT/tools/dvrlab
@@ -26,5 +29,5 @@ docker run --rm --name "$name" --network dvrlab --ipc=host --user "$(id -u):$(id
   -v "$ROOT:$ROOT:ro" -v "$OUT/pki:$OUT/pki:ro" -v "$dir:$dir" \
   --tmpfs "$ROOT/gawk-app/node_modules/.vite-temp:mode=1777" \
   -e RELAY=https://dvrlab-relay:4433 -e OPS=http://dvrlab-relay:9100 -e ID="$id" \
-  -e STRIPE="$stripe" -e SECS="$secs" -e CERT="$OUT/pki/relay.pem" -e OUT="$dir" \
+  -e STRIPE="$stripe" -e SECS="$secs" -e CERT="$OUT/pki/relay.pem" -e OUT="$dir" -e DVR_BUFFER_MS="${DVR_BUFFER_MS:-}" \
   "$PW_IMAGE" bash -c "cd $ROOT/e2e && node dvr-striped-app-profile.mjs" 2>&1 | tee "$dir/client.log"

@@ -17,7 +17,7 @@ docker exec dvrlab-relay sh -c "tc qdisc add dev eth0 root netem $netem"
 key=$(printf 'ab%.0s' $(seq 32))
 docker exec -d dvrlab-relay sh -c "/b/gawk-server -addr :4433 -metrics-addr 0.0.0.0:9100 \
   -cert-file /pki/relay.pem -key-file /pki/relay.key -stats-key $key \
-  -conn-rate-limit 1000 -conn-burst-limit 1000 -log-level ${RELAY_LOG_LEVEL:-info} > /tmp/relay.log 2>&1"
+  -conn-rate-limit 1000 -conn-burst-limit 1000 -log-level ${RELAY_LOG_LEVEL:-info} ${RELAY_ARGS:-} > /tmp/relay.log 2>&1"
 docker exec dvrlab-relay sh -c 'for i in $(seq 100); do curl -sf http://127.0.0.1:9100/healthz >/dev/null && exit 0; sleep 0.1; done; exit 1'
 docker exec -d dvrlab-relay sh -c "/b/gawk-pubsim -url https://127.0.0.1:4433 -insecure -fixture large -fps 30 \
   -pad-keyframe-bytes 294000 -pad-delta-bytes 26300 > /tmp/pub.log 2>&1"

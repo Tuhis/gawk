@@ -137,19 +137,22 @@ try {
   log(`relay ${RELAY} id ${ID} stripe ${STRIPE} secs ${SECS} cert ${certHash.slice(0, 16)}…`);
 
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
-  await context.addInitScript(({ serverUrl, hash, stripeMode }) => {
+  await context.addInitScript(({ serverUrl, hash, stripeMode, dvrBufferMs }) => {
     localStorage.setItem('gawk.serverUrl', serverUrl);
     localStorage.setItem('gawk.certHashHex', hash);
     localStorage.setItem('gawk:viewer-delivery', 'deep');
     localStorage.setItem('gawk:stripe-mode', stripeMode);
     window.__GAWK_CONFIG__ = { requirePublishSecret: false, termsVersion: 'e2e', relayUrl: serverUrl };
+    // DVR_BUFFER_MS: the deployment's Deep buffer (runtime config dvrBufferMs);
+    // the relay grants at most its -dvr-window (RELAY_ARGS in app-run.sh).
+    if (dvrBufferMs) window.__GAWK_CONFIG__.dvrBufferMs = dvrBufferMs;
     localStorage.setItem('gawk:terms-accepted', 'e2e');
     window.__gawkClipboard = [];
     Object.defineProperty(Navigator.prototype, 'clipboard', {
       configurable: true,
       get: () => ({ writeText: (t) => (window.__gawkClipboard.push(t), Promise.resolve()) }),
     });
-  }, { serverUrl: RELAY, hash: certHash, stripeMode: STRIPE });
+  }, { serverUrl: RELAY, hash: certHash, stripeMode: STRIPE, dvrBufferMs: Number(process.env.DVR_BUFFER_MS) || 0 });
   const page = await context.newPage();
   const consoleLog = join(OUT, 'console.log');
   writeFileSync(consoleLog, '');
