@@ -415,6 +415,16 @@ const (
 	CloseCodeRelayFull     = 4019
 )
 
+// CloseCodeStripeLegDrained (4020) ends an R87 DVR stripe leg whose drain is
+// complete (docs/91 D11): the viewer superseded the leg (a width change or
+// an unstripe) and sent it an unstriped StripeState, and the leg has
+// delivered every GOP it owed up to its drain point. Nothing went wrong, so
+// it is not 4005 (an orphan reap), and a viewer expects it on a leg it is
+// draining. NOT terminal, and leg-only: never sent to a primary or any
+// non-leg session, and never noticed in-band (a leg reads no notices).
+// Allocated 2026-11-20 (R87).
+const CloseCodeStripeLegDrained = 4020
+
 // Size constants for the wire format.
 const (
 	// MaxDatagramSize is the largest datagram we ever produce. It is chosen

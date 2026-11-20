@@ -71,6 +71,14 @@ export const CAP_UPLINK_CARRIERS = 1 << 2;
  */
 export const CAP_KEYFRAME_CARRIERS = 1 << 3;
 
+/**
+ * The relay accepts stripe legs on a deep-buffer (DVR) subscription and
+ * serves each connection its own share of GOPs, the primary carrying share 0
+ * (R87, docs/91 D6, D8). A viewer never stripes a deep-buffer session
+ * without it; plain reliable (Smoother) sessions never stripe at all (OD4).
+ */
+export const CAP_STRIPED_DVR = 1 << 4;
+
 // --- GF(2^8), primitive polynomial 0x11D, generator 2 ----------------------
 
 const GF_EXP = new Uint8Array(512);

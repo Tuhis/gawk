@@ -100,6 +100,14 @@ offers the control only in live delivery (the `deliveryMode === 'live'`
 conditional the parity menu group already uses,
 `ViewerScreen.tsx:683–704`).
 
+*Narrowed 2026-11-20 by R87 ([docs/91](91-striped-dvr.md)):* the argument
+holds for burst loss, the problem this milestone solves. It does not hold
+for a single connection's **throughput**, which loss caps on the relay's
+congestion controller. Deep-buffer delivery therefore stripes whole GOPs
+across legs under its own capability bit (`CapStripedDVR`, docs/91 D1–D8).
+Resilient delivery still never stripes, and the relay still refuses stripe
+parameters on a plain reliable subscriber.
+
 ---
 
 ## 4. Owner decisions (2026-07-29)

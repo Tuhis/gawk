@@ -483,6 +483,14 @@ config:
   # so size that cap accordingly on fleets expecting striping. Off: leg dials
   # get 400, the capability is not advertised, byte-identical to pre-R30.
   stripedDelivery: "true"
+  # R87 striped deep-buffer delivery (docs/91): also accept DVR stripe legs, so
+  # a Most stable viewer whose one connection cannot carry the stream spreads
+  # whole GOPs over up to 4 connections, each a DVR cursor over its share of
+  # the ring. Effective only with stripedDelivery on. On by default: nothing
+  # changes until a viewer engages, and its legs count against maxSubscribers
+  # like R30's. Off: DVR leg dials get 400 and the capability is not
+  # advertised, as before R87.
+  stripedDvr: "true"
   # R73 reliable uplink (docs/75 D2): accept a broadcaster's reliable carrier
   # streams, so its deltas can ride one QUIC stream per GOP instead of
   # datagrams and a loss on the broadcaster's uplink is retransmitted rather

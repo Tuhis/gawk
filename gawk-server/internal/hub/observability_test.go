@@ -490,3 +490,62 @@ func TestAPopLegsIngressIsItsOwnLeg(t *testing.T) {
 			tot.PopLegIngressFramesLost, tot.IngressFramesLost)
 	}
 }
+
+// pathStatsSender is a fakeSender whose transport reports PathStats (R87 SG0).
+type pathStatsSender struct {
+	fakeSender
+	ps PathStats
+}
+
+func (p *pathStatsSender) PathStats() (PathStats, bool) { return p.ps, true }
+
+// R87 SG0 (docs/91 §4): a connection's own RTT and loss reach /statusz when
+// its transport reports them, and are omitted when it doesn't.
+func TestSubscriberDetailsCarryPathStats(t *testing.T) {
+	r := NewRegistry(discardLog, Options{})
+	id, pub, _ := r.StartPublish("")
+	defer pub.Close()
+
+	withStats := &pathStatsSender{ps: PathStats{
+		SmoothedRTT: 41500 * time.Microsecond, MinRTT: 40 * time.Millisecond,
+		BytesSent: 123456, PacketsSent: 1000, PacketsLost: 5,
+	}}
+	s1, err := r.Subscribe(id, withStats)
+	if err != nil {
+		t.Fatalf("Subscribe with stats: %v", err)
+	}
+	defer s1.Close()
+	s2, err := r.Subscribe(id, &fakeSender{})
+	if err != nil {
+		t.Fatalf("Subscribe without stats: %v", err)
+	}
+	defer s2.Close()
+
+	tests := []struct {
+		name string
+		key  string
+		want SubscriberStats
+	}{
+		{"reporting transport", s1.statsKey, SubscriberStats{
+			PathSRTTMs: 41.5, PathMinRTTMs: 40, PathBytesSent: 123456, PathPacketsSent: 1000, PathPacketsLost: 5,
+		}},
+		{"silent transport", s2.statsKey, SubscriberStats{}},
+	}
+	st := singleBroadcastStats(t, r)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, d := range st.SubscriberDetails {
+				if d.Key != tc.key {
+					continue
+				}
+				got := [5]any{d.PathSRTTMs, d.PathMinRTTMs, d.PathBytesSent, d.PathPacketsSent, d.PathPacketsLost}
+				want := [5]any{tc.want.PathSRTTMs, tc.want.PathMinRTTMs, tc.want.PathBytesSent, tc.want.PathPacketsSent, tc.want.PathPacketsLost}
+				if got != want {
+					t.Errorf("path stats = %v, want %v", got, want)
+				}
+				return
+			}
+			t.Fatalf("no subscriber detail with key %q", tc.key)
+		})
+	}
+}

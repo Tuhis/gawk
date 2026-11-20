@@ -97,8 +97,9 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
         // degraded "reliable requested / datagrams served" state. 'dvr' is the
         // relay's own word for it (the join-time DeliveryAck) — a replayed GOP
         // looks exactly like a live one, so nothing the viewer can observe
-        // would tell these two apart.
-        ['Delivery mode', stats == null ? '—' : stats.deliveryMode === 'dvr' ? `ring-backed (buffer ${fmtInt(stats.dvrBufferMs)} ms)` : stats.deliveryMode === 'reliable' ? 'reliable (resilient)' : stats.deliveryMode === 'reliable-requested' ? 'reliable requested / datagrams served' : 'datagrams (live-edge)'],
+        // would tell these two apart. A striped ring names its width, the
+        // connections carrying GOPs with the primary (docs/91 §7).
+        ['Delivery mode', stats == null ? '—' : stats.deliveryMode === 'dvr' ? `ring-backed (buffer ${fmtInt(stats.dvrBufferMs)} ms)${(stats.dvrStripeWidth ?? 1) > 1 ? ` · striped ×${stats.dvrStripeWidth}` : ''}` : stats.deliveryMode === 'reliable' ? 'reliable (resilient)' : stats.deliveryMode === 'reliable-requested' ? 'reliable requested / datagrams served' : 'datagrams (live-edge)'],
         ...(stats?.deliveryMode !== 'datagrams' && stats != null
           ? ([
               ['Carrier streams', stats.carrierStreams == null ? '—' : `${stats.carrierStreams} (${stats.carrierStreamsAborted ?? 0} aborted)`],

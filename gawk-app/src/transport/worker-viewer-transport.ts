@@ -10,6 +10,7 @@ import type { TransportConnectionStats } from './net-stats';
 import type { TimeSyncStats } from './time-sync';
 import type { TransportWorkerCommand, TransportWorkerEvent } from './transport-worker-core';
 import type {
+  StripeLayout,
   StripeTransportStats,
   ViewerTransport,
   ViewerTransportCallbacks,
@@ -66,17 +67,23 @@ export class WorkerViewerTransport implements ViewerTransport {
             break;
           }
           case 'datagram':
-            if (!this.closing) cb.onDatagram(ev.data);
+            // The connection index only when there is one, so the primary's
+            // deliveries look exactly as they did before legs carried media.
+            if (this.closing) break;
+            if (ev.conn) cb.onDatagram(ev.data, ev.conn);
+            else cb.onDatagram(ev.data);
             break;
           case 'keyframe':
             if (!this.closing) {
-              cb.onKeyframe({
+              const kf = {
                 frameId: ev.frameId,
                 timestampUs: ev.timestampUs,
                 config: ev.config,
                 data: ev.data,
                 streamBytes: ev.streamBytes,
-              });
+              };
+              if (ev.conn) cb.onKeyframe(kf, ev.conn);
+              else cb.onKeyframe(kf);
             }
             break;
           case 'closed': {
@@ -148,8 +155,8 @@ export class WorkerViewerTransport implements ViewerTransport {
     return this.latestDatagramBuffer;
   }
 
-  setStripe(n: number): void {
-    if (!this.closing) this.worker?.postMessage({ type: 'stripe', n });
+  setStripe(n: number, layout?: StripeLayout): void {
+    if (!this.closing) this.worker?.postMessage(layout ? { type: 'stripe', n, layout } : { type: 'stripe', n });
   }
 
   sampleStripe(): StripeTransportStats | null {

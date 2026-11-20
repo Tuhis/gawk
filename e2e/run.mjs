@@ -710,6 +710,49 @@ function assertStripeFlow(d1, d2) {
   );
 }
 
+// R87 (docs/91 SG2): a Most stable viewer with Striping seeded On, on the
+// clean loopback. On engages ×2 at join without evidence (D10), so this is
+// deterministic where Auto would correctly stay at ×1 here. What only a real
+// browser against a real relay shows: CAP_STRIPED_DVR arriving, the DVR leg
+// dial (leg=1, stripe=2, the primary's delivery/buffer/owner) being accepted,
+// GOPs arriving on BOTH connections, and the reorder buffer playing the
+// interleave back — assertFlow's fps floors and assertDvrFlow's 1:1
+// keyframe/carrier invariant (both counted across connections) still hold.
+function assertDvrStripeFlow(d1, d2) {
+  const problems = [];
+  const check = (ok, msg) => {
+    if (!ok) problems.push(msg);
+  };
+  const s1 = latest(d1);
+  const s2 = latest(d2);
+
+  check(s2.stripeDvrCapable === true, `stripeDvrCapable = ${s2.stripeDvrCapable}, want true (CAP_STRIPED_DVR not seen)`);
+  check(s2.stripeMode === 'on', `stripeMode = ${s2.stripeMode}, want the seeded 'on'`);
+  check(s2.dvrStripeWidth >= 2, `dvrStripeWidth = ${s2.dvrStripeWidth}, want >= 2 (DVR legs engaged)`);
+  check((s2.stripeLegDials ?? 0) >= 1, `stripeLegDials = ${s2.stripeLegDials}, want >= 1`);
+  check((s2.stripeLegDeaths ?? 0) === 0, `stripeLegDeaths = ${s2.stripeLegDeaths}, want 0 on a loopback`);
+  // Every connection carries GOPs, not just the primary: the hash spreads
+  // ~10 GOPs per capture gap over two connections.
+  const b1 = s1.connectionBytesReceived ?? [];
+  const b2 = s2.connectionBytesReceived ?? [];
+  check(b2.length >= 2, `connectionBytesReceived = ${JSON.stringify(b2)}, want one entry per connection`);
+  for (let i = 0; i < b2.length; i++) {
+    check(
+      b2[i] - (b1[i] ?? 0) > 0,
+      `connection ${i} received no video between the captures (${b1[i] ?? 0} → ${b2[i]})`,
+    );
+  }
+
+  if (problems.length > 0) {
+    fail(`striped deep-buffer assertions failed:\n  - ${problems.join('\n  - ')}`);
+  }
+  log(
+    `striped deep buffer: ×${s2.dvrStripeWidth}, bytes per connection ${JSON.stringify(b2)}, ` +
+      `${s2.dvrDuplicateFrames ?? 0} duplicate / ${s2.dvrLateFramesDropped ?? 0} late frames, ` +
+      `${s2.reorderGapResyncs ?? 0} gap resyncs`,
+  );
+}
+
 // A context with the persisted transport settings seeded (the keys
 // useTransportStore owns), the clipboard stubbed (the ViewerScreen.test.tsx
 // precedent), and the publish-secret prompt disabled (loopback hosts count as
@@ -962,7 +1005,7 @@ function assertCarrierFlow(d1, d2) {
 async function browserScenario({
   relayUrl, certHash, id, attempt, expectedCodec, delivery = null, telemetryUrl = null,
   dwellMs = 0, duringDwell = null, expectAudio = false, parity = null, expectParity = null,
-  stripe = null, expectStripe = false, dvrBufferMs = null,
+  stripe = null, expectStripe = false, expectDvrStripe = false, dvrBufferMs = null,
 }) {
   const browser = await launchBrowser();
   try {
@@ -1050,6 +1093,7 @@ async function browserScenario({
     if (expectAudio) assertAudioFlow(diag1, diag2);
     if (expectParity != null) assertParityFlow(diag1, diag2, { expectParity });
     if (expectStripe) assertStripeFlow(diag1, diag2);
+    if (expectDvrStripe) assertDvrStripeFlow(diag1, diag2);
 
     const shot = await page.locator('canvas').first().screenshot();
     writeFileSync(join(OUT, `viewer-${attempt}.png`), shot);
@@ -2610,6 +2654,18 @@ async function main() {
       // never run. A mode with no pass is a mode nobody tests.
       log('running the deep-buffer viewer pass (R21 DVR ring)');
       await runViewer('deep', MAX_RESILIENT_RETRIES, { delivery: 'deep', dvrBufferMs: DEEP_BUFFER_CONFIG_MS });
+
+      // R87 (docs/91 SG2): the same, striped. On, not Auto: Auto correctly
+      // dials nothing on a clean loopback, and SG4 owns that claim.
+      log('running the striped deep-buffer viewer pass (R87, Striping On)');
+      await runViewer('deep-striped', MAX_RESILIENT_RETRIES, {
+        delivery: 'deep',
+        stripe: 'on',
+        expectDvrStripe: true,
+        // assertDvrFlow checks the grant against it, so the striped pass also
+        // proves the legs ask with the configured buffer, not the default.
+        dvrBufferMs: DEEP_BUFFER_CONFIG_MS,
+      });
     }
 
     // R29 (docs/34 FP8): the parity pass, behind a link that actually loses

@@ -1,0 +1,909 @@
+# R87 — Striped deep-buffer delivery (docs/91)
+
+**Status**: designed 2026-11-19 from one field case (§2). **SG0's lab half
+and its instruments were done 2026-11-19** (§11.1): in the lab a
+per-connection ceiling is real, it is set by loss, and each extra connection
+adds its own share; Firefox's per-stream window is not the limit up to
+150 ms. **SG1–SG3 were implemented 2026-11-20** with SG4's browser e2e pass,
+after the owner chose to build ahead of SG0's field half (OD1); §12 records
+where the code differs from the plan. Open: SG0's field run and SG5, the
+owner pass, both on the owner's mobile path.
+
+**Scope**: the relay's DVR drain and stripe-leg negotiation
+(`gawk-server/internal/hub`, `internal/transport`), one capability bit in
+`gawk-server/wire` (mirrored in `wire.ts` and `crates/wire`), the web
+viewer's deep-buffer path and its Striping setting (`gawk-app`), and
+telemetry (`gawk-telemetry`: two fields, one new rule, one rule fix). No iOS
+change: the iOS viewer has no DVR mode ([docs/67](67-ios-app.md) D13).
+
+The *Most stable* preset carries a viewer's video from the relay's DVR ring
+([docs/26](26-relay-dvr-buffer.md)) over **one** QUIC connection, one GOP
+at a time. R30's stripe legs ([docs/35](35-connection-interleaving.md))
+spread live-edge datagrams across up to four connections, and are refused
+in reliable and DVR modes on the reasoning that "carriers retransmit, so
+striping there is pure waste" (docs/35 §3). That reasoning holds for burst
+loss, the problem R30 solved. It does not hold if a single connection's
+**throughput** is capped below the stream bitrate while the link has room
+to spare, and the field case below suggests exactly that.
+
+This milestone serves a deep-buffer viewer's GOPs across several
+connections: each GOP still travels whole, keyframe and records, but GOP
+*k* goes to connection *h(k) mod N*. Each connection then needs 1/N of the
+bitrate.
+
+## 1. Why, and what "done" means
+
+### 1.1 The problem in one line
+
+A deep-buffer viewer on a mobile link received a 10.7 Mbit/s stream at
+5.05 Mbit/s for 55 minutes. The relay jumped it to the newest keyframe 622
+times, and a second connection from the same browser received exactly as
+much again at the same time.
+
+### Milestone acceptance criteria
+
+| # | Goal | Verified by |
+|---|---|---|
+| G1 | We know which cause it is: a per-connection ceiling (§5 A), a per-stream window (§5 B), or neither. Nothing after SG0 is built without that answer | SG0's report against §9 |
+| G2 | On a path whose single connection carries less than the stream bitrate but whose link carries more, a *Most stable* viewer plays with no DVR resyncs | SG4: the netem lab path, plus SG5 on the owner's mobile path |
+| G3 | On a clean path nothing changes: no legs dialed, byte-identical relay behaviour, same latency | SG4 regression run; the relay's existing DVR tests pass unmodified |
+| G4 | Striping never makes a viewer worse: if added connections don't raise the aggregate, the viewer stops adding them and drops back | SG2 unit tests on the growth rule; SG4's link-limited control path |
+| G5 | Telemetry can tell undersupply apart from a per-connection ceiling, and no longer reports undersupply for every deep-buffer viewer | SG3's rule tests against the §2 session's recorded facts |
+
+## 2. The field case (2026-11-19)
+
+The owner was watching a room from a Windows laptop on a mobile connection
+in Firefox 161, while also broadcasting into the same room. Everything below
+comes from the relay's logs and Prometheus series and from gawk-telemetry's
+recorded sessions.
+
+**The stream.** A 1080p60 H.264 broadcast from the Windows native
+broadcaster, about **10.7 Mbit/s**: 5.9 Mbit/s of deltas and 4.7 Mbit/s of
+keyframes, with **a keyframe every 0.5 s** (GOP = 30 frames).
+
+**Live mode, 16:14–16:41, striped ×4.** The burst-loss rule passed: R30 did
+its job on the deltas. The viewer still saw only the keyframe cadence for
+long stretches (`keyframe-only-delivery`, 2,560 reorder-gap resyncs). The
+relay dropped **387 keyframes** for this subscriber, and keyframes ride the
+primary connection's reliable streams, not the legs. About 4.7 Mbit/s on
+one connection was not getting through.
+
+**Deep-buffer mode, 16:41–17:36.** The viewer switched to *Most stable*:
+two DVR subscriptions, the 1080p stream and a second room stream, each on
+its own connection.
+
+| Signal | Value | Source |
+|---|---|---|
+| Goodput, 1080p subscription | **5.05 Mbit/s** average over 54 min (`videoBytesReceived` 42 MB → 2,075 MB between t=69 s and t=3,287 s) | client |
+| Goodput, the other subscription, same window | **5.05 Mbit/s** (107 MB → 1,834 MB between t=170 s and t=2,905 s) | client |
+| Goodput, 1080p subscription after the other ended at 17:33:23 | **~5.2 Mbit/s** (17:32:43–17:35:54) | client |
+| DVR resyncs | **622**, about 11 a minute, steady from the first 10 minutes to the last | relay |
+| Frame rate | below half its baseline **58 %** of the window, 341 separate collapses, longest 36 s | client |
+| RTT (TimeSync, primary) | 26–73 ms, median about 35 ms | client |
+| Session end | `no keyframe for 8006ms while frames are still arriving` → reconnect | client |
+| Relay-side drops, send errors, node UDP errors | **0** | relay, node exporter |
+
+**What the numbers say.** Two connections on the same link held
+5.05 Mbit/s each at the same time, so the link carried at least
+10.1 Mbit/s plus the owner's own 3.8 Mbit/s upload. When one connection
+ended, the other did not take up the freed capacity. A full link would give
+the survivor most of the freed 5 Mbit/s. A ceiling per connection would
+leave it where it was, and it stayed where it was.
+
+**A mechanism that fits, unproven.** The relay is the sender, so the
+congestion controller limiting the download is quic-go's, on the relay.
+Loss-based congestion control at RTT *R* and random loss *p* settles near
+`1.22 · MSS / (R · √p)` (Mathis et al.). At MSS 1,200 B and *R* = 35 ms,
+5 Mbit/s corresponds to *p* ≈ 0.45 %: an ordinary loss rate on a mobile
+radio link that isn't caused by congestion. Each connection backs off on its
+own losses, so N connections get about N times the rate until the link
+itself fills. This is the same reason parallel-TCP downloaders exist.
+
+**What this case does not prove.**
+- **The rise after one connection ended covers 2.5 minutes** and one
+  sample. It is suggestive, not a measurement.
+- **The loss rate was not measured.** No browser ships WebTransport
+  `getStats()`, so `connection` stats are null on every client
+  (`net-stats.ts`), and the relay exports no per-connection QUIC stats.
+- **A per-stream receive window explains the same numbers**, and that
+  would call for a different fix (§5 B). The DVR drain keeps one video
+  carrier open at a time (`drainDVR`, `hub/dvr.go`). Throughput through one
+  stream is bounded by its receive window over the RTT *under load*. A
+  window of a few hundred KB at a few hundred milliseconds of queueing delay
+  also gives about 5 Mbit/s, and TimeSync's RTT is measured on the
+  primary's control traffic, not under the carrier's load.
+- **The viewer reached the relay through the home network.** It appeared
+  under a home-LAN source address, not its mobile one, so a tunnel may sit
+  on the path. A tunnel puts every connection into one outer flow: a
+  carrier that polices per flow would defeat striping, while a
+  per-connection congestion ceiling would not.
+
+SG0 exists to settle these before any of §6 is built.
+
+**A side finding: a rule that cannot fail.** `resilient-undersupply`
+(`gawk-telemetry/internal/rules/playbook.go`) fires when `playoutOffsetMs ≥
+resilientClampMs − 50`, that is ≥ 1,950 ms. A deep-buffer viewer's playout
+floor *is* its DVR buffer, 3,000 ms by default (`DVR_PLAYOUT_PROFILE`,
+`playout.ts`), so the rule fires for **every** deep-buffer viewer, healthy
+or not. It fired on the §2 session, and its verdict ("the link cannot carry
+the stream bitrate") was the wrong conclusion. SG3 fixes it.
+
+## 3. Owner decisions
+
+| # | Question | Options | Recommendation | Decided |
+|---|---|---|---|---|
+| OD1 | Build before SG0, or let SG0 gate the build? | (a) SG0 first, kill criteria binding; (b) build A and measure on the result | **(a)**. Two designs fit the evidence and they share almost no code; R30 built ahead of its ST1 and its on-hardware proof is still pending (ROADMAP R30) | **(b)**, 2026-11-20: the owner chose to build A once SG0's lab half had ruled out B and the field case's two concurrent connections, through the owner's VPN, had each held their own share. §9's field criteria still apply to SG5 |
+| OD2 | How is a GOP assigned to a connection? | (a) static hash of the keyframe's frameID, mod N; (b) a scheduler on the primary's pod; (c) work stealing between connections | **(a)**: no coordination, correct when legs land on other pods (D2) | built as recommended, with the build (2026-11-20); not separately decided |
+| OD3 | When does striping engage? | (a) Auto: on measured undersupply, growing only while it helps; (b) always in *Most stable*; (c) only when switched On | **(a)**, with the existing Auto/On/Off setting enabled for *Most stable* (D10) | built as recommended, with the build (2026-11-20); not separately decided |
+| OD4 | Does *Smoother* (plain reliable, no ring) get striping too? | (a) no, DVR only; (b) both | **(a)**. Without a ring a connection has no cursor to resume from, and docs/24's drop-at-GOP behaviour would have to be redone per leg. Revisit if SG0 shows *Smoother* viewers hitting the same ceiling | built as recommended, with the build (2026-11-20); not separately decided |
+
+## 4. How SG0 measures it
+
+Two instruments, both cheap, both kept afterwards.
+
+1. **The relay's view of each connection.** Export quic-go's per-connection
+   statistics (smoothed RTT, congestion window, bytes in flight, packets
+   sent and lost) into `/statusz` `subscriberDetails`, per subscriber,
+   behind the existing stats key. If quic-go's API in the pinned version
+   doesn't expose congestion state, export what it has and record what is
+   missing. This turns "a ceiling consistent with Mathis" into a measured
+   cwnd and loss rate on the real path.
+2. **A K-connection bench.** `e2e/dvr-throughput-profile.mjs`, alongside
+   docs/35's `datagram-loss-profile.mjs`: from one browser it opens K
+   deep-buffer subscriptions to one broadcast (K = 1, 2, 3, 4, each a
+   separate WebTransport session, as docs/34 finding 5 did for datagrams)
+   and reports per-session and aggregate goodput, resyncs and RTT. Run it
+   on:
+   - **the owner's mobile path**, against the live fleet with a 1080p60
+     broadcast, with and without the tunnel if one is in use;
+   - **two netem lab paths**: *per-connection-limited* (40 ms, 0.5 % random
+     loss, 50 Mbit/s bottleneck) and *link-limited* (40 ms, 0 % loss,
+     8 Mbit/s bottleneck). These are the controls for SG4.
+
+   To separate §5 A from §5 B, the bench also runs K = 1 against a
+   lab-only relay flag that lets the DVR drain keep two GOP carriers open
+   at once on one connection. That's the cheapest test of whether a
+   per-stream window is the limit.
+
+   *Revised 2026-11-19, as built:*
+   - **Instrument 1.** quic-go v0.62's `ConnectionStats` reports RTT, bytes,
+     packets sent and packets lost, but not cwnd or bytes in flight.
+     `/statusz` therefore carries `pathSrttMs`, `pathMinRttMs`,
+     `pathBytesSent`, `pathPacketsSent` and `pathPacketsLost` per
+     subscriber, and nothing for congestion state.
+   - **Instrument 2** is `e2e/dvr-throughput-profile.mjs` (Firefox) plus
+     `gawk-loadgen -session-csv` (quic-go's client), driven by
+     `tools/dvrlab`. Relay and publisher share one container, so the
+     uplink is never shaped. netem on the relay's egress shapes every
+     viewer's download.
+   - **The two-carrier flag was not built.** A per-stream receive window W
+     caps one stream at W/RTT whatever the loss, so a loss-free sweep over
+     RTT tests the same thing for free: if W were the limit, goodput would
+     fall as the RTT grew (§11).
+
+## 5. Design options
+
+**A — Stripe GOPs across connections (§6).** The fix if the ceiling is per
+connection. It reuses R30's legs, owner token, lease and make-before-break
+transitions, with a different filter (GOP residue instead of chunk
+residue) and a ring cursor per connection.
+
+**B — Pipeline GOP carriers on one connection.** The fix if the ceiling is
+per stream. `drainDVR` would open GOP *k+1*'s keyframe stream and carrier
+while GOP *k*'s carrier drains, keeping up to two in flight as docs/24
+Decision 5 already allows live reliable subscribers. No wire change and no
+legs. It is a fraction of A's cost, and it is what SG0's two-carrier flag
+tests. If SG0 points here, this doc is revised to B before anything is
+built.
+
+**C — Lower the bitrate.** Always available to the viewer and the
+broadcaster: a lower rung, or a longer keyframe interval (§2's 0.5 s GOP
+spends 44 % of the bitrate on keyframes). It is complementary, not a fix: a
+path that carries 20 Mbit/s should not be held to 5 by how gawk uses it.
+
+**D — Change the relay's congestion control.** The ceiling, if SG0 confirms
+it, comes from quic-go's loss-based controller on the relay. A
+loss-tolerant controller would raise it for every mode at once. Rejected
+for this milestone: quic-go offers no pluggable controller, and gawk does
+not fork quic-go. Recorded so it isn't re-derived.
+
+## 6. Recommended design (option A)
+
+### D1 — The unit is the GOP
+
+A DVR subscriber is already served one GOP at a time, each on its own
+keyframe stream and carrier (`drainDVR`, `dvrSendKeyframe`,
+`dvrWriteRecord`). A GOP is independently decodable from its keyframe.
+Striping at GOP granularity keeps every existing stream type, keeps each
+GOP's records in order on one carrier, and leaves R30's chunk-ordinal
+filter for live mode alone. Chunk-level striping of carriers was rejected:
+it would interleave one GOP's records across connections, and the client
+could not decode any of them until the slowest connection caught up.
+
+### D2 — Assignment: a static hash of the keyframe's frameID (OD2)
+
+GOP *k* belongs to connection `mix32(keyframeFrameID) mod N`, where
+`mix32` is a fixed integer mixer (the murmur3 finalizer), pinned in all
+three wire copies with golden vectors. *Revised 2026-11-20:* pinned in Go
+only (`wire.StripeGOPResidue`, with golden vectors). Only relays compute
+it; the client reorders whatever arrives and never needs a residue.
+- **The publisher's frameID, not the ring's `gopSeq`**, because `gopSeq`
+  is local to a pod and legs land on any pod in cluster mode (docs/35
+  §5.7). Every pod sees the same frameID for the same keyframe.
+- **Hashed rather than raw**, because a fixed GOP length makes
+  `frameID mod N` collapse onto a few residues: 30 mod 4 alternates
+  between 0 and 2.
+- **What hashing costs:** short runs on one connection. With N = 2, three
+  consecutive GOPs on the same connection happen a quarter of the time.
+  That is 1.5 s of video, well inside the 3 s buffer.
+
+A scheduler on the primary's pod (OD2 b) would balance better but needs
+the legs on the same pod, or a cross-pod feed. Work stealing (OD2 c) needs
+a feedback channel that docs/15 Decision 6 rules out in spirit. Both can
+replace D2 later without wire changes beyond the capability bit's
+semantics.
+
+### D3 — Every connection is a full DVR subscriber over its residue
+
+The primary and each leg get their own `DVRCursor`, their own `drainDVR`
+loop and their own `dvrFellBehind` / `dvrResync`. A GOP outside a
+connection's residue is skipped when the cursor reaches it. A connection
+that falls behind resyncs alone, to the newest GOP *of its residue*, and
+only its GOPs are lost. `DVRProgressTimeout` treats a skipped GOP as
+progress, so a leg whose residue had no GOP for a while is not evicted.
+
+### D4 — The catch-up pacer is shared out
+
+`dvrPacer` caps a subscriber at `-dvr-max-catchup × LiveRateBps`. A striped
+connection's pacer runs at that cap divided by N, so the group's catch-up
+never exceeds what one unstriped viewer may take. *As built, a floor lifts
+this at N ≥ 3 with the default `-dvr-max-catchup` (§12, D4).* The egress budget
+(`consumeBandwidth`) and every docs/07 cap are unchanged. Legs already
+count against subscriber caps (`hub.go`, R30).
+
+### D5 — Audio, control and telemetry stay on the primary
+
+The audio ring keeps its own carrier on the primary (docs/26 DV5). Its
+skew throttle (`AudioSkewBudget`, 500 ms) runs against the primary's own
+video cursor time: the connections advance through the same timeline at
+the same rate, so the primary's cursor is a fair proxy, and the cost of
+being wrong is the same audio ring overflow the throttle already handles.
+DeliveryAck, capabilities, close notices and the telemetry hello stay on
+the primary, as for R30 legs.
+
+### D6 — The primary carries residue 0
+
+In R30 the primary carries no deltas at all, so that every burst stays
+short. In DVR mode there is no burst to protect, so the primary serves
+residue 0 and legs `j = 1 … N−1` serve the rest. Striping ×2 therefore
+costs one extra connection, not two.
+
+### D7 — The primary's striped state rides StripeState (0x10)
+
+`ApplyStripeState` stops returning early for a DVR primary that has an
+owner. On a DVR primary, *striped* means "serve residue 0 of `StripeN`".
+`StripeN` becomes authoritative there; it stays informational for live
+mode, so the message format doesn't change. It keeps R30's level-state rule:
+refreshed at 1 Hz, expiring after `StripeStateTTL` (5 s). An expired or
+lost state sends the primary back to serving every GOP: duplicates, never
+holes. The client deduplicates by frameID. The primary needs the owner
+token, which `SubscribeDVR` does not receive today (`server.go`), so it
+gets the same `owner` argument `SubscribeParity` already does.
+
+### D8 — Negotiation: one capability bit
+
+`CapStripedDVR = 1 << 4` in `RelayCapabilities`, appended per the
+append-never-renumber rule. A relay that sets it:
+- accepts a leg dial that carries `delivery=reliable&buffer=…`;
+  `NegotiateStripe` keeps refusing plain reliable legs (OD4);
+- applies D2's filter to it and gives it a DVR cursor.
+
+A relay without the bit still answers 400, as it does today, and a client
+never dials DVR legs without the bit. The leg dial URL is the primary's
+plus `stripe=N&leg=j&owner=…`, which `dialLeg` already builds.
+
+### D9 — The client reorders GOPs against the playout deadline
+
+The resilient reorder buffer orders by frameID (`reorder-buffer.ts`). Two
+things change in striped DVR mode:
+- **GOP *k+1* can arrive entirely before GOP *k*.** The buffer holds a
+  complete later GOP while an earlier one is still arriving.
+  `RESILIENT_MAX_BUFFERED_FRAMES` (256) covers 4.3 s at 60 fps, which is
+  more than the 3 s buffer.
+- **A missing GOP is waited for until its playout deadline**, not for
+  `RESILIENT_DELTA_GAP_GRACE_MS` (250 ms). That constant exists for
+  stragglers within one connection's carrier rotation. Across connections a
+  GOP can trail by much more and still be on time. When the deadline
+  passes, the buffer skips to the next complete keyframe, and a GOP that
+  arrives after that is dropped.
+
+### D10 — Engagement: Auto grows only while it helps (OD3)
+
+The Advanced *Striping* setting (Auto/On/Off, `playbackPresets.ts`) is
+enabled for *Most stable* when the relay sets `CapStripedDVR`.
+- **When Auto engages.** It engages ×2 when either of these holds for 10 s:
+  - complete-GOP goodput stays below 90 % of the stream's live rate. The
+    live rate comes from the stream's own frame timestamps and sizes, so no
+    new signal is needed.
+  - the client sees a relay resync, a jump to a newer keyframe with a GOP
+    gap.
+- **Growing:** it grows by one leg, up to `MaxStripeLegs` (4), only while
+  the previous step raised aggregate goodput by at least 20 %.
+- **Stepping back:** if a step does not help, it returns to the previous
+  width and holds there for the session.
+
+This rule is G4 in code: on a full link, extra connections take nothing
+more, so Auto stops at ×1 or ×2. It is also the production version of
+SG0's discriminator: in telemetry, "engaged, grew, helped" against "engaged,
+didn't help" counts per-connection ceilings in the field. *On* engages ×2
+at join and grows by the same rule. *Off* never stripes.
+
+### D11 — Transitions reuse R30's make-before-break
+
+`transitionStripe` dials the new set of legs before sending the new
+StripeState. While the set changes, a GOP's owner can change between the
+old N and the new N. The worst case is one GOP served twice (dropped by
+frameID) or one GOP served by nobody (skipped at its deadline, D9). SG4
+counts both.
+
+### D12 — Limits that don't change
+
+`MaxStripeLegs` stays 4: it is a constant bound to docs/34 finding 5, not
+a knob. The leg lease (20 s), owner reap and close code 4005 are reused
+unchanged. The number of bytes the relay sends is unchanged; it is only
+spread over more connections. Opening streams spreads too: BUGS.md's ~4
+uni streams per second per deep-buffer viewer become ~4/N per connection.
+
+## 7. What users see
+
+- **Nothing on a good path.** Auto never engages, and the overlay shows
+  what it shows today.
+- **On a constrained path,** the overlay's delivery line reads
+  `ring-backed (buffer 3000 ms) · striped ×N`, the stripe width R30 already
+  shows for live mode.
+- **The Striping setting is enabled for *Most stable*** when the relay
+  supports it. Its hint changes from "Not used in this mode" to "Spreads
+  the stream over several connections when one can't carry it."
+
+## 8. Chunks and acceptance criteria
+
+Order: SG0 → (decision per §9) → SG1 ∥ SG2 ∥ SG3 → SG4 → SG5.
+
+### SG0 — Measure the ceiling
+
+| Acceptance criterion | Verified by |
+|---|---|
+| `/statusz` `subscriberDetails` carries per-connection smoothed RTT, cwnd (if quic-go exposes it), bytes sent, packets sent and lost; documented in docs/13's playbook | relay unit test on the JSON shape; one field read on the reference deployment |
+| `e2e/dvr-throughput-profile.mjs` reports per-session and aggregate goodput, resyncs and RTT for K = 1–4 deep-buffer sessions from one browser | a run on the dev stack |
+| Runs recorded on the owner's mobile path and both netem paths (§4), including K = 1 with the two-carrier flag | the report appended to this doc as §11 |
+| A verdict against §9: A, B, or stop | this doc revised in place, with a dated note |
+
+### SG1 — Relay
+
+| Acceptance criterion | Verified by |
+|---|---|
+| `CapStripedDVR` is advertised when striping and DVR are both enabled; a DVR leg dial is accepted only then; plain reliable legs are still refused | `NegotiateStripe` table tests, including today's "reliable combination" and "dvr combination" rows, inverted only for DVR |
+| Each connection serves exactly its residue's GOPs, keyframe and records, in order; across N connections every GOP is served exactly once while StripeState is fresh | hub test: N cursors on one ring, 600 GOPs, the union equals the ring and the pairwise intersections are empty |
+| StripeState expiry sends the primary back to every GOP; no GOP goes unserved across an expiry | hub test with a stopped refresh |
+| A leg that falls behind resyncs alone and the other connections keep their cursors | hub test: one leg's writes blocked past the buffer |
+| The pacer share is `max-catchup × live / N`, floored at `min(1.5, max-catchup) × live` per connection (§12, D4); the group's catch-up egress never exceeds `max(max-catchup, 1.5 × N) × live` | pacer test |
+| A leg on another pod serves the same GOPs it would on the primary's pod | e2e-cluster: primary and leg pinned to different pods, frameIDs compared |
+| Existing DVR, R30 and R19 tests pass unmodified | CI |
+
+### SG2 — Web viewer
+
+| Acceptance criterion | Verified by |
+|---|---|
+| The viewer dials DVR legs only with `CapStripedDVR`, only in *Most stable*, only when Striping is not Off | unit tests on the gate (`viewer.ts`, `stripe.ts`) |
+| The reorder buffer plays GOPs in frameID order when a later GOP completes first, waits for a missing GOP until its playout deadline, then skips, and drops a GOP that arrives after the skip | reorder-buffer unit tests with interleaved GOP arrival |
+| Auto engages, grows and steps back as D10 says | unit tests against scripted goodput series: a per-connection-limited series grows to ×3; a link-limited series stays at ×1 or returns to it |
+| Duplicates from StripeState expiry or transitions are dropped by frameID | unit test |
+| The overlay and the Advanced setting match §7 | component tests |
+
+### SG3 — Telemetry
+
+| Acceptance criterion | Verified by |
+|---|---|
+| `resilient-undersupply` compares the offset against the mode's own clamp (`dvrBufferMs` for DVR) plus a cadence condition; it does not fire on a healthy deep-buffer session | rule tests: a recorded healthy DVR session (silent) and the §2 session (fires on goodput, not on the offset) |
+| The client reports goodput per connection (`connectionBytesReceived`, primary first) and the stripe width over time in DVR mode (`dvrStripeWidth`) | ViewerStats unit test; ingest round trip |
+| A new rule, `per-connection-ceiling`, fires when the aggregate rose with width while each connection's goodput stayed flat, or when the relay's per-connection stats show a loss-limited sender (loss present, `pathSrttMs` within 25 % of `pathMinRttMs`: §9.3, since quic-go exposes no cwnd) | rule tests on synthetic facts for both signatures |
+
+### SG4 — End to end
+
+| Acceptance criterion | Verified by |
+|---|---|
+| On the per-connection-limited netem path, a 1080p60 *Most stable* viewer shows 0 resyncs over 10 minutes with Auto; the unstriped control resyncs | e2e run, paired |
+| On the link-limited path, Auto ends at ×1 or ×2 and the viewer is no worse than the control | e2e run, paired |
+| On a clean path no leg is dialed and `/statusz` matches the unstriped control | e2e run |
+| Width transitions under load lose at most one GOP each | e2e: scripted ×2 → ×3 → ×2 while counting GOPs |
+
+### SG5 — The owner pass
+
+| Acceptance criterion | Verified by |
+|---|---|
+| The §2 path (mobile, Firefox, 1080p60 in *Most stable*) plays without DVR resyncs, or the remaining resyncs are explained by the link's total capacity | the owner, with the telemetry session linked here |
+
+## 9. Kill criteria (registered before SG0 runs)
+
+Read from SG0's runs on the owner's mobile path, with K = 1–4 deep-buffer
+sessions of a 1080p60 broadcast.
+
+1. **Stop**, and record why, if the aggregate goodput at K = 2 is below
+   1.5× the K = 1 goodput. Extra connections don't buy throughput there,
+   so neither A nor B can help on that path.
+2. **Revise to option B** if K = 1 with two carriers in flight reaches at
+   least 1.5× plain K = 1. In that case a per-stream window is the limit,
+   and pipelining is the cheaper fix.
+3. **Build option A** if (1) and (2) both fail to apply and the relay's
+   per-connection stats show a loss-limited sender: cwnd well below the
+   bandwidth-delay product needed for the stream, with loss present.
+   *Revised 2026-11-19, before any field run:* quic-go exposes no cwnd
+   (§4). The test is now loss present while `pathSrttMs` stays within 25 %
+   of `pathMinRttMs`. That is the loss-limited signature §11 measured: a
+   full link instead pushes RTT up 4–5× and loses packets in its queue.
+4. **For (2), the loss-free RTT sweep replaces the two-carrier flag (§4).**
+   Option B applies if a loss-free path holds K = 1 below the stream
+   bitrate at an RTT the field path actually shows.
+5. **Check the tunnel before deciding.** If the owner's path goes through a
+   tunnel, run (1) both through it and outside it. If striping helps only
+   outside the tunnel, A still ships, and the doc records that
+   tunnel-wrapped viewers don't benefit.
+
+## 10. Risks, and out of scope
+
+- **Fairness.** N connections claim N shares at a shared bottleneck. This
+  is bounded: the group never sends faster than the stream plus its
+  catch-up share (D4), and Auto stops adding connections that don't help
+  (D10).
+- **Cost on the relay.** Up to four DVR cursors and drain goroutines per
+  constrained viewer, all reading one shared ring. Per-connection overhead
+  is the same as R30 legs, which already count against the subscriber
+  caps.
+- **Flow-level policing.** A carrier that polices per user rather than per
+  flow defeats this, as does a tunnel. SG0 (§9.5) checks it on the one
+  path we have.
+- **Out of scope:** iOS (no DVR mode), *Smoother* (OD4), relay congestion
+  control (§5 D), adaptive bitrate.
+
+## 11. Measurements
+
+### 11.1 SG0 lab, 2026-11-19
+
+**Setup** (`tools/dvrlab`, rerun with `build.sh` then `matrix.sh`):
+- **Relay:** the branch's relay with per-connection stats, quic-go v0.62,
+  stock Cubic.
+- **Stream:** the §2 shape at 10.7 Mbit/s with a 0.5 s GOP (`gawk-pubsim
+  -pad-*-bytes`).
+- **Viewers:** deep buffer at 3000 ms.
+- **Paths:** netem on the relay's egress only, so "delay" is the whole RTT.
+- **Clients:** quic-go's client (`gawk-loadgen`, one connection per session)
+  and Firefox 159 headless (`e2e/dvr-throughput-profile.mjs`, Playwright
+  1.65.1 image).
+- **Window:** 90 s runs (60 s for the RTT sweep), goodput over 20 s to the
+  end.
+- **Columns:** "relay RTT/loss" is the relay's own `pathSrttMs` and
+  `pathPacketsLost/pathPacketsSent` per connection, from `/statusz` halfway
+  through the run. Resyncs are the relay's DVR resyncs during the run.
+
+| Path | Client | K | Goodput per connection, Mbit/s | Total | Resyncs | Relay RTT ms / loss % |
+|---|---|---|---|---|---|---|
+| 40 ms, clean | quic-go / Firefox | 1 | 11.24 / 11.24 | 11.24 | 0 / 0 | 40 / 0 |
+| 40 ms, 0.2 % loss | quic-go | 1 → 4 | 11.31 · 11.2–11.3 · 11.2 · 11.0–11.3 | 11.3 → 44.8 | 0 | 41–47 / 0.16–0.25 |
+| 40 ms, 0.2 % loss | Firefox | 1, 2 | 11.29 · 11.16 11.23 | 11.3, 22.4 | 0 | 41 / 0.2 |
+| 40 ms, 0.5 % loss | quic-go | 1 → 4 | 8.33 · 8.28 8.57 · 8.0–8.6 · 8.3–9.1 | 8.3 → 16.9 → 25.0 → 34.9 | 8 → 28 | 41 / 0.4–0.56 |
+| 40 ms, 0.5 % loss | Firefox | 1, 2 | 8.61 · 8.79 8.09 | 8.6, 16.9 | 7, 16 | 41 / 0.45–0.53 |
+| 40 ms, 1 % loss | quic-go | 1 → 4 | 6.11 · 5.77 6.09 · 6.1–6.3 · 5.8–6.3 | 6.1 → 11.9 → 18.6 → 24.3 | 15 → 61 | 41 / 0.87–1.07 |
+| 40 ms, 1 % loss | Firefox | 1, 2 | 5.89 · 6.19 6.26 | 5.9, 12.5 | 16, 29 | 41 / 0.88–1.06 |
+| 40 ms, 8 Mbit/s link | quic-go | 1 → 4 | 7.59 · 3.63 3.96 · 2.4–2.8 · 1.6–2.1 | **7.6 flat** | 11 → 107 | **152 → 220** / 0.06 → 1.95 |
+| 75 ms, clean | quic-go / Firefox | 1 | 11.24 / 11.24 | 11.24 | 0 | 76 / 0 |
+| 150 ms, clean | quic-go / Firefox | 1 | 11.24 / 11.24 | 11.24 | 0 | 151–152 / 0 |
+
+**What the lab shows:**
+1. **A per-connection ceiling, set by loss.** At the same 40 ms, one
+   connection carries the whole 11.3 Mbit/s stream at 0.2 % loss (its
+   ceiling is above the stream), but gets 8.4 Mbit/s at 0.5 % and 6.0 at
+   1 %. Halving the loss from 1 % to 0.5 % raises the ceiling 1.4×, the
+   `1/√p` shape of §2. §2's 5.05 Mbit/s sits just below the 1 % row, so the field
+   path is consistent with roughly 1–1.5 % random loss at ~35 ms.
+2. **Every added connection brings its own share.** At 1 % loss the total
+   grows 6.1 → 11.9 → 18.6 → 24.3 Mbit/s over K = 1 → 4 while each
+   connection stays at ~6. Two connections at the field's ceiling carry
+   §2's 10.7 Mbit/s stream with room to spare.
+3. **On a full link, connections add nothing**, and the relay can tell:
+   - the total stays at 7.6 Mbit/s whatever K is;
+   - the relay's RTT rises from 40 to 150–220 ms as the queue fills, and
+     its loss comes from the queue.
+
+   Under random loss, RTT stays at its minimum. This is the discriminator
+   §9.3 now uses. The field case's TimeSync RTT also stayed at 26–73 ms on
+   the loaded connection, which fits loss more than a full link.
+4. **Firefox matches quic-go's client** everywhere, because the relay's
+   Cubic is the sender either way.
+   - **Separate connections:** Firefox opens every WebTransport session on
+     its own QUIC connection (distinct source ports in the relay's log), so
+     legs are real extra connections in Firefox.
+   - **Per-stream window not a limit:** a single Firefox connection carries
+     the full stream loss-free at 75 and 150 ms. So W ≥ 11.24 Mbit/s ×
+     150 ms ≈ 210 KB, and Firefox's per-stream window isn't the limit at
+     any RTT the field case showed (§9.4: option B does not apply).
+
+**What is still open:** the kill criteria are read on the owner's mobile
+path (§9). That run doesn't need a deploy for goodput. On the live fleet,
+open the same 1080p broadcast in *Most stable* in one, then two, then three
+Firefox tabs on the mobile link, three minutes each, and read each
+session's `videoBytesReceived` from telemetry. The relay-side RTT and loss
+(§9.3) need this branch's `/statusz` change deployed first. The tunnel
+question (§9.5) has to be answered first.
+
+### 11.2 SG4 lab: the production viewer under loss, 2026-11-20
+
+`tools/dvrlab/app-run.sh` runs `gawk-app/dist` (Chromium, Playwright
+1.65.1) in Most stable against the lab relay. "Relay resyncs" is
+`gawk_relay_dvr_resyncs_total`. The client's gap-resync count is inflated
+in this harness by headless software decode (about 7 per 120 s on a clean
+unstriped path), so the relay's count is the one that matters. Stream and
+paths as in §11.1; runs of 300 s unless noted.
+
+| Path | Striping | Code | Engaged | Widths | Relay resyncs | Delivered |
+|---|---|---|---|---|---|---|
+| 1 % loss | Off | review round 0 | – | ×1 | 54 (47 after 30 s) | 6.0 Mbit/s, 15 fps |
+| 1 % loss | Auto | review round 0 | 13.6 s | ×2 → ×3 → back to ×2, held | 16 (14 after engaging) | 10.45 Mbit/s, 29 fps |
+| 1 % loss | Auto | review round 0 | 13.7 s | ×2 → ×3 → ×4 | 8 (5 after engaging) | 11.1 Mbit/s, 30 fps |
+| 1 % loss | Auto | after review round 2 | 13.1 s | ×2 at 13 s → ×3 at 27 s → ×4 at 41–54 s | 6: 5 in the first 60 s while growing, **1 in the 245 s at ×4** | 29 fps |
+| 1 % loss | Auto | after review round 3 | 13.6 s | ×2 → ×3 → ×4 at 41 s; ×4 judged no help, back to ×3 at 55 s, held | 8: 5 in the first 55 s while growing, **3 in the 245 s at ×3** | 27 fps; every superseded leg closed by the relay's drain, none died |
+| 8 Mbit/s link | Off, 180 s | review round 0 | – | ×1 | 22 | – |
+| 8 Mbit/s link | Auto, 180 s | review round 0 | 13.2 s | ×2, back to ×1 at 27 s, held | 25 | – |
+| clean | Auto, 120 s | review round 0 | – | ×1, no leg dialed | 0 | 30 fps |
+
+**What it shows:**
+- On the loss-limited path, Auto engages within about 13 s and grows to
+  ×3 or ×4 (run to run, the ×4 step sits at the noise of the 20 % rule). Resyncs fall from about 10 a minute to about one every 4 minutes,
+  and the frame rate doubles.
+- On a full link Auto tries ×2, sees no gain, and returns to ×1 and holds
+  (G4).
+- On a clean path it dials nothing (G3).
+- The first run's step back from ×3 was review round 1's finding: a step
+  from just below the live rate could never show a 20 % gain. The fixed
+  rule (§12) grew to ×4.
+
+**SG4's first criterion, "0 resyncs over 10 minutes with Auto", is not
+met.** Each remaining resync is logged (§12, resync log) as `off_tail` at
+a lag of 2.5–3.0 s. The connection's GOP left the ring, whose window
+(`-dvr-window`, 3 s) equals the viewer's buffer (3,000 ms).
+*Revised 2026-11-20:* the remedy this paragraph first proposed, a longer
+window, moves those resyncs instead of removing them (§11.3).
+
+### 11.3 Ring window and viewer buffer, 2026-11-20
+
+Same path (1 % loss, 40 ms) and Auto, 300 s each, with the resync log on.
+
+| Run | Window / buffer | Width it settled on | Relay resyncs (after engaging) | How each resync was cut |
+|---|---|---|---|---|
+| §11.2, after round 3 | 3 s / 3,000 ms | ×3, held | 8 (4) | all `off_tail`, lag 2.5–3.0 s |
+| window + 1 s | 4 s / 3,000 ms | ×2, held | 15 (13) | all by the lag check, lag 3.0–3.5 s |
+| window + 3 s, buffer 5 s requested | 6 s / *3,000 ms* | ×2, held | 15 (12) | all by the lag check, lag 3.0–3.5 s |
+
+**What it shows:**
+1. **The ring cut GOPs too early.** It evicted a GOP once the GOP's *start*
+   left the window, while lag is measured between GOP starts. So a GOP whose
+   first frame was due, but whose remaining half-second a viewer's buffer
+   still covered, was dropped from under its cursor. Fixed: a GOP now leaves
+   only once its successor's start has left the window, so the ring holds
+   the window plus at most one GOP, whatever the GOP length. That is the
+   same effect as a window one GOP longer than the buffer, without a
+   setting to keep in step with every broadcaster's GOP.
+2. **The fix moves resyncs; it does not remove them.** With slack, every
+   resync came from the lag check instead, at 3.0–3.5 s. A connection that
+   falls behind keeps falling behind, and the extra slack only changes when
+   it is cut. The fix is still right, because the viewer no longer loses a
+   GOP it could have partly played, but it is not a resync remedy.
+3. **Width dominates.** The run that settled at ×3 had 4 resyncs after
+   engaging; the two that settled at ×2 had 12–13. Both ×2 runs tried ×3,
+   judged that it didn't help (goodput was already near the live rate, so
+   no 20 % gain, and the hole skips continued), and held ×2 for the
+   session. D10's step test reads goodput, not the resync rate. At ×2 a
+   1 %-loss link sits at about 12 Mbit/s against a 10.7 Mbit/s stream, so a
+   connection's backoff after a loss is enough to resync it. That is the
+   larger lever, and it is open.
+4. **The 5 s buffer was never tested, because the viewer cannot ask for
+   one.** A bug from R21: the subscribe URL's `buffer` comes from
+   `DVR_BUFFER_MS`, a module constant computed from
+   `window.__GAWK_CONFIG__.dvrBufferMs` when the module loads. In Chromium
+   and Firefox that module runs in the viewer's Web Worker, which has no
+   `window`, so every deep-buffer viewer asks for the 3,000 ms default
+   whatever the deployment sets. Separate from R87, and open: a
+   larger-buffer measurement needs that fix first.
+
+### 11.4 The buffer, once it can be set, 2026-11-20
+
+§11.3's 5 s run never asked for 5 s. Since #815, the viewer's worker gets
+the deployment's runtime config, so `dvrBufferMs` reaches the relay. These
+runs used one build with that fix and the Auto cool-down (§12), on the same
+path (1 % loss, 40 ms) with Auto, for 360 s each:
+
+| Window / buffer | Auto's width | Relay resyncs | After engaging |
+|---|---|---|---|
+| 3 s / 3,000 ms | ×3 at 41 s, ×4 at 117 s | 5 | 3, the last about 4 minutes in |
+| 6 s / 5,000 ms (granted 5,000) | ×3 at 40 s | 2, both while engaging | **0** |
+
+A 5 s buffer absorbed the dips that still resynced a striped viewer at 3 s,
+for 2 s more latency on *Most stable*. Single runs, so this is a direction,
+not a rate. It is a deployment setting, not a code change: the app's
+`dvrBufferMs` together with the relay's `-dvr-window`, which must be at
+least the buffer, because the relay grants no more than its window. The
+shipped default stays 3 s.
+
+## 12. Where the code differs from the plan (2026-11-20)
+
+**Relay (SG1)**
+- **Leg numbering in deep mode.** The primary serves share 0 and legs are
+  `leg=1…N−1` (D6). The relay answers 400 to `leg=0` with a buffer, and to
+  any plain reliable leg. A deep-mode leg whose buffer would not negotiate
+  the ring is also refused, rather than served in another mode.
+- **The knob.** `-striped-dvr` / `GAWK_STRIPED_DVR` / Helm
+  `config.stripedDvr`, on by default. It takes effect only with
+  `-striped-delivery`, and the relay advertises `CapStripedDVR` (`1 << 4`)
+  only when both are on.
+- **A GOP whose keyframe does not parse** has no frameID, so it counts as
+  share 0 and the primary serves it. No connection loses it.
+- **D3, resync.** A connection that falls behind lands on the newest GOP and
+  then skips forward to the next GOP of its own share. It does not jump back
+  to an older one of its share, so the lag check cannot loop. It costs at
+  most one more of that connection's GOPs.
+- **D3, eviction.** A skipped GOP counts as idleness, so a leg with nothing
+  to send is not evicted. The exception is a connection whose last write
+  failed: there a skip does not refresh the progress timer, or a dead leg
+  that keeps resyncing onto other connections' GOPs would never be evicted.
+- **D7, the primary filters only GOPs that reached the ring after its
+  current striped period began.** A period starts at an arm, at a re-arm
+  after expiry, and at a width change. A primary usually engages seconds
+  behind live, while a new leg starts at the newest GOP. Filtering the GOPs
+  in between would leave several of them served by nobody. With this rule,
+  engaging or widening costs some duplicate GOPs and never a gap.
+- **D4, a per-connection floor (PR review rounds 1 and 2).** A striped
+  connection's share is `live / N`, but never below what lets it catch up at
+  1.5× live (`dvrStripeMinConnCatchup`): at the default `-dvr-max-catchup`
+  of 4 and N = 4 the plain share is exactly 1× live, and a connection whose
+  run of GOPs starts behind could never catch up; with `-dvr-max-catchup`
+  below N, striping would add lag. The share never exceeds the unstriped
+  rate, so with `-dvr-max-catchup` between 1 and 1.5 the floor is that
+  multiple, not 1.5×.
+  - **The trade-off.** The stripe's group catch-up is
+    `max(max-catchup, 1.5 × N) × live` (for `max-catchup` ≥ 1.5; below it,
+    `N × max-catchup × live`): at the default 4 that is 4× at
+    N = 2, 4.5× at N = 3 and 6× at N = 4, against one unstriped viewer's 4×.
+    By default nothing else bounds it: the process-wide egress budget exists
+    only when `-max-bandwidth` is set, and its default is 0 (no limit). So a
+    herd of ×4 striped viewers recovering from one network event at once
+    takes up to 1.5× what the same herd unstriped would. Accepted: striping
+    engages only for viewers whose connections cannot carry the stream, and
+    a deployment that needs a hard bound sets `-max-bandwidth`.
+  - Audio shares the primary's bucket and is never striped.
+- **D4, a pacer fix that was latent before R87.** A write larger than the
+  whole token-bucket burst now passes once the bucket is full, as debt
+  repaid at the ceiling's rate. Before, any keyframe larger than a quarter
+  of a second at the ceiling wedged the cursor forever. That was possible
+  unstriped, and dividing the rate by N made it likely, for example a
+  low-motion 2 Mbit/s stream with a 2 s GOP at N = 4. Found test-first.
+- **D7, published whole.** A DVR primary's striped state (width, period
+  start, deadline) is one immutable value behind an atomic pointer, so the
+  drain sees the old state or the new one, never a mix of the two.
+- **D11, the drain signal (added in review).** A StripeState with
+  Striped=false on a deep-buffer *leg's* own session drains that leg. Its
+  drain point is the newest GOP in its pod's ring at that moment. On a ring
+  that never held a GOP, the drain owes nothing. The leg keeps serving its
+  share up to the point and never serves a newer GOP. Once done, it finishes
+  its carrier normally and *lingers*: 4 × the connection's smoothed RTT,
+  between 1 s and 5 s. The relay can't tell when stream data has been
+  acknowledged, and closing at once would cut off the tail of the last GOP
+  the drain exists to deliver. Then it closes with the new close code
+  **4020 `CloseCodeStripeLegDrained`** (non-terminal, leg-only, mirrored in
+  `wire.ts` and `crates/wire`). Other rules:
+  - A draining leg that falls behind its buffer ends its drain without a
+    resync, so a superseded leg's abandoned duplicates never count as
+    viewer loss in `dvrResyncs`.
+  - Repeated drains don't move the point.
+  - `/statusz` shows `stripeDraining`. Without this, a superseded leg either lost its backlog
+  (closed at once) or kept taking new GOPs at its old width (left open),
+  spending the short link on duplicates while the new width was being
+  judged.
+- **Resync log.** Each DVR resync logs at Debug which connection fell
+  behind: subscriber key, leg and member, why (off the ring's tail, or lag
+  over the buffer), and the lag at that moment.
+- **The ring's eviction (docs/26).** A GOP is evicted once its successor's
+  start is older than the window, not its own start. A GOP whose first frame
+  is due but whose rest a buffer still covers stays (§11.3).
+- **Counters.** `dvrSubscribers` and `reliableSubscribers` count viewers,
+  so they exclude legs. `dvrResyncs` includes leg resyncs, and
+  `gawk_broadcast_stripe_legs` counts deep-buffer legs.
+- **Cluster.** An in-process two-pod test checks that legs on another pod
+  serve their own share. The real e2e-cluster run, with the primary and a
+  leg pinned to different pods, has not been done.
+
+**Web viewer (SG2)**
+- **The gate.** A session stripes only when all four hold: it is a
+  deep-buffer session, the relay advertised `CAP_STRIPED_DVR`, the
+  DeliveryAck granted the ring, and Striping is not Off.
+- **D9, as built.** Once legs have been requested, the reorder buffer keeps
+  its striped behaviour for the rest of the session:
+  - It waits for a missing frame until the frame held right after the gap
+    is due, and never less than the old 250 ms grace. Then it skips to the
+    next keyframe by frameID and counts a hole skip.
+  - A keyframe behind the decode position, within the playout offset plus
+    5 s of media time and 2,048 frames, is a late GOP and is dropped, not a
+    broadcaster restart.
+  - The reassembler drops duplicates through a set of the last 512 frames
+    it emitted, instead of dropping late deltas against its watermark. The
+    set is cleared at a broadcaster restart (PR review round 1).
+  - A re-arrival of a frame that was here, released or dropped from the
+    buffer, counts as a duplicate and not as a dropped delta. A frame counts
+    as late only if it never arrived before its hole was skipped. The
+    memory (2,048 frameIDs) is cleared at a broadcaster restart.
+- **D10, as built.** The policy is a pure module (`dvr-stripe.ts`). Its
+  constants, none of which D10 named:
+  - Undersupply means complete-*frame* goodput (not GOP goodput) below 90 %
+    of the live rate, measured over 2 s, or at least two hole skips in the
+    last 60 s. It must hold for 10 s before ×2 engages. One skip never
+    engages; skips recurring every ~25 s at ~92 % goodput (§11.3), which
+    goodput alone never reads as short, do. *Revised in PR review round 1:*
+    the skip window was 10 s, the same as the engage hold, so a resync could
+    engage only if skips came less than 10 s apart. Skips seen at one width
+    are forgotten when the width changes.
+  - A window with no video bytes on any connection is *idle*, a broadcaster
+    pause: it neither engages, sets a baseline nor judges a step. A window
+    with bytes but no complete frame is starvation, and counts as goodput 0.
+  - Nor do the samples near a pause count, while the 2 s goodput window
+    still averages in its silence (PR review rounds 1 and 2). A pause
+    reaches `DVR_STRIPE_PAUSE_EDGE_MS` (2.5 s: the window plus one 500 ms
+    tick, since idle flips anywhere within a tick) to either side: samples
+    that close before it are discarded when it starts, and none are taken
+    until that long after it ends. Every decision (a step's baseline and
+    its evaluation) reads only samples at least that old, so a pause that
+    starts just after a decision cannot have shaped it; each evaluation
+    comes 2.5 s later. A step's baseline is the 7.5 s from the start of the
+    10 s undersupply hold to 2.5 s ago: reaching back a full 10 s from
+    there would take in healthy samples from before the shortfall, and
+    undo a step that helped (PR review round 3). Pauses recurring faster than about every 5 s leave no
+    sample to judge a step on, so the step waits, as over one long pause.
+  - A pause restarts a step's evaluation, but only up to 60 s past when it
+    would first have ended. After that the step is judged on what it has,
+    and never on fewer than 10 frame-bearing samples, so a long pause
+    cannot condemn a step.
+  - The live rate is bytes over media time across runs of consecutive
+    frames between keyframes. A skipped GOP cannot drag the live rate down
+    to the goodput.
+  - A step is judged 3 s after its legs are up, by mean goodput over 10 s
+    against the 10 s before the step. It *helped* if goodput rose 20 %, or
+    if the shortfall is gone: goodput at least 95 % of the live rate with no
+    hole skip in the evaluation. Goodput cannot exceed the live rate for
+    long, so a 20 % gain alone would fail every step taken from just below
+    the live rate.
+  - The policy grows only while still undersupplied. A step whose legs are
+    not up within 10 s counts as not helping. After a leg dies, it waits
+    5 s and asks for the same width again.
+  - The viewer reconciles the transport's actual legs against the wanted
+    width. It re-requests after a failed dial's 5 s backoff, after a
+    transition has dialed for more than 10 s, or when the transport's
+    target differs. A request at the current width cancels a transition
+    still dialing.
+  - *On* never drops below ×2.
+  - *Revised 2026-11-20 (§11.3):* `held` is a cool-down, not a verdict for
+    the session. After 120 s held (idle time not counted), a session whose
+    undersupply has held for 10 s, as for engaging, retries the next width.
+    A retry abandoned by switching to *Off* is not a failed retry. Each retry that fails again
+    doubles the cool-down, up to 15 minutes; one that helps resets it. In
+    §11.3, two of three runs locked in ×2 while still losing GOPs, because
+    from just below the live rate ×3 could show neither a 20 % gain nor a
+    skip-free 10 s window. A later retry catches one.
+  - Hole skips are not used to *judge* a step. At the rate §11.3 saw, about
+    one resync every 25 s, a 10 s evaluation window shows none two-thirds
+    of the time even when the step changed nothing, so "skips halved" would
+    measure chance.
+- **D11, as built.**
+  - **Order of signals.** On a width change, the primary's new StripeState
+    goes out as a burst (0, 100 and 200 ms). Only after that does the drain
+    go to the superseded legs (from 250 ms, then +100 and +200, then 1 Hz
+    as their heartbeat on their own timer). So the primary switches width
+    before the old legs stop taking new GOPs. A lone, lost StripeState could
+    otherwise leave GOPs that no connection serves.
+  - **End of a drain.** A draining leg is read until its streams end, even
+    if its session's close arrives first, with the buffer plus 1 s as the
+    backstop. Its close (4020) is not a leg death.
+  - **Leg death.** The primary still unstripes at once and the dead leg is
+    closed, but the surviving legs drain instead of being dropped.
+- **The resync signal is the client's own hole-skip count.** In striped
+  mode it also counts GOPs that nobody served during a width transition.
+- **Stats.**
+  - `dvrStripeWidth` is the width the transport actually has up.
+  - `connectionBytesReceived` has one slot per connection. A replacement
+    leg keeps adding to its slot, and the array's length always equals the
+    width.
+  - Also added: `stripeDvrCapable`, `dvrStripePhase` (`held` means a step
+    was undone), `dvrDuplicateFrames`, `dvrLateFramesDropped`, and from the
+    policy's own meter `dvrLiveRateBps` and `dvrGoodputBps` (complete-frame
+    video, deduplicated, no parity or audio; goodput over 2 s), and
+    `dvrIdle` (no video bytes on any connection in that window: a pause,
+    not starvation).
+- **The undeliverable-video watch** counts only the primary's keyframes. The
+  notice is about the primary, and leg keyframes arrive out of order.
+- **Known risk.** A broadcaster restart could be read as a late GOP and
+  freeze playback for up to the window above. That needs both an old
+  session under about 34 s old and a new timeline that starts within about
+  8 s behind the old one.
+
+**Telemetry (SG3)**
+- **`resilient-undersupply`** compares the offset against the mode's own
+  clamp. That is 2,000 ms for reliable, and `max(2000, dvrBufferMs)` for
+  DVR, with the relay's buffer, then the client's, then 3,000 ms as the
+  source. It also requires a supply shortfall. The reliable mode had the
+  same flaw in a milder form: its stated "while cadence stays bad" was
+  never checked. When the path is loss-limited, its verdict says "on this
+  connection, not a full link".
+- **The supply shortfall** (both rules), as revised in review:
+  - *Deep mode:* `dvrSupplyRatio` is Σ`dvrGoodputBps` / Σ`dvrLiveRateBps`
+    over the samples that count: not idle (`dvrIdle` false, so starved
+    windows count as 0) and with a live rate, at least 5 of them. A paused
+    broadcaster, or a restart before the rate is re-measured, drops out. A
+    shortfall is a ratio below 0.75. Both sides come from one client meter,
+    so they count the same bytes. A sum, not a median: once starved windows
+    count, the series is bimodal and its median jumps between the modes.
+    Older clients without `dvrIdle` skip zero-goodput samples instead.
+  - *Otherwise:* goodput from `videoBytesReceived` against a video floor.
+    The floor is the relay's ingress bitrate minus a 256 kbit/s audio
+    allowance and the maximum parity per frame. The bitrate and frame rate
+    come from one window (`relay.streamBitrateBps`,
+    `relay.streamFramesPerSec`). The comparison errs toward silence: the
+    goodput can only overstate the video and the floor can only understate
+    it.
+  - With neither the client's pair nor a usable floor, both rules stay
+    silent.
+- **The stream bitrate** is derived from the relay's ingress byte counters,
+  which `relayscrape` now mirrors; nothing exported one before.
+- **`per-connection-ceiling`** needs the same goodput shortfall, and then
+  one of two signatures:
+  - (a) relay loss ≥ 0.1 % with `pathSrttMs` ≤ 1.25 × `pathMinRttMs`
+    (confidence 0.8);
+  - (b) a striped session whose aggregate at its widest stripe is at least
+    1.5 × its width-1 goodput, while its slowest connection kept at least
+    0.75 × the width-1 rate (confidence 0.6).
+
+  Both together give 0.9. A full link (RTT 4–5× its minimum) and a stripe
+  that split one total stay silent. Signature (a) reads only the primary's
+  path for now.
+- **Revised in PR review round 1:**
+  - Signature (b)'s per-width rates skip any interval with `dvrIdle` at
+    either end, the filter the supply ratio uses. Before, a paused width-1
+    period deflated the width-1 rate, so a full link's even ×2 split read as
+    stripe scaling.
+  - Loss needs at least 2,000 packets sent (`PathLossMinPackets`). Loss
+    counts as present at 0.1 %, so one lost keepalive in a near-idle 5 s
+    scrape read as several percent. The live path takes the shortest recent
+    window with enough packets, reaching back at most 60 s; with nothing
+    sent for 60 s the fact is gone. The window starts over when the
+    subscriber's relay key changes (round 2): the telemetry session id
+    survives a reconnect, so counters alone could mix two connections.
+
+**End to end (SG4)**
+- **The production viewer under loss** is §11.2.
+- **Tier-1 browser e2e.** A `deep-striped` pass: Most stable with Striping
+  On on the clean loopback, asserting the capability, width ≥ 2, legs
+  dialed, no leg deaths and bytes on every connection. It passed on
+  2026-11-20: ×2, bytes split 1.50 MB / 1.41 MB, 0 duplicate and 0 late
+  frames, 0 gap resyncs.
+
+## 13. References
+
+- [docs/24](24-viewer-network-resilience.md) — reliable carriers, one per
+  GOP, Decision 5 (≤ 2 open).
+- [docs/26](26-relay-dvr-buffer.md) — the DVR ring, cursor, resync and
+  pacer; stall coverage `B/(B−S)`.
+- [docs/34](34-live-edge-forward-parity.md) finding 5 — per-connection
+  headroom for datagrams, the method SG0's bench copies.
+- [docs/35](35-connection-interleaving.md) — stripe legs, owner token,
+  lease, StripeState, cross-pod legs; §3 "Why live-edge only", which this
+  milestone narrows.
+- [docs/88](88-browser-reliable-uplink.md) D2 — the keyframe-at-head GOP
+  stream; a later option to halve DVR stream opens, not used here.
+- `BUGS.md` — the deep-buffer stream-open rate.
+- M. Mathis, J. Semke, J. Mahdavi, T. Ott, "The macroscopic behavior of
+  the TCP congestion avoidance algorithm", CCR 27(3), 1997.

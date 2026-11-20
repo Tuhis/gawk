@@ -213,6 +213,30 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('Delivery mode').nextSibling?.textContent).toBe('reliable requested / datagrams served');
   });
 
+  // R87 (docs/91 §7): a striped ring names its width; an unstriped one reads
+  // as it always did.
+  it('reads the ring-backed delivery line with and without striping', () => {
+    const cases: { width: number | undefined; want: string }[] = [
+      { width: undefined, want: 'ring-backed (buffer 3000 ms)' },
+      { width: 1, want: 'ring-backed (buffer 3000 ms)' },
+      { width: 3, want: 'ring-backed (buffer 3000 ms) · striped ×3' },
+    ];
+    for (const c of cases) {
+      cleanup();
+      render(
+        <StatsOverlay
+          stats={{ ...fullStats(), deliveryMode: 'dvr', dvrBufferMs: 3000, dvrStripeWidth: c.width }}
+          codec="vp8"
+          bitrateBps={null}
+          onClose={() => {}}
+          onCopy={() => {}}
+          copied={false}
+        />,
+      );
+      expect(screen.getByText('Delivery mode').nextSibling?.textContent).toBe(c.want);
+    }
+  });
+
   it('renders — for everything when stats are absent or degraded', () => {
     render(
       <StatsOverlay stats={null} codec={null} bitrateBps={null} onClose={() => {}} onCopy={() => {}} copied={false} />,
