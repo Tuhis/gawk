@@ -613,6 +613,25 @@ Same path (1 % loss, 40 ms) and Auto, 300 s each, with the resync log on.
    whatever the deployment sets. Separate from R87, and open: a
    larger-buffer measurement needs that fix first.
 
+### 11.4 The buffer, once it can be set, 2026-11-20
+
+§11.3's 5 s run never asked for 5 s. Since #815, the viewer's worker gets
+the deployment's runtime config, so `dvrBufferMs` reaches the relay. These
+runs used one build with that fix and the Auto cool-down (§12), on the same
+path (1 % loss, 40 ms) with Auto, for 360 s each:
+
+| Window / buffer | Auto's width | Relay resyncs | After engaging |
+|---|---|---|---|
+| 3 s / 3,000 ms | ×3 at 41 s, ×4 at 117 s | 5 | 3, the last about 4 minutes in |
+| 6 s / 5,000 ms (granted 5,000) | ×3 at 40 s | 2, both while engaging | **0** |
+
+A 5 s buffer absorbed the dips that still resynced a striped viewer at 3 s,
+for 2 s more latency on *Most stable*. Single runs, so this is a direction,
+not a rate. It is a deployment setting, not a code change: the app's
+`dvrBufferMs` together with the relay's `-dvr-window`, which must be at
+least the buffer, because the relay grants no more than its window. The
+shipped default stays 3 s.
+
 ## 12. Where the code differs from the plan (2026-11-20)
 
 **Relay (SG1)**
