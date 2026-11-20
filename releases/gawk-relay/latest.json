@@ -1,56 +1,56 @@
 {
   "asset": {
     "name": "gawk-relay-windows-amd64.exe",
-    "sha256": "303365d6bbbf31f240fb4c9b7e5e0a54a1380e3d9a40469770e433eb86d145c6",
-    "size": 40364544,
-    "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.41.1/gawk-relay-windows-amd64.exe"
+    "sha256": "4496959dade55eb7e5242da7cf93c5ef5f461ecb3b13704304ed665ff0480f13",
+    "size": 40427520,
+    "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.42.0/gawk-relay-windows-amd64.exe"
   },
   "assets": {
     "BUILD-INFO.txt": {
-      "sha256": "34d996522e8a83d143356ae4664f0ea0eca941b2775f0633d63f67c97c276616",
+      "sha256": "d166744b48386ee745ff92d30d5b265e8a3580060aa7083773159cb6d5442aad",
       "size": 225,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.41.1/BUILD-INFO.txt"
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.42.0/BUILD-INFO.txt"
     },
     "LICENSE": {
       "sha256": "31d34ab1effd9d99ecbc4feeb527b28d4624ddeaff93fd86c136fa0934ddce4f",
       "size": 11344,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.41.1/LICENSE"
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.42.0/LICENSE"
     },
     "SHA256SUMS": {
-      "sha256": "c79edb7bff85a343d3096bc8f5413ac3749eb36d68db736ab9a89fe8fc5dd0d9",
+      "sha256": "aa2f70cb54e094b9da788b64dab90240f6ee8084cec073ade20260ef72fb919c",
       "size": 638,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.41.1/SHA256SUMS"
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.42.0/SHA256SUMS"
     },
     "THIRD-PARTY-NOTICES-app.md": {
       "sha256": "9b269357d23b8f340c5b463ed01ddff71b44928398710f231f2ae6ca53149bb6",
       "size": 6963,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.41.1/THIRD-PARTY-NOTICES-app.md"
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.42.0/THIRD-PARTY-NOTICES-app.md"
     },
     "THIRD-PARTY-NOTICES.md": {
       "sha256": "a7b06cf0b4ca15a89e5189430bbd0c768f89b5b42ce4a20740f4030151dc8fdc",
       "size": 112047,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.41.1/THIRD-PARTY-NOTICES.md"
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.42.0/THIRD-PARTY-NOTICES.md"
     },
     "gawk-relay-linux-amd64.tar.gz": {
-      "sha256": "f40f42ef27c897845686b0abd0e4b35eb6233b470e53fd718c44579a057c983b",
-      "size": 13755128,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.41.1/gawk-relay-linux-amd64.tar.gz"
+      "sha256": "71b6c874647a2feacabe467ba9ea865e5b1cfedf2807645c8d747802f21cd307",
+      "size": 13775514,
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.42.0/gawk-relay-linux-amd64.tar.gz"
     },
     "gawk-relay-linux-arm64.tar.gz": {
-      "sha256": "d314a3f65922ab3d71160ca37d3123bd0e8706a11cadcc19a3f87020d68b465d",
-      "size": 12230031,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.41.1/gawk-relay-linux-arm64.tar.gz"
+      "sha256": "123725b144e0147fa8bfcc29d0aa4873f163d3ee1dcd27e0750bcd251468c324",
+      "size": 12249654,
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.42.0/gawk-relay-linux-arm64.tar.gz"
     },
     "gawk-relay-windows-amd64.exe": {
-      "sha256": "303365d6bbbf31f240fb4c9b7e5e0a54a1380e3d9a40469770e433eb86d145c6",
-      "size": 40364544,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.41.1/gawk-relay-windows-amd64.exe"
+      "sha256": "4496959dade55eb7e5242da7cf93c5ef5f461ecb3b13704304ed665ff0480f13",
+      "size": 40427520,
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-server/v0.42.0/gawk-relay-windows-amd64.exe"
     }
   },
   "component": "gawk-relay",
-  "published_at": "2026-11-15T20:43:12Z",
-  "release_url": "https://github.com/Tuhis/gawk/releases/tag/gawk-server/v0.41.1",
+  "published_at": "2026-11-20T17:32:13Z",
+  "release_url": "https://github.com/Tuhis/gawk/releases/tag/gawk-server/v0.42.0",
   "schema": 1,
-  "tag": "gawk-server/v0.41.1",
-  "version": "0.41.1"
+  "tag": "gawk-server/v0.42.0",
+  "version": "0.42.0"
 }
