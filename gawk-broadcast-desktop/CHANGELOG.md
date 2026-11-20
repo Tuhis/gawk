@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.18.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.17.0...gawk-broadcast-desktop/v2.18.0) (2026-11-20)
+
+
+### Features
+
+* **relay:** striped deep-buffer delivery (R87) ([#814](https://github.com/Tuhis/gawk/issues/814)) ([caf1213](https://github.com/Tuhis/gawk/commit/caf1213fd1d8776f5250cb1e0499a070b47537d6))
+
 ## [2.17.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.16.1...gawk-broadcast-desktop/v2.17.0) (2026-11-19)
 
 

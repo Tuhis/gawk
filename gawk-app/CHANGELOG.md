@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.64.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.63.0...gawk-app/v0.64.0) (2026-11-20)
+
+
+### Features
+
+* **relay:** striped deep-buffer delivery (R87) ([#814](https://github.com/Tuhis/gawk/issues/814)) ([caf1213](https://github.com/Tuhis/gawk/commit/caf1213fd1d8776f5250cb1e0499a070b47537d6))
+
+
+### Bug Fixes
+
+* **app:** give the viewer worker the deployment's runtime config ([#815](https://github.com/Tuhis/gawk/issues/815)) ([3937b05](https://github.com/Tuhis/gawk/commit/3937b0558f56c244d3aa2ecb93f67a55213f2c07))
+
 ## [0.63.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.62.0...gawk-app/v0.63.0) (2026-11-19)
 
 
