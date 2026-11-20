@@ -287,7 +287,7 @@ describe('DvrStripePolicy (docs/91 D10)', () => {
     // A full link (the step cannot help); once engaged, a pause every 8 s
     // keeps restarting the evaluation. Each lasts 2 s, the shortest idle the
     // meter reports (no bytes for its 2 s goodput window); with the samples
-    // near each pause set aside, about 1 s of every 8 is judged.
+    // near each pause set aside, about 1.5 s of every 8 is judged.
     const flicker = (t: number) => t > 12_000 && t % 8000 < 2000;
     const r = simulate({
       mode: 'auto',
@@ -475,6 +475,20 @@ describe('DvrStripePolicy retries a held width (docs/91 §11.3)', () => {
     });
     expect(Math.max(...r.widths.slice(100_000 / TICK_MS))).toBe(1);
     expect(r.phase).toBe('held');
+  });
+
+  it('keeps a step that helped when the ceiling appears after a healthy stretch (PR review round 3)', () => {
+    // Healthy until 30 s, then a per-connection ceiling: ×1 at 0.6× live,
+    // ×2 at 0.8× (a 33 % gain). The baseline must be the ceiling's own ×1
+    // rate, not diluted by the healthy samples before the hold began.
+    const r = simulate({
+      mode: 'auto',
+      seconds: 90,
+      goodput: (w, t) => (t < 30_000 ? LIVE : w === 1 ? 0.6 * LIVE : w === 2 ? 0.8 * LIVE : LIVE),
+    });
+    const c = changes(r.widths);
+    expect(c.slice(0, 2).map((x) => x.to)).toEqual([2, 3]);
+    expect(r.final).toBe(3);
   });
 
   it('does not judge a step on the goodput dip before a pause starts (PR review round 2)', () => {

@@ -257,7 +257,7 @@ progress, so a leg whose residue had no GOP for a while is not evicted.
 `dvrPacer` caps a subscriber at `-dvr-max-catchup × LiveRateBps`. A striped
 connection's pacer runs at that cap divided by N, so the group's catch-up
 never exceeds what one unstriped viewer may take. *As built, a floor lifts
-this at N ≥ 3 (§12, D4).* The egress budget
+this at N ≥ 3 with the default `-dvr-max-catchup` (§12, D4).* The egress budget
 (`consumeBandwidth`) and every docs/07 cap are unchanged. Legs already
 count against subscriber caps (`hub.go`, R30).
 
@@ -669,7 +669,8 @@ shipped default stays 3 s.
   rate, so with `-dvr-max-catchup` between 1 and 1.5 the floor is that
   multiple, not 1.5×.
   - **The trade-off.** The stripe's group catch-up is
-    `max(max-catchup, 1.5 × N) × live`: at the default 4 that is 4× at
+    `max(max-catchup, 1.5 × N) × live` (for `max-catchup` ≥ 1.5; below it,
+    `N × max-catchup × live`): at the default 4 that is 4× at
     N = 2, 4.5× at N = 3 and 6× at N = 4, against one unstriped viewer's 4×.
     By default nothing else bounds it: the process-wide egress budget exists
     only when `-max-bandwidth` is set, and its default is 0 (no limit). So a
@@ -758,8 +759,11 @@ shipped default stays 3 s.
     that close before it are discarded when it starts, and none are taken
     until that long after it ends. Every decision (a step's baseline and
     its evaluation) reads only samples at least that old, so a pause that
-    starts just after a decision cannot have shaped it; each decision comes
-    2.5 s later. Pauses recurring faster than about every 5 s leave no
+    starts just after a decision cannot have shaped it; each evaluation
+    comes 2.5 s later. A step's baseline is the 7.5 s from the start of the
+    10 s undersupply hold to 2.5 s ago: reaching back a full 10 s from
+    there would take in healthy samples from before the shortfall, and
+    undo a step that helped (PR review round 3). Pauses recurring faster than about every 5 s leave no
     sample to judge a step on, so the step waits, as over one long pause.
   - A pause restarts a step's evaluation, but only up to 60 s past when it
     would first have ended. After that the step is judged on what it has,

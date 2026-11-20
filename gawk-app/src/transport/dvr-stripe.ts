@@ -421,8 +421,12 @@ export class DvrStripePolicy {
   }
 
   private step(now: number, width: number): void {
+    // Inside the undersupply hold (sustainedUndersupply puts its start at or
+    // before now − ENGAGE_MS) and ending where a pause can no longer reach:
+    // starting ENGAGE_MS before `settled` would take in the healthy samples
+    // from before the shortfall began (PR review round 3).
     const settled = now - DVR_STRIPE_PAUSE_EDGE_MS;
-    this.baselineBps = this.meanGoodput(settled - DVR_STRIPE_ENGAGE_MS, settled);
+    this.baselineBps = this.meanGoodput(now - DVR_STRIPE_ENGAGE_MS, settled);
     this.previous = this.target;
     this.target = Math.min(DVR_STRIPE_MAX_WIDTH, width);
     this.phase = 'stepping';
