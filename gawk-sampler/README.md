@@ -72,9 +72,9 @@ To build the same ffmpeg on your machine (a C compiler, `make`, `curl` and
 sh deploy/build-ffmpeg.sh "$HOME/.local/gawk-ffmpeg"
 ```
 
-ONNX Runtime is the `onnxruntime-linux-x64-<version>.tgz` release asset, at the
-version and SHA-256 in `deploy/Dockerfile`; its `lib/libonnxruntime.so.<version>`
-is the file.
+ONNX Runtime is Microsoft's `Microsoft.ML.OnnxRuntime` NuGet package, at the
+version and SHA-256 in `deploy/Dockerfile`; its
+`runtimes/linux-x64/native/libonnxruntime.so` is the file (a `.nupkg` is a zip).
 
 ## Test
 
@@ -89,7 +89,7 @@ test models — **skip** unless they are pointed at the binaries:
 
 ```sh
 GAWK_SAMPLER_FFMPEG=$HOME/.local/gawk-ffmpeg/bin/ffmpeg \
-GAWK_SAMPLER_ONNXRUNTIME_LIB=/path/to/libonnxruntime.so.1.31.0 \
+GAWK_SAMPLER_ONNXRUNTIME_LIB=/path/to/libonnxruntime.so \
 CGO_ENABLED=1 go test ./...
 ```
 
