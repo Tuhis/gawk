@@ -410,13 +410,13 @@ script for what counts as a dependency here and why.
 | `yazi` | 0.2.2 | `Apache-2.0 OR MIT` | Copyright (c) 2020 Chad Brokaw |
 | `yeslogic-fontconfig-sys` | 6.0.1 | `MIT` | Copyright 2019 YesLogic Pty. Ltd<br>Copyright 2016 Manuel Reinhardt<br>Copyright 2014 Austin Bonander<br>Copyright 2013 The Servo Project Developers |
 | `yoke` | 0.8.4 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
-| `zbus` | 6.3.0 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
+| `zbus` | 6.4.0 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
 | `zbus` | 5.19.0 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
 | `zbus-lockstep` | 0.5.2 | `MIT` | — |
 | `zbus_names` | 4.3.5 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
 | `zbus_utils` | 6.1.0 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
 | `zbus_xml` | 5.2.1 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
-| `zcheapstr` | 1.2.0 | `MIT` | Copyright (c) 2026 Zeeshan Ali Khan & zcheapstr contributors |
+| `zcheapstr` | 1.3.0 | `MIT` | Copyright (c) 2026 Zeeshan Ali Khan & zcheapstr contributors |
 | `zeno` | 0.3.3 | `Apache-2.0 OR MIT` | Copyright (c) 2020 Chad Brokaw |
 | `zerocopy` | 0.8.63 | `BSD-2-Clause OR Apache-2.0 OR MIT` | Copyright 2023 The Fuchsia Authors<br>Copyright 2019 The Fuchsia Authors |
 | `zerofrom` | 0.1.8 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
