@@ -18,10 +18,10 @@
     },
     "gawk-app": {
       "component": "gawk-app",
-      "covered": 12800,
+      "covered": 12832,
       "label": "app",
-      "pct": 87.8,
-      "total": 14573,
+      "pct": 88.0,
+      "total": 14582,
       "unit": "lines"
     },
     "gawk-broadcast-desktop": {
