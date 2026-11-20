@@ -251,3 +251,28 @@ func TestLivePathLossNeedsEnoughPackets(t *testing.T) {
 		}
 	}
 }
+
+// PR review round 2: the session id survives a reconnect, so the loss window
+// must start over when the connection (its relay key) changes, even when the
+// new connection's counters are already higher than the old one's.
+func TestLivePathLossStartsOverOnANewConnection(t *testing.T) {
+	const sid = "f6f6f6f6f6f6f6f6f6f6f6f6"
+	p, clk := newProj()
+	old := relayscrape.Subscriber{SessionID: sid, Key: "conn-a", DVR: true, DVRBufferMs: 3000,
+		PathSRTTMs: 34, PathMinRTTMs: 33, PathPacketsSent: 1500, PathPacketsLost: 0}
+	p.ObserveRelay(relayRound(old))
+	// A new connection, 5 s later, that has already sent more than the old one.
+	clk.add(5 * time.Second)
+	fresh := old
+	fresh.Key, fresh.PathPacketsSent, fresh.PathPacketsLost = "conn-b", 4000, 40
+	p.ObserveRelay(relayRound(fresh))
+	if v, ok := relayFact(p, sid, "pathLossRatio"); ok {
+		t.Errorf("pathLossRatio = %v across two connections' counters", v)
+	}
+	clk.add(5 * time.Second)
+	fresh.PathPacketsSent, fresh.PathPacketsLost = 6000, 42
+	p.ObserveRelay(relayRound(fresh))
+	if v, ok := relayFact(p, sid, "pathLossRatio"); !ok || v != 2.0/2000 {
+		t.Errorf("pathLossRatio = %v (%v), want the new connection's own 2/2000", v, ok)
+	}
+}

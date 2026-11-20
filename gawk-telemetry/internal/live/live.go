@@ -1433,12 +1433,15 @@ type lossPoint struct {
 // pathLoss is the connection's loss over the shortest recent window that
 // sent at least relayscrape.PathLossMinPackets: one ~5 s scrape for a stream
 // of a few Mbit/s, longer for a slow or near-idle one, and nothing when even
-// pathLossMaxWindow did not send enough. Counters that went backwards are a
-// different connection, so the history starts over.
+// pathLossMaxWindow did not send enough. A changed relay key, or counters
+// that went backwards, are a different connection, so the history starts
+// over.
 func (s *sessionState) pathLoss(sub relayscrape.Subscriber, now time.Time) (float64, bool) {
 	if n := len(s.lossHist); n > 0 {
 		last := s.lossHist[n-1].sub
-		if sub.PathPacketsSent < last.PathPacketsSent || sub.PathPacketsLost < last.PathPacketsLost {
+		// A different relay key is a different connection: the session id
+		// survives a reconnect, and two pods can report it during a re-home.
+		if sub.Key != last.Key || sub.PathPacketsSent < last.PathPacketsSent || sub.PathPacketsLost < last.PathPacketsLost {
 			s.lossHist = nil
 		}
 	}
