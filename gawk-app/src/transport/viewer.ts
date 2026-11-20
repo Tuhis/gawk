@@ -1302,6 +1302,7 @@ export class ViewerPipeline {
   // drift baseline AND the clock mapping (the new session's mapping arrives
   // with its first re-send / relay prime).
   private handleBroadcasterRestart(): void {
+    this.reassembler?.noteRestart();
     this.liveEdge.reset();
     this.dvrMeter.reset();
     this.broadcastClockOffsetUs = null;

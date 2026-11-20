@@ -143,7 +143,7 @@ interface Run {
 // the aggregate carries at a given number of connections. The transport is
 // modelled as always bringing the requested legs up at once.
 function simulate(opts: {
-  mode: StripeMode;
+  mode: StripeMode | ((tMs: number) => StripeMode);
   seconds: number;
   goodput: (width: number, tMs: number) => number;
   resyncAt?: (tMs: number, width: number) => boolean;
@@ -160,7 +160,7 @@ function simulate(opts: {
     if (opts.resyncAt?.(t, active)) resyncs++;
     const width = policy.decide({
       allowed: true,
-      mode: opts.mode,
+      mode: typeof opts.mode === 'function' ? opts.mode(t) : opts.mode,
       goodputBps: opts.goodput(active, t),
       liveRateBps: LIVE,
       resyncs,
@@ -350,6 +350,18 @@ describe('DvrStripePolicy (docs/91 D10)', () => {
     expect(Math.max(...r.widths)).toBe(1);
   });
 
+  it('engages on skips that recur slower than the engage hold (docs/91 §11.3)', () => {
+    // ~92 % of live never reads as starved; a skip every 25 s is the shortfall.
+    const r = simulate({
+      mode: 'auto',
+      seconds: 120,
+      goodput: (w) => (w === 1 ? 0.92 * LIVE : LIVE),
+      resyncAt: (t, w) => w === 1 && t > 0 && t % 25_000 === 0,
+    });
+    expect(r.final).toBe(2);
+    expect(r.phase).toBe('engaged');
+  });
+
   it('On engages ×2 at join, without evidence, and grows by the same rule', () => {
     const clean = simulate({ mode: 'on', seconds: 60, goodput: () => LIVE });
     expect(clean.widths[0]).toBe(2);
@@ -443,6 +455,38 @@ describe('DvrStripePolicy retries a held width (docs/91 §11.3)', () => {
     expect(changes(r.widths).map((x) => x.to)).toEqual([2, 3, 2, 3]);
     expect(r.final).toBe(3);
     expect(r.phase).toBe('engaged');
+  });
+
+  it('does not retry on the goodput dip at the edges of a pause', () => {
+    // Full link until 60 s (held at ×1), then a link that carries the stream.
+    // Every 40 s after that the broadcaster pauses for 8 s; the 2 s goodput
+    // window reads short just before and after each pause.
+    const paused = (t: number) => t >= 60_000 && t % 40_000 >= 20_000 && t % 40_000 < 28_000;
+    const nearPause = (t: number) => t >= 60_000 && t % 40_000 >= 18_000 && t % 40_000 < 30_000;
+    const r = simulate({
+      mode: 'auto',
+      seconds: 600,
+      goodput: (_w, t) => (t < 60_000 ? 5_000_000 : nearPause(t) ? 0.5 * LIVE : LIVE),
+      idle: paused,
+    });
+    expect(Math.max(...r.widths.slice(100_000 / TICK_MS))).toBe(1);
+    expect(r.phase).toBe('held');
+  });
+
+  it('a retry abandoned by Off does not double the next cool-down', () => {
+    // Full link: held at ×1 by ~25 s, retry ×2 after the 120 s cool-down;
+    // Off during that retry, then Auto again engages afresh and fails.
+    const offFrom = 150_000;
+    const offTo = 155_000;
+    const r = simulate({
+      mode: (t) => (t >= offFrom && t < offTo ? 'off' : 'auto'),
+      seconds: 600,
+      goodput: () => 5_000_000,
+    });
+    const c = changes(r.widths).filter((x) => x.t >= offTo);
+    // Fresh ×2, back to ×1, then the first retry after the BASE cool-down.
+    expect(c.slice(0, 3).map((x) => x.to)).toEqual([2, 1, 2]);
+    expect(Math.abs(c[2].t - c[1].t - DVR_STRIPE_RETRY_BASE_MS)).toBeLessThanOrEqual(TICK_MS);
   });
 
   it('does not advance the cool-down during a broadcaster pause', () => {

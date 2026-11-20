@@ -190,6 +190,12 @@ export class Reassembler {
     return this.duplicateFrames;
   }
 
+  // Broadcaster restart: a new frameId space, in which the old session's
+  // emitted ids are not duplicates.
+  noteRestart(): void {
+    this.recentlyEmitted.clear();
+  }
+
   private outOfOrder(): boolean {
     return this.cb.framesOutOfOrder?.() ?? false;
   }

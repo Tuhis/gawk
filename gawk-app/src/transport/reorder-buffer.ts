@@ -289,9 +289,10 @@ export class ReorderBuffer {
   private gopsOutOfOrder: () => boolean;
   // Timestamp of the last released frame, the late-GOP test's reference.
   private lastReleasedTimestampUs: bigint | null = null;
-  // Recently released frameIds (insertion ordered, bounded), so a frame
-  // arriving behind the decode position can be told apart as a copy of one
-  // that played (a duplicate) or one that never did (late: skipped as a hole).
+  // Recently held frameIds, released or dropped from the buffer (insertion
+  // ordered, bounded), so a frame arriving behind the decode position can be
+  // told apart as a copy of one that was here (a duplicate) or one that never
+  // was (late: skipped as a hole).
   private recentlyReleased = new Set<number>();
   // Windowed min of (arrivalMs − timestampMs): the pacing anchor.
   // Reset with the restart signal — new session, new timestamp timeline.
@@ -398,6 +399,11 @@ export class ReorderBuffer {
     // A delta at or behind the decode position is stale (already superseded).
     // Serial comparison: a delta just past the uint32 rollover is ahead.
     if (this.decodePosition !== null && !frameIdAhead(d.frameId, this.decodePosition)) {
+      // Striped, a copy of a frame already here is a duplicate, not a drop.
+      if (this.gopsOutOfOrder() && this.recentlyReleased.has(d.frameId)) {
+        this.stats.duplicateFrames++;
+        return;
+      }
       this.stats.deltasDropped++;
       if (this.gopsOutOfOrder()) this.countBehind(d.frameId);
       return;
@@ -472,6 +478,7 @@ export class ReorderBuffer {
       const oldest = this.buffer.keys().next();
       if (oldest.done) return;
       this.buffer.delete(oldest.value);
+      this.remember(oldest.value);
       this.stats.deltasDropped++;
     }
   }
@@ -571,6 +578,7 @@ export class ReorderBuffer {
       const behindBest = id !== best.frameId && !frameIdAhead(id, best.frameId);
       if (behindBest || (id === best.frameId && !e.keyframe)) {
         this.buffer.delete(id);
+        this.remember(id);
         if (!e.keyframe) this.stats.deltasDropped++;
       }
     }
@@ -639,6 +647,14 @@ export class ReorderBuffer {
 
   // Out of order, a frame behind the decode position is a duplicate if it
   // played and late if it was skipped (docs/91 D9).
+  private remember(frameId: number): void {
+    this.recentlyReleased.add(frameId);
+    if (this.recentlyReleased.size > RECENTLY_RELEASED_FRAMES) {
+      const oldest = this.recentlyReleased.values().next().value;
+      if (oldest !== undefined) this.recentlyReleased.delete(oldest);
+    }
+  }
+
   private countBehind(frameId: number): void {
     if (this.recentlyReleased.has(frameId)) this.stats.duplicateFrames++;
     else this.stats.lateFramesDropped++;
@@ -661,6 +677,7 @@ export class ReorderBuffer {
       if (e.keyframe) continue; // keyframes are always useful to resync on
       if (e.receivedAtMs < cutoff) {
         this.buffer.delete(id);
+        this.remember(id);
         this.stats.keyframeWaitDrops++;
       }
     }
@@ -670,11 +687,7 @@ export class ReorderBuffer {
     this.buffer.delete(entry.frameId);
     this.decodePosition = entry.frameId;
     this.lastReleasedTimestampUs = entry.timestampUs;
-    this.recentlyReleased.add(entry.frameId);
-    if (this.recentlyReleased.size > RECENTLY_RELEASED_FRAMES) {
-      const oldest = this.recentlyReleased.values().next().value;
-      if (oldest !== undefined) this.recentlyReleased.delete(oldest);
-    }
+    this.remember(entry.frameId);
     this.stats.released++;
     if (entry.keyframe) {
       this.stats.keyframesReleased++;

@@ -164,6 +164,23 @@ describe('ReorderBuffer with GOPs out of order (docs/91 D9)', () => {
     const s = h.rb.getStats();
     expect(s.duplicateFrames).toBe(2 * GOP);
     expect(s.lateFramesDropped).toBe(0);
+    // A duplicate is not a dropped delta either (PR review round 1).
+    expect(s.deltasDropped).toBe(0);
+  });
+
+  it('counts a copy of a frame dropped from the buffer as a duplicate, not late', () => {
+    const h = harness();
+    h.runTo(complete(0));
+    h.pushGop(0);
+    // GOP 1 starts arriving (keyframe 4 and delta 5) but stalls; GOP 2 wins.
+    h.rb.pushKeyframe({ frameId: 4, timestampUs: 400_000n, config: null, data: new Uint8Array([4]) });
+    h.rb.pushDelta({ frameId: 5, timestampUs: 500_000n, data: new Uint8Array([5]) });
+    h.runTo(complete(2));
+    h.pushGop(2);
+    h.runTo(due(9));
+    // 4 and 5 were held and dropped at the skip; 6 and 7 never arrived.
+    h.pushGop(1);
+    expect(h.rb.getStats()).toMatchObject({ duplicateFrames: 2, lateFramesDropped: 2 });
   });
 
   it('still recognises a broadcaster restart: a keyframe far behind on a new timeline', () => {
@@ -245,6 +262,18 @@ describe('Reassembler with frames out of order (docs/91 D9)', () => {
     r.push(chunk(2)); // served twice: dropped at the chunk, no phantom assembly
     expect(ids()).toEqual([5, 6, 7, 1, 2, 3]);
     expect(r.getStats()).toMatchObject({ framesDroppedLate: 0, staleChunks: 1, framesDroppedIncomplete: 0 });
+  });
+
+  it("forgets the old session's emitted frames on a broadcaster restart", () => {
+    const { r, ids } = reassembler(true);
+    r.noteStreamKeyframe(0);
+    for (const id of [1, 2, 3]) r.push(chunk(id));
+    r.noteRestart();
+    // The new session numbers from 0 again: 1–3 are new frames, not copies.
+    r.noteStreamKeyframe(0);
+    for (const id of [1, 2, 3]) r.push(chunk(id));
+    expect(ids()).toEqual([1, 2, 3, 1, 2, 3]);
+    expect(r.duplicateFramesDropped()).toBe(0);
   });
 
   it('keeps the watermark when frames arrive in order', () => {
