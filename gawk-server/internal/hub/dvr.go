@@ -367,7 +367,13 @@ func (r *DVRRing) findLocked(seq int64) *dvrGop {
 // large it is: dropping it would leave the ring with no decodable entry point
 // at all, which is worse than briefly exceeding the cap.
 func (r *DVRRing) evictLocked(now time.Time) {
-	for len(r.gops) > 1 && now.Sub(r.gops[0].at) > r.opts.Window {
+	// A GOP leaves only once all of it is older than the window, which is
+	// when its successor started more than a window ago. Measuring from its
+	// own start dropped a GOP whose first frame was due but whose rest a
+	// viewer's buffer still covered, so a cursor fell off the tail up to a GOP
+	// before the lag check would have resynced it (docs/91 §11.3). The ring
+	// therefore holds the window plus at most one GOP.
+	for len(r.gops) > 1 && now.Sub(r.gops[1].at) > r.opts.Window {
 		r.dropOldestLocked()
 	}
 	for len(r.gops) > 1 && r.opts.MaxBytes > 0 && r.bytes > r.opts.MaxBytes {

@@ -105,19 +105,52 @@ func TestDVRRingOwnsItsBytes(t *testing.T) {
 func TestDVRRingEvictsByWindow(t *testing.T) {
 	r := NewDVRRing(DVROptions{Window: 2 * time.Second, MaxBytes: 1 << 20})
 	t0 := time.Now()
-	// One GOP per 500 ms, six of them (t0 … t0+2500 ms). The window is measured
-	// against the newest GOP and the edge is inclusive, so GOP 1 at t0+500 is
-	// exactly 2000 ms old and stays; only GOP 0 is dropped.
+	// One GOP per 500 ms, six of them (t0 … t0+2500 ms). A GOP leaves only once
+	// all of it is older than the window, i.e. once its successor's start is
+	// (docs/91 §11.3): GOP 0 ends at t0+500, exactly 2000 ms before the newest
+	// append, and the edge is inclusive, so nothing is dropped yet.
 	for g := range 6 {
 		appendGop(r, g, 2, t0.Add(time.Duration(g)*500*time.Millisecond))
 	}
-	if got := r.OldestGopSeq(); got != 1 {
-		t.Errorf("OldestGopSeq = %d, want 1 (2 s window, inclusive edge)", got)
+	if got := r.OldestGopSeq(); got != 0 {
+		t.Errorf("OldestGopSeq = %d, want 0 (GOP 0 still ends inside the window)", got)
 	}
 	// One more GOP pushes the frontier along by exactly one.
 	appendGop(r, 6, 2, t0.Add(3*time.Second))
-	if got := r.OldestGopSeq(); got != 2 {
-		t.Errorf("OldestGopSeq = %d, want 2 after the window slid", got)
+	if got := r.OldestGopSeq(); got != 1 {
+		t.Errorf("OldestGopSeq = %d, want 1 after the window slid", got)
+	}
+}
+
+// docs/91 §11.3, the field case: a 3 s window, a 500 ms GOP, and a cursor on
+// the GOP that started 3000 ms before the newest one. Its first frame is due
+// now but the rest of it still plays, so it must not have fallen off the tail
+// while records of the newest GOP keep arriving; only once the GOP after it is
+// also older than the window may it go.
+func TestDVRRingKeepsAGopUntilAllOfItLeavesTheWindow(t *testing.T) {
+	r := NewDVRRing(DVROptions{Window: 3 * time.Second, MaxBytes: 1 << 24})
+	t0 := time.Now()
+	for g := range 7 { // GOPs at t0 … t0+3000 ms
+		appendGop(r, g, 2, t0.Add(time.Duration(g)*500*time.Millisecond))
+	}
+	cursor := r.ResyncCursor()
+	cursor.gopSeq = 0
+	tests := []struct {
+		name    string
+		at      time.Duration // a record of the newest GOP arriving this long after t0
+		offTail bool
+	}{
+		{"newest GOP just started", 3000 * time.Millisecond, false},
+		{"newest GOP 300 ms in", 3300 * time.Millisecond, false},
+		{"GOP 0's successor now older than the window", 3600 * time.Millisecond, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r.AppendRecord(recordBytes(6, 99), t0.Add(tc.at))
+			if got := r.FellOffTail(cursor); got != tc.offTail {
+				t.Errorf("FellOffTail = %v, want %v", got, tc.offTail)
+			}
+		})
 	}
 }
 
