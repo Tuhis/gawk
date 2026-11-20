@@ -256,7 +256,8 @@ progress, so a leg whose residue had no GOP for a while is not evicted.
 
 `dvrPacer` caps a subscriber at `-dvr-max-catchup × LiveRateBps`. A striped
 connection's pacer runs at that cap divided by N, so the group's catch-up
-never exceeds what one unstriped viewer may take. The egress budget
+never exceeds what one unstriped viewer may take. *As built, a floor lifts
+this at N ≥ 3 (§12, D4).* The egress budget
 (`consumeBandwidth`) and every docs/07 cap are unchanged. Legs already
 count against subscriber caps (`hub.go`, R30).
 
@@ -385,7 +386,7 @@ Order: SG0 → (decision per §9) → SG1 ∥ SG2 ∥ SG3 → SG4 → SG5.
 | Each connection serves exactly its residue's GOPs, keyframe and records, in order; across N connections every GOP is served exactly once while StripeState is fresh | hub test: N cursors on one ring, 600 GOPs, the union equals the ring and the pairwise intersections are empty |
 | StripeState expiry sends the primary back to every GOP; no GOP goes unserved across an expiry | hub test with a stopped refresh |
 | A leg that falls behind resyncs alone and the other connections keep their cursors | hub test: one leg's writes blocked past the buffer |
-| The pacer share is `max-catchup × live / N`; the group's catch-up egress never exceeds one unstriped subscriber's | pacer test |
+| The pacer share is `max-catchup × live / N`, floored at `min(1.5, max-catchup) × live` per connection (§12, D4); the group's catch-up egress never exceeds `max(max-catchup, 1.5 × N) × live` | pacer test |
 | A leg on another pod serves the same GOPs it would on the primary's pod | e2e-cluster: primary and leg pinned to different pods, frameIDs compared |
 | Existing DVR, R30 and R19 tests pass unmodified | CI |
 
@@ -659,16 +660,24 @@ shipped default stays 3 s.
   behind live, while a new leg starts at the newest GOP. Filtering the GOPs
   in between would leave several of them served by nobody. With this rule,
   engaging or widening costs some duplicate GOPs and never a gap.
-- **D4, a per-connection floor (PR review round 1).** A striped
+- **D4, a per-connection floor (PR review rounds 1 and 2).** A striped
   connection's share is `live / N`, but never below what lets it catch up at
   1.5× live (`dvrStripeMinConnCatchup`): at the default `-dvr-max-catchup`
   of 4 and N = 4 the plain share is exactly 1× live, and a connection whose
   run of GOPs starts behind could never catch up; with `-dvr-max-catchup`
-  below N, striping would add lag. The floor never exceeds the unstriped
-  rate. So at N ≥ 3 and the default, the stripe together may catch up at
-  up to 1.5 × N × live, above one unstriped viewer's 4×; the process-wide
-  egress budget still bounds it. Audio shares the primary's bucket and is
-  never striped.
+  below N, striping would add lag. The share never exceeds the unstriped
+  rate, so with `-dvr-max-catchup` between 1 and 1.5 the floor is that
+  multiple, not 1.5×.
+  - **The trade-off.** The stripe's group catch-up is
+    `max(max-catchup, 1.5 × N) × live`: at the default 4 that is 4× at
+    N = 2, 4.5× at N = 3 and 6× at N = 4, against one unstriped viewer's 4×.
+    By default nothing else bounds it: the process-wide egress budget exists
+    only when `-max-bandwidth` is set, and its default is 0 (no limit). So a
+    herd of ×4 striped viewers recovering from one network event at once
+    takes up to 1.5× what the same herd unstriped would. Accepted: striping
+    engages only for viewers whose connections cannot carry the stream, and
+    a deployment that needs a hard bound sets `-max-bandwidth`.
+  - Audio shares the primary's bucket and is never striped.
 - **D4, a pacer fix that was latent before R87.** A write larger than the
   whole token-bucket burst now passes once the bucket is full, as debt
   repaid at the ceiling's rate. Before, any keyframe larger than a quarter
@@ -740,13 +749,19 @@ shipped default stays 3 s.
     engage only if skips came less than 10 s apart. Skips seen at one width
     are forgotten when the width changes.
   - A window with no video bytes on any connection is *idle*, a broadcaster
-    pause: it neither engages, sets a baseline nor judges a step. Nor do
-    the 2 s on either side of it, while the 2 s goodput window still
-    averages in the silence (PR review round 1): samples from the 2 s before
-    a pause are discarded when it starts, and none are taken until 2 s
-    after it ends. A window
+    pause: it neither engages, sets a baseline nor judges a step. A window
     with bytes but no complete frame is starvation, and counts as goodput 0.
-    A pause restarts a step's evaluation, but only up to 60 s past when it
+  - Nor do the samples near a pause count, while the 2 s goodput window
+    still averages in its silence (PR review rounds 1 and 2). A pause
+    reaches `DVR_STRIPE_PAUSE_EDGE_MS` (2.5 s: the window plus one 500 ms
+    tick, since idle flips anywhere within a tick) to either side: samples
+    that close before it are discarded when it starts, and none are taken
+    until that long after it ends. Every decision (a step's baseline and
+    its evaluation) reads only samples at least that old, so a pause that
+    starts just after a decision cannot have shaped it; each decision comes
+    2.5 s later. Pauses recurring faster than about every 5 s leave no
+    sample to judge a step on, so the step waits, as over one long pause.
+  - A pause restarts a step's evaluation, but only up to 60 s past when it
     would first have ended. After that the step is judged on what it has,
     and never on fewer than 10 frame-bearing samples, so a long pause
     cannot condemn a step.
@@ -860,7 +875,9 @@ shipped default stays 3 s.
     counts as present at 0.1 %, so one lost keepalive in a near-idle 5 s
     scrape read as several percent. The live path takes the shortest recent
     window with enough packets, reaching back at most 60 s; with nothing
-    sent for 60 s the fact is gone.
+    sent for 60 s the fact is gone. The window starts over when the
+    subscriber's relay key changes (round 2): the telemetry session id
+    survives a reconnect, so counters alone could mix two connections.
 
 **End to end (SG4)**
 - **The production viewer under loss** is §11.2.
