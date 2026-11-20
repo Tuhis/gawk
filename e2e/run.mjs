@@ -2662,6 +2662,9 @@ async function main() {
         delivery: 'deep',
         stripe: 'on',
         expectDvrStripe: true,
+        // assertDvrFlow checks the grant against it, so the striped pass also
+        // proves the legs ask with the configured buffer, not the default.
+        dvrBufferMs: DEEP_BUFFER_CONFIG_MS,
       });
     }
 
