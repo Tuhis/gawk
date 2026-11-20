@@ -279,7 +279,7 @@ export function useViewerConnection(
   const ensureSink = useCallback((): AudioSink | null => {
     if (sinkRef.current) return sinkRef.current;
     if (!audioSinkSupported()) return null;
-    // Three-valued: Deep buffer needs a floor at DVR_BUFFER_MS, not the
+    // Three-valued: Deep buffer needs a floor at getDvrBufferMs(), not the
     // resilient 500 ms, and live edge needs neither — a truthy check on the
     // mode would hand live edge the resilient profile.
     const profile = (): AudioBufferProfile =>

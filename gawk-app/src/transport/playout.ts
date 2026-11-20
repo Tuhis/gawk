@@ -119,21 +119,33 @@ export const RESILIENT_PLAYOUT_PROFILE: PlayoutProfile = {
   stepUpAboveMs: 150,
 };
 
-// The buffer a viewer requests from the relay's DVR ring, and the playout
-// floor that goes with it. The value must strictly exceed the stall it covers
-// — 3 s of buffer backs a ~2 s stall at 3x recovery bandwidth.
-export const DVR_BUFFER_MS = getDvrBufferMs();
-
+// The buffer a viewer requests from the relay's DVR ring is getDvrBufferMs()
+// (config.ts), and this profile is the playout floor that goes with it. The
+// value must strictly exceed the stall it covers — 3 s of buffer backs a ~2 s
+// stall at 3x recovery bandwidth.
+//
 // The resilient envelope with its floor raised to what the relay's ring can
 // keep filled. maxMs rises with it so the adaptive controller is not clamped
 // below its own floor.
-export const DVR_PLAYOUT_PROFILE: PlayoutProfile = {
-  ...RESILIENT_PLAYOUT_PROFILE,
-  seedMs: DVR_BUFFER_MS,
-  minMs: DVR_BUFFER_MS,
-  maxMs: Math.max(RESILIENT_PLAYOUT_PROFILE.maxMs, DVR_BUFFER_MS),
-  quantileRangeMs: Math.max(RESILIENT_PLAYOUT_PROFILE.quantileRangeMs, DVR_BUFFER_MS + 500),
-};
+//
+// Built on use, never at import: in a Web Worker the runtime config arrives
+// with the init message, after this module has been evaluated. Cached per
+// buffer value because the reorder buffer rebuilds its jitter histogram
+// whenever the profile's identity changes.
+let dvrProfile: PlayoutProfile | null = null;
+export function getDvrPlayoutProfile(): PlayoutProfile {
+  const bufferMs = getDvrBufferMs();
+  if (dvrProfile?.minMs !== bufferMs) {
+    dvrProfile = {
+      ...RESILIENT_PLAYOUT_PROFILE,
+      seedMs: bufferMs,
+      minMs: bufferMs,
+      maxMs: Math.max(RESILIENT_PLAYOUT_PROFILE.maxMs, bufferMs),
+      quantileRangeMs: Math.max(RESILIENT_PLAYOUT_PROFILE.quantileRangeMs, bufferMs + 500),
+    };
+  }
+  return dvrProfile;
+}
 
 // What the relay's DeliveryAck said about this session, or null before it
 // arrives. Module state like the delivery mode itself, and reset on every mode
@@ -167,7 +179,7 @@ export function getPlayoutProfile(): PlayoutProfile {
   if (!getResilientMode()) return DEFAULT_PLAYOUT_PROFILE;
   // The user's choice applies at once; only an explicit denial walks it back.
   // See the DvrAck comment for why the asymmetry matters.
-  return getDeepBuffer() && dvrAck !== 'denied' ? DVR_PLAYOUT_PROFILE : RESILIENT_PLAYOUT_PROFILE;
+  return getDeepBuffer() && dvrAck !== 'denied' ? getDvrPlayoutProfile() : RESILIENT_PLAYOUT_PROFILE;
 }
 
 // The subset of a profile this controller actually reads: a clamp plus an

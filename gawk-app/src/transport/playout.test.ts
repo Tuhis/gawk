@@ -24,7 +24,7 @@ import {
   setPlayoutMode,
   setViewerDeliveryMode,
   updatePlayoutController,
-  DVR_PLAYOUT_PROFILE,
+  getDvrPlayoutProfile,
   setDvrGranted,
 } from './playout';
 
@@ -360,9 +360,9 @@ describe('viewer delivery mode', () => {
     // Applied before the ack arrives: deepening later would make the reorder
     // buffer hold frames longer mid-session, which is a visible multi-second
     // freeze.
-    expect(getPlayoutProfile()).toBe(DVR_PLAYOUT_PROFILE);
+    expect(getPlayoutProfile()).toBe(getDvrPlayoutProfile());
     setDvrGranted(true);
-    expect(getPlayoutProfile()).toBe(DVR_PLAYOUT_PROFILE);
+    expect(getPlayoutProfile()).toBe(getDvrPlayoutProfile());
   });
 
   it('shortens the buffer when the relay says it is not serving a ring', () => {
@@ -381,6 +381,34 @@ describe('viewer delivery mode', () => {
     setViewerDeliveryMode('deep');
     // The new session starts unknown, not denied: a relay that was replaced
     // mid-view must not keep an old refusal in force.
-    expect(getPlayoutProfile()).toBe(DVR_PLAYOUT_PROFILE);
+    expect(getPlayoutProfile()).toBe(getDvrPlayoutProfile());
+  });
+});
+
+// The viewer pipeline runs in a Web Worker on Chromium and Firefox. A worker
+// has no `window`; the main thread hands it the runtime config at init, after
+// every module here has been imported. So the Deep buffer floor must be read
+// from the config when it is used, not frozen at import time. This file runs
+// in vitest's node environment, which has no `window` either.
+describe('Deep buffer floor in a worker context', () => {
+  const scope = globalThis as { __GAWK_CONFIG__?: unknown };
+  afterEach(() => {
+    delete scope.__GAWK_CONFIG__;
+    setViewerDeliveryMode('live');
+    setDvrGranted(false);
+  });
+
+  it('takes dvrBufferMs from the config handed over after import', () => {
+    expect(typeof window).toBe('undefined');
+    scope.__GAWK_CONFIG__ = { dvrBufferMs: 4000 };
+    setViewerDeliveryMode('deep');
+    const profile = getPlayoutProfile();
+    expect(profile.seedMs).toBe(4000);
+    expect(profile.minMs).toBe(4000);
+    expect(profile.maxMs).toBeGreaterThanOrEqual(4000);
+    expect(profile.quantileRangeMs).toBeGreaterThanOrEqual(4500);
+    // The reorder buffer rebuilds its jitter histogram whenever the profile's
+    // identity changes, so an unchanged config must give the same object.
+    expect(getPlayoutProfile()).toBe(profile);
   });
 });
