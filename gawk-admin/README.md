@@ -101,7 +101,7 @@ the store, the reconciler or a migration:
 ```sh
 docker run -d --rm --name gawk-admin-pg \
   -e POSTGRES_USER=gawk -e POSTGRES_PASSWORD=gawk -e POSTGRES_DB=gawkadmin \
-  -p 55432:5432 postgres:18-alpine
+  -p 55432:5432 postgres:19-alpine
 
 export GAWK_ADMIN_TEST_DSN='postgres://gawk:gawk@127.0.0.1:55432/gawkadmin?sslmode=disable'
 go test ./...

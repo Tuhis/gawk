@@ -319,7 +319,7 @@ services:
       POSTGRES_PASSWORD: gawk
       POSTGRES_DB: gawkadmin
     volumes:
-      # /var/lib/postgresql, NOT .../data: the postgres:18 image refuses the
+      # /var/lib/postgresql, NOT .../data: the postgres:18+ images refuse the
       # old data-subdirectory mount point (docker-library/postgres#37).
       - admin-pg-data:/var/lib/postgresql
     healthcheck:
