@@ -64,6 +64,13 @@ export const DVR_STRIPE_REENGAGE_BACKOFF_MS = 5_000;
 // the live rate over a long one so it spans several GOPs.
 export const DVR_GOODPUT_WINDOW_MS = 2_000;
 export const DVR_LIVE_RATE_WINDOW_MS = 10_000;
+// How far a pause's silence reaches into the goodput samples on either side
+// of it: the goodput window, plus one 500 ms stats tick, since idle turns
+// true (and back) anywhere within a tick. Samples that close to a pause are
+// discarded, and decisions read only samples at least this old, so a pause
+// that starts just after a decision cannot have shaped it (PR review rounds
+// 1 and 2).
+export const DVR_STRIPE_PAUSE_EDGE_MS = DVR_GOODPUT_WINDOW_MS + 500;
 
 // D8, D10, OD4: a deep-buffer session may stripe only against a relay that
 // advertises CAP_STRIPED_DVR and actually granted the ring, and only when the
@@ -382,8 +389,8 @@ export class DvrStripePolicy {
     if (input.idle) {
       // Entering a pause: the window before it already averaged in the
       // silence that made it idle, so those samples are not goodput either.
-      if (this.lastIdleAt === null || now - this.lastIdleAt > DVR_GOODPUT_WINDOW_MS) {
-        while (this.samples.length > 0 && this.samples[this.samples.length - 1].atMs > now - DVR_GOODPUT_WINDOW_MS) {
+      if (this.lastIdleAt === null || now - this.lastIdleAt > DVR_STRIPE_PAUSE_EDGE_MS) {
+        while (this.samples.length > 0 && this.samples[this.samples.length - 1].atMs > now - DVR_STRIPE_PAUSE_EDGE_MS) {
           this.samples.pop();
         }
       }
@@ -396,7 +403,7 @@ export class DvrStripePolicy {
       return;
     }
     // Leaving a pause: the goodput window still spans part of it.
-    if (this.lastIdleAt !== null && now - this.lastIdleAt < DVR_GOODPUT_WINDOW_MS) return;
+    if (this.lastIdleAt !== null && now - this.lastIdleAt < DVR_STRIPE_PAUSE_EDGE_MS) return;
     // Bytes are arriving but no frame completed: starvation, zero goodput.
     const goodputBps = input.goodputBps ?? 0;
     this.samples.push({ atMs: now, bps: goodputBps });
@@ -414,7 +421,8 @@ export class DvrStripePolicy {
   }
 
   private step(now: number, width: number): void {
-    this.baselineBps = this.meanGoodput(now - DVR_STRIPE_ENGAGE_MS, now);
+    const settled = now - DVR_STRIPE_PAUSE_EDGE_MS;
+    this.baselineBps = this.meanGoodput(settled - DVR_STRIPE_ENGAGE_MS, settled);
     this.previous = this.target;
     this.target = Math.min(DVR_STRIPE_MAX_WIDTH, width);
     this.phase = 'stepping';
@@ -435,14 +443,17 @@ export class DvrStripePolicy {
     // holds enough frame-bearing samples. Past the postponement bound, the
     // window since the legs first came up — again only once it holds enough:
     // a step is never judged on a pause, however long.
+    // Judged on samples a pause starting now could still discard? Not yet:
+    // the window ends DVR_STRIPE_PAUSE_EDGE_MS ago.
+    const to = now - DVR_STRIPE_PAUSE_EDGE_MS;
     let from = this.activeAt + DVR_STRIPE_SETTLE_MS;
-    const ready = now >= from + DVR_STRIPE_EVAL_MS && this.sampleCount(from, now) >= DVR_STRIPE_MIN_EVAL_SAMPLES;
+    const ready = to >= from + DVR_STRIPE_EVAL_MS && this.sampleCount(from, to) >= DVR_STRIPE_MIN_EVAL_SAMPLES;
     if (!ready) {
       if (now < this.evalDeadline()) return;
       from = this.firstActiveAt + DVR_STRIPE_SETTLE_MS;
-      if (this.sampleCount(from, now) < DVR_STRIPE_MIN_EVAL_SAMPLES) return;
+      if (this.sampleCount(from, to) < DVR_STRIPE_MIN_EVAL_SAMPLES) return;
     }
-    const after = this.meanGoodput(from, now);
+    const after = this.meanGoodput(from, to);
     const shortfallGone =
       this.liveRateBps !== null &&
       after >= DVR_STRIPE_SHORTFALL_GONE_RATIO * this.liveRateBps &&

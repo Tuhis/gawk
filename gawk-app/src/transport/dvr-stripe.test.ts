@@ -6,10 +6,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DVR_STRIPE_ENGAGE_MS,
+  DVR_STRIPE_EVAL_MS,
   DVR_STRIPE_MAX_WIDTH,
   DVR_STRIPE_REENGAGE_BACKOFF_MS,
   DVR_STRIPE_RETRY_BASE_MS,
   DVR_STRIPE_RETRY_MAX_MS,
+  DVR_STRIPE_SETTLE_MS,
   DvrGoodputMeter,
   DvrStripePolicy,
   dvrStripeAllowed,
@@ -282,9 +284,11 @@ describe('DvrStripePolicy (docs/91 D10)', () => {
   });
 
   it('does not postpone a step\'s evaluation forever: a flickering pause still gets judged', () => {
-    // A full link (the step cannot help); once engaged, a one-tick pause
-    // every 4 s keeps restarting the evaluation.
-    const flicker = (t: number) => t > 12_000 && t % 4000 === 0;
+    // A full link (the step cannot help); once engaged, a pause every 8 s
+    // keeps restarting the evaluation. Each lasts 2 s, the shortest idle the
+    // meter reports (no bytes for its 2 s goodput window); with the samples
+    // near each pause set aside, about 1 s of every 8 is judged.
+    const flicker = (t: number) => t > 12_000 && t % 8000 < 2000;
     const r = simulate({
       mode: 'auto',
       seconds: 120,
@@ -471,6 +475,28 @@ describe('DvrStripePolicy retries a held width (docs/91 §11.3)', () => {
     });
     expect(Math.max(...r.widths.slice(100_000 / TICK_MS))).toBe(1);
     expect(r.phase).toBe('held');
+  });
+
+  it('does not judge a step on the goodput dip before a pause starts (PR review round 2)', () => {
+    // ×1 at 85 % of live, ×2 at the live rate: the step clears the shortfall.
+    const goodput = (w: number) => (w === 1 ? 0.85 * LIVE : LIVE);
+    const clean = simulate({ mode: 'auto', seconds: 60, goodput });
+    const stepAt = changes(clean.widths)[0].t;
+    // Its first possible judgement is settle + eval after the step. The
+    // broadcaster pauses so that idle turns true just after it: the 2 s
+    // before, the goodput window decays toward 0, and so for 2 s after.
+    const evalAt = stepAt + DVR_STRIPE_SETTLE_MS + DVR_STRIPE_EVAL_MS;
+    const idleFrom = evalAt + 1000;
+    const idleTo = idleFrom + 6000;
+    const dip = (t: number) => (t >= idleFrom - 2000 && t < idleFrom) || (t >= idleTo && t < idleTo + 2000);
+    const r = simulate({
+      mode: 'auto',
+      seconds: 90,
+      goodput: (w, t) => (dip(t) ? 0.4 * goodput(w) : goodput(w)),
+      idle: (t) => t >= idleFrom && t < idleTo,
+    });
+    expect(r.final).toBe(2);
+    expect(r.phase).toBe('engaged');
   });
 
   it('a retry abandoned by Off does not double the next cool-down', () => {
