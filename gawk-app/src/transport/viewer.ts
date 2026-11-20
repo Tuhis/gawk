@@ -402,7 +402,9 @@ export interface ViewerStats extends ReassemblerStats {
   //                            slots beyond the current width are left out
   //                            (kept, and resumed if the width grows back)
   //   dvrStripePhase           the Auto policy's state (docs/91 D10): held
-  //                            means a step did not help and was undone
+  //                            means a step did not help and was undone, and
+  //                            the policy is cooling down before it retries
+  //                            the next width (stepping again)
   //   dvrDuplicateFrames       frames served twice (StripeState expiry, a
   //                            width transition), dropped by frameId
   //   dvrLateFramesDropped     frames of a GOP that arrived after its

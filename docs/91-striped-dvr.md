@@ -729,6 +729,17 @@ Same path (1 % loss, 40 ms) and Auto, 300 s each, with the resync log on.
     target differs. A request at the current width cancels a transition
     still dialing.
   - *On* never drops below ×2.
+  - *Revised 2026-11-20 (§11.3):* `held` is a cool-down, not a verdict for
+    the session. After 120 s held (idle time not counted), a session still
+    undersupplied retries the next width. Each retry that fails again
+    doubles the cool-down, up to 15 minutes; one that helps resets it. In
+    §11.3, two of three runs locked in ×2 while still losing GOPs, because
+    from just below the live rate ×3 could show neither a 20 % gain nor a
+    skip-free 10 s window. A later retry catches one.
+  - Hole skips are not used to *judge* a step. At the rate §11.3 saw, about
+    one resync every 25 s, a 10 s evaluation window shows none two-thirds
+    of the time even when the step changed nothing, so "skips halved" would
+    measure chance.
 - **D11, as built.**
   - **Order of signals.** On a width change, the primary's new StripeState
     goes out as a burst (0, 100 and 200 ms). Only after that does the drain

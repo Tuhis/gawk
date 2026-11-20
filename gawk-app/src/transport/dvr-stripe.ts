@@ -41,6 +41,13 @@ export const DVR_STRIPE_DIAL_TIMEOUT_MS = 10_000;
 // past when the evaluation would first have ended; then the step is judged on
 // every frame-bearing sample since its legs came up.
 export const DVR_STRIPE_MAX_EVAL_POSTPONE_MS = 60_000;
+// A held width is a cool-down, not a verdict for the session (docs/91 §11.3:
+// held ×2 kept losing GOPs that ×3 would have saved). After this much
+// non-idle time held, a session still undersupplied retries the next width;
+// each retry that fails again doubles the cool-down, up to the cap, so a
+// genuinely full link tries rarely; a step that helps resets it.
+export const DVR_STRIPE_RETRY_BASE_MS = 120_000;
+export const DVR_STRIPE_RETRY_MAX_MS = 15 * 60_000;
 // A step is never judged on fewer frame-bearing samples than this since its
 // legs came up (5 s at the 500 ms stats cadence): an empty window would read
 // as "not helped" and hold the policy for the session over a long pause.
@@ -219,8 +226,11 @@ interface GoodputSample {
 // it by DVR_STRIPE_HELP_RATIO, or removed the shortfall
 // (DVR_STRIPE_SHORTFALL_GONE_RATIO), stays, and if the stream is still undersupplied
 // the next step follows, up to DVR_STRIPE_MAX_WIDTH; a step that did not
-// returns to the previous width and holds it for the session — on a full
-// link extra connections take nothing more, so Auto ends at ×1 or ×2 (G4).
+// returns to the previous width and holds it for a cool-down
+// (DVR_STRIPE_RETRY_BASE_MS of non-idle time, doubling per failed retry)
+// before it retries the next width if still undersupplied — on a full link
+// extra connections take nothing more, so Auto keeps returning to ×1 or ×2,
+// ever more rarely (G4).
 // On engages ×2 at join without evidence and grows by the same rule; it never
 // returns below ×2. Off never stripes.
 export class DvrStripePolicy {
@@ -241,6 +251,13 @@ export class DvrStripePolicy {
   private lastResyncAt: number | null = null;
   private liveRateBps: number | null = null;
   private samples: GoodputSample[] = [];
+  // The held cool-down: non-idle time spent held so far, the clock it is
+  // advanced from, whether the step in flight is a retry, and how many
+  // retries in a row have failed.
+  private heldMs = 0;
+  private lastDecideAt: number | null = null;
+  private retrying = false;
+  private failedRetries = 0;
 
   constructor(now: () => number = () => performance.now()) {
     this.now = now;
@@ -267,9 +284,14 @@ export class DvrStripePolicy {
   decide(input: DvrStripeInput): number {
     const now = this.now();
     this.observe(now, input);
+    // Pauses don't count toward the cool-down: a retry is judged on frames,
+    // and a full link that is paused has learned nothing new.
+    if (this.phase === 'held' && this.lastDecideAt !== null && !input.idle) {
+      this.heldMs += now - this.lastDecideAt;
+    }
+    this.lastDecideAt = now;
     if (!input.allowed || input.mode === 'off') {
-      // A held width survives an Off flip: the session already learned that
-      // more connections don't help here.
+      // A held width, and its cool-down, survive an Off flip.
       if (this.phase !== 'held') {
         this.phase = 'idle';
         this.target = 1;
@@ -303,6 +325,10 @@ export class DvrStripePolicy {
         // On's floor holds even over a session that learned ×1 under Auto.
         if (input.mode === 'on' && this.target < DVR_STRIPE_START_WIDTH) {
           this.target = DVR_STRIPE_START_WIDTH;
+        }
+        if (this.heldMs >= this.retryCooldownMs() && this.undersupplied && this.target < DVR_STRIPE_MAX_WIDTH) {
+          this.retrying = true;
+          this.step(now, this.target + 1);
         }
         break;
     }
@@ -392,6 +418,8 @@ export class DvrStripePolicy {
       return;
     }
     this.phase = 'engaged';
+    this.retrying = false;
+    this.failedRetries = 0;
     // Still short of the stream after a step that helped: the next one is
     // already justified by the evaluation window itself.
     const stillShort =
@@ -410,6 +438,13 @@ export class DvrStripePolicy {
     this.target = this.previous;
     this.phase = 'held';
     this.activeAt = null;
+    if (this.retrying) this.failedRetries++;
+    this.retrying = false;
+    this.heldMs = 0;
+  }
+
+  private retryCooldownMs(): number {
+    return Math.min(DVR_STRIPE_RETRY_MAX_MS, DVR_STRIPE_RETRY_BASE_MS * 2 ** this.failedRetries);
   }
 
   private sampleCount(fromMs: number, toMs: number): number {

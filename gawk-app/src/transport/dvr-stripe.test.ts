@@ -8,6 +8,8 @@ import {
   DVR_STRIPE_ENGAGE_MS,
   DVR_STRIPE_MAX_WIDTH,
   DVR_STRIPE_REENGAGE_BACKOFF_MS,
+  DVR_STRIPE_RETRY_BASE_MS,
+  DVR_STRIPE_RETRY_MAX_MS,
   DvrGoodputMeter,
   DvrStripePolicy,
   dvrStripeAllowed,
@@ -193,7 +195,7 @@ describe('DvrStripePolicy (docs/91 D10)', () => {
     expect(Math.max(...r.widths)).toBe(2);
     expect(r.final).toBe(1);
     expect(r.phase).toBe('held');
-    // Held for the session: once back at ×1 it never tries again.
+    // Back at ×1 at the end: retries (below) never leave a wider width held.
     const back = r.widths.lastIndexOf(2) + 1;
     expect(r.widths.slice(back).every((w) => w === 1)).toBe(true);
   });
@@ -285,10 +287,12 @@ describe('DvrStripePolicy (docs/91 D10)', () => {
     const flicker = (t: number) => t > 12_000 && t % 4000 === 0;
     const r = simulate({
       mode: 'auto',
-      seconds: 240,
+      seconds: 120,
       goodput: (_w, t) => (flicker(t) ? 0 : 5_000_000),
       idle: flicker,
     });
+    // Judged (not helped) by the postponement bound, well before the cool-down
+    // could bring a retry.
     expect(Math.max(...r.widths)).toBe(2);
     expect(r.final).toBe(1);
     expect(r.phase).toBe('held');
@@ -397,5 +401,95 @@ describe('DvrStripePolicy (docs/91 D10)', () => {
     expect(policy.decide({ ...base, allowed: true })).toBe(2);
     expect(policy.decide({ ...base, allowed: false })).toBe(1);
     expect(policy.decide({ ...base, allowed: true })).toBe(2);
+  });
+});
+
+// Times (ms) at which the requested width changed, with the new width.
+function changes(widths: number[]): { t: number; to: number }[] {
+  const out: { t: number; to: number }[] = [];
+  for (let i = 1; i < widths.length; i++) {
+    if (widths[i] !== widths[i - 1]) out.push({ t: i * TICK_MS, to: widths[i] });
+  }
+  return out;
+}
+
+// docs/91 §11.3: `held` locked in a width that still lost GOPs for the rest
+// of the session. It is now a cool-down: a still-undersupplied session retries
+// the next width after DVR_STRIPE_RETRY_BASE_MS of non-idle time, doubling
+// after each retry that fails again, reset by one that helps.
+describe('DvrStripePolicy retries a held width (docs/91 §11.3)', () => {
+  it('retries a full link after 120 s, fails, backs off to 240 s, and never holds a wider width', () => {
+    const r = simulate({ mode: 'auto', seconds: 700, goodput: () => 5_000_000 });
+    const c = changes(r.widths);
+    // engage, back, retry, back, retry, back, …
+    expect(c.slice(0, 6).map((x) => x.to)).toEqual([2, 1, 2, 1, 2, 1]);
+    const near = (a: number, b: number) => expect(Math.abs(a - b)).toBeLessThanOrEqual(TICK_MS);
+    near(c[2].t - c[1].t, DVR_STRIPE_RETRY_BASE_MS);
+    near(c[4].t - c[3].t, 2 * DVR_STRIPE_RETRY_BASE_MS);
+    expect(Math.max(...r.widths)).toBe(2);
+    expect(r.final).toBe(1);
+  });
+
+  it('ends at ×3 when ×2 is near the live rate but still skips GOPs and ×3 removes the skips', () => {
+    // ×1 starved; ×2 at 97 % of live with a hole skip every 8 s; ×3 at the
+    // live rate, its first try still skipping (transition noise) and clean
+    // after that — the lab's runs that held ×2 for the session.
+    const r = simulate({
+      mode: 'auto',
+      seconds: 300,
+      goodput: (w) => (w === 1 ? 0.6 * LIVE : w === 2 ? 0.97 * LIVE : LIVE),
+      resyncAt: (t, w) => t > 0 && t % 8000 === 0 && (w === 2 || (w === 3 && t < 60_000)),
+    });
+    expect(changes(r.widths).map((x) => x.to)).toEqual([2, 3, 2, 3]);
+    expect(r.final).toBe(3);
+    expect(r.phase).toBe('engaged');
+  });
+
+  it('does not advance the cool-down during a broadcaster pause', () => {
+    // Held at ~23 s; a 100 s pause inside the cool-down pushes the retry out.
+    const paused = (t: number) => t >= 40_000 && t < 140_000;
+    const r = simulate({
+      mode: 'auto',
+      seconds: 400,
+      goodput: (_w, t) => (paused(t) ? 0 : 5_000_000),
+      idle: paused,
+    });
+    const c = changes(r.widths);
+    expect(c[1].to).toBe(1);
+    expect(c[2].to).toBe(2);
+    expect(c[2].t - c[1].t).toBeGreaterThanOrEqual(DVR_STRIPE_RETRY_BASE_MS + 100_000 - TICK_MS);
+  });
+
+  it('resets the backoff after a retry that helps', () => {
+    // A full link until 300 s (engage fails, first retry fails: cool-down now
+    // 240 s); then a per-connection ceiling, so the next retry helps and
+    // grows; from 500 s the link caps at 8 Mbit/s, so ×4 fails — and the
+    // cool-down after it is back at the base, not 480 s.
+    const r = simulate({
+      mode: 'auto',
+      seconds: 900,
+      goodput: (w, t) => (t < 300_000 ? 5_000_000 : t < 500_000 ? Math.min(LIVE, w * 4_000_000) : Math.min(8_000_000, w * 4_000_000)),
+    });
+    const c = changes(r.widths);
+    const toFour = c.findIndex((x) => x.to === 4);
+    expect(toFour).toBeGreaterThan(0);
+    expect(c[toFour + 1].to).toBe(3);
+    expect(c[toFour + 2].to).toBe(4);
+    expect(Math.abs(c[toFour + 2].t - c[toFour + 1].t - DVR_STRIPE_RETRY_BASE_MS)).toBeLessThanOrEqual(TICK_MS);
+  });
+
+  it(`caps the cool-down at ${DVR_STRIPE_RETRY_MAX_MS / 60_000} min`, () => {
+    const r = simulate({ mode: 'auto', seconds: 4 * 3600, goodput: () => 5_000_000 });
+    const c = changes(r.widths);
+    let maxGap = 0;
+    for (let i = 2; i < c.length; i += 2) maxGap = Math.max(maxGap, c[i].t - c[i - 1].t);
+    expect(maxGap).toBeLessThanOrEqual(DVR_STRIPE_RETRY_MAX_MS + TICK_MS);
+    expect(maxGap).toBeGreaterThanOrEqual(DVR_STRIPE_RETRY_MAX_MS - TICK_MS);
+  });
+
+  it('keeps On at ×2 or wider through a failed retry', () => {
+    const r = simulate({ mode: 'on', seconds: 400, goodput: () => 5_000_000 });
+    expect(Math.min(...r.widths)).toBe(2);
+    expect(Math.max(...r.widths)).toBe(3);
   });
 });
