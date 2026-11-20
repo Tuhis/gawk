@@ -14,6 +14,7 @@ package hub
 // exactly the GOPs it would serve beside the primary.
 
 import (
+	"math"
 	"time"
 
 	"github.com/Tuhis/gawk/gawk-server/wire"
@@ -121,15 +122,37 @@ func (s *Subscriber) dvrSkipGop(wake, drain <-chan struct{}) bool {
 	return true
 }
 
+// dvrStripeMinConnCatchup is the least catch-up, as a multiple of the live
+// rate, a striped connection's pacer allows (D4). A connection that starts
+// its run of GOPs behind must deliver faster than real time to catch up, and
+// on engaging the primary serves the backlog from before the period alone:
+// -dvr-max-catchup / N at the default 4 and N = 4 is exactly 1× live, and
+// below N it is less, which would make striping add lag (PR review round 1).
+const dvrStripeMinConnCatchup = 1.5
+
 // dvrPaceBps is the live rate this connection's catch-up pacer is scaled
 // by: the ring's rate divided by the stripe width (D4), so a stripe's
-// connections together never catch up faster than one unstriped viewer.
+// connections together catch up no faster than one unstriped viewer, but
+// never below dvrStripeMinConnCatchup × live for any one connection.
 func (s *Subscriber) dvrPaceBps() int {
 	live := s.dvr.LiveRateBps()
-	if _, n, _ := s.dvrStripeShare(time.Now().UnixNano()); n > 1 {
-		return live / n
+	_, n, _ := s.dvrStripeShare(time.Now().UnixNano())
+	return stripePaceBps(live, n, s.dvrPace.multiple)
+}
+
+// stripePaceBps is dvrPaceBps's arithmetic: live / n, floored so that
+// multiple × the result is at least dvrStripeMinConnCatchup × live.
+func stripePaceBps(live, n int, multiple float64) int {
+	if n <= 1 || live <= 0 {
+		return live
 	}
-	return live
+	share := live / n
+	if multiple > 0 {
+		if floor := int(math.Ceil(dvrStripeMinConnCatchup * float64(live) / multiple)); share < floor {
+			share = floor
+		}
+	}
+	return min(share, live)
 }
 
 // drainDVRLeg starts draining a superseded DVR leg (docs/91 D11): the

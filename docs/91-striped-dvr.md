@@ -659,6 +659,16 @@ shipped default stays 3 s.
   behind live, while a new leg starts at the newest GOP. Filtering the GOPs
   in between would leave several of them served by nobody. With this rule,
   engaging or widening costs some duplicate GOPs and never a gap.
+- **D4, a per-connection floor (PR review round 1).** A striped
+  connection's share is `live / N`, but never below what lets it catch up at
+  1.5× live (`dvrStripeMinConnCatchup`): at the default `-dvr-max-catchup`
+  of 4 and N = 4 the plain share is exactly 1× live, and a connection whose
+  run of GOPs starts behind could never catch up; with `-dvr-max-catchup`
+  below N, striping would add lag. The floor never exceeds the unstriped
+  rate. So at N ≥ 3 and the default, the stripe together may catch up at
+  up to 1.5 × N × live, above one unstriped viewer's 4×; the process-wide
+  egress budget still bounds it. Audio shares the primary's bucket and is
+  never striped.
 - **D4, a pacer fix that was latent before R87.** A write larger than the
   whole token-bucket burst now passes once the bucket is full, as debt
   repaid at the ceiling's rate. Before, any keyframe larger than a quarter
@@ -713,18 +723,28 @@ shipped default stays 3 s.
     5 s of media time and 2,048 frames, is a late GOP and is dropped, not a
     broadcaster restart.
   - The reassembler drops duplicates through a set of the last 512 frames
-    it emitted, instead of dropping late deltas against its watermark.
-  - A re-arrival of a frame already released counts as a duplicate. A
-    frame counts as late only if it was skipped as a hole. The
-    released-frame memory (2,048 frameIDs) is cleared at a broadcaster
-    restart.
+    it emitted, instead of dropping late deltas against its watermark. The
+    set is cleared at a broadcaster restart (PR review round 1).
+  - A re-arrival of a frame that was here, released or dropped from the
+    buffer, counts as a duplicate and not as a dropped delta. A frame counts
+    as late only if it never arrived before its hole was skipped. The
+    memory (2,048 frameIDs) is cleared at a broadcaster restart.
 - **D10, as built.** The policy is a pure module (`dvr-stripe.ts`). Its
   constants, none of which D10 named:
   - Undersupply means complete-*frame* goodput (not GOP goodput) below 90 %
-    of the live rate, measured over 2 s, or a hole skip in the last 10 s.
-    It must hold for 10 s before ×2 engages.
+    of the live rate, measured over 2 s, or at least two hole skips in the
+    last 60 s. It must hold for 10 s before ×2 engages. One skip never
+    engages; skips recurring every ~25 s at ~92 % goodput (§11.3), which
+    goodput alone never reads as short, do. *Revised in PR review round 1:*
+    the skip window was 10 s, the same as the engage hold, so a resync could
+    engage only if skips came less than 10 s apart. Skips seen at one width
+    are forgotten when the width changes.
   - A window with no video bytes on any connection is *idle*, a broadcaster
-    pause: it neither engages, sets a baseline nor judges a step. A window
+    pause: it neither engages, sets a baseline nor judges a step. Nor do
+    the 2 s on either side of it, while the 2 s goodput window still
+    averages in the silence (PR review round 1): samples from the 2 s before
+    a pause are discarded when it starts, and none are taken until 2 s
+    after it ends. A window
     with bytes but no complete frame is starvation, and counts as goodput 0.
     A pause restarts a step's evaluation, but only up to 60 s past when it
     would first have ended. After that the step is judged on what it has,
@@ -749,8 +769,9 @@ shipped default stays 3 s.
     still dialing.
   - *On* never drops below ×2.
   - *Revised 2026-11-20 (§11.3):* `held` is a cool-down, not a verdict for
-    the session. After 120 s held (idle time not counted), a session still
-    undersupplied retries the next width. Each retry that fails again
+    the session. After 120 s held (idle time not counted), a session whose
+    undersupply has held for 10 s, as for engaging, retries the next width.
+    A retry abandoned by switching to *Off* is not a failed retry. Each retry that fails again
     doubles the cool-down, up to 15 minutes; one that helps resets it. In
     §11.3, two of three runs locked in ×2 while still losing GOPs, because
     from just below the live rate ×3 could show neither a 20 % gain nor a
@@ -830,6 +851,16 @@ shipped default stays 3 s.
   Both together give 0.9. A full link (RTT 4–5× its minimum) and a stripe
   that split one total stay silent. Signature (a) reads only the primary's
   path for now.
+- **Revised in PR review round 1:**
+  - Signature (b)'s per-width rates skip any interval with `dvrIdle` at
+    either end, the filter the supply ratio uses. Before, a paused width-1
+    period deflated the width-1 rate, so a full link's even ×2 split read as
+    stripe scaling.
+  - Loss needs at least 2,000 packets sent (`PathLossMinPackets`). Loss
+    counts as present at 0.1 %, so one lost keepalive in a near-idle 5 s
+    scrape read as several percent. The live path takes the shortest recent
+    window with enough packets, reaching back at most 60 s; with nothing
+    sent for 60 s the fact is gone.
 
 **End to end (SG4)**
 - **The production viewer under loss** is §11.2.

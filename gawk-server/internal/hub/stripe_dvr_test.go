@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -322,8 +323,8 @@ func TestStripedDVRLegFallsBehindAlone(t *testing.T) {
 }
 
 // TestStripedDVRPacerShare (D4): a striped connection's catch-up ceiling is
-// max-catchup × live / N, so the whole stripe never catches up faster than
-// one unstriped viewer.
+// max-catchup × live / N, so the whole stripe catches up no faster than one
+// unstriped viewer, but never below dvrStripeMinConnCatchup × live.
 func TestStripedDVRPacerShare(t *testing.T) {
 	r := NewRegistry(discardLog, stripedDVROpts())
 	id, _, err := r.StartPublish("")
@@ -343,13 +344,16 @@ func TestStripedDVRPacerShare(t *testing.T) {
 	if live <= 0 {
 		t.Fatal("no live rate to share")
 	}
+	// At the default multiple of 4, live/3 would let a connection catch up
+	// at only 1.33× live: the floor lifts it to 1.5×.
+	floor := int(math.Ceil(dvrStripeMinConnCatchup * float64(live) / DefaultDVRMaxCatchup))
 	for name, tc := range map[string]struct {
 		s    *Subscriber
 		want int
 	}{
 		"unstriped":       {plain, live},
-		"striped primary": {primary, live / 3},
-		"leg":             {legs[0], live / 3},
+		"striped primary": {primary, max(live/3, floor)},
+		"leg":             {legs[0], max(live/3, floor)},
 	} {
 		if got := tc.s.dvrPaceBps(); got != tc.want {
 			t.Errorf("%s: pace rate %d, want %d", name, got, tc.want)
@@ -360,8 +364,30 @@ func TestStripedDVRPacerShare(t *testing.T) {
 		t.Errorf("unstriped primary: pace rate %d, want the full %d", got, live)
 	}
 
-	// The group bound: N pacers at live/N hand out no more in a second than
-	// one pacer at live.
+	// The floor (PR review round 1): N = 4 at the default multiple would be
+	// exactly 1× live per connection, which cannot catch up; a multiple
+	// below 1.5 caps the share at the unstriped rate.
+	for _, c := range []struct {
+		live, n  int
+		multiple float64
+		want     int
+	}{
+		{12_000_000, 2, 4, 6_000_000},
+		{12_000_000, 4, 4, 4_500_000},
+		{12_000_000, 4, 8, 3_000_000},
+		{12_000_000, 3, 1, 12_000_000},
+		{12_000_000, 4, 0, 3_000_000},
+		{12_000_000, 1, 4, 12_000_000},
+		{0, 4, 4, 0},
+	} {
+		if got := stripePaceBps(c.live, c.n, c.multiple); got != c.want {
+			t.Errorf("stripePaceBps(%d, %d, %v) = %d, want %d", c.live, c.n, c.multiple, got, c.want)
+		}
+	}
+
+	// The group bound: N pacers at their share hand out no more in a second
+	// than one pacer at live, except where the floor lifts the share — and
+	// then no more than N connections at the floor.
 	for n := 2; n <= wire.MaxStripeLegs; n++ {
 		now := time.Now()
 		clock := func() time.Time { return now }
@@ -376,13 +402,15 @@ func TestStripedDVRPacerShare(t *testing.T) {
 				singleBytes += 1000
 			}
 			for _, g := range group {
-				if g.allow(1000, live/n) {
+				if g.allow(1000, stripePaceBps(live, n, DefaultDVRMaxCatchup)) {
 					groupBytes += 1000
 				}
 			}
 			now = now.Add(time.Millisecond)
 		}
-		if groupBytes > singleBytes+n*1000 {
+		// N connections at the floor, plus each bucket's starting burst.
+		floorBytes := int(dvrStripeMinConnCatchup*float64(n)*float64(live)*1.25) + n*1000
+		if groupBytes > max(singleBytes+n*1000, floorBytes) {
 			t.Errorf("N=%d: the stripe caught up %d bytes in 1 s, one unstriped viewer %d", n, groupBytes, singleBytes)
 		}
 	}
