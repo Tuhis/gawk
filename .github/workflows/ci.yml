@@ -819,7 +819,7 @@ jobs:
     timeout-minutes: 30
     services:
       postgres:
-        image: postgres:18-alpine
+        image: postgres:19-alpine
         env:
           POSTGRES_USER: gawk
           POSTGRES_PASSWORD: gawk
@@ -910,7 +910,7 @@ jobs:
     timeout-minutes: 30
     services:
       postgres:
-        image: postgres:18-alpine
+        image: postgres:19-alpine
         env:
           POSTGRES_USER: gawk
           POSTGRES_PASSWORD: gawk
@@ -1131,7 +1131,7 @@ jobs:
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     services:
       postgres:
-        image: postgres:18-alpine
+        image: postgres:19-alpine
         env:
           POSTGRES_USER: gawk
           POSTGRES_PASSWORD: gawk
@@ -4190,9 +4190,9 @@ jobs:
           # on the missing digests ("content digest ... not found", run
           # 33064724042) — taking the two locally BUILT (single-platform)
           # images down with it when loaded in the same call.
-          docker pull postgres:18-alpine
+          docker pull postgres:19-alpine
           kind load docker-image gawk-admin:e2e gawk-fakeidp:e2e
-          docker save postgres:18-alpine | docker exec --privileged -i kind-control-plane \
+          docker save postgres:19-alpine | docker exec --privileged -i kind-control-plane \
             ctr --namespace=k8s.io images import --platform linux/amd64 --snapshotter=overlayfs -
           kubectl -n gawk-e2e apply -f e2e/admin-fixtures.yaml
           kubectl -n gawk-e2e wait --for=condition=ready pod -l app=gawk-admin-pg --timeout=120s
