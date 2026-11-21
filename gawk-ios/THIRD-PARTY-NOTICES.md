@@ -77,7 +77,7 @@ script for what counts as a dependency here and why.
 | `errno` | 0.3.15 | `MIT OR Apache-2.0` | Copyright (c) 2014 Chris Wong |
 | `fastrand` | 2.5.0 | `Apache-2.0 OR MIT` | — |
 | `flate2` | 1.1.11 | `MIT OR Apache-2.0` | Copyright (c) 2014-2026 Alex Crichton |
-| `form_urlencoded` | 1.2.2 | `MIT OR Apache-2.0` | Copyright (c) 2013-2016 The rust-url developers |
+| `form_urlencoded` | 1.2.3 | `MIT OR Apache-2.0` | Copyright (c) 2013-2016 The rust-url developers |
 | `getrandom` | 0.2.17 | `MIT OR Apache-2.0` | Copyright (c) 2018-2024 The rust-random Project Developers<br>Copyright (c) 2014 The Rust Project Developers |
 | `getrandom` | 0.4.3 | `MIT OR Apache-2.0` | Copyright (c) 2018-2026 The rust-random Project Developers<br>Copyright (c) 2014 The Rust Project Developers |
 | `hashbrown` | 0.17.1 | `MIT OR Apache-2.0` | Copyright (c) 2016 Amanieu d'Antras |
@@ -182,7 +182,7 @@ script for what counts as a dependency here and why.
 | `untrusted` | 0.9.0 | `ISC` | Copyright 2015-2021 Brian Smith |
 | `ureq` | 3.5.2 | `MIT OR Apache-2.0` | Copyright (c) 2019 Martin Algesten |
 | `ureq-proto` | 0.7.1 | `MIT OR Apache-2.0` | Copyright 2022 Martin Algesten |
-| `url` | 2.5.8 | `MIT OR Apache-2.0` | Copyright (c) 2013-2025 The rust-url developers |
+| `url` | 2.5.9 | `MIT OR Apache-2.0` | Copyright (c) 2013-2025 The rust-url developers |
 | `utf8-zero` | 0.8.1 | `MIT OR Apache-2.0` | — |
 | `utf8_iter` | 1.1.0 | `Apache-2.0 OR MIT` | — |
 | `utf_types` | 1.0.0 | `Apache-2.0 OR MIT` | — |
