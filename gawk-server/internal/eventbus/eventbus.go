@@ -559,12 +559,38 @@ func (p *Publisher) publishedInc() {
 // the client upgrades from the server's INFO, TLS is not implied by the
 // scheme. So the switch must say only what it means — do not verify — and
 // leave whether TLS happens to the server.
+//
+// Since nats.go v1.56 a non-nil Options.TLSConfig itself asks for TLS, so the
+// switch may only touch a TLS config when something else already asks for
+// TLS: a tls:// or wss:// URL, or a CA or client certificate (nats.RootCAs and
+// nats.ClientCert fill TLSConfig in, which is why this option is applied after
+// them). On a plain nats:// URL it does nothing; a TLS-requiring server with a
+// certificate nothing trusts must therefore be spelled tls:// to be reached
+// with the switch on.
 func insecureSkipVerify() nats.Option {
 	return func(o *nats.Options) error {
 		if o.TLSConfig == nil {
+			if !natsURLsAskForTLS(o) {
+				return nil
+			}
 			o.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 		}
 		o.TLSConfig.InsecureSkipVerify = true //nolint:gosec // the flag's whole purpose, warned about at every start
 		return nil
 	}
+}
+
+// natsURLsAskForTLS reports whether any configured server URL has a TLS
+// scheme, which makes nats.go use TLS for the whole connection.
+func natsURLsAskForTLS(o *nats.Options) bool {
+	urls := append([]string{o.Url}, o.Servers...)
+	for _, u := range urls {
+		for _, one := range strings.Split(u, ",") {
+			scheme, _, ok := strings.Cut(strings.TrimSpace(one), "://")
+			if ok && (strings.EqualFold(scheme, "tls") || strings.EqualFold(scheme, "wss")) {
+				return true
+			}
+		}
+	}
+	return false
 }
