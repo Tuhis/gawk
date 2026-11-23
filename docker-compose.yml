@@ -313,13 +313,13 @@ services:
   # database is a PREREQUISITE — here the stack is the operator, so it brings
   # its own).
   admin-pg:
-    image: postgres:18-alpine
+    image: postgres:19-alpine
     environment:
       POSTGRES_USER: gawk
       POSTGRES_PASSWORD: gawk
       POSTGRES_DB: gawkadmin
     volumes:
-      # /var/lib/postgresql, NOT .../data: the postgres:18 image refuses the
+      # /var/lib/postgresql, NOT .../data: the postgres:18+ images refuse the
       # old data-subdirectory mount point (docker-library/postgres#37).
       - admin-pg-data:/var/lib/postgresql
     healthcheck:
