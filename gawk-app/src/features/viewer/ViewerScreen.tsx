@@ -992,6 +992,7 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
         <ViewerSettingsPanel
           config={playbackConfig}
           interpolationAvailable={stats == null ? null : stats.interpolation != null}
+          dvrStripingAvailable={stats?.stripeDvrCapable === true}
           onPreset={applyPreset}
           onParity={chooseParity}
           onStriping={chooseStripeMode}

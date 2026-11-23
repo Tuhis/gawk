@@ -52,7 +52,7 @@ import {
   type ViewerStats,
 } from './viewer';
 import type { RenderSink } from './render-sink';
-import { DVR_BUFFER_MS, getDvrGranted, setDvrGranted, setViewerDeliveryMode } from './playout';
+import { getDvrGranted, setDvrGranted, setViewerDeliveryMode } from './playout';
 import type { ViewerTransport, ViewerTransportCallbacks } from './viewer-transport';
 import {
   CLOSE_CODE_BROADCAST_ENDED,
@@ -66,7 +66,7 @@ import {
   encodeDeliveryAck,
   encodeVideoUndeliverable,
 } from './wire';
-import { MAX_DVR_BUFFER_MS } from '../config';
+import { DEFAULT_DVR_BUFFER_MS, MAX_DVR_BUFFER_MS } from '../config';
 
 function makeFakeWT(closedAfterMs: number, closeInfo: unknown) {
   const closed = new Promise((res) => {
@@ -269,12 +269,35 @@ describe('ViewerPipeline', () => {
       const pipeline = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', opts, cbs);
       await pipeline.start();
       expectDialed(
-        `https://relay.test:4433/subscribe/K7XQ2M?delivery=reliable&buffer=${DVR_BUFFER_MS}`,
+        `https://relay.test:4433/subscribe/K7XQ2M?delivery=reliable&buffer=${DEFAULT_DVR_BUFFER_MS}`,
         opts,
       );
       await pipeline.stop();
     } finally {
       setViewerDeliveryMode('live');
+    }
+  });
+
+  // The worker case: no `window`, and the config arrives (on globalThis,
+  // which is `self` in a worker) after every module was imported. The
+  // deployment's buffer must still reach the relay, not the 3 s default.
+  it("asks the relay for the deployment's dvrBufferMs in a worker context", async () => {
+    vi.stubGlobal('window', undefined);
+    const scope = globalThis as { __GAWK_CONFIG__?: unknown };
+    connectWebTransport.mockResolvedValue(makeFakeWT(60_000, {}));
+    readDatagrams.mockReturnValue(new Promise(() => {}));
+    scope.__GAWK_CONFIG__ = { dvrBufferMs: 4000 };
+    setViewerDeliveryMode('deep');
+    try {
+      const { cbs } = makeCallbacks();
+      const opts = { deliveryMode: 'reliable' as const };
+      const pipeline = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', opts, cbs);
+      await pipeline.start();
+      expectDialed('https://relay.test:4433/subscribe/K7XQ2M?delivery=reliable&buffer=4000', opts);
+      await pipeline.stop();
+    } finally {
+      setViewerDeliveryMode('live');
+      delete scope.__GAWK_CONFIG__;
     }
   });
 

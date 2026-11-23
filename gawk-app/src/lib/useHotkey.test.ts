@@ -75,6 +75,54 @@ describe('useHotkey', () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
+  // Shift changes a digit's character with the layout ('!' on US, '"' on
+  // Nordic), so Shift+digit shortcuts match the number row by code (R86).
+  it('matches Shift+digit by its number-row key, and the plain digit only without Shift', () => {
+    const shifted = vi.fn();
+    const plain = vi.fn();
+    renderHook(() => useHotkey({ key: '2', shift: true }, shifted));
+    renderHook(() => useHotkey({ key: '2' }, plain));
+    press(window, { key: '"', code: 'Digit2', ctrlKey: false, altKey: false, shiftKey: true });
+    press(window, { key: '@', code: 'Digit2', ctrlKey: false, altKey: false, shiftKey: true });
+    expect(shifted).toHaveBeenCalledTimes(2);
+    expect(plain).not.toHaveBeenCalled();
+    press(window, { key: '2', code: 'Digit2', ctrlKey: false, altKey: false, shiftKey: false });
+    expect(plain).toHaveBeenCalledTimes(1);
+    expect(shifted).toHaveBeenCalledTimes(2);
+    // Another digit's key is not this one.
+    press(window, { key: '#', code: 'Digit3', ctrlKey: false, altKey: false, shiftKey: true });
+    expect(shifted).toHaveBeenCalledTimes(2);
+  });
+
+  // AZERTY types a digit with Shift: that is the digit, not Shift+digit.
+  it('takes a digit Shift typed (AZERTY) for the plain digit, not the Shift shortcut', () => {
+    const shifted = vi.fn();
+    const plain = vi.fn();
+    renderHook(() => useHotkey({ key: '1', shift: true }, shifted));
+    renderHook(() => useHotkey({ key: '1' }, plain));
+    press(window, { key: '1', code: 'Digit1', ctrlKey: false, altKey: false, shiftKey: true });
+    expect(shifted).not.toHaveBeenCalled();
+    expect(plain).toHaveBeenCalledTimes(1);
+    // A letter's Shift is still a modifier.
+    const letter = vi.fn();
+    renderHook(() => useHotkey({ key: 'f' }, letter));
+    press(window, { key: 'F', code: 'KeyF', ctrlKey: false, altKey: false, shiftKey: true });
+    expect(letter).not.toHaveBeenCalled();
+  });
+
+  // A checkbox or radio takes no typing, so keys stay commands there (R86).
+  it('fires with a checkbox, radio or range focused, not with a text field', () => {
+    const handler = vi.fn();
+    renderHook(() => useHotkey({ key: '2', shift: true }, handler));
+    for (const type of ['checkbox', 'radio', 'range', 'text', 'search', 'number']) {
+      const input = document.createElement('input');
+      input.type = type;
+      document.body.appendChild(input);
+      press(input, { key: '@', code: 'Digit2', ctrlKey: false, altKey: false, shiftKey: true });
+    }
+    expect(handler).toHaveBeenCalledTimes(3);
+  });
+
   it('formats a readable label', () => {
     expect(formatHotkey(STATS)).toBe('Ctrl+Alt+Shift+D');
   });

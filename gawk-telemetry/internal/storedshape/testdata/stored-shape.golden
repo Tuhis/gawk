@@ -32,9 +32,11 @@ relay.broadcast.edgeSessions number
 relay.broadcast.framesRelayed number
 relay.broadcast.ingressChunksExpected number
 relay.broadcast.ingressChunksLost number
+relay.broadcast.ingressDatagramBytes number
 relay.broadcast.ingressFramesDamaged number
 relay.broadcast.ingressFramesExpected number
 relay.broadcast.ingressFramesLost number
+relay.broadcast.keyframeBytesIn number
 relay.broadcast.keyframeStreamsDropped number
 relay.broadcast.keyframeStreamsIn number
 relay.broadcast.keyframeStreamsSent number
@@ -60,6 +62,11 @@ relay.broadcast.subscriberDetails[].internal boolean
 relay.broadcast.subscriberDetails[].key string
 relay.broadcast.subscriberDetails[].keyframesDropped number
 relay.broadcast.subscriberDetails[].keyframesSent number
+relay.broadcast.subscriberDetails[].pathBytesSent number
+relay.broadcast.subscriberDetails[].pathMinRttMs number
+relay.broadcast.subscriberDetails[].pathPacketsLost number
+relay.broadcast.subscriberDetails[].pathPacketsSent number
+relay.broadcast.subscriberDetails[].pathSrttMs number
 relay.broadcast.subscriberDetails[].queueDepth number
 relay.broadcast.subscriberDetails[].reliable boolean
 relay.broadcast.subscriberDetails[].sendErrors number
@@ -92,6 +99,11 @@ relay.subscriber.internal boolean
 relay.subscriber.key string
 relay.subscriber.keyframesDropped number
 relay.subscriber.keyframesSent number
+relay.subscriber.pathBytesSent number
+relay.subscriber.pathMinRttMs number
+relay.subscriber.pathPacketsLost number
+relay.subscriber.pathPacketsSent number
+relay.subscriber.pathSrttMs number
 relay.subscriber.queueDepth number
 relay.subscriber.reliable boolean
 relay.subscriber.sendErrors number
@@ -282,6 +294,8 @@ sessions.stats.codec string
 sessions.stats.configsApplied number
 sessions.stats.configsSent number
 sessions.stats.connection object
+sessions.stats.connectionBytesReceived array
+sessions.stats.connectionBytesReceived[] number
 sessions.stats.datagramsReceived number
 sessions.stats.datagramsSent number
 sessions.stats.decodeJitterMs number
@@ -295,6 +309,10 @@ sessions.stats.droppedFrames number
 sessions.stats.duplicateChunks number
 sessions.stats.duplicateConfigs number
 sessions.stats.dvrBufferMs number
+sessions.stats.dvrGoodputBps number
+sessions.stats.dvrIdle boolean
+sessions.stats.dvrLiveRateBps number
+sessions.stats.dvrStripeWidth number
 sessions.stats.encodedFrames number
 sessions.stats.encoder string
 sessions.stats.encoderFps number

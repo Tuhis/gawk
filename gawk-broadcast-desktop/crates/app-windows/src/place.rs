@@ -6,12 +6,14 @@ use gawk_ui::MainWindow;
 use gawk_ui::fit::{self, Placement, Rect};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::ComponentHandle;
+use windows::Win32::Foundation::LPARAM;
 use windows::Win32::Foundation::{HWND, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY, MONITORINFO,
-    MonitorFromPoint, MonitorFromWindow,
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST,
+    MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint, MonitorFromWindow,
 };
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowPlacement, GetWindowRect, IsIconic, IsZoomed, SW_SHOWNORMAL, WINDOWPLACEMENT,
 };
@@ -35,7 +37,7 @@ pub(crate) fn hwnd(ui: &MainWindow) -> Option<HWND> {
 }
 
 /// The monitor's work area (the screen less the taskbar), in physical px.
-fn work_area(monitor: windows::Win32::Graphics::Gdi::HMONITOR) -> Option<RECT> {
+fn work_area(monitor: HMONITOR) -> Option<RECT> {
     let mut info = MONITORINFO {
         cbSize: size_of::<MONITORINFO>() as u32,
         ..Default::default()
@@ -101,17 +103,102 @@ fn snapped(hwnd: HWND, window: Rect) -> bool {
     {
         return false;
     }
-    // rcNormalPosition is in workspace coordinates, relative to the PRIMARY
-    // monitor's work area.
-    // SAFETY: a plain lookup of the primary monitor.
-    let Some(primary) =
-        work_area(unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) })
-    else {
+    let Some(restore) = restore_rect(&wp) else {
         return false;
     };
-    let restore = fit::workspace_to_screen(
+    fit::differs_from_restore(window, restore)
+}
+
+/// `rcNormalPosition` in screen coordinates, physical px. It is in
+/// workspace coordinates, relative to the PRIMARY monitor's work area.
+fn restore_rect(wp: &WINDOWPLACEMENT) -> Option<Rect> {
+    // SAFETY: a plain lookup of the primary monitor.
+    let primary =
+        work_area(unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) })?;
+    Some(fit::workspace_to_screen(
         rect(wp.rcNormalPosition),
         (primary.left as f32, primary.top as f32),
-    );
-    fit::differs_from_restore(window, restore)
+    ))
+}
+
+/// Where the window restores to (docs/66 D18): the top-left of its restore
+/// rectangle, physical px, so a position kept while it is maximized,
+/// snapped or minimized is the one it had before. Physical, not logical:
+/// with monitors at different scales, one logical space doesn't exist.
+pub fn window_position(ui: &MainWindow) -> Option<(i32, i32)> {
+    let hwnd = hwnd(ui)?;
+    let mut wp = WINDOWPLACEMENT {
+        length: size_of::<WINDOWPLACEMENT>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `wp` has its length set, as the call requires; `hwnd` is this
+    // process's live window.
+    unsafe { GetWindowPlacement(hwnd, &mut wp) }.ok()?;
+    let r = restore_rect(&wp)?;
+    Some((r.x.round() as i32, r.y.round() as i32))
+}
+
+/// Before the window exists (docs/66 D18): open it at `saved` if that is
+/// still on a monitor, pulled in to its work area. `width` is the logical
+/// client width; the monitor's scale makes it physical.
+pub fn place_window(ui: &MainWindow, saved: (i32, i32), width: f32) {
+    let works = monitors();
+    let at = POINT {
+        x: saved.0,
+        y: saved.1,
+    };
+    // SAFETY: plain lookups; `dpi` is filled by the call.
+    let scale = unsafe {
+        let monitor = MonitorFromPoint(at, MONITOR_DEFAULTTONEAREST);
+        let (mut dpi, mut _y) = (96u32, 0u32);
+        GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi, &mut _y)
+            .map(|()| dpi as f32 / 96.0)
+            .unwrap_or(1.0)
+    };
+    let saved_f = (saved.0 as f32, saved.1 as f32);
+    match fit::launch_position(saved_f, width * scale, &works) {
+        Some((x, y)) => {
+            log::info!(
+                "window position: {},{} (saved {},{})",
+                x.round(),
+                y.round(),
+                saved.0,
+                saved.1
+            );
+            ui.window().set_position(slint::PhysicalPosition::new(
+                x.round() as i32,
+                y.round() as i32,
+            ));
+        }
+        None => log::info!(
+            "window position: saved {},{} is on no monitor, left to Windows",
+            saved.0,
+            saved.1
+        ),
+    }
+}
+
+/// Every monitor's work area, physical px.
+fn monitors() -> Vec<Rect> {
+    unsafe extern "system" fn each(m: HMONITOR, _: HDC, _: *mut RECT, data: LPARAM) -> BOOL {
+        // SAFETY: `data` is the `&mut Vec<Rect>` passed below, alive for the
+        // whole enumeration.
+        let out = unsafe { &mut *(data.0 as *mut Vec<Rect>) };
+        if let Some(work) = work_area(m) {
+            out.push(rect(work));
+        }
+        BOOL(1)
+    }
+    let mut out: Vec<Rect> = Vec::new();
+    // SAFETY: no DC and no clip: every monitor on the desktop. The callback
+    // only runs during the call, while `out` lives.
+    let _ = unsafe {
+        EnumDisplayMonitors(
+            None,
+            None,
+            Some(each),
+            LPARAM(&mut out as *mut Vec<Rect> as isize),
+        )
+    };
+    out
 }

@@ -1,0 +1,517 @@
+// Striped deep-buffer delivery, the viewer's decision half (R87, docs/91).
+// Pure and transport-free, like stripe.ts: the pipeline feeds it complete
+// frames and the reorder buffer's hole skips, calls decide() at the stats
+// cadence, and forwards a changed width to the transport's setStripe().
+//
+// Width counts connections, the primary included: the primary carries GOP
+// share 0 and legs j = 1 … width−1 carry the rest (D6). Width 1 is unstriped.
+// Live-edge striping (stripe.ts) is a different mechanism with a different
+// unit and is untouched by anything here.
+
+import { CAP_STRIPED_DVR } from './parity';
+import type { StripeMode } from './stripe';
+import { MAX_STRIPE_LEGS, nextFrameId } from './wire';
+
+// D12: MaxStripeLegs bounds the connections one viewer opens, so the width,
+// which counts the primary, tops out at it.
+export const DVR_STRIPE_MAX_WIDTH = MAX_STRIPE_LEGS;
+// D10: Auto's first step, and the width On engages at join.
+export const DVR_STRIPE_START_WIDTH = 2;
+// D10: undersupply is complete-frame goodput below this share of the stream's
+// own live rate, or recurring relay resyncs, held for DVR_STRIPE_ENGAGE_MS.
+export const DVR_STRIPE_UNDERSUPPLY_RATIO = 0.9;
+export const DVR_STRIPE_ENGAGE_MS = 10_000;
+// Resyncs are undersupply while at least DVR_STRIPE_RESYNC_RECUR_COUNT of them
+// fall in the last DVR_STRIPE_RESYNC_WINDOW_MS. One skip is not a pattern; a
+// skip every ~25 s at ~92 % goodput (docs/91 §11.3) is, though goodput alone
+// never reads short there. The window is longer than the engage hold, or
+// skips spaced wider than the hold could never engage.
+export const DVR_STRIPE_RESYNC_WINDOW_MS = 60_000;
+export const DVR_STRIPE_RESYNC_RECUR_COUNT = 2;
+// D10: a step helped when it raised aggregate goodput by at least 20 %.
+export const DVR_STRIPE_HELP_RATIO = 1.2;
+// Goodput cannot exceed the live rate (plus the relay's catch-up), so a step
+// from a baseline near it can never show +20 %. It also helped when it removed
+// the shortfall: goodput at this share of the live rate with no hole skip
+// during the evaluation. A full link fails both: its total stays flat, and the
+// skips go on.
+export const DVR_STRIPE_SHORTFALL_GONE_RATIO = 0.95;
+// After a step's legs are up: time for the new connections to ramp before
+// goodput is measured, then the window it is measured over.
+export const DVR_STRIPE_SETTLE_MS = 3_000;
+export const DVR_STRIPE_EVAL_MS = 10_000;
+// A step whose legs never come up (caps pressure, dial errors) did not help.
+export const DVR_STRIPE_DIAL_TIMEOUT_MS = 10_000;
+// A broadcaster pause restarts a step's evaluation, but only until this long
+// past when the evaluation would first have ended; then the step is judged on
+// every frame-bearing sample since its legs came up.
+export const DVR_STRIPE_MAX_EVAL_POSTPONE_MS = 60_000;
+// A held width is a cool-down, not a verdict for the session (docs/91 §11.3:
+// held ×2 kept losing GOPs that ×3 would have saved). After this much
+// non-idle time held, a session still undersupplied retries the next width;
+// each retry that fails again doubles the cool-down, up to the cap, so a
+// genuinely full link tries rarely; a step that helps resets it.
+export const DVR_STRIPE_RETRY_BASE_MS = 120_000;
+export const DVR_STRIPE_RETRY_MAX_MS = 15 * 60_000;
+// A step is never judged on fewer frame-bearing samples than this since its
+// legs came up (5 s at the 500 ms stats cadence): an empty window would read
+// as "not helped" and hold the policy for the session over a long pause.
+export const DVR_STRIPE_MIN_EVAL_SAMPLES = 10;
+// After a leg death forced a fallback, as stripe.ts: a flapping path must not
+// burn dials at the stats cadence.
+export const DVR_STRIPE_REENGAGE_BACKOFF_MS = 5_000;
+// Goodput is measured over a short window so a step's effect shows quickly;
+// the live rate over a long one so it spans several GOPs.
+export const DVR_GOODPUT_WINDOW_MS = 2_000;
+export const DVR_LIVE_RATE_WINDOW_MS = 10_000;
+// How far a pause's silence reaches into the goodput samples on either side
+// of it: the goodput window, plus one 500 ms stats tick, since idle turns
+// true (and back) anywhere within a tick. Samples that close to a pause are
+// discarded, and decisions read only samples at least this old, so a pause
+// that starts just after a decision cannot have shaped it (PR review rounds
+// 1 and 2).
+export const DVR_STRIPE_PAUSE_EDGE_MS = DVR_GOODPUT_WINDOW_MS + 500;
+
+// D8, D10, OD4: a deep-buffer session may stripe only against a relay that
+// advertises CAP_STRIPED_DVR and actually granted the ring, and only when the
+// setting is not Off. Plain reliable (Smoother) never stripes: it is not deep.
+export function dvrStripeAllowed(g: {
+  deep: boolean;
+  dvrGranted: boolean;
+  capFlags: number;
+  mode: StripeMode;
+}): boolean {
+  return g.deep && g.dvrGranted && (g.capFlags & CAP_STRIPED_DVR) !== 0 && g.mode !== 'off';
+}
+
+// --- Goodput and the stream's live rate ---------------------------------------
+
+interface FrameSample {
+  frameId: number;
+  timestampUs: number;
+  bytes: number;
+  keyframe: boolean;
+  atMs: number;
+}
+
+// Measures what the connections together deliver against what the stream
+// needs. Both come from complete frames, deduplicated by frameId, so a GOP
+// served twice during a transition (D11) counts once.
+//
+// Goodput is complete-frame bytes per second of wall time. The live rate is
+// bytes per second of MEDIA time, taken only over runs of consecutive frames
+// from one keyframe to a later one: a span with a skipped GOP in it would
+// count the skipped GOP's time but not its bytes, and read an undersupplied
+// stream's rate as low as its goodput — which would hide exactly the
+// undersupply this exists to see.
+export class DvrGoodputMeter {
+  private now: () => number;
+  private frames = new Map<number, FrameSample>(); // insertion = arrival order
+  private firstAtMs: number | null = null;
+  private lastLiveRateBps: number | null = null;
+  private lastBytesAtMs: number | null = null;
+
+  constructor(now: () => number = () => performance.now()) {
+    this.now = now;
+  }
+
+  // Raw video bytes from any connection (chunk and parity datagrams, carrier
+  // records, keyframe streams), complete or not: what tells a starved link
+  // from a broadcaster that stopped sending.
+  observeBytes(bytes: number): void {
+    if (bytes > 0) this.lastBytesAtMs = this.now();
+  }
+
+  // No video bytes at all in the goodput window.
+  idle(): boolean {
+    return this.lastBytesAtMs === null || this.now() - this.lastBytesAtMs >= DVR_GOODPUT_WINDOW_MS;
+  }
+
+  observeFrame(frameId: number, timestampUs: bigint, bytes: number, keyframe: boolean): void {
+    this.lastBytesAtMs = this.now();
+    if (this.frames.has(frameId)) return;
+    const atMs = this.now();
+    this.firstAtMs ??= atMs;
+    this.frames.set(frameId, { frameId, timestampUs: Number(timestampUs), bytes, keyframe, atMs });
+    this.evict(atMs);
+  }
+
+  // Broadcaster restart: a new timeline, so nothing measured on the old one
+  // describes it.
+  reset(): void {
+    this.frames.clear();
+    this.lastBytesAtMs = null;
+    this.firstAtMs = null;
+    this.lastLiveRateBps = null;
+  }
+
+  goodputBps(): number | null {
+    const now = this.now();
+    this.evict(now);
+    if (this.firstAtMs === null) return null;
+    const windowMs = Math.min(DVR_GOODPUT_WINDOW_MS, now - this.firstAtMs);
+    if (windowMs <= 0) return null;
+    let bytes = 0;
+    for (const f of this.frames.values()) if (f.atMs > now - DVR_GOODPUT_WINDOW_MS) bytes += f.bytes;
+    return (bytes * 8 * 1000) / windowMs;
+  }
+
+  // The last measurable live rate: a window with no keyframe-to-keyframe run
+  // keeps the previous estimate rather than reporting none.
+  liveRateBps(): number | null {
+    this.evict(this.now());
+    const sorted = [...this.frames.values()].sort((a, b) => a.timestampUs - b.timestampUs);
+    let bytes = 0;
+    let spanUs = 0;
+    let runStart = 0;
+    for (let i = 1; i <= sorted.length; i++) {
+      const contiguous = i < sorted.length && sorted[i].frameId === nextFrameId(sorted[i - 1].frameId);
+      if (contiguous) continue;
+      const r = keyframeSpan(sorted, runStart, i);
+      bytes += r.bytes;
+      spanUs += r.spanUs;
+      runStart = i;
+    }
+    if (spanUs > 0) this.lastLiveRateBps = (bytes * 8 * 1e6) / spanUs;
+    return this.lastLiveRateBps;
+  }
+
+  private evict(now: number): void {
+    const cutoff = now - DVR_LIVE_RATE_WINDOW_MS;
+    for (const [id, f] of this.frames) {
+      if (f.atMs >= cutoff) break;
+      this.frames.delete(id);
+    }
+  }
+}
+
+// Within one contiguous run [from, to): the frames from its first keyframe up
+// to (not including) its last, and the media time between those two keyframes.
+function keyframeSpan(run: FrameSample[], from: number, to: number): { bytes: number; spanUs: number } {
+  let first = -1;
+  let last = -1;
+  for (let i = from; i < to; i++) {
+    if (!run[i].keyframe) continue;
+    if (first < 0) first = i;
+    last = i;
+  }
+  if (first < 0 || last <= first) return { bytes: 0, spanUs: 0 };
+  let bytes = 0;
+  for (let i = first; i < last; i++) bytes += run[i].bytes;
+  return { bytes, spanUs: Math.max(0, run[last].timestampUs - run[first].timestampUs) };
+}
+
+// --- The engagement policy (D10) ----------------------------------------------
+
+export interface DvrStripeInput {
+  // dvrStripeAllowed() without the mode, which is passed on its own so Off
+  // can be told apart from "not possible here".
+  allowed: boolean;
+  mode: StripeMode;
+  goodputBps: number | null;
+  liveRateBps: number | null;
+  // Cumulative missing-frame skips to a newer keyframe (ReorderStats
+  // holeSkips): the client's view of a relay resync.
+  resyncs: number;
+  // No video bytes at all, on any connection, in the goodput window
+  // (DvrGoodputMeter.idle): the broadcaster stopped sending. Bytes without a
+  // complete frame are not idle — that is a starved link mid-keyframe.
+  idle: boolean;
+}
+
+export type DvrStripePhase = 'idle' | 'stepping' | 'engaged' | 'held';
+
+export interface DvrStripeSnapshot {
+  target: number;
+  phase: DvrStripePhase;
+  undersupplied: boolean;
+}
+
+interface GoodputSample {
+  atMs: number;
+  bps: number;
+}
+
+// Auto engages ×2 once undersupply has held for DVR_STRIPE_ENGAGE_MS. Each
+// step is measured: goodput over DVR_STRIPE_EVAL_MS after its legs settle,
+// against goodput over the DVR_STRIPE_ENGAGE_MS before it. A step that raised
+// it by DVR_STRIPE_HELP_RATIO, or removed the shortfall
+// (DVR_STRIPE_SHORTFALL_GONE_RATIO), stays, and if the stream is still undersupplied
+// the next step follows, up to DVR_STRIPE_MAX_WIDTH; a step that did not
+// returns to the previous width and holds it for a cool-down
+// (DVR_STRIPE_RETRY_BASE_MS of non-idle time, doubling per failed retry)
+// before it retries the next width if still undersupplied — on a full link
+// extra connections take nothing more, so Auto keeps returning to ×1 or ×2,
+// ever more rarely (G4).
+// On engages ×2 at join without evidence and grows by the same rule; it never
+// returns below ×2. Off never stripes.
+export class DvrStripePolicy {
+  private now: () => number;
+  private target = 1;
+  private previous = 1;
+  private phase: DvrStripePhase = 'idle';
+  private stepAt = 0;
+  private activeAt: number | null = null;
+  // When this step's legs first came up: the bound on postponing its judgement.
+  private firstActiveAt = 0;
+  private baselineBps = 0;
+  private active = 1;
+  private backoffUntil = 0;
+  private undersuppliedSince: number | null = null;
+  private undersupplied = false;
+  private lastResyncs = 0;
+  private lastResyncAt: number | null = null;
+  private resyncTimes: number[] = [];
+  // The last idle tick: goodput is averaged over DVR_GOODPUT_WINDOW_MS, so
+  // for that long after a pause it still counts the pause's silence.
+  private lastIdleAt: number | null = null;
+  private liveRateBps: number | null = null;
+  private samples: GoodputSample[] = [];
+  // The held cool-down: non-idle time spent held so far, the clock it is
+  // advanced from, whether the step in flight is a retry, and how many
+  // retries in a row have failed.
+  private heldMs = 0;
+  private lastDecideAt: number | null = null;
+  private retrying = false;
+  private failedRetries = 0;
+
+  constructor(now: () => number = () => performance.now()) {
+    this.now = now;
+  }
+
+  // The width the transport actually has up (1 = unstriped). A drop to 1 while
+  // striped is a leg-death fallback; anything else just times the step.
+  noteActive(width: number): void {
+    const now = this.now();
+    if (width <= 1 && this.active > 1 && this.target > 1) {
+      this.backoffUntil = now + DVR_STRIPE_REENGAGE_BACKOFF_MS;
+      if (this.phase === 'stepping') {
+        this.activeAt = null;
+        this.stepAt = this.backoffUntil;
+      }
+    }
+    this.active = width;
+    if (this.phase === 'stepping' && this.activeAt === null && width >= this.target) {
+      this.activeAt = now;
+      this.firstActiveAt = now;
+    }
+  }
+
+  decide(input: DvrStripeInput): number {
+    const now = this.now();
+    this.observe(now, input);
+    // Pauses don't count toward the cool-down: a retry is judged on frames,
+    // and a full link that is paused has learned nothing new.
+    if (this.phase === 'held' && this.lastDecideAt !== null && !input.idle) {
+      this.heldMs += now - this.lastDecideAt;
+    }
+    this.lastDecideAt = now;
+    if (!input.allowed || input.mode === 'off') {
+      // A held width, and its cool-down, survive an Off flip.
+      if (this.phase !== 'held') {
+        this.phase = 'idle';
+        this.target = 1;
+        this.previous = 1;
+        // A retry abandoned by Off is not a failed retry: a later fresh
+        // engagement starts the cool-down from its base.
+        this.retrying = false;
+      }
+      return 1;
+    }
+    if (now < this.backoffUntil) return 1;
+
+    switch (this.phase) {
+      case 'idle':
+        if (input.mode === 'on') {
+          this.target = DVR_STRIPE_START_WIDTH;
+          this.phase = 'engaged';
+        } else if (this.sustainedUndersupply(now)) {
+          this.step(now, DVR_STRIPE_START_WIDTH);
+        }
+        break;
+      case 'stepping':
+        this.evaluate(now);
+        break;
+      case 'engaged':
+        if (input.mode === 'on' && this.target < DVR_STRIPE_START_WIDTH) {
+          this.target = DVR_STRIPE_START_WIDTH;
+        }
+        if (this.target < DVR_STRIPE_MAX_WIDTH && this.sustainedUndersupply(now)) {
+          this.step(now, this.target + 1);
+        }
+        break;
+      case 'held':
+        // On's floor holds even over a session that learned ×1 under Auto.
+        if (input.mode === 'on' && this.target < DVR_STRIPE_START_WIDTH) {
+          this.target = DVR_STRIPE_START_WIDTH;
+        }
+        // Sustained, as for engaging: one tick at a pause's edge reads short.
+        if (
+          this.heldMs >= this.retryCooldownMs() &&
+          this.sustainedUndersupply(now) &&
+          this.target < DVR_STRIPE_MAX_WIDTH
+        ) {
+          this.retrying = true;
+          this.step(now, this.target + 1);
+        }
+        break;
+    }
+    return this.target;
+  }
+
+  snapshot(): DvrStripeSnapshot {
+    return { target: this.target, phase: this.phase, undersupplied: this.undersupplied };
+  }
+
+  private observe(now: number, input: DvrStripeInput): void {
+    if (input.liveRateBps !== null) this.liveRateBps = input.liveRateBps;
+    const keepMs =
+      DVR_STRIPE_ENGAGE_MS +
+      DVR_STRIPE_SETTLE_MS +
+      DVR_STRIPE_EVAL_MS +
+      DVR_STRIPE_DIAL_TIMEOUT_MS +
+      DVR_STRIPE_MAX_EVAL_POSTPONE_MS;
+    while (this.samples.length > 0 && this.samples[0].atMs < now - keepMs) this.samples.shift();
+    if (input.resyncs > this.lastResyncs) {
+      this.lastResyncAt = now;
+      this.resyncTimes.push(now);
+    }
+    this.lastResyncs = input.resyncs;
+    while (this.resyncTimes.length > 0 && this.resyncTimes[0] <= now - DVR_STRIPE_RESYNC_WINDOW_MS) {
+      this.resyncTimes.shift();
+    }
+
+    // No complete frame in the window is a broadcaster that stopped sending,
+    // not a path that cannot carry it: the live rate is a cached estimate
+    // there, and goodput against it would read as starvation. An idle tick
+    // records no sample (so it never sets a baseline), resets the undersupply
+    // hold, and restarts a step's evaluation, which is judged on frames only.
+    if (input.idle) {
+      // Entering a pause: the window before it already averaged in the
+      // silence that made it idle, so those samples are not goodput either.
+      if (this.lastIdleAt === null || now - this.lastIdleAt > DVR_STRIPE_PAUSE_EDGE_MS) {
+        while (this.samples.length > 0 && this.samples[this.samples.length - 1].atMs > now - DVR_STRIPE_PAUSE_EDGE_MS) {
+          this.samples.pop();
+        }
+      }
+      this.lastIdleAt = now;
+      this.undersupplied = false;
+      this.undersuppliedSince = null;
+      if (this.phase === 'stepping' && this.activeAt !== null && now < this.evalDeadline()) {
+        this.activeAt = now;
+      }
+      return;
+    }
+    // Leaving a pause: the goodput window still spans part of it.
+    if (this.lastIdleAt !== null && now - this.lastIdleAt < DVR_STRIPE_PAUSE_EDGE_MS) return;
+    // Bytes are arriving but no frame completed: starvation, zero goodput.
+    const goodputBps = input.goodputBps ?? 0;
+    this.samples.push({ atMs: now, bps: goodputBps });
+
+    const starved =
+      this.liveRateBps !== null && goodputBps < DVR_STRIPE_UNDERSUPPLY_RATIO * this.liveRateBps;
+    const resynced = this.resyncTimes.length >= DVR_STRIPE_RESYNC_RECUR_COUNT;
+    this.undersupplied = starved || resynced;
+    if (!this.undersupplied) this.undersuppliedSince = null;
+    else this.undersuppliedSince ??= now;
+  }
+
+  private sustainedUndersupply(now: number): boolean {
+    return this.undersuppliedSince !== null && now - this.undersuppliedSince >= DVR_STRIPE_ENGAGE_MS;
+  }
+
+  private step(now: number, width: number): void {
+    // Inside the undersupply hold (sustainedUndersupply puts its start at or
+    // before now − ENGAGE_MS) and ending where a pause can no longer reach:
+    // starting ENGAGE_MS before `settled` would take in the healthy samples
+    // from before the shortfall began (PR review round 3).
+    const settled = now - DVR_STRIPE_PAUSE_EDGE_MS;
+    this.baselineBps = this.meanGoodput(now - DVR_STRIPE_ENGAGE_MS, settled);
+    this.previous = this.target;
+    this.target = Math.min(DVR_STRIPE_MAX_WIDTH, width);
+    this.phase = 'stepping';
+    this.stepAt = now;
+    this.activeAt = this.active >= this.target ? now : null;
+    this.firstActiveAt = now;
+    this.undersuppliedSince = null;
+    // Skips at the old width say nothing about the new one.
+    this.resyncTimes = [];
+  }
+
+  private evaluate(now: number): void {
+    if (this.activeAt === null) {
+      if (now - this.stepAt >= DVR_STRIPE_DIAL_TIMEOUT_MS) this.stepBack();
+      return;
+    }
+    // The window since the last (re)start, once it has run its length and
+    // holds enough frame-bearing samples. Past the postponement bound, the
+    // window since the legs first came up — again only once it holds enough:
+    // a step is never judged on a pause, however long.
+    // Judged on samples a pause starting now could still discard? Not yet:
+    // the window ends DVR_STRIPE_PAUSE_EDGE_MS ago.
+    const to = now - DVR_STRIPE_PAUSE_EDGE_MS;
+    let from = this.activeAt + DVR_STRIPE_SETTLE_MS;
+    const ready = to >= from + DVR_STRIPE_EVAL_MS && this.sampleCount(from, to) >= DVR_STRIPE_MIN_EVAL_SAMPLES;
+    if (!ready) {
+      if (now < this.evalDeadline()) return;
+      from = this.firstActiveAt + DVR_STRIPE_SETTLE_MS;
+      if (this.sampleCount(from, to) < DVR_STRIPE_MIN_EVAL_SAMPLES) return;
+    }
+    const after = this.meanGoodput(from, to);
+    const shortfallGone =
+      this.liveRateBps !== null &&
+      after >= DVR_STRIPE_SHORTFALL_GONE_RATIO * this.liveRateBps &&
+      (this.lastResyncAt === null || this.lastResyncAt < from);
+    const helped = (after >= DVR_STRIPE_HELP_RATIO * this.baselineBps && after > 0) || shortfallGone;
+    if (!helped) {
+      this.stepBack();
+      return;
+    }
+    this.phase = 'engaged';
+    this.retrying = false;
+    this.failedRetries = 0;
+    // Still short of the stream after a step that helped: the next one is
+    // already justified by the evaluation window itself.
+    const stillShort =
+      this.liveRateBps !== null && after < DVR_STRIPE_UNDERSUPPLY_RATIO * this.liveRateBps;
+    if (stillShort && this.target < DVR_STRIPE_MAX_WIDTH) {
+      this.step(now, this.target + 1);
+      this.baselineBps = after;
+    }
+  }
+
+  private evalDeadline(): number {
+    return this.firstActiveAt + DVR_STRIPE_SETTLE_MS + DVR_STRIPE_EVAL_MS + DVR_STRIPE_MAX_EVAL_POSTPONE_MS;
+  }
+
+  private stepBack(): void {
+    this.target = this.previous;
+    this.phase = 'held';
+    this.activeAt = null;
+    if (this.retrying) this.failedRetries++;
+    this.retrying = false;
+    this.heldMs = 0;
+    this.resyncTimes = [];
+  }
+
+  private retryCooldownMs(): number {
+    return Math.min(DVR_STRIPE_RETRY_MAX_MS, DVR_STRIPE_RETRY_BASE_MS * 2 ** this.failedRetries);
+  }
+
+  private sampleCount(fromMs: number, toMs: number): number {
+    let n = 0;
+    for (const s of this.samples) if (s.atMs >= fromMs && s.atMs <= toMs) n++;
+    return n;
+  }
+
+  private meanGoodput(fromMs: number, toMs: number): number {
+    let sum = 0;
+    let n = 0;
+    for (const s of this.samples) {
+      if (s.atMs < fromMs || s.atMs > toMs) continue;
+      sum += s.bps;
+      n++;
+    }
+    return n > 0 ? sum / n : 0;
+  }
+}

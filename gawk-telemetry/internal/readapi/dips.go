@@ -293,6 +293,11 @@ func relayMovers(lines [][]byte, sessionID string, fromMs, toMs int64) []Mover {
 			record("carrierQueueOverflow", float64(o.Subscriber.CarrierQueueOverflow))
 			record("carrierRecordsDropped", float64(o.Subscriber.CarrierRecordsDropped))
 			record("dvrResyncs", float64(o.Subscriber.DVRResyncs))
+			// R87: the relay declaring packets lost on this connection
+			// inside a dip (docs/91 §9.3). Absent from older relays.
+			if o.Subscriber.PathPacketsSent > 0 {
+				record("pathPacketsLost", float64(o.Subscriber.PathPacketsLost))
+			}
 			record("queueDepth", float64(o.Subscriber.QueueDepth))
 		}
 		if o.Broadcast != nil && !relayscrape.IsEdgeRole(o.Role) {

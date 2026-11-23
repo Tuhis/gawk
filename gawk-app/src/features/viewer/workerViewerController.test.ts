@@ -76,7 +76,27 @@ describe('WorkerViewerController message shapes (R22 MF2)', () => {
     )!;
     expect(init).toBeDefined();
     // Key-for-key: no mux key at all, not merely a falsy flag.
-    expect(Object.keys(init.msg as object).sort()).toEqual(['canvas', 'type']);
+    expect(Object.keys(init.msg as object).sort()).toEqual(['canvas', 'config', 'type']);
+  });
+
+  // A worker has no `window`, so it cannot read config.js's
+  // window.__GAWK_CONFIG__ itself; init is how it gets the deployment's config
+  // (dvrBufferMs, maxDecoderQueueSize) before the first start.
+  it("init hands the worker this page's runtime config", () => {
+    window.__GAWK_CONFIG__ = { dvrBufferMs: 4000, maxDecoderQueueSize: 4 };
+    try {
+      const controller = new WorkerViewerController(makeCanvas(), {
+        onEvent: () => {},
+        onUnsupported: () => {},
+      });
+      controller.start(START);
+      workers[0].boot();
+      const init = workers[0].posted[0].msg as { type: string; config?: unknown };
+      expect(init.type).toBe('init');
+      expect(init.config).toEqual({ dvrBufferMs: 4000, maxDecoderQueueSize: 4 });
+    } finally {
+      delete window.__GAWK_CONFIG__;
+    }
   });
 
   it('non-gated: armPresentation() never reaches the worker', () => {

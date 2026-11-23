@@ -123,6 +123,15 @@ impl Platform for Mac {
         crate::place::placement(ui)
     }
 
+    /// The client area's top-left, in points (docs/66 D18).
+    fn window_position(&self, ui: &MainWindow) -> Option<(i32, i32)> {
+        crate::place::window_position(ui)
+    }
+
+    fn place_window(&self, ui: &MainWindow, saved: (i32, i32), width: f32) {
+        crate::place::place_window(ui, saved, width);
+    }
+
     /// A link or a second launch of the bundle (R66, docs/68 D6): out of
     /// the Dock if minimized, shown, and the app activated — a window only
     /// ordered front stays behind the app that was active.

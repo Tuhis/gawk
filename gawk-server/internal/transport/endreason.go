@@ -29,7 +29,22 @@ type connContextKey struct{}
 // connection's context — not the *quic.Conn — so the value is a plain
 // context.Context that tests can supply without a QUIC stack.
 func withConnContext(ctx context.Context, conn *quic.Conn) context.Context {
+	ctx = context.WithValue(ctx, connStatsKey{}, connStatsFunc(conn.ConnectionStats))
 	return context.WithValue(ctx, connContextKey{}, conn.Context())
+}
+
+// connStatsKey carries the connection's ConnectionStats reader down to each
+// handler (R87 SG0): a func, for the same reason the context above is not
+// the *quic.Conn.
+type connStatsKey struct{}
+
+type connStatsFunc func() quic.ConnectionStats
+
+// pathStatsFrom returns the connection-stats reader ConnContext stored, or
+// nil when there is none (tests, a non-QUIC context).
+func pathStatsFrom(ctx context.Context) connStatsFunc {
+	f, _ := ctx.Value(connStatsKey{}).(connStatsFunc)
+	return f
 }
 
 // connCauseWait bounds how long sessionEndReason waits for the connection's

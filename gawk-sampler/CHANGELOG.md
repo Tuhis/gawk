@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/Tuhis/gawk/compare/gawk-sampler/v1.1.0...gawk-sampler/v1.1.1) (2026-11-20)
+
+
+### Bug Fixes
+
+* **sampler:** fetch ONNX Runtime from NuGet, the GitHub release asset is gone ([#823](https://github.com/Tuhis/gawk/issues/823)) ([72a3ff9](https://github.com/Tuhis/gawk/commit/72a3ff98b50ede67de48364afbf256d855f8e889))
+
 ## [1.1.0](https://github.com/Tuhis/gawk/compare/gawk-sampler/v1.0.0...gawk-sampler/v1.1.0) (2026-10-15)
 
 

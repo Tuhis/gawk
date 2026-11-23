@@ -7,8 +7,8 @@ cloud.google.com/go/compute/metadata v0.5.0 h1:Zr0eK8JbFv6+Wi4ilXAR8FJ3wyNdpxHKJ
 cloud.google.com/go/compute/metadata v0.5.0/go.mod h1:aHnloV2TPI38yx4s9+wAZhHykWvVCfu7hQbF+9CWoiY=
 github.com/andybalholm/brotli v1.2.0 h1:ukwgCxwYrmACq68yiUqwIWnGY0cTPox/M94sVwToPjQ=
 github.com/andybalholm/brotli v1.2.0/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
-github.com/anthropics/anthropic-sdk-go/v2 v2.10.0 h1:Cby/ZbQx6TIJciwVbU1mB/YVXYxPn/wg5nkEhslb1nI=
-github.com/anthropics/anthropic-sdk-go/v2 v2.10.0/go.mod h1:9MisVFnaVHMm4A8Pm1h75dsxyM3M8vv6NW9O5Tm2Q4k=
+github.com/anthropics/anthropic-sdk-go/v2 v2.13.0 h1:IClHmLpdWZBOn8IrkDkQJuHinFlSa/URtkNECjXcgmE=
+github.com/anthropics/anthropic-sdk-go/v2 v2.13.0/go.mod h1:9MisVFnaVHMm4A8Pm1h75dsxyM3M8vv6NW9O5Tm2Q4k=
 github.com/apache/arrow-go/v18 v18.4.1 h1:q/jVkBWCJOB9reDgaIZIdruLQUb1kbkvOnOFezVH1C4=
 github.com/apache/arrow-go/v18 v18.4.1/go.mod h1:tLyFubsAl17bvFdUAy24bsSvA/6ww95Iqi67fTpGu3E=
 github.com/apache/thrift v0.22.0 h1:r7mTJdj51TMDe6RtcmNdQxgn9XcyfGDOzegMDRg47uc=
