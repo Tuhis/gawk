@@ -80,7 +80,7 @@ script for what counts as a dependency here and why.
 | `form_urlencoded` | 1.2.3 | `MIT OR Apache-2.0` | Copyright (c) 2013-2016 The rust-url developers |
 | `getrandom` | 0.2.17 | `MIT OR Apache-2.0` | Copyright (c) 2018-2024 The rust-random Project Developers<br>Copyright (c) 2014 The Rust Project Developers |
 | `getrandom` | 0.4.3 | `MIT OR Apache-2.0` | Copyright (c) 2018-2026 The rust-random Project Developers<br>Copyright (c) 2014 The Rust Project Developers |
-| `hashbrown` | 0.17.1 | `MIT OR Apache-2.0` | Copyright (c) 2016 Amanieu d'Antras |
+| `hashbrown` | 0.17.2 | `MIT OR Apache-2.0` | Copyright (c) 2016 Amanieu d'Antras |
 | `heck` | 0.5.0 | `MIT OR Apache-2.0` | Copyright (c) 2015 The Rust Project Developers |
 | `httlib-huffman` | 0.3.4 | `MIT` | — |
 | `http` | 1.5.0 | `MIT OR Apache-2.0` | Copyright 2017 http-rs authors<br>Copyright (c) 2017 http-rs authors |
@@ -132,7 +132,7 @@ script for what counts as a dependency here and why.
 | `opusic-sys` | 0.7.7 | `BSD-3-Clause` | Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, |
 | `pem` | 4.0.0 | `MIT` | Copyright (c) 2016 Jonathan Creekmore |
 | `percent-encoding` | 2.3.2 | `MIT OR Apache-2.0` | Copyright (c) 2013-2025 The rust-url developers |
-| `pin-project-lite` | 0.2.17 | `Apache-2.0 OR MIT` | — |
+| `pin-project-lite` | 0.2.18 | `Apache-2.0 OR MIT` | — |
 | `potential_utf` | 0.1.6 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `powerfmt` | 0.2.1 | `MIT OR Apache-2.0` | Copyright 2023 Jacob Pratt et al<br>Copyright (c) 2023 Jacob Pratt et al |
 | `quinn` | 0.11.12 | `MIT OR Apache-2.0` | Copyright (c) 2018 The quinn Developers |
@@ -140,7 +140,7 @@ script for what counts as a dependency here and why.
 | `quinn-udp` | 0.5.16 | `MIT OR Apache-2.0` | Copyright (c) 2018 The quinn Developers |
 | `rand` | 0.10.4 | `MIT OR Apache-2.0` | Copyright 2018 Developers of the Rand project<br>Copyright (c) 2014 The Rust Project Developers |
 | `rand_core` | 0.10.1 | `MIT OR Apache-2.0` | Copyright (c) 2018-2026 The Rand Project Developers |
-| `rand_pcg` | 0.10.2 | `MIT OR Apache-2.0` | Copyright (c) 2014-2017 Melissa O'Neill and PCG Project contributors<br>Copyright 2018 Developers of the Rand project |
+| `rand_pcg` | 0.10.3 | `MIT OR Apache-2.0` | Copyright (c) 2014-2017 Melissa O'Neill and PCG Project contributors<br>Copyright 2018 Developers of the Rand project |
 | `rcgen` | 0.14.10 | `MIT OR Apache-2.0` | Copyright (c) 2019-2026 est31 <MTest31@outlook.com> and contributors |
 | `ring` | 0.17.14 | `Apache-2.0 AND ISC` | Copyright (c) 2009 The Go Authors. All rights reserved<br>Copyright 2015 The Chromium Authors. All rights reserved<br>Copyright 2015-2025 Brian Smith |
 | `rustc-hash` | 2.1.3 | `Apache-2.0 OR MIT` | — |
@@ -161,7 +161,7 @@ script for what counts as a dependency here and why.
 | `shiguredo_libvpx` | 2026.2.0-canary.3 | `Apache-2.0` | — |
 | `simd-adler32` | 0.3.10 | `MIT` | — |
 | `slab` | 0.4.12 | `MIT` | Copyright (c) 2019 Carl Lerche |
-| `smallvec` | 1.16.5 | `MIT OR Apache-2.0` | Copyright (c) 2018 The Servo Project Developers |
+| `smallvec` | 1.16.6 | `MIT OR Apache-2.0` | Copyright (c) 2018 The Servo Project Developers |
 | `socket2` | 0.6.5 | `MIT OR Apache-2.0` | Copyright (c) 2014 Alex Crichton |
 | `stable_deref_trait` | 1.2.1 | `MIT OR Apache-2.0` | Copyright (c) 2017 Robert Grosse |
 | `static_assertions` | 1.1.0 | `MIT OR Apache-2.0` | Copyright (c) 2017 Nikolai Vazquez |
