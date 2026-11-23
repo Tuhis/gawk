@@ -134,7 +134,12 @@ var fieldMeta = map[string]meta{
 	"stripeLegDeaths":              counter("legs", "Striped connections that died."),
 
 	// --- viewer: delivery + audio ------------------------------------------
-	"dvrBufferMs":           gauge("ms", "Depth of the relay-side DVR ring this viewer is reading from."),
+	"dvrBufferMs":    gauge("ms", "Depth of the relay-side DVR ring this viewer is reading from."),
+	"dvrStripeWidth": gauge("connections", "Connections carrying this deep-buffer viewer's GOPs, the primary included (R87). 1 is unstriped; absent outside deep mode."),
+	"dvrGoodputBps":  gauge("bps", "Video this deep-buffer viewer received over the last 2 s, on the same meter as dvrLiveRateBps (complete frames, deduplicated, no parity or audio). 0 while the broadcaster is paused."),
+	"dvrLiveRateBps": gauge("bps", "The stream's live video rate as this deep-buffer viewer measures it (frame sizes over media time): what it should be receiving. Goodput under it is undersupply."),
+	"connectionBytesReceived": {SemObject, "bytes",
+		"Cumulative video bytes per connection in deep mode, primary first (R87). Goodput per connection is its rate; diagnose() derives it."},
 	"carrierStreams":        counter("streams", "Carrier streams opened (resilient delivery)."),
 	"carrierRecords":        counter("records", "Records delivered over carrier streams."),
 	"carrierStreamsAborted": counter("streams", "Carrier streams aborted."),
@@ -293,6 +298,7 @@ var fieldMeta = map[string]meta{
 	"acceleration":     {SemText, "", "Hardware-acceleration preference the encoder was configured with."},
 
 	// --- bools --------------------------------------------------------------
+	"dvrIdle":                   {SemBool, "", "Whether this deep-buffer viewer's last window carried no video bytes on any connection — a broadcaster pause, not starvation (R87)."},
 	"documentHidden":            {SemBool, "", "Whether the tab was in the background at this sample. renderedFps means nothing without it."},
 	"isHardwareAccelerated":     {SemBool, "", "Whether the decoder reported itself hardware-accelerated."},
 	"stripeCapable":             {SemBool, "", "Whether this client can stripe at all."},
@@ -346,7 +352,7 @@ func semanticFor(k Kind) Semantic {
 		return SemBool
 	case KindString:
 		return SemText
-	case KindObject, KindAny:
+	case KindObject, KindAny, KindNumbers:
 		return SemObject
 	default:
 		return SemGauge

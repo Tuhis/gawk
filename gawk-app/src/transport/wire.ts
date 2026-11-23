@@ -162,6 +162,12 @@ export const CLOSE_CODE_PUBLISHER_SUPERSEDED = 4004;
 // session set), exactly as for any other leg death. Never sent to a primary.
 // Mirrored from Go wire.CloseCodeStripeLegOrphaned.
 export const CLOSE_CODE_STRIPE_LEG_ORPHANED = 4005;
+// The relay closed this deep-buffer stripe leg because it finished draining:
+// the viewer sent it StripeState Striped=false on its own session, and every
+// GOP the leg owed has been delivered (R87, docs/91 D11). The expected end of
+// a drain, never a leg death. Never sent to a primary. Mirrored from Go
+// wire.CloseCodeStripeLegDrained.
+export const CLOSE_CODE_STRIPE_LEG_DRAINED = 4020;
 // The operator terminated this broadcast — sent to the publisher being killed
 // and to every viewer of it. TERMINAL in both roles: a viewer must not
 // reconnect and a publisher must not auto-resume, because the ID is banned for

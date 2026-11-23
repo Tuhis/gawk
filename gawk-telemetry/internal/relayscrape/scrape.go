@@ -93,6 +93,12 @@ type Broadcast struct {
 	CarrierQueueOverflow   uint64 `json:"carrierQueueOverflow"`
 	DVRSubscribers         int    `json:"dvrSubscribers"`
 	DVRResyncs             uint64 `json:"dvrResyncs"`
+	// What the publisher sent the relay, in bytes: delta, config, audio and
+	// parity datagrams, and whole keyframes. Their rate over a window is the
+	// stream's bitrate as the relay ingested it (docs/91 SG3), the "supply"
+	// a viewer's goodput is compared against.
+	IngressDatagramBytes uint64 `json:"ingressDatagramBytes"`
+	KeyframeBytesIn      uint64 `json:"keyframeBytesIn"`
 
 	SubscriberDetails []Subscriber `json:"subscriberDetails"`
 }
@@ -188,6 +194,60 @@ type Subscriber struct {
 	// striping disabled, on a viewer that sent no owner token (reliable and
 	// DVR delivery included), on edge sessions, and on every PoP record.
 	StripeOwner string `json:"stripeOwner,omitempty"`
+	// The connection's own QUIC counters as the relay's stack reports them
+	// (R87 SG0, docs/91 §4; hub.SubscriberStats): the relay is the sender on
+	// every viewer connection, so its RTT and loss are what bound one
+	// connection's throughput. Connection-wide — a stripe leg and its primary
+	// each have their own. Absent from relays that predate them and from
+	// transports that cannot report them.
+	PathSRTTMs      float64 `json:"pathSrttMs,omitempty"`
+	PathMinRTTMs    float64 `json:"pathMinRttMs,omitempty"`
+	PathBytesSent   uint64  `json:"pathBytesSent,omitempty"`
+	PathPacketsSent uint64  `json:"pathPacketsSent,omitempty"`
+	PathPacketsLost uint64  `json:"pathPacketsLost,omitempty"`
+}
+
+// PathLossMinPackets is the fewest packets sent a loss ratio is reported
+// over. Loss counts as present at 0.1 % (docs/91 §9.3), so fewer packets
+// make one lost packet — a keepalive in a near-idle window — read as several
+// percent (PR review round 1).
+const PathLossMinPackets = 2000
+
+// PathLossRatio is the connection's packets lost per packet sent, over the
+// window prev → s (pass a zero prev for the connection's lifetime). ok is
+// false when fewer than PathLossMinPackets were sent in the window, the relay
+// does not report the counters, or a counter went backwards (a different
+// connection).
+func (s Subscriber) PathLossRatio(prev Subscriber) (float64, bool) {
+	if s.PathPacketsSent < prev.PathPacketsSent+PathLossMinPackets || s.PathPacketsLost < prev.PathPacketsLost {
+		return 0, false
+	}
+	return float64(s.PathPacketsLost-prev.PathPacketsLost) / float64(s.PathPacketsSent-prev.PathPacketsSent), true
+}
+
+// IngressBytes is everything the publisher sent this relay for the
+// broadcast so far: datagrams and keyframes.
+func (b Broadcast) IngressBytes() uint64 { return b.IngressDatagramBytes + b.KeyframeBytesIn }
+
+// StreamBitrateBps is the broadcast's ingested bitrate between two
+// observations of the SAME pod. ok is false across a counter that went
+// backwards (a re-created hub) or an empty interval.
+func StreamBitrateBps(prev, cur Broadcast, prevAtMs, curAtMs int64) (float64, bool) {
+	bps, _, ok := StreamRates(prev, cur, prevAtMs, curAtMs)
+	return bps, ok
+}
+
+// StreamRates is the ingested bitrate and the relayed frame rate over ONE
+// window, so a per-frame allowance taken off the bitrate is taken at the
+// rate those bytes came in (docs/91 SG3, review round 2).
+func StreamRates(prev, cur Broadcast, prevAtMs, curAtMs int64) (bps, fps float64, ok bool) {
+	if curAtMs <= prevAtMs || cur.IngressBytes() < prev.IngressBytes() || prev.IngressBytes() == 0 ||
+		cur.FramesRelayed < prev.FramesRelayed {
+		return 0, 0, false
+	}
+	secs := float64(curAtMs-prevAtMs) / 1000
+	return float64(cur.IngressBytes()-prev.IngressBytes()) * 8 / secs,
+		float64(cur.FramesRelayed-prev.FramesRelayed) / secs, true
 }
 
 // IsAudience reports whether a /statusz subscriber entry is a viewer rather

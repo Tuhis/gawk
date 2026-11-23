@@ -133,7 +133,7 @@ func newUplinkSide(t *testing.T) *uplinkSide {
 	if err != nil {
 		t.Fatalf("SubscribeReliable: %v", err)
 	}
-	s3, err := r.SubscribeDVR(id, u.dvr, 30_000, 2)
+	s3, err := r.SubscribeDVR(id, u.dvr, 30_000, 2, "")
 	if err != nil {
 		t.Fatalf("SubscribeDVR: %v", err)
 	}

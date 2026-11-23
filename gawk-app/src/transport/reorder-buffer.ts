@@ -83,6 +83,21 @@ export const MAX_BUFFERED_FRAMES = 64;
 // least until the following keyframe is due.
 export const KEYFRAME_WAIT_PLAYOUT_HEADROOM_MS = 500;
 
+// Striped deep buffer (docs/91 D9): how far behind the decode position a
+// keyframe may sit and still be read as a GOP that lost the race to a later
+// one, rather than as a broadcaster restart. A relay resyncs a connection that
+// falls behind its buffer (D3), so a straggling GOP trails by at most about the
+// playout offset; past this headroom on top of it, and past this many frames,
+// a backwards keyframe is a new timeline. Both must hold, because a restart
+// numbers frames from 0 on a fresh clock and a short-lived old session could
+// satisfy either bound alone.
+export const STRIPED_LATE_GOP_HEADROOM_MS = 5000;
+export const STRIPED_LATE_GOP_MAX_FRAMES = 2048;
+// How many released frameIds are remembered to tell a duplicate from a late
+// frame. A copy trails its original by at most a width transition, a drain
+// grace or a StripeState TTL: well under 30 s, which is 1800 frames at 60 fps.
+export const RECENTLY_RELEASED_FRAMES = STRIPED_LATE_GOP_MAX_FRAMES;
+
 // The three bounds widen while resilient mode is on — read live per use.
 function keyframeWaitMs(): number {
   const base = getResilientMode() ? RESILIENT_KEYFRAME_WAIT_MS : KEYFRAME_WAIT_MS;
@@ -214,6 +229,16 @@ export interface ReorderStats {
   keyframeWaitDrops: number;
   // Held (buffered, not yet released) frames right now.
   buffered: number;
+  // Missing frames abandoned for a newer buffered keyframe: the client-side
+  // view of a GOP that never came — in deep-buffer mode, a relay resync or a
+  // GOP nobody served (docs/91 D10, D11). A subset of gapResyncs.
+  holeSkips: number;
+  // Frames of a GOP that arrived after its deadline had passed and the buffer
+  // had moved past it (gopsOutOfOrder only, docs/91 D9).
+  lateFramesDropped: number;
+  // Frames that arrived again while a copy was still held — a GOP served by
+  // two connections (docs/91 D7, D11). Dropped by frameId.
+  duplicateFrames: number;
 }
 
 interface Entry {
@@ -245,6 +270,13 @@ export interface ReorderBufferOptions {
   // datagram evidence may be a keyframe still arriving on its stream.
   // Absent: every missing frame counts as a delta.
   isDeltaFrame?: (frameId: number) => boolean;
+  // Read live: true while whole GOPs may arrive out of frameId order — a
+  // striped deep-buffer session, where each connection carries its own GOPs
+  // (docs/91 D9). A missing frame is then waited for until the playout
+  // deadline of the frame after it, not the delta-gap grace; a keyframe behind
+  // the decode position is a straggling GOP, dropped, not a restart; and the
+  // keyframe to resync on is chosen by frameId, not by arrival. Absent: false.
+  gopsOutOfOrder?: () => boolean;
 }
 
 export class ReorderBuffer {
@@ -254,6 +286,14 @@ export class ReorderBuffer {
   private isDeltaFrame: (frameId: number) => boolean;
   private playoutOffsetMs: () => number;
   private decodeLeadMs: () => number;
+  private gopsOutOfOrder: () => boolean;
+  // Timestamp of the last released frame, the late-GOP test's reference.
+  private lastReleasedTimestampUs: bigint | null = null;
+  // Recently held frameIds, released or dropped from the buffer (insertion
+  // ordered, bounded), so a frame arriving behind the decode position can be
+  // told apart as a copy of one that was here (a duplicate) or one that never
+  // was (late: skipped as a hole).
+  private recentlyReleased = new Set<number>();
   // Windowed min of (arrivalMs − timestampMs): the pacing anchor.
   // Reset with the restart signal — new session, new timestamp timeline.
   // Its window is profile-independent on purpose: `releasableAt` anchors the
@@ -286,6 +326,9 @@ export class ReorderBuffer {
     framesSkippedWithinAllowance: 0,
     keyframeWaitDrops: 0,
     buffered: 0,
+    holeSkips: 0,
+    lateFramesDropped: 0,
+    duplicateFrames: 0,
   };
 
   constructor(
@@ -300,6 +343,7 @@ export class ReorderBuffer {
     this.playoutOffsetMs = opts.playoutOffsetMs ?? getPlayoutOffsetMs;
     this.decodeLeadMs =
       opts.decodeLeadMs ?? (() => (getPlayoutMode() === 'adaptive' ? DECODE_LEAD_MS : 0));
+    this.gopsOutOfOrder = opts.gopsOutOfOrder ?? (() => false);
   }
 
   pushKeyframe(kf: ReorderKeyframe): void {
@@ -309,6 +353,7 @@ export class ReorderBuffer {
     // of the current position; anything else is buffered and the resync logic
     // sorts out ordering (jumping backwards on restart is intentional).
     if (this.decodePosition !== null && kf.frameId === this.decodePosition) {
+      if (this.gopsOutOfOrder()) this.stats.duplicateFrames++;
       return; // exact duplicate of the just-decoded frame
     }
     // A keyframe BEHIND the decode position (serially) is the restart signal:
@@ -319,12 +364,18 @@ export class ReorderBuffer {
     // order) costs one brief jump back and self-heals at the next keyframe.
     const backwards =
       this.decodePosition !== null && !frameIdAhead(kf.frameId, this.decodePosition);
+    if (backwards && this.gopsOutOfOrder() && this.isStragglingGop(kf)) {
+      this.countBehind(kf.frameId);
+      return;
+    }
     if (backwards) {
       // Everything buffered belongs to the old session, whose frameIds can sit
       // serially ahead of the new ones and would pass for the new session's
       // oldest waiting frames.
       for (const e of this.buffer.values()) if (!e.keyframe) this.stats.deltasDropped++;
       this.buffer.clear();
+      // A new frameId space: the old session's releases are not the new one's.
+      this.recentlyReleased.clear();
       this.arrivalBaseline.reset();
       this.arrivalQuantile.reset();
       this.onRestart?.();
@@ -348,7 +399,13 @@ export class ReorderBuffer {
     // A delta at or behind the decode position is stale (already superseded).
     // Serial comparison: a delta just past the uint32 rollover is ahead.
     if (this.decodePosition !== null && !frameIdAhead(d.frameId, this.decodePosition)) {
+      // Striped, a copy of a frame already here is a duplicate, not a drop.
+      if (this.gopsOutOfOrder() && this.recentlyReleased.has(d.frameId)) {
+        this.stats.duplicateFrames++;
+        return;
+      }
       this.stats.deltasDropped++;
+      if (this.gopsOutOfOrder()) this.countBehind(d.frameId);
       return;
     }
     this.insert({
@@ -406,7 +463,10 @@ export class ReorderBuffer {
     const existing = this.buffer.get(e.frameId);
     // Keep a keyframe over a duplicate delta for the same id; otherwise ignore
     // a duplicate.
-    if (existing && !(e.keyframe && !existing.keyframe)) return;
+    if (existing && !(e.keyframe && !existing.keyframe)) {
+      this.stats.duplicateFrames++;
+      return;
+    }
     this.buffer.set(e.frameId, e);
     this.evictIfOverCap();
   }
@@ -418,6 +478,7 @@ export class ReorderBuffer {
       const oldest = this.buffer.keys().next();
       if (oldest.done) return;
       this.buffer.delete(oldest.value);
+      this.remember(oldest.value);
       this.stats.deltasDropped++;
     }
   }
@@ -445,15 +506,22 @@ export class ReorderBuffer {
       // If a keyframe is already buffered ahead, it is a definitive, reliable
       // resync point — jump to it now (latest-first) rather than waiting on
       // deltas that clearly lost the race to it.
+      //
+      // Unless GOPs arrive out of order: then the keyframe above may be the
+      // GOP after one still on its way over another connection, and the hole
+      // is waited for until it can no longer play on time (docs/91 D9).
+      const outOfOrder = this.gopsOutOfOrder();
       if (this.hasBufferedKeyframeAbove(this.decodePosition)) {
+        if (outOfOrder && !this.holeDeadlinePassed()) return;
         this.stats.gapResyncs++;
+        this.stats.holeSkips++;
         this.waitingForKeyframe = true;
         continue;
       }
       // No keyframe yet: wait briefly for a straggler delta; past the grace,
       // either spend one of the GOP's loss allowance and carry on,
       // or declare a gap and freeze until the next (reliable) keyframe.
-      if (this.shouldDeclareGap()) {
+      if (outOfOrder ? this.holeDeadlinePassed() : this.shouldDeclareGap()) {
         // The allowance is live-edge only: resilient/DVR deltas ride reliable
         // carriers, so a hole there means something else went wrong and
         // freezing is still the correct response.
@@ -491,11 +559,18 @@ export class ReorderBuffer {
   // stays black. At offset 0 (live-edge) everything buffered is due.
   private jumpToKeyframe(): boolean {
     const now = this.now();
+    // Out of order, arrival order says nothing about recency: the freshest
+    // due keyframe is the one furthest along in frameId, which is what
+    // arrival order means when GOPs arrive in sequence.
+    const byFrameId = this.gopsOutOfOrder();
     let best: Entry | null = null;
     for (const e of this.buffer.values()) {
       if (!e.keyframe) continue;
       if (now < this.releasableAt(e)) continue; // paced: not due yet
-      if (best === null || e.receivedAtMs > best.receivedAtMs) best = e;
+      const fresher =
+        best === null ||
+        (byFrameId ? frameIdAhead(e.frameId, best.frameId) : e.receivedAtMs > best.receivedAtMs);
+      if (fresher) best = e;
     }
     if (!best) return false;
 
@@ -503,6 +578,7 @@ export class ReorderBuffer {
       const behindBest = id !== best.frameId && !frameIdAhead(id, best.frameId);
       if (behindBest || (id === best.frameId && !e.keyframe)) {
         this.buffer.delete(id);
+        this.remember(id);
         if (!e.keyframe) this.stats.deltasDropped++;
       }
     }
@@ -538,6 +614,52 @@ export class ReorderBuffer {
     return false;
   }
 
+  // A keyframe behind the decode position that belongs to the current
+  // timeline: its GOP lost the race to a later one and was skipped at its
+  // deadline. See STRIPED_LATE_GOP_HEADROOM_MS for why both bounds hold.
+  private isStragglingGop(kf: ReorderKeyframe): boolean {
+    if (this.decodePosition === null || this.lastReleasedTimestampUs === null) return false;
+    const framesBehind = (this.decodePosition - kf.frameId) >>> 0;
+    if (framesBehind > STRIPED_LATE_GOP_MAX_FRAMES) return false;
+    const behindUs = this.lastReleasedTimestampUs - kf.timestampUs;
+    const windowUs = BigInt(
+      Math.round((Math.max(0, this.playoutOffsetMs()) + STRIPED_LATE_GOP_HEADROOM_MS) * 1000),
+    );
+    return behindUs >= 0n && behindUs <= windowUs;
+  }
+
+  // The hole after the decode position can no longer play on time once the
+  // first frame held after it is due: by then every frame of the missing run
+  // is overdue too. Never sooner than the delta-gap grace, so a viewer at
+  // offset 0 (or before a baseline exists) waits exactly as long as it would
+  // unstriped.
+  private holeDeadlinePassed(): boolean {
+    if (!this.shouldDeclareGap()) return false;
+    const position = this.decodePosition;
+    let first: Entry | null = null;
+    for (const e of this.buffer.values()) {
+      if (position !== null && !frameIdAhead(e.frameId, position)) continue;
+      if (first === null || frameIdAhead(first.frameId, e.frameId)) first = e;
+    }
+    if (first === null) return false;
+    return this.now() >= this.releasableAt(first);
+  }
+
+  // Out of order, a frame behind the decode position is a duplicate if it
+  // played and late if it was skipped (docs/91 D9).
+  private remember(frameId: number): void {
+    this.recentlyReleased.add(frameId);
+    if (this.recentlyReleased.size > RECENTLY_RELEASED_FRAMES) {
+      const oldest = this.recentlyReleased.values().next().value;
+      if (oldest !== undefined) this.recentlyReleased.delete(oldest);
+    }
+  }
+
+  private countBehind(frameId: number): void {
+    if (this.recentlyReleased.has(frameId)) this.stats.duplicateFrames++;
+    else this.stats.lateFramesDropped++;
+  }
+
   private shouldDeclareGap(): boolean {
     // Declare a gap once the oldest frame waiting above the missing one has sat
     // in the buffer longer than the grace — the straggler isn't coming.
@@ -555,6 +677,7 @@ export class ReorderBuffer {
       if (e.keyframe) continue; // keyframes are always useful to resync on
       if (e.receivedAtMs < cutoff) {
         this.buffer.delete(id);
+        this.remember(id);
         this.stats.keyframeWaitDrops++;
       }
     }
@@ -563,6 +686,8 @@ export class ReorderBuffer {
   private release(entry: Entry): void {
     this.buffer.delete(entry.frameId);
     this.decodePosition = entry.frameId;
+    this.lastReleasedTimestampUs = entry.timestampUs;
+    this.remember(entry.frameId);
     this.stats.released++;
     if (entry.keyframe) {
       this.stats.keyframesReleased++;

@@ -274,6 +274,13 @@ type Config struct {
 	// never dials a leg), leg dials get 400 and StripeState is ignored. The
 	// stripe width cap and burst target are constants, not knobs.
 	StripedDelivery bool
+	// StripedDVR extends striping to DVR delivery (R87, docs/91): DVR stripe
+	// legs, each serving its residue of the ring's GOPs, and StripeState on a
+	// DVR primary. On by default, at zero relay cost until a viewer engages.
+	// Effective only beside StripedDelivery: CapStripedDVR is advertised only
+	// when both are on. Off: DVR leg dials get 400 as before R87, and a DVR
+	// primary ignores StripeState.
+	StripedDVR bool
 
 	// UplinkCarriers accepts reliable carrier streams from publishers (R73,
 	// docs/75 D2): the relay advertises CapUplinkCarriers on publish sessions
@@ -502,6 +509,8 @@ func parse(args []string, getenv func(string) string, p Profile, register func(f
 		"forward-parity symbols producers emit per delta frame, and the per-subscriber ceiling (R29); 0 disables fleet-wide")
 	stripedDelivery := fs.Bool("striped-delivery", envBool("GAWK_STRIPED_DELIVERY", true),
 		"accept R30 stripe-leg subscribe sessions (?stripe=N&leg=j) and StripeState suppression; off is byte-identical to pre-R30")
+	stripedDVR := fs.Bool("striped-dvr", envBool("GAWK_STRIPED_DVR", true),
+		"also stripe R21 DVR delivery across connections, one GOP per connection (R87); needs -striped-delivery; off refuses DVR legs as before")
 	uplinkCarriers := fs.Bool("uplink-carriers", envBool("GAWK_UPLINK_CARRIERS", true),
 		"accept R73 reliable uplink carriers and R84 keyframe carriers from broadcasters (advertised to publishers); off is byte-identical to pre-R73")
 	uplinkMaxBitrate := fs.String("uplink-max-bitrate", env("GAWK_UPLINK_MAX_BITRATE", "50mbps"),
@@ -899,6 +908,7 @@ func parse(args []string, getenv func(string) string, p Profile, register func(f
 		LiveEdgeAudioOnReliableStream: *liveEdgeAudioOnReliableStream,
 		ParityDefault:                 parityDef,
 		StripedDelivery:               *stripedDelivery,
+		StripedDVR:                    *stripedDVR,
 		UplinkCarriers:                *uplinkCarriers,
 		UplinkMaxBitrateBytes:         uplinkMaxBitrateBytes,
 

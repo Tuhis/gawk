@@ -72,7 +72,7 @@ script for what counts as a dependency here and why.
 | `arrayref` | 0.3.9 | `BSD-2-Clause` | Copyright (c) 2015 David Roundy <roundyd@physics.oregonstate.edu> |
 | `arrayvec` | 0.7.8 | `MIT OR Apache-2.0` | Copyright (c) Ulrik Sverdrup "bluss" 2015-2023 |
 | `as-raw-xcb-connection` | 1.0.1 | `MIT OR Apache-2.0` | Copyright 2019 as-raw-xcb-connection Contributers |
-| `ashpd` | 0.14.0 | `MIT` | Copyright (c) 2020 Bilal Elmoussaoui |
+| `ashpd` | 0.14.3 | `MIT` | Copyright (c) 2020 Bilal Elmoussaoui |
 | `asn1-rs` | 0.7.2 | `MIT OR Apache-2.0` | Copyright (c) 2017 Pierre Chifflier |
 | `async-broadcast` | 0.7.2 | `MIT OR Apache-2.0` | Copyright 2020 Yoshua Wuyts<br>Copyright (c) 2020 Yoshua Wuyts |
 | `async-channel` | 2.5.0 | `Apache-2.0 OR MIT` | — |
@@ -145,7 +145,7 @@ script for what counts as a dependency here and why.
 | `font-types` | 0.12.7 | `MIT OR Apache-2.0` | Copyright 2019 Fontations Developers<br>Copyright (c) 2019 Fontations Developers |
 | `fontdb` | 0.24.0 | `MIT` | Copyright (c) 2020 Yevhenii Reizner |
 | `fontique` | 0.12.0 | `Apache-2.0 OR MIT` | Copyright 2024 the Parley Authors |
-| `form_urlencoded` | 1.2.2 | `MIT OR Apache-2.0` | Copyright (c) 2013-2016 The rust-url developers |
+| `form_urlencoded` | 1.2.3 | `MIT OR Apache-2.0` | Copyright (c) 2013-2016 The rust-url developers |
 | `futures` | 0.3.34 | `MIT OR Apache-2.0` | Copyright (c) 2016 Alex Crichton<br>Copyright (c) 2017 The Tokio Authors |
 | `futures-channel` | 0.3.34 | `MIT OR Apache-2.0` | Copyright (c) 2016 Alex Crichton<br>Copyright (c) 2017 The Tokio Authors |
 | `futures-core` | 0.3.34 | `MIT OR Apache-2.0` | Copyright (c) 2016 Alex Crichton<br>Copyright (c) 2017 The Tokio Authors |
@@ -178,7 +178,7 @@ script for what counts as a dependency here and why.
 | `gstreamer-video` | 0.25.4 | `MIT OR Apache-2.0` | — |
 | `gstreamer-video-sys` | 0.25.4 | `MIT` | — |
 | `harfrust` | 0.12.0 | `MIT` | Copyright (c) HarfBuzz developers<br>Copyright (c) 2020 Yevhenii Reizner |
-| `hashbrown` | 0.17.1 | `MIT OR Apache-2.0` | Copyright (c) 2016 Amanieu d'Antras |
+| `hashbrown` | 0.17.2 | `MIT OR Apache-2.0` | Copyright (c) 2016 Amanieu d'Antras |
 | `hashbrown` | 0.16.1 | `MIT OR Apache-2.0` | Copyright (c) 2016 Amanieu d'Antras |
 | `hex` | 0.4.3 | `MIT OR Apache-2.0` | Copyright (c) 2013-2014 The Rust Project Developers<br>Copyright (c) 2015-2020 The rust-hex Developers |
 | `htmlparser` | 0.2.1 | `MIT OR Apache-2.0` | Copyright (c) 2018 Reizner Evgeniy |
@@ -274,8 +274,8 @@ script for what counts as a dependency here and why.
 | `phf` | 0.14.0 | `MIT` | Copyright (c) 2014-2022 Steven Fackler, Yuki Okushi |
 | `phf_shared` | 0.14.0 | `MIT` | Copyright (c) 2014-2022 Steven Fackler, Yuki Okushi |
 | `pico-args` | 0.5.0 | `MIT` | Copyright (c) 2019 Yevhenii Reizner |
-| `pin-project` | 1.1.13 | `Apache-2.0 OR MIT` | — |
-| `pin-project-lite` | 0.2.17 | `Apache-2.0 OR MIT` | — |
+| `pin-project` | 1.2.0 | `Apache-2.0 OR MIT` | — |
+| `pin-project-lite` | 0.2.18 | `Apache-2.0 OR MIT` | — |
 | `pin-weak` | 1.1.0 | `MIT` | Copyright (c) 2020 Olivier Goffart <ogoffart@sixtyfps.io> |
 | `piper` | 0.2.5 | `MIT OR Apache-2.0` | — |
 | `pipewire` | 0.10.1 | `MIT` | — |
@@ -296,7 +296,7 @@ script for what counts as a dependency here and why.
 | `quote` | 1.0.47 | `MIT OR Apache-2.0` | — |
 | `rand` | 0.10.4 | `MIT OR Apache-2.0` | Copyright 2018 Developers of the Rand project<br>Copyright (c) 2014 The Rust Project Developers |
 | `rand_core` | 0.10.1 | `MIT OR Apache-2.0` | Copyright (c) 2018-2026 The Rand Project Developers |
-| `rand_pcg` | 0.10.2 | `MIT OR Apache-2.0` | Copyright (c) 2014-2017 Melissa O'Neill and PCG Project contributors<br>Copyright 2018 Developers of the Rand project |
+| `rand_pcg` | 0.10.3 | `MIT OR Apache-2.0` | Copyright (c) 2014-2017 Melissa O'Neill and PCG Project contributors<br>Copyright 2018 Developers of the Rand project |
 | `raw-window-handle` | 0.6.2 | `MIT OR Apache-2.0 OR Zlib` | Copyright (c) 2019 Osspial<br>Copyright (c) 2020 Osspial |
 | `rcgen` | 0.14.10 | `MIT OR Apache-2.0` | Copyright (c) 2019-2026 est31 <MTest31@outlook.com> and contributors |
 | `read-fonts` | 0.41.0 | `MIT OR Apache-2.0` | Copyright 2019 Fontations Developers<br>Copyright (c) 2019 Fontations Developers |
@@ -328,7 +328,7 @@ script for what counts as a dependency here and why.
 | `slab` | 0.4.12 | `MIT` | Copyright (c) 2019 Carl Lerche |
 | `slint` | 1.19.0 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
 | `slotmap` | 1.1.1 | `Zlib` | Copyright (c) 2021 Orson Peters <orsonpeters@gmail.com> |
-| `smallvec` | 1.16.5 | `MIT OR Apache-2.0` | Copyright (c) 2018 The Servo Project Developers |
+| `smallvec` | 1.16.6 | `MIT OR Apache-2.0` | Copyright (c) 2018 The Servo Project Developers |
 | `smithay-client-toolkit` | 0.19.2 | `MIT` | Copyright (c) 2018 Victor Berger |
 | `smithay-client-toolkit` | 0.20.0 | `MIT` | Copyright (c) 2018 Victor Berger |
 | `smithay-clipboard` | 0.7.3 | `MIT` | Copyright (c) 2018 Lucas Timmins & Victor Berger |
@@ -373,7 +373,7 @@ script for what counts as a dependency here and why.
 | `untrusted` | 0.9.0 | `ISC` | Copyright 2015-2021 Brian Smith |
 | `ureq` | 3.5.2 | `MIT OR Apache-2.0` | Copyright (c) 2019 Martin Algesten |
 | `ureq-proto` | 0.7.1 | `MIT OR Apache-2.0` | Copyright 2022 Martin Algesten |
-| `url` | 2.5.8 | `MIT OR Apache-2.0` | Copyright (c) 2013-2025 The rust-url developers |
+| `url` | 2.5.9 | `MIT OR Apache-2.0` | Copyright (c) 2013-2025 The rust-url developers |
 | `usvg` | 0.49.0 | `Apache-2.0 OR MIT` | Copyright 2017 the Resvg Authors |
 | `utf8-zero` | 0.8.1 | `MIT OR Apache-2.0` | — |
 | `utf8_iter` | 1.1.0 | `Apache-2.0 OR MIT` | — |
@@ -410,21 +410,21 @@ script for what counts as a dependency here and why.
 | `yazi` | 0.2.2 | `Apache-2.0 OR MIT` | Copyright (c) 2020 Chad Brokaw |
 | `yeslogic-fontconfig-sys` | 6.0.1 | `MIT` | Copyright 2019 YesLogic Pty. Ltd<br>Copyright 2016 Manuel Reinhardt<br>Copyright 2014 Austin Bonander<br>Copyright 2013 The Servo Project Developers |
 | `yoke` | 0.8.4 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
-| `zbus` | 6.3.0 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
+| `zbus` | 6.5.0 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
 | `zbus` | 5.19.0 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
 | `zbus-lockstep` | 0.5.2 | `MIT` | — |
 | `zbus_names` | 4.3.5 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
 | `zbus_utils` | 6.1.0 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
 | `zbus_xml` | 5.2.1 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
-| `zcheapstr` | 1.2.0 | `MIT` | Copyright (c) 2026 Zeeshan Ali Khan & zcheapstr contributors |
+| `zcheapstr` | 1.4.0 | `MIT` | Copyright (c) 2026 Zeeshan Ali Khan & zcheapstr contributors |
 | `zeno` | 0.3.3 | `Apache-2.0 OR MIT` | Copyright (c) 2020 Chad Brokaw |
-| `zerocopy` | 0.8.63 | `BSD-2-Clause OR Apache-2.0 OR MIT` | Copyright 2023 The Fuchsia Authors<br>Copyright 2019 The Fuchsia Authors |
+| `zerocopy` | 0.8.64 | `BSD-2-Clause OR Apache-2.0 OR MIT` | Copyright 2023 The Fuchsia Authors<br>Copyright 2019 The Fuchsia Authors |
 | `zerofrom` | 0.1.8 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `zeroize` | 1.9.2 | `Apache-2.0 OR MIT` | Copyright (c) 2018-2026 The RustCrypto Project Developers |
 | `zerotrie` | 0.2.5 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `zerovec` | 0.11.9 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `zmij` | 1.0.23 | `MIT` | — |
-| `zruntime` | 0.2.3 | `MIT` | Copyright (c) 2026 Zeeshan Ali Khan & zruntime contributors<br>Copyright (c) 2020 Yoshua Wuyts, Stjepan Glavina & Zeeshan Ali Khan |
+| `zruntime` | 0.2.4 | `MIT` | Copyright (c) 2026 Zeeshan Ali Khan & zruntime contributors<br>Copyright (c) 2020 Yoshua Wuyts, Stjepan Glavina & Zeeshan Ali Khan |
 | `zune-core` | 0.5.3 | `MIT OR Apache-2.0 OR Zlib` | Copyright (c) zune-image developers |
 | `zune-jpeg` | 0.5.15 | `MIT OR Apache-2.0 OR Zlib` | Copyright (c) zune-image developers |
 | `zvariant` | 5.15.1 | `MIT` | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |

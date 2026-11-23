@@ -36,10 +36,11 @@ pub use error::WireError;
 pub use localrelay::*;
 pub use messages::*;
 pub use parity::{
-    CAP_KEYFRAME_CARRIERS, CAP_PARITY_CHUNKS, CAP_STRIPED_DELIVERY, CAP_UPLINK_CARRIERS,
-    MAX_PARITY_DATA_CHUNKS, MAX_PARITY_SYMBOLS, PARITY_CHUNK_HEADER_SIZE, ParityChunkHeader,
-    RELAY_CAPABILITIES_SIZE, RelayCapabilities, append_parity_chunk, append_relay_capabilities,
-    compute_parity, parse_parity_chunk, parse_relay_capabilities, recover_chunks,
+    CAP_KEYFRAME_CARRIERS, CAP_PARITY_CHUNKS, CAP_STRIPED_DELIVERY, CAP_STRIPED_DVR,
+    CAP_UPLINK_CARRIERS, MAX_PARITY_DATA_CHUNKS, MAX_PARITY_SYMBOLS, PARITY_CHUNK_HEADER_SIZE,
+    ParityChunkHeader, RELAY_CAPABILITIES_SIZE, RelayCapabilities, append_parity_chunk,
+    append_relay_capabilities, compute_parity, parse_parity_chunk, parse_relay_capabilities,
+    recover_chunks,
 };
 pub use room::*;
 pub use stripe::{
@@ -207,6 +208,11 @@ pub const CLOSE_CODE_BROADCAST_FULL: u32 = 4018;
 /// As [`CLOSE_CODE_BROADCAST_FULL`], but the relay itself is at its limit
 /// (its total, or a PoP's downlink to home). NOT terminal.
 pub const CLOSE_CODE_RELAY_FULL: u32 = 4019;
+/// Relay → an R87 DVR stripe leg whose drain is complete (docs/91 D11): the
+/// viewer superseded it and it has delivered every GOP it owed. NOT
+/// terminal, leg-only, never noticed in-band. Viewer-side; mirrored for
+/// namespace parity.
+pub const CLOSE_CODE_STRIPE_LEG_DRAINED: u32 = 4020;
 
 /// Whether a close code ends a *viewer* for good (R65, docs/67 D13): the
 /// broadcast was garbage-collected (4000) or the operator killed it (4006).

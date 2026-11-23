@@ -100,6 +100,31 @@ describe('TransportWorkerCore', () => {
     }
   });
 
+  // docs/91: a deep-buffer leg's media crosses the worker hop tagged with its
+  // connection index, and the stripe command carries its layout; the primary's
+  // events stay exactly as they were.
+  it("tags a leg's datagrams and keyframes with their connection, and passes the stripe layout", async () => {
+    const setStripe = vi.fn();
+    const { transport, cb } = fakeTransport();
+    transport.setStripe = setStripe;
+    const { core, posted } = makeCore(transport);
+    core.connect('https://relay.test/subscribe/AB', {});
+    await flush();
+
+    cb().onDatagram(new Uint8Array([1]), 2);
+    cb().onKeyframe(
+      { frameId: 7, timestampUs: 1n, config: null, data: new Uint8Array([2]), streamBytes: 20 },
+      2,
+    );
+    cb().onDatagram(new Uint8Array([3]));
+    const media = posted.filter((p) => p.event.type === 'datagram' || p.event.type === 'keyframe');
+    expect(media.map((p) => (p.event as { conn?: number }).conn)).toEqual([2, 2, undefined]);
+    expect('conn' in media[2].event).toBe(false);
+
+    core.setStripe(2, 'dvr');
+    expect(setStripe).toHaveBeenCalledWith(2, 'dvr');
+  });
+
   it('forwards the session close with its code and stops the stats ticker', async () => {
     vi.useFakeTimers();
     const { transport, cb } = fakeTransport();

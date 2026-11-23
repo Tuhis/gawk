@@ -15,6 +15,8 @@ import type { TimeSyncStats } from './time-sync';
 import type { DecoderConfigMessage, TelemetryHelloMessage } from './wire';
 import {
   LocalViewerTransport,
+  type ConnectionIndex,
+  type StripeLayout,
   type StripeTransportStats,
   type TransportClosedInfo,
   type ViewerTransportFactory,
@@ -26,7 +28,7 @@ export type TransportWorkerCommand =
   // Stripe target. The transport worker owns the legs — they must live beside
   // the primary's session so their datagrams ride the same posting path with no
   // extra hop.
-  | { type: 'stripe'; n: number }
+  | { type: 'stripe'; n: number; layout?: StripeLayout }
   | { type: 'close' };
 
 // Transport worker → decode worker. datagram/keyframe buffers are transferred
@@ -34,7 +36,9 @@ export type TransportWorkerCommand =
 export type TransportWorkerEvent =
   | { type: 'connected' }
   | { type: 'connect-error'; message: string }
-  | { type: 'datagram'; data: Uint8Array }
+  // conn: which connection delivered it (absent = the primary), so the
+  // deep-buffer pipeline can count bytes per connection (docs/91 SG3).
+  | { type: 'datagram'; data: Uint8Array; conn?: ConnectionIndex }
   | {
       type: 'keyframe';
       frameId: number;
@@ -42,6 +46,7 @@ export type TransportWorkerEvent =
       config: DecoderConfigMessage | null;
       data: Uint8Array;
       streamBytes: number;
+      conn?: ConnectionIndex;
     }
   | { type: 'closed'; closeCode?: number; reason?: string; message: string }
   // The session's telemetry identity, forwarded once. It gets its own message
@@ -98,8 +103,9 @@ export class TransportWorkerCore {
     this.transport = transport;
     transport
       .connect({
-        onDatagram: (data) => this.host.post({ type: 'datagram', data }, [data.buffer]),
-        onKeyframe: (kf) =>
+        onDatagram: (data, conn) =>
+          this.host.post(conn ? { type: 'datagram', data, conn } : { type: 'datagram', data }, [data.buffer]),
+        onKeyframe: (kf, conn) =>
           this.host.post(
             {
               type: 'keyframe',
@@ -108,6 +114,7 @@ export class TransportWorkerCore {
               config: kf.config,
               data: kf.data,
               streamBytes: kf.streamBytes,
+              ...(conn ? { conn } : {}),
             },
             keyframeTransferables(kf),
           ),
@@ -142,8 +149,8 @@ export class TransportWorkerCore {
       });
   }
 
-  setStripe(n: number): void {
-    this.transport?.setStripe?.(n);
+  setStripe(n: number, layout?: StripeLayout): void {
+    this.transport?.setStripe?.(n, layout);
   }
 
   close(): void {

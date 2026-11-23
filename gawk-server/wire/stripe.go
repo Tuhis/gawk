@@ -34,8 +34,12 @@ const (
 )
 
 // StripeState is the primary-suppression signal (R30, docs/35 §5.3):
-// client→relay, datagram, valid only on an external datagram-delivery
-// subscribe session that is not itself a leg.
+// client→relay, datagram, valid on an external subscribe session that is not
+// itself a leg: a datagram-delivery one, or since R87 a DVR one on a relay
+// advertising CapStripedDVR (docs/91 D7). On a DVR stripe leg (R87) an
+// unstriped state means drain: serve what is owed up to the ring's newest
+// GOP at that moment, nothing newer, then the relay closes the leg. Every
+// other leg ignores it.
 //
 // It is LEVEL state, not an edge: the viewer re-sends it at 1 Hz while
 // striped (plus a short burst on the unstripe transition), and the relay
@@ -104,6 +108,39 @@ func validateStripeState(s StripeState) error {
 			ErrBadChunkCount, s.StripeN)
 	}
 	return nil
+}
+
+// StripeGOPResidue returns which connection of an n-wide striped DVR viewer
+// serves the GOP whose keyframe carries keyframeFrameID (R87, docs/91 D2):
+// fmix32(keyframeFrameID) mod n, where connection 0 is the primary and
+// j = 1…n−1 are the legs (D6). n < 2 means unstriped: residue 0.
+//
+// The publisher's frameID, not a ring sequence, because legs land on any pod
+// (docs/35 §5.7) and only the frameID is the same on every pod. Hashed,
+// because a fixed GOP length makes frameID mod n collapse onto a few
+// residues (30 mod 4 alternates between 0 and 2).
+//
+// Relay-only: no client ever computes a residue (it reorders by frameID,
+// D9), so unlike every other export here this has no wire.ts or crates/wire
+// mirror. The golden vectors in stripe_test.go pin it across pods of
+// different versions, which is what a cross-pod leg needs.
+func StripeGOPResidue(keyframeFrameID uint32, n int) int {
+	if n < 2 {
+		return 0
+	}
+	return int(fmix32(keyframeFrameID) % uint32(n))
+}
+
+// fmix32 is MurmurHash3's 32-bit finalizer: a bijective mixer whose every
+// input bit affects every output bit, so consecutive or evenly spaced
+// frameIDs spread evenly over any small modulus.
+func fmix32(h uint32) uint32 {
+	h ^= h >> 16
+	h *= 0x85ebca6b
+	h ^= h >> 13
+	h *= 0xc2b2ae35
+	h ^= h >> 16
+	return h
 }
 
 // StripeOrdinal returns the stripe ordinal of a delta datagram: data chunk i

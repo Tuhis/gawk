@@ -226,7 +226,7 @@ func (s *Subscriber) writeAudioRecord(dgram []byte, scratch *[]byte) bool {
 	if !ok {
 		return true // undeliverable by construction; skip it
 	}
-	if !s.dvrPace.allow(n, s.dvr.LiveRateBps()) {
+	if !s.dvrPace.allow(n, s.dvrPaceBps()) {
 		return false
 	}
 	if !s.hub.registry.consumeBandwidth(n) {

@@ -134,6 +134,7 @@ Reading all of them is not the point. Three give you the shape of the system:
 | [`86`](86-telemetry-facelift.md) | R36 — the telemetry dashboard's usability pass and facelift: IBM Plex bundled, dark and light from one token set, content-fit and operator-resizable tables, chart stacks read through one axis and a readout rail, the service's age drawn as an axis extent, a striped viewer as one participant with its legs (relay `stripeOwner`), PoP labels, live sparklines, a two-column session page; TU1–TU12 |
 | [`87`](87-room-fit-layout.md) | R83 — Fit: a room layout mode beside Grid that sizes each tile from its stream's decoded aspect ratio and arranges order-preserving rows or columns to maximise Σ ln(tile area); the web app and the iOS room player |
 | [`90`](90-room-stream-visibility.md) | R86 — Choose which streams to watch in a room: the layout segment keeps Grid · Fit · Focus and a What to show pill offers All streams · Choose (a checkbox per stream, unticked ones unsubscribed) · None (the old Hide videos), remembered per room |
+| [`91`](91-striped-dvr.md) | R87 — Striped deep-buffer delivery: a *Most stable* viewer's GOPs spread across up to four connections (GOP *k* on connection `mix32(keyframe frameID) mod N`, each with its own ring cursor) when one connection can't carry the stream; measured first in the lab (a loss-set per-connection ceiling, each connection adding its own share); also per-connection RTT and loss on `/statusz`, and `resilient-undersupply` no longer firing on every deep-buffer viewer |
 
 ## Testing, telemetry, operations
 
