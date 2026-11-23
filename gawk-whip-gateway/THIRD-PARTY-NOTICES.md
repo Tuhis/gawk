@@ -65,10 +65,10 @@ script for what counts as a dependency here and why.
 | `github.com/wlynxg/anet` | v0.0.5 | `BSD-3-Clause` | Copyright (c) 2023, wlynxg |
 | `github.com/x448/float16` | v0.8.4 | `MIT` | Copyright (c) 2019 Montgomery Edwards⁴⁴⁸ and Faye Amacker |
 | `go.yaml.in/yaml/v2` | v2.4.4 | `Apache-2.0 OR MIT` | Copyright (c) 2006 Kirill Simonov<br>Copyright 2011-2016 Canonical Ltd |
-| `golang.org/x/crypto` | v0.58.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
-| `golang.org/x/net` | v0.62.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
+| `golang.org/x/crypto` | v0.59.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
+| `golang.org/x/net` | v0.63.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/sys` | v0.50.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
-| `golang.org/x/text` | v0.43.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
+| `golang.org/x/text` | v0.44.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/time` | v0.16.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `google.golang.org/protobuf` | v1.36.12 | `BSD-3-Clause` | Copyright (c) 2018 The Go Authors. All rights reserved |
 | `gopkg.in/inf.v0` | v0.9.1 | `BSD-3-Clause` | Copyright (c) 2012 Péter Surányi. Portions Copyright (c) 2009 The Go |
