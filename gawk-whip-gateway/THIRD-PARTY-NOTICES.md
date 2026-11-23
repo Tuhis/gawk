@@ -54,7 +54,7 @@ script for what counts as a dependency here and why.
 | `github.com/pion/stun/v4` | v4.0.1 | `MIT OR BSD-3-Clause OR UNKNOWN` | Copyright (c) 2026 The Pion community <https://pion.ly> |
 | `github.com/pion/transport/v5` | v5.1.5 | `MIT OR BSD-3-Clause` | Copyright (c) 2026 The Pion community <https://pion.ly> |
 | `github.com/pion/turn/v5` | v5.1.3 | `MIT OR UNKNOWN` | Copyright (c) 2026 The Pion community <https://pion.ly> |
-| `github.com/pion/webrtc/v4` | v4.2.28 | `MIT` | Copyright (c) 2026 The Pion community <https://pion.ly> |
+| `github.com/pion/webrtc/v4` | v4.2.29 | `MIT` | Copyright (c) 2026 The Pion community <https://pion.ly> |
 | `github.com/prometheus/client_golang` | v1.25.0 | `Apache-2.0 OR UNKNOWN` | Copyright 2012-2015 The Prometheus Authors<br>Copyright 2013-2015 Blake Mizerany, Björn Rabenstein<br>Copyright 2010 The Go Authors |
 | `github.com/prometheus/client_model` | v0.6.3 | `Apache-2.0 OR UNKNOWN` | Copyright 2012-2015 The Prometheus Authors |
 | `github.com/prometheus/common` | v0.72.0 | `Apache-2.0 OR UNKNOWN` | Copyright 2015 The Prometheus Authors |
