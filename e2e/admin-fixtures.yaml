@@ -12,7 +12,7 @@ metadata:
 spec:
   containers:
     - name: postgres
-      image: postgres:18-alpine
+      image: postgres:19-alpine
       # The image is pulled on the host and `kind load`ed by the workflow —
       # the kind node cannot reach docker.io on these runners.
       imagePullPolicy: IfNotPresent

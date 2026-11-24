@@ -43,6 +43,8 @@ var kindType = map[schema.Kind]string{
 	schema.KindString: storedshape.String,
 	schema.KindObject: storedshape.Object,
 	schema.KindAny:    storedshape.Any,
+	// An array of numbers: the array, and its elements below.
+	schema.KindNumbers: storedshape.Array,
 }
 
 // current is everything the service writes, as the views see it.
@@ -72,6 +74,9 @@ func current(t *testing.T) map[string]string {
 				t.Fatalf("stats field %s has a Kind this test cannot map; add it to kindType", name)
 			}
 			all["sessions.stats."+name] = typ
+			if k == schema.KindNumbers {
+				all["sessions.stats."+name+"[]"] = storedshape.Number
+			}
 		}
 	}
 	for p, typ := range all {

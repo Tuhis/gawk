@@ -47,30 +47,41 @@ RUN sh /usr/local/bin/build-ffmpeg.sh /opt/ffmpeg /tmp/ffmpeg-build \
  && rm -rf /tmp/ffmpeg-build
 
 # ── ONNX Runtime ──────────────────────────────────────────────────────────
-# The release tarball, pinned by version AND SHA-256 (GitHub's published asset
-# digest). The version is the one onnxruntime_go's C API headers are written
-# against (its README: "this library uses version 1.31.0 of the onnxruntime C
-# API headers"); bump the two together.
+# Microsoft's NuGet package, pinned by version AND SHA-256 of the .nupkg. The
+# version is the one onnxruntime_go's C API headers are written against (its
+# README: "this library uses version 1.31.0 of the onnxruntime C API
+# headers"); bump the two together.
+#
+# NuGet, not the GitHub release tarball: since 2026-11 every
+# github.com/microsoft/onnxruntime/releases/download/... URL answers 404 (the
+# 1.31.0 tarball this stage pinned included), which failed every sampler CI
+# run. The package carries the same Microsoft build: the one real
+# libonnxruntime.so (SONAME libonnxruntime.so.1, no symlink chain), LICENSE
+# and ThirdPartyNotices.txt; it has no VERSION_NUMBER, so the stage writes it.
 #
 # The execution provider is a BUILD ARGUMENT (docs/71 §3, Rejected: a GPU image
 # variant): the CPU package by default; a GPU variant sets ORT_PACKAGE to a
-# CUDA package and ORT_SHA256 to its digest — and needs a CUDA runtime base
-# instead of distroless, which is why it is not a variant today.
+# CUDA package's NuGet id (lower case, e.g. microsoft.ml.onnxruntime.gpu.linux)
+# and ORT_SHA256 to its digest — and needs a CUDA runtime base instead of
+# distroless, which is why it is not a variant today.
 FROM golang:1.27-trixie AS onnxruntime
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends unzip \
+ && rm -rf /var/lib/apt/lists/*
 ARG ORT_VERSION=1.31.0
-ARG ORT_PACKAGE=onnxruntime-linux-x64
-ARG ORT_SHA256=cc5c72baf5ae5c8238a6841f0897227be2d02826b9cf98eaf02fdefaeeb03a57
+ARG ORT_PACKAGE=microsoft.ml.onnxruntime
+ARG ORT_SHA256=7e35fdb4f5adb62f01e60798e2e5ed05108f5fbbe1cca03fbcc37903cf7c5e3b
 WORKDIR /tmp/ort
-RUN curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -o ort.tgz \
-      "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_PACKAGE}-${ORT_VERSION}.tgz" \
- && echo "${ORT_SHA256}  ort.tgz" | sha256sum -c - \
- && tar -xzf ort.tgz \
+RUN curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -o ort.nupkg \
+      "https://api.nuget.org/v3-flatcontainer/${ORT_PACKAGE}/${ORT_VERSION}/${ORT_PACKAGE}.${ORT_VERSION}.nupkg" \
+ && echo "${ORT_SHA256}  ort.nupkg" | sha256sum -c - \
+ && unzip -q ort.nupkg runtimes/linux-x64/native/libonnxruntime.so LICENSE ThirdPartyNotices.txt \
  && mkdir -p /out/lib /out/licenses \
- # -L: the tarball ships libonnxruntime.so as a symlink chain; the image
- # carries the one real file, loaded by its full path (-onnxruntime-lib).
- && cp -L "${ORT_PACKAGE}-${ORT_VERSION}/lib/libonnxruntime.so" /out/lib/libonnxruntime.so \
- && cp "${ORT_PACKAGE}-${ORT_VERSION}/LICENSE" "${ORT_PACKAGE}-${ORT_VERSION}/ThirdPartyNotices.txt" \
-       "${ORT_PACKAGE}-${ORT_VERSION}/VERSION_NUMBER" /out/licenses/
+ # The image carries the one library file, loaded by its full path
+ # (-onnxruntime-lib).
+ && cp runtimes/linux-x64/native/libonnxruntime.so /out/lib/libonnxruntime.so \
+ && cp LICENSE ThirdPartyNotices.txt /out/licenses/ \
+ && printf '%s\n' "${ORT_VERSION}" > /out/licenses/VERSION_NUMBER
 
 # ── the sampler ───────────────────────────────────────────────────────────
 FROM golang:1.27-trixie AS build

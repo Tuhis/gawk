@@ -10,6 +10,7 @@ import {
   advancedChanges,
   notApplicable,
   resolvePreset,
+  stripingNote,
   type ParityChoice,
   type PlaybackConfig,
   type PresetId,
@@ -26,6 +27,12 @@ interface Props {
    * cannot do something it can.
    */
   interpolationAvailable: boolean | null;
+  /**
+   * Whether the relay can stripe a deep-buffer session (CAP_STRIPED_DVR,
+   * docs/91 §7), which is what enables Striping on Most stable. Unknown
+   * (before the relay has said) reads as no.
+   */
+  dvrStripingAvailable?: boolean;
   onPreset: (id: PresetId) => void;
   onParity: (value: ParityChoice) => void;
   onStriping: (value: StripeMode) => void;
@@ -45,6 +52,7 @@ interface Props {
 export function ViewerSettingsPanel({
   config,
   interpolationAvailable,
+  dvrStripingAvailable = false,
   onPreset,
   onParity,
   onStriping,
@@ -61,7 +69,7 @@ export function ViewerSettingsPanel({
   const changed = advancedChanges(config);
 
   const parityReason = notApplicable('parity', config);
-  const stripingReason = notApplicable('striping', config);
+  const stripingReason = notApplicable('striping', config, { dvrStriping: dvrStripingAvailable });
   // Two independent reasons an interpolation toggle can be inert, and the
   // more specific one wins: "your pacing mode has no mid-frames to make" is
   // actionable, "this pipeline can't interpolate" is not.
@@ -145,7 +153,7 @@ export function ViewerSettingsPanel({
                 label="Striping"
                 value={config.striping}
                 reason={stripingReason}
-                note={stripingReason ? null : optionSub(STRIPE_OPTIONS, config.striping)}
+                note={stripingReason ? null : stripingNote(config)}
                 options={STRIPE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
                 onChange={(v) => onStriping(v as StripeMode)}
               />

@@ -487,6 +487,8 @@ spec:
               value: {{ .Values.config.parityDefault | quote }}
             - name: GAWK_STRIPED_DELIVERY
               value: {{ .Values.config.stripedDelivery | quote }}
+            - name: GAWK_STRIPED_DVR
+              value: {{ .Values.config.stripedDvr | quote }}
             - name: GAWK_UPLINK_CARRIERS
               value: {{ .Values.config.uplinkCarriers | quote }}
             - name: GAWK_UPLINK_MAX_BITRATE

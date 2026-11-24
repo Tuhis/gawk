@@ -2,9 +2,17 @@ package eventbus
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"io"
 	"log/slog"
+	"math/big"
+	"net"
 	"strconv"
 	"strings"
 	"sync"
@@ -361,17 +369,118 @@ func TestInsecureDoesNotForceTLSOnAPlainURL(t *testing.T) {
 
 // TestInsecureNeverRequiresTLS: the switch relaxes verification, it does not
 // demand a TLS handshake. nats.Secure does both, and that is what broke the
-// plain compose lane; it would also break a TLS-requiring server dialled as
-// nats://, which is the spelling NATS itself documents.
+// plain compose lane. Since nats.go v1.56 a non-nil Options.TLSConfig asks for
+// TLS by itself, so on a plain URL the switch must leave TLSConfig unset, and
+// where something else already asks for TLS it must still relax it.
 func TestInsecureNeverRequiresTLS(t *testing.T) {
-	var o nats.Options
+	plain := nats.GetDefaultOptions()
+	plain.Servers = []string{"nats://127.0.0.1:4222"}
+	if err := insecureSkipVerify()(&plain); err != nil {
+		t.Fatal(err)
+	}
+	if plain.Secure || plain.TLSConfig != nil {
+		t.Errorf("the insecure switch asked for TLS on a plain URL: secure=%v tlsConfig=%+v",
+			plain.Secure, plain.TLSConfig)
+	}
+
+	for _, servers := range [][]string{
+		{"tls://nats.example:4222"},
+		{"nats://a:4222", "tls://b:4222"},
+		{"wss://nats.example:443"},
+	} {
+		o := nats.GetDefaultOptions()
+		o.Servers = servers
+		if err := insecureSkipVerify()(&o); err != nil {
+			t.Fatal(err)
+		}
+		if o.TLSConfig == nil || !o.TLSConfig.InsecureSkipVerify {
+			t.Errorf("%v: verification was not relaxed: %+v", servers, o.TLSConfig)
+		}
+	}
+
+	// A CA or client certificate applied before it has already asked for TLS.
+	o := nats.GetDefaultOptions()
+	o.Servers = []string{"nats://127.0.0.1:4222"}
+	o.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	if err := insecureSkipVerify()(&o); err != nil {
 		t.Fatal(err)
 	}
-	if o.Secure {
-		t.Error("the insecure switch turned TLS on")
+	if !o.TLSConfig.InsecureSkipVerify {
+		t.Error("verification was not relaxed on an existing TLS config")
 	}
-	if o.TLSConfig == nil || !o.TLSConfig.InsecureSkipVerify {
-		t.Errorf("verification was not relaxed: %+v", o.TLSConfig)
+}
+
+// TestInsecureReachesASelfSignedTLSServer is the switch doing its one job: a
+// tls:// bus whose certificate nothing trusts is reachable with it on.
+func TestInsecureReachesASelfSignedTLSServer(t *testing.T) {
+	url, js := withTLSStream(t)
+	p, m := newTestPublisher(t, url, func(o *Options) { o.Insecure = true })
+
+	p.Publish(Event{Type: events.TypeBroadcastStarted, Key: "3f9a1c4e7b2d",
+		Data: events.BroadcastStartedData{BroadcastID: "k7m2q9", BroadcastKey: "3f9a1c4e7b2d",
+			Role: events.RoleOrigin}})
+
+	if msg := firstMessage(t, js, "gawk.broadcast.3f9a1c4e7b2d.started"); len(msg.Data()) == 0 {
+		t.Fatal("no event arrived")
 	}
+	if got := m.drops(DropPublish); got != 0 {
+		t.Errorf("%d publishes failed against a self-signed tls:// server with -eventbus-insecure set", got)
+	}
+}
+
+// withTLSStream is withStream behind a TLS-requiring server with a
+// self-signed certificate, returned as a tls:// URL.
+func withTLSStream(t *testing.T) (string, jetstream.JetStream) {
+	t.Helper()
+	opts := natstest.DefaultTestOptions
+	opts.Port = -1
+	opts.JetStream = true
+	opts.StoreDir = t.TempDir()
+	opts.TLS = true
+	opts.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{selfSigned(t)}}
+	srv := natstest.RunServer(&opts)
+	t.Cleanup(srv.Shutdown)
+	if !srv.ReadyForConnections(5 * time.Second) {
+		t.Fatal("embedded nats-server did not start")
+	}
+	url := "tls://127.0.0.1:" + strconv.Itoa(srv.Addr().(*net.TCPAddr).Port)
+
+	nc, err := nats.Connect(url, nats.Secure(&tls.Config{InsecureSkipVerify: true})) //nolint:gosec // the test's own server
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(nc.Close)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "GAWK_EVENTS", Subjects: []string{"gawk.>"}}); err != nil {
+		t.Fatal(err)
+	}
+	return url, js
+}
+
+// selfSigned is a certificate for 127.0.0.1 that no trust store holds.
+func selfSigned(t *testing.T) tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "nats-test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
 }

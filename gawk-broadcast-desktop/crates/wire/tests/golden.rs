@@ -38,6 +38,7 @@ const GOLDEN_PARITY_CHUNK: &str = "010e01020304010009000021c0deadbeef";
 const GOLDEN_RELAY_CAPABILITIES: &str = "010f000102";
 const GOLDEN_CAPABILITIES_BOTH_BITS: &str = "010f000302";
 const GOLDEN_CAPABILITIES_UPLINK_CARRIERS: &str = "010f000702";
+const GOLDEN_CAPABILITIES_STRIPED_DVR: &str = "010f001302";
 const GOLDEN_STRIPE_STATE_STRIPED: &str = "0110010300";
 const GOLDEN_STRIPE_STATE_UNSTRIPED: &str = "0110000000";
 // R37 (docs/40 SP4): ServerVersion "1.42.0", Name "gawk home".
@@ -545,6 +546,25 @@ fn capabilities_carry_the_uplink_carriers_bit() {
     assert_eq!(to_hex(&got), GOLDEN_CAPABILITIES_UPLINK_CARRIERS);
     let back = parse_relay_capabilities(&got).unwrap();
     assert_ne!(back.flags & CAP_UPLINK_CARRIERS, 0);
+}
+
+// R87 (docs/91 D8): a viewer-side bit this producer never reads, in the same
+// 5 bytes. It only has to keep parsing when the bit is set.
+#[test]
+fn capabilities_carry_the_striped_dvr_bit() {
+    assert_eq!(CAP_STRIPED_DVR, 1 << 4);
+    let mut got = Vec::new();
+    append_relay_capabilities(
+        &mut got,
+        &RelayCapabilities {
+            flags: CAP_PARITY_CHUNKS | CAP_STRIPED_DELIVERY | CAP_STRIPED_DVR,
+            parity_level: 2,
+        },
+    )
+    .unwrap();
+    assert_eq!(to_hex(&got), GOLDEN_CAPABILITIES_STRIPED_DVR);
+    let back = parse_relay_capabilities(&got).unwrap();
+    assert_ne!(back.flags & CAP_STRIPED_DVR, 0);
 }
 
 #[test]
@@ -2422,6 +2442,8 @@ fn golden_session_closing_capacity_refusals() {
     assert_eq!(CLOSE_CODE_BROADCAST_FULL, 4018);
     assert_eq!(CLOSE_CODE_BROADCAST_FULL, CLOSE_CODE_PUBLISH_MINTED + 1);
     assert_eq!(CLOSE_CODE_RELAY_FULL, 4019);
+    assert_eq!(CLOSE_CODE_STRIPE_LEG_DRAINED, 4020);
+    assert!(!terminal_for_viewer(CLOSE_CODE_STRIPE_LEG_DRAINED));
     for (code, golden) in [
         (
             CLOSE_CODE_BROADCAST_FULL,

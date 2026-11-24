@@ -3,9 +3,11 @@ package decode
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -46,20 +48,43 @@ func testDecoder(t *testing.T, ffmpeg string) *Decoder {
 
 // D4: the subprocess runs with RLIMIT_CORE = 0 and the configured RLIMIT_AS.
 // The helper execs a shell that reports its own limits instead of ffmpeg.
+//
+// It runs the helper many times at once: the RLIMIT_AS cap lands on the Go
+// helper before the exec, so any runtime allocation in that window (a new
+// thread, a GC) dies with "fatal error: runtime: cannot allocate memory".
+// One run at a time on an idle machine almost never hits the window; CI's
+// loaded runners did (2026-11-20), and so does this under -race.
 func TestHelperSetsCoreAndAddressSpaceLimits(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
 		t.Skip("no sh")
 	}
 	exe, _ := os.Executable()
-	cmd := exec.Command(exe, HelperCommand, "-as", "536870912", "--", sh, "-c", "ulimit -c; ulimit -v")
-	cmd.Env = []string{helperEnv + "=1"}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("helper: %v: %s", err, out)
+	const runs = 64
+	errs := make(chan error, runs)
+	sem := make(chan struct{}, 2*runtime.NumCPU())
+	for i := 0; i < runs; i++ {
+		go func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			cmd := exec.Command(exe, HelperCommand, "-as", "536870912", "--", sh, "-c", "ulimit -c; ulimit -v")
+			cmd.Env = []string{helperEnv + "=1"}
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				errs <- fmt.Errorf("helper: %v: %s", err, out)
+				return
+			}
+			if got := strings.Fields(string(out)); len(got) != 2 || got[0] != "0" || got[1] != "524288" {
+				errs <- fmt.Errorf("limits %q, want core 0 and 524288 KiB of address space", out)
+				return
+			}
+			errs <- nil
+		}()
 	}
-	if got := strings.Fields(string(out)); len(got) != 2 || got[0] != "0" || got[1] != "524288" {
-		t.Fatalf("limits %q, want core 0 and 524288 KiB of address space", out)
+	for i := 0; i < runs; i++ {
+		if err := <-errs; err != nil {
+			t.Error(err)
+		}
 	}
 }
 

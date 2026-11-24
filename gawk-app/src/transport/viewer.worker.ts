@@ -9,6 +9,7 @@ import { notePlayhead } from './av-sync';
 import { AAC_CODEC, AacTranscoder } from './audio-transcode';
 import type { DecodedAudioChunk } from './audio-decode';
 import { Fmp4Muxer, type AudioMuxCodec, type Fmp4Segment } from './fmp4-muxer';
+import { installRuntimeConfig } from '../config';
 import { setInterpolationEnabled } from './interpolation';
 import { getPlayoutMode, setPlayoutMode, setViewerDeliveryMode } from './playout';
 import { setStripeMode } from './stripe';
@@ -178,6 +179,8 @@ ctx.onmessage = (e: MessageEvent) => {
       // coalescing by default, display-slot pacing in adaptive mode. On gated
       // devices only, install the frame tap so the pipeline forks released
       // frames to the (idle-until-armed) muxer.
+      // The page's runtime config first: everything after reads it.
+      installRuntimeConfig(cmd.config);
       muxRequested = Boolean(cmd.presentationMux);
       sink = createRenderSink(cmd.canvas);
       core = new ViewerWorkerCore({

@@ -4,8 +4,9 @@
 // control session and every tile's media session are faked at the transport
 // seam (the ViewerScreen test's FakeViewerSession pattern), so each test
 // drives RoomState / RoomEvent through the control session's callbacks and
-// asserts the tiles, the roster and the copy that result — and, for hide
-// videos, that NO /subscribe session exists at all.
+// asserts the tiles, the roster and the copy that result — and, for None
+// (the old hide videos) and every stream hidden under Choose, that NO
+// /subscribe session exists for what is not shown.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { StrictMode } from 'react';
@@ -150,6 +151,8 @@ function state(over: Partial<RoomState> = {}): RoomState {
 }
 
 const activeViewerIds = () => viewerSessions.filter((s) => !s.stopped).map((s) => s.id).sort();
+// R86: the footer's What to show pill, whatever it reads.
+const openWhatToShow = () => fireEvent.click(screen.getByRole('button', { name: /^What to show:/ }));
 
 async function joinAs(nickname = 'tuhis', over: Partial<RoomState> = {}) {
   localStorage.setItem('gawk:nickname', nickname);
@@ -330,27 +333,294 @@ describe('RoomScreen modes', () => {
     expect(viewerSessions).toHaveLength(created);
   });
 
-  it('hide videos: no tiles, every /subscribe session closed, the control session kept, the card shown', async () => {
+  it('None: no tiles, every /subscribe session closed, the control session kept, the card shown', async () => {
     const room = await joinAs();
     await waitFor(() => expect(activeViewerIds()).toHaveLength(3));
-    fireEvent.click(screen.getByRole('radio', { name: 'Hide videos' }));
+    openWhatToShow();
+    fireEvent.click(screen.getByRole('radio', { name: 'None' }));
     expect(screen.queryAllByTestId('room-tile')).toHaveLength(0);
     await waitFor(() => expect(activeViewerIds()).toEqual([]));
     expect(room.stopped).toBe(false);
     expect(screen.getByText('You’re still in the room')).toBeTruthy();
     expect(screen.getByText(/Nothing is downloading/)).toBeTruthy();
-    expect(localStorage.getItem('gawk:room-mode')).toBe('hidden');
+    expect(screen.getByRole('button', { name: 'What to show: None' })).toBeTruthy();
+    expect(localStorage.getItem('gawk:room-videos')).toBe('off');
+    // The layout is kept, set aside (docs/90 D8).
+    expect(screen.getByRole('radiogroup', { name: 'Layout' }).getAttribute('data-dim')).toBe('true');
+    expect(screen.getByRole('radio', { name: 'Grid' }).getAttribute('aria-checked')).toBe('true');
 
-    // Back to grid re-dials.
+    // Picking a layout leaves None and re-dials, as clicking Grid left
+    // Hide videos.
     fireEvent.click(screen.getByRole('radio', { name: 'Grid' }));
     await waitFor(() => expect(activeViewerIds()).toHaveLength(3));
+    expect(localStorage.getItem('gawk:room-videos')).toBeNull();
   });
 
-  it('a remembered hidden mode opens no media session at all', async () => {
+  it('a remembered None opens no media session at all, nor does a hidden mode stored before R86', async () => {
+    localStorage.setItem('gawk:room-videos', 'off');
+    await joinAs();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(viewerSessions).toHaveLength(0);
+    cleanup();
+    roomSessions.length = 0;
+    localStorage.clear();
     localStorage.setItem('gawk:room-mode', 'hidden');
     await joinAs();
     await new Promise((r) => setTimeout(r, 20));
     expect(viewerSessions).toHaveLength(0);
+    expect(screen.getByText('You’re still in the room')).toBeTruthy();
+  });
+});
+
+// R86 (docs/90): the What to show pill — All streams · Choose · None — and
+// the keys. A hidden stream is an unmounted tile, so it has no media session.
+describe('RoomScreen What to show', () => {
+  const tileNumbers = () => screen.queryAllByTestId('room-tile').map((t) => t.getAttribute('data-broadcast-index'));
+  const variants = () => screen.queryAllByTestId('room-tile').map((t) => t.getAttribute('data-variant'));
+  const shift = (digit: string) =>
+    fireEvent.keyDown(window, { key: { '1': '!', '2': '@', '3': '#', '4': '$' }[digit], code: `Digit${digit}`, shiftKey: true });
+  const choose = () => {
+    openWhatToShow();
+    fireEvent.click(screen.getByRole('radio', { name: 'Choose' }));
+  };
+
+  it('offers All streams, Choose and None, and under Choose a checkbox per stream, all ticked', async () => {
+    await joinAs();
+    expect(screen.getByRole('button', { name: 'What to show: All streams' }).getAttribute('aria-expanded')).toBe('false');
+    openWhatToShow();
+    const pop = screen.getByRole('dialog', { name: 'What to show' });
+    const group = within(pop).getByRole('radiogroup', { name: 'What to show' });
+    const radios = within(group).getAllByRole('radio');
+    expect(radios.map((r) => r.getAttribute('aria-checked'))).toEqual(['true', 'false', 'false']);
+    expect(within(group).getByRole('radio', { name: 'All streams' })).toBe(radios[0]);
+    expect(within(group).getByRole('radio', { name: 'Choose' })).toBe(radios[1]);
+    expect(within(group).getByRole('radio', { name: 'None' })).toBe(radios[2]);
+    expect(within(pop).queryAllByRole('checkbox')).toHaveLength(0);
+    fireEvent.click(screen.getByRole('radio', { name: 'Choose' }));
+    // The checkboxes are their own group, not members of the radiogroup.
+    expect(within(group).queryAllByRole('checkbox')).toHaveLength(0);
+    const streams = within(pop).getByRole('group', { name: 'Streams · 3 of 3 shown' });
+    expect(within(streams).getAllByRole('checkbox')).toHaveLength(3);
+    for (const name of ['alpha', 'bravo', 'charlie']) {
+      expect((within(pop).getByRole('checkbox', { name }) as HTMLInputElement).checked).toBe(true);
+    }
+    expect(screen.getByRole('button', { name: 'What to show: 3 of 3' })).toBeTruthy();
+    expect(within(pop).getByText('away')).toBeTruthy();
+    expect(within(pop).getByText('Shift+1–4 hides or shows a stream')).toBeTruthy();
+  });
+
+  it('unticking a stream closes its media session only; numbers stay the room’s', async () => {
+    await joinAs();
+    await waitFor(() => expect(activeViewerIds()).toEqual(['AAAAAA', 'BBBBBB', 'CCCCCC']));
+    const created = viewerSessions.length;
+    choose();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'bravo' }));
+    expect(tileNumbers()).toEqual(['1', '3']);
+    await waitFor(() => expect(activeViewerIds()).toEqual(['AAAAAA', 'CCCCCC']));
+    // The others kept their sessions: nothing re-dialed.
+    expect(viewerSessions).toHaveLength(created);
+    expect(screen.getByRole('button', { name: 'What to show: 2 of 3' }).getAttribute('data-vis')).toBe('some');
+    expect((screen.getByRole('checkbox', { name: 'bravo' }) as HTMLInputElement).checked).toBe(false);
+
+    // Ticking it again dials it again.
+    fireEvent.click(screen.getByRole('checkbox', { name: 'bravo' }));
+    expect(tileNumbers()).toEqual(['1', '2', '3']);
+    await waitFor(() => expect(activeViewerIds()).toEqual(['AAAAAA', 'BBBBBB', 'CCCCCC']));
+  });
+
+  it('Shift+number hides and shows; the plain number shows a hidden stream and focuses it (D7)', async () => {
+    await joinAs();
+    shift('2');
+    expect(tileNumbers()).toEqual(['1', '3']);
+    expect(screen.getByRole('button', { name: 'What to show: 2 of 3' })).toBeTruthy();
+    // A peek and its undo leave the room as it was: All streams.
+    shift('2');
+    expect(tileNumbers()).toEqual(['1', '2', '3']);
+    expect(screen.getByRole('button', { name: 'What to show: All streams' })).toBeTruthy();
+    shift('2');
+    fireEvent.keyDown(window, { key: '2' });
+    expect(tileNumbers()).toEqual(['1', '2', '3']);
+    expect(variants()).toEqual(['small', 'focus', 'small']);
+
+    // Under None, a number brings that stream back and the rest as they were.
+    shift('3');
+    openWhatToShow();
+    fireEvent.click(screen.getByRole('radio', { name: 'None' }));
+    expect(tileNumbers()).toEqual([]);
+    fireEvent.keyDown(window, { key: '1' });
+    expect(tileNumbers()).toEqual(['1', '2']);
+    expect(variants()).toEqual(['focus', 'small']);
+  });
+
+  it('Shift+number from All streams hides just that stream, not a set kept from before', async () => {
+    await joinAs();
+    choose();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'alpha' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'All streams' }));
+    expect(tileNumbers()).toEqual(['1', '2', '3']);
+    shift('3');
+    expect(tileNumbers()).toEqual(['1', '2']);
+  });
+
+  it('All streams keeps the set, and Choose brings it back', async () => {
+    await joinAs();
+    choose();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'bravo' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'All streams' }));
+    expect(tileNumbers()).toEqual(['1', '2', '3']);
+    expect(screen.getByRole('button', { name: 'What to show: All streams' }).getAttribute('data-vis')).toBe('all');
+    fireEvent.click(screen.getByRole('radio', { name: 'Choose' }));
+    expect(tileNumbers()).toEqual(['1', '3']);
+    // So does leaving None.
+    fireEvent.click(screen.getByRole('radio', { name: 'None' }));
+    fireEvent.keyDown(window, { key: '0' });
+    expect(tileNumbers()).toEqual(['1', '3']);
+  });
+
+  it('a stream that joins later arrives shown', async () => {
+    const room = await joinAs();
+    shift('2');
+    const base = state();
+    act(() =>
+      room.cbs.onState(
+        state({ seq: 4, attachments: [...base.attachments, { broadcastId: 'DDDDDD', label: 'delta', live: true, viewerCount: 0 }] }),
+      ),
+    );
+    expect(tileNumbers()).toEqual(['1', '3', '4']);
+  });
+
+  it('is remembered for the room: a rejoin opens no session for the hidden stream', async () => {
+    await joinAs();
+    shift('2');
+    cleanup();
+    roomSessions.length = 0;
+    viewerSessions.length = 0;
+    await joinAs();
+    expect(tileNumbers()).toEqual(['1', '3']);
+    await waitFor(() => expect(activeViewerIds()).toEqual(['AAAAAA', 'CCCCCC']));
+    expect(viewerSessions.some((v) => v.id === 'BBBBBB')).toBe(false);
+
+    // Another room starts on All streams.
+    cleanup();
+    roomSessions.length = 0;
+    render(<RoomScreen code="ZZ9ZZ9" />);
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    act(() => roomSessions[0].cbs.onState(state({ code: 'ZZ9ZZ9' })));
+    expect(tileNumbers()).toEqual(['1', '2', '3']);
+  });
+
+  it('every stream unticked is a card that offers them back, never a black stage (D10)', async () => {
+    await joinAs();
+    choose();
+    for (const name of ['alpha', 'bravo', 'charlie']) fireEvent.click(screen.getByRole('checkbox', { name }));
+    expect(tileNumbers()).toEqual([]);
+    await waitFor(() => expect(activeViewerIds()).toEqual([]));
+    expect(screen.getByText('No streams chosen')).toBeTruthy();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'What to show' })).toBeNull();
+    // Choose… opens the popover on the checklist, and Escape from the card's
+    // button, where the click left focus, closes it again.
+    const chooseBtn = screen.getByRole('button', { name: 'Choose…' });
+    fireEvent.click(chooseBtn);
+    expect(screen.getAllByRole('checkbox')).toHaveLength(3);
+    fireEvent.keyDown(chooseBtn, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'What to show' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'All streams' }));
+    expect(tileNumbers()).toEqual(['1', '2', '3']);
+  });
+
+  it('Choose from None dials nothing until a stream is ticked', async () => {
+    localStorage.setItem('gawk:room-videos', 'off');
+    await joinAs();
+    fireEvent.click(screen.getByRole('button', { name: 'Choose…' }));
+    expect(screen.getByText('No streams chosen')).toBeTruthy();
+    for (const box of screen.getAllByRole('checkbox')) expect((box as HTMLInputElement).checked).toBe(false);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(viewerSessions).toHaveLength(0);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'charlie' }));
+    expect(tileNumbers()).toEqual(['3']);
+    await waitFor(() => expect(activeViewerIds()).toEqual(['CCCCCC']));
+    expect(viewerSessions).toHaveLength(1);
+  });
+
+  it('focus skips hidden streams, and showing one again does not take focus back (D9)', async () => {
+    await joinAs();
+    fireEvent.keyDown(window, { key: '1' });
+    expect(variants()).toEqual(['focus', 'small', 'small']);
+    shift('1');
+    expect(tileNumbers()).toEqual(['2', '3']);
+    expect(variants()).toEqual(['focus', 'small']);
+    shift('1');
+    expect(tileNumbers()).toEqual(['1', '2', '3']);
+    expect(variants()).toEqual(['small', 'focus', 'small']);
+  });
+
+  it('moves focus nobody chose for good too, and a stream that left keeps its claim (D9)', async () => {
+    localStorage.setItem('gawk:room-mode', 'focus');
+    const room = await joinAs();
+    expect(variants()).toEqual(['focus', 'small', 'small']);
+    shift('1');
+    expect(variants()).toEqual(['focus', 'small']);
+    shift('1');
+    expect(variants()).toEqual(['small', 'focus', 'small']);
+
+    // Bravo, focused, drops out of a snapshot and comes back: focus returns.
+    const full = state().attachments;
+    act(() => room.cbs.onState(state({ seq: 4, attachments: [full[0], full[2]] })));
+    expect(variants()).toEqual(['focus', 'small']);
+    act(() => room.cbs.onState(state({ seq: 5 })));
+    expect(variants()).toEqual(['small', 'focus', 'small']);
+  });
+
+  it('reads the room’s picks whatever the case of the code in the link', async () => {
+    localStorage.setItem('gawk:room-picks', JSON.stringify([{ code: 'ab2cd3', choose: true, hidden: ['BBBBBB'] }]));
+    await joinAs();
+    expect(tileNumbers()).toEqual(['1', '3']);
+  });
+
+  it('leaves an Escape pressed in another layer to that layer', async () => {
+    await joinAs();
+    openWhatToShow();
+    fireEvent.click(screen.getByRole('button', { name: 'People and chat' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit nickname' }));
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'New nickname' }), { key: 'Escape' });
+    expect(screen.getByRole('dialog', { name: 'What to show' })).toBeTruthy();
+  });
+
+  it('keeps the keys working while a checkbox in the popover has focus', async () => {
+    await joinAs();
+    choose();
+    const bravo = screen.getByRole('checkbox', { name: 'bravo' });
+    bravo.focus();
+    fireEvent.keyDown(bravo, { key: '#', code: 'Digit3', shiftKey: true });
+    expect(tileNumbers()).toEqual(['1', '2']);
+  });
+
+  it('a choice made before a mint’s first state is the new room’s', async () => {
+    render(
+      <RoomView
+        target={{ kind: 'mint', broadcastId: 'AAAAAA', resumeTokenHex: 'b'.repeat(32), label: 'mine' }}
+        presetNickname="me"
+        onLeave={() => {}}
+      />,
+    );
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    openWhatToShow();
+    fireEvent.click(screen.getByRole('radio', { name: 'Choose' }));
+    act(() => roomSessions[0].cbs.onState(state()));
+    expect(screen.getByRole('button', { name: 'What to show: 3 of 3' })).toBeTruthy();
+    expect(JSON.parse(localStorage.getItem('gawk:room-picks')!)).toEqual([{ code: 'ab2cd3', choose: true, hidden: [] }]);
+  });
+
+  it('closes on Escape back onto the pill, and on a press outside', async () => {
+    await joinAs();
+    openWhatToShow();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'What to show' })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'What to show: All streams' }));
+    openWhatToShow();
+    fireEvent.pointerDown(screen.getByTestId('room-header'));
+    expect(screen.queryByRole('dialog', { name: 'What to show' })).toBeNull();
   });
 });
 
@@ -373,10 +643,10 @@ describe('RoomScreen Fit layout', () => {
     act(() => s.cbs.onStats({ viewerCount: 1, framesCompleted: 5, frameWidth: width, frameHeight: height }));
   };
 
-  it('the layout segment offers Grid, Fit, Focus and Hide videos, in that order', async () => {
+  it('the layout segment offers Grid, Fit and Focus, in that order', async () => {
     await joinAs();
     const seg = screen.getByRole('radiogroup', { name: 'Layout' });
-    expect(within(seg).getAllByRole('radio').map((r) => r.textContent?.trim())).toEqual(['Grid', 'Fit', 'Focus', 'Hide videos']);
+    expect(within(seg).getAllByRole('radio').map((r) => r.textContent?.trim())).toEqual(['Grid', 'Fit', 'Focus']);
   });
 
   it('Fit places every tile at its stream shape, persisted, without re-dialing', async () => {
@@ -521,13 +791,13 @@ describe('RoomScreen Fit layout', () => {
     expect(screen.getByRole('radio', { name: 'Fit' }).getAttribute('aria-checked')).toBe('true');
   });
 
-  it("the hide-videos card's way back follows the last all-POV mode", async () => {
+  it('a hidden mode stored before R86 comes back from None on the last all-POV mode', async () => {
     localStorage.setItem('gawk:room-grid', 'fit');
     localStorage.setItem('gawk:room-mode', 'hidden');
     await joinAs();
-    const back = screen.getByRole('button', { name: 'Fit' });
-    fireEvent.click(back);
+    fireEvent.click(screen.getByRole('button', { name: 'All streams' }));
     expect(screen.getByRole('radio', { name: 'Fit' }).getAttribute('aria-checked')).toBe('true');
+    expect(tiles()).toHaveLength(3);
   });
 
   it("the broadcaster's own preview tile takes the shape of its local video", async () => {
@@ -1571,6 +1841,17 @@ describe('RoomScreen tile stats', () => {
     fireEvent.click(screen.getByRole('button', { name: 'More options' }));
     expect(screen.queryByRole('menuitem', { name: 'Stats' })).toBeNull();
     expect(screen.getByRole('menuitem', { name: 'Leave room' })).toBeTruthy();
+  });
+
+  it('closes when its tile is hidden (docs/90 D13)', async () => {
+    await joinAs();
+    fireEvent.contextMenu(screen.getAllByTestId('room-tile')[1]);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Stats' }));
+    expect(statsDialog()).toBeTruthy();
+    fireEvent.keyDown(window, { key: '@', code: 'Digit2', shiftKey: true });
+    expect(statsDialog()).toBeNull();
+    fireEvent.keyDown(window, { key: '@', code: 'Digit2', shiftKey: true });
+    expect(statsDialog()).toBeNull();
   });
 
   it('closes when its tile’s attachment is removed', async () => {

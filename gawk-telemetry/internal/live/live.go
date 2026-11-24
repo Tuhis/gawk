@@ -83,6 +83,12 @@ const (
 	// fact cannot hold for EscalateSamples consecutive evaluations, which is
 	// precisely why intermittent collapses never lit the dashboard up before.
 	DipWindowSamples = 60
+	// IngressHistoryRounds is how many of the origin's scrapes the stream
+	// bitrate is measured over (docs/91 SG3): ~2 minutes at the default 5 s
+	// interval, matching the goodput window it is compared against. One
+	// interval holds two or three keyframes, so a bitrate over it alone
+	// swings with where they fell.
+	IngressHistoryRounds = 24
 )
 
 // SessionView is one row in the broadcast detail table — a broadcaster or a
@@ -189,6 +195,10 @@ type sessionState struct {
 	// can only ratchet upward.
 	prevSub     relayscrape.Subscriber
 	havePrevSub bool
+	// lossHist is this connection's recent scrapes, oldest first, for a loss
+	// window long enough to count (relayscrape.PathLossMinPackets) but no
+	// older than pathLossMaxWindow.
+	lossHist []lossPoint
 	// stripeOwner is the relay's owner key on this viewer's primary
 	// subscriber entry as last scraped: what its stripe legs are joined by
 	// (R36 TU5). Per connection attempt, so it changes on a reconnect.
@@ -203,6 +213,11 @@ type sessionState struct {
 	// the middle of a batch is exactly what the last-sample-only fold used to
 	// throw away.
 	dipWindow []rollup.Sample
+	// goodputWindow is the same rolling window trimmed to what
+	// rollup.DeriveGoodput reads (R87, docs/91 SG3), so the live goodput is
+	// measured over the stretch the stored session's would be, not over one
+	// batch.
+	goodputWindow []rollup.Sample
 	// spark is the two-minute fps tail GET /live/sparks serves (R36 TU7):
 	// the other bounded history this projection keeps.
 	spark sparkRing
@@ -261,6 +276,14 @@ type podView struct {
 	have   bool // a previous answer exists, so a delta is meaningful
 	at     time.Time
 	prevAt time.Time
+	// ingress is the last IngressHistoryRounds observations' ingress bytes,
+	// oldest first: what the stream bitrate is measured over.
+	ingress []ingressPoint
+}
+
+type ingressPoint struct {
+	atMs int64
+	b    relayscrape.Broadcast
 }
 
 // legState is one stripe leg's latest /statusz entry and the one before it,
@@ -392,12 +415,20 @@ func (p *Projection) ObserveClient(a ingest.Accepted, browser, os, appVersion st
 			delete(s.clientFacts, k)
 		}
 	}
+	if a.Role == "viewer" {
+		s.foldGoodputLocked(a.Samples)
+	}
 
 	// The LAST sample in the batch is "now" for this session.
 	if n := len(a.Samples); n > 0 {
 		stats := a.Samples[n-1].Stats
 		for _, f := range liveNumericFields {
-			if v, ok := schema.Number(stats, f); ok {
+			v, ok := schema.Number(stats, f)
+			if !ok && liveClearedWhenAbsent[f] {
+				delete(s.clientFacts, f)
+				continue
+			}
+			if ok {
 				// #376: an old tab's clock fault reads as a 48-minute latency
 				// in the row's cap→render column. Absent, and the previous
 				// reading cleared rather than left standing as "now".
@@ -438,12 +469,39 @@ func (p *Projection) ObserveClient(a ingest.Accepted, browser, os, appVersion st
 		if hidden, ok := schema.Bool(stats, "documentHidden"); ok {
 			s.clientFacts["documentHidden"] = boolToF(hidden)
 		}
+		// A deep-mode fact (R87): cleared when the sample omits it, like
+		// liveClearedWhenAbsent.
+		if idle, ok := schema.Bool(stats, "dvrIdle"); ok {
+			s.clientFacts["dvrIdle"] = boolToF(idle)
+		} else {
+			delete(s.clientFacts, "dvrIdle")
+		}
 		for _, f := range liveTextFields {
 			if v, ok := schema.String(stats, f); ok {
 				s.textFacts[f] = v
 			}
 		}
 		s.foldUplinkLocked(a.Samples)
+	}
+}
+
+// foldGoodputLocked keeps the goodput window and re-derives its facts (R87,
+// docs/91 SG3). Like the dip facts, a window that can no longer support one
+// clears it rather than leaving the last reading standing.
+func (s *sessionState) foldGoodputLocked(samples []ingest.Sample) {
+	for _, smp := range samples {
+		s.goodputWindow = append(s.goodputWindow, rollup.TrimGoodputSample(rollup.Sample{TMs: smp.TMs, Stats: smp.Stats}))
+	}
+	if n := len(s.goodputWindow); n > DipWindowSamples {
+		s.goodputWindow = append([]rollup.Sample(nil), s.goodputWindow[n-DipWindowSamples:]...)
+	}
+	g := rollup.DeriveGoodput(s.goodputWindow).Facts()
+	for _, k := range rollup.GoodputFactNames {
+		if v, ok := g[k]; ok {
+			s.clientFacts[k] = v
+		} else {
+			delete(s.clientFacts, k)
+		}
 	}
 }
 
@@ -536,6 +594,13 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 				pv.prev, pv.prevAt, pv.have = pv.cur, pv.at, true
 			}
 			pv.role, pv.cur, pv.at = o.Role, *o.Broadcast, now
+			pv.ingress = append(pv.ingress, ingressPoint{atMs: now.UnixMilli(), b: relayscrape.Broadcast{
+				IngressDatagramBytes: o.Broadcast.IngressDatagramBytes, KeyframeBytesIn: o.Broadcast.KeyframeBytesIn,
+				FramesRelayed: o.Broadcast.FramesRelayed,
+			}})
+			if n := len(pv.ingress); n > IngressHistoryRounds {
+				pv.ingress = append([]ingressPoint(nil), pv.ingress[n-IngressHistoryRounds:]...)
+			}
 
 			// The publisher's session is named on the broadcast record
 			// (`publisherSessionId`), not in subscriberDetails — it is the same
@@ -596,6 +661,9 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 			// delta, and are ABSENT until there is a window to measure (the
 			// alternative — reporting the lifetime total for one scrape — is
 			// the very thing this change exists to stop).
+			// Rebuilt from this scrape alone, so a fact the scrape no longer
+			// supports (a path the relay stopped reporting, a window with
+			// nothing sent, a viewer out of deep mode) is gone, not stale.
 			s.relayFacts = map[string]float64{
 				"queueDepth": float64(sub.QueueDepth),
 				"dvrLagMs":   float64(sub.DVRLagMs),
@@ -606,6 +674,20 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 			setDelta(s.relayFacts, "carrierQueueOverflow", sub.CarrierQueueOverflow, prev.CarrierQueueOverflow, have)
 			setDelta(s.relayFacts, "carrierRecordsDropped", sub.CarrierRecordsDropped, prev.CarrierRecordsDropped, have)
 			setDelta(s.relayFacts, "dvrResyncs", sub.DVRResyncs, prev.DVRResyncs, have)
+			if sub.DVR && sub.DVRBufferMs > 0 {
+				s.relayFacts["dvrBufferMs"] = float64(sub.DVRBufferMs)
+			}
+			// R87 (docs/91 §9.3): the connection's own path, as scraped; its
+			// loss over this window, like every other live counter.
+			if sub.PathSRTTMs > 0 {
+				s.relayFacts["pathSrttMs"] = sub.PathSRTTMs
+			}
+			if sub.PathMinRTTMs > 0 {
+				s.relayFacts["pathMinRttMs"] = sub.PathMinRTTMs
+			}
+			if loss, ok := s.pathLoss(*sub, now); ok {
+				s.relayFacts["pathLossRatio"] = loss
+			}
 			s.prevSub, s.havePrevSub = *sub, true
 		}
 	}
@@ -658,8 +740,10 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 				continue
 			}
 			s.relayFacts["ingressLossRatio"] = b.relayFacts["ingressLossRatio"]
-			// The leg-A units a viewer's rules read to tell leg A from leg B.
-			for _, k := range []string{"ingressFrameLossRatio", "ingressChunkLossRatio"} {
+			// The leg-A units a viewer's rules read to tell leg A from leg B,
+			// and the stream bitrate its goodput is judged against (R87).
+			// streamFramesPerSec bounds the parity in that bitrate.
+			for _, k := range []string{"ingressFrameLossRatio", "ingressChunkLossRatio", "streamBitrateBps", "streamFramesPerSec"} {
 				if v, ok := b.relayFacts[k]; ok {
 					s.relayFacts[k] = v
 				} else {
@@ -886,6 +970,17 @@ func (b *broadcastState) aggregateLocked() {
 			}
 			if chunkOK {
 				f["ingressChunkLossRatio"] = chunk
+			}
+		}
+		// R87 (docs/91 SG3): the stream's ingested bitrate over the origin's
+		// recent rounds — the supply a viewer's goodput is judged against —
+		// and the frame rate over the SAME rounds, which bounds the parity in
+		// it (framesRelayedPerSec above is one scrape's).
+		if n := len(origin.ingress); n > 1 {
+			first, last := origin.ingress[0], origin.ingress[n-1]
+			if bps, fps, ok := relayscrape.StreamRates(first.b, last.b, first.atMs, last.atMs); ok {
+				f["streamBitrateBps"] = bps
+				f["streamFramesPerSec"] = fps
 			}
 		}
 		b.pod, b.role = origin.pod, origin.role
@@ -1290,6 +1385,10 @@ var liveNumericFields = []string{
 	// R30 (docs/35 §7): the burst-threshold-loss rule's inputs, live.
 	"stripeLargeLossPct", "stripeSmallLossPct", "stripeLargeChunks",
 	"stripeActive", "stripeNeeded",
+	// R21/R87: the deep buffer and its stripe width (docs/91 SG3).
+	// Cleared when a sample omits them (liveClearedWhenAbsent). The client's
+	// rate pair is not read here: it is derived over the goodput window.
+	"dvrBufferMs", "dvrStripeWidth",
 	"captureFps", "encoderFps", "sentFps", "encoderQueueDepth",
 	"EncoderFps", "SentFps",
 	// D17: the target, so the live row can show a shortfall too.
@@ -1303,6 +1402,13 @@ var liveNumericFields = []string{
 	"memFootprintBytes", "memFootprintPeakBytes", "memHeapBytes", "memGpuBytes",
 }
 
+// liveClearedWhenAbsent are the live fields whose ABSENCE from the latest
+// sample is itself a statement (R87, review round 2): the deep-mode fields
+// are omitted outside deep mode, so the last value kept would describe a
+// mode the viewer has left. The older fields keep their last value, as they
+// always have.
+var liveClearedWhenAbsent = map[string]bool{"dvrBufferMs": true, "dvrStripeWidth": true}
+
 var liveTextFields = []string{
 	// docs/77 D14: the native broadcaster's uplink, live.
 	"uplinkModeRequested", "uplinkMode", "uplinkCongestion",
@@ -1312,4 +1418,41 @@ var liveTextFields = []string{
 	// at a broadcaster delivering half its target wants to know whether it is
 	// encoding in software before they look anywhere else.
 	"acceleration", "codec",
+}
+
+// pathLossMaxWindow bounds how far back the loss window reaches: a slow
+// stream's window grows until it holds enough packets, and a connection that
+// went quiet stops reporting the loss it had once this has passed.
+const pathLossMaxWindow = 60 * time.Second
+
+type lossPoint struct {
+	at  time.Time
+	sub relayscrape.Subscriber
+}
+
+// pathLoss is the connection's loss over the shortest recent window that
+// sent at least relayscrape.PathLossMinPackets: one ~5 s scrape for a stream
+// of a few Mbit/s, longer for a slow or near-idle one, and nothing when even
+// pathLossMaxWindow did not send enough. A changed relay key, or counters
+// that went backwards, are a different connection, so the history starts
+// over.
+func (s *sessionState) pathLoss(sub relayscrape.Subscriber, now time.Time) (float64, bool) {
+	if n := len(s.lossHist); n > 0 {
+		last := s.lossHist[n-1].sub
+		// A different relay key is a different connection: the session id
+		// survives a reconnect, and two pods can report it during a re-home.
+		if sub.Key != last.Key || sub.PathPacketsSent < last.PathPacketsSent || sub.PathPacketsLost < last.PathPacketsLost {
+			s.lossHist = nil
+		}
+	}
+	for len(s.lossHist) > 0 && now.Sub(s.lossHist[0].at) > pathLossMaxWindow {
+		s.lossHist = s.lossHist[1:]
+	}
+	var loss float64
+	var ok bool
+	for i := len(s.lossHist) - 1; i >= 0 && !ok; i-- {
+		loss, ok = sub.PathLossRatio(s.lossHist[i].sub)
+	}
+	s.lossHist = append(s.lossHist, lossPoint{at: now, sub: sub})
+	return loss, ok
 }

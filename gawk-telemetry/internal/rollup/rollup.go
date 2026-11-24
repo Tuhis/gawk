@@ -183,6 +183,8 @@ var viewerSeries = []string{
 	// are what the burst-threshold-loss rule reads.
 	"stripeActive", "stripeNeeded", "stripeLargeLossPct", "stripeSmallLossPct",
 	"stripeLargeChunks",
+	// R87 (docs/91 SG3): the deep-buffer stripe width over the session.
+	"dvrStripeWidth", "dvrLiveRateBps", "dvrGoodputBps",
 }
 
 var broadcasterSeries = []string{

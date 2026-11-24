@@ -7,6 +7,7 @@
 // cannot be repeated or reversed), drive with start()/stop() across broadcasts,
 // dispose() on teardown.
 
+import { getRuntimeConfig } from '../../config';
 import { log } from '../../lib/logger';
 import type { ViewerDeliveryMode } from '../../transport/resilient';
 import type { StripeMode } from '../../transport/stripe';
@@ -135,9 +136,15 @@ export class WorkerViewerController {
       const offscreen = this.canvas.transferControlToOffscreen();
       this.canvasTransferred = true;
       // The mux flag is spread in only when set, so a non-gated init message
-      // carries no trace of it.
+      // carries no trace of it. The runtime config always travels: the worker
+      // has no window to read config.js's values from.
       this.post(
-        { type: 'init', canvas: offscreen, ...(this.presentationMux ? { presentationMux: true } : {}) },
+        {
+          type: 'init',
+          canvas: offscreen,
+          config: getRuntimeConfig(),
+          ...(this.presentationMux ? { presentationMux: true } : {}),
+        },
         [offscreen],
       );
     }

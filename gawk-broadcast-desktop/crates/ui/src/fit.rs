@@ -1,7 +1,7 @@
 //! Window fit (R64, docs/66 D8–D14, D16): the window grows to show the main
 //! page whole when the screen has room, shrinks back only on a change of
 //! state, never fights a manual resize, and remembers the size the user
-//! chose. Everything here is pure: the shell feeds [`FitState::step`] what
+//! chose, and where it was (D18). Everything here is pure: the shell feeds [`FitState::step`] what
 //! it observed on each UI tick and applies the [`Move`] it returns.
 //!
 //! Platform-free like the rest of the crate: each platform measures a
@@ -271,6 +271,95 @@ impl FitState {
             Some(at) if now >= at => {
                 self.save_at = None;
                 Some((self.your.0.round() as u32, self.your.1.round() as u32))
+            }
+            _ => None,
+        }
+    }
+}
+
+// ----- your position (D18) -----
+
+/// How much of the title bar must lie on a screen for a remembered
+/// position to be kept: its height, enough to grab it by (D18).
+pub const GRAB_H: f32 = 32.0;
+
+/// Where a window whose frame's top-left was last at `saved` reopens
+/// (D18), given every monitor's work area, all in the platform's one
+/// coordinate space; `width` is the frame's width there. `None` — the
+/// system places it — when no work area holds any of its title bar: the
+/// monitor it was on is gone or has moved. Otherwise the frame is pulled
+/// in to lie wholly across that work area, and its top inside it, so the
+/// title bar is never under a taskbar or off an edge. The bottom is left
+/// to window fit's launch clamp (D13).
+pub fn launch_position(saved: (f32, f32), width: f32, works: &[Rect]) -> Option<(f32, f32)> {
+    let bar = Rect::new(saved.0, saved.1, width.max(1.0), GRAB_H);
+    let overlap = |w: &Rect| {
+        let dx = (bar.x + bar.w).min(w.x + w.w) - bar.x.max(w.x);
+        let dy = bar.bottom().min(w.bottom()) - bar.y.max(w.y);
+        if dx > 0.0 && dy > 0.0 { dx * dy } else { 0.0 }
+    };
+    let work = works
+        .iter()
+        .map(|w| (overlap(w), w))
+        .filter(|(a, _)| *a > 0.0)
+        .max_by(|a, b| a.0.total_cmp(&b.0))?
+        .1;
+    let x = saved.0.min(work.x + work.w - bar.w).max(work.x);
+    let y = saved.1.min(work.bottom() - GRAB_H).max(work.y);
+    Some((x, y))
+}
+
+/// [`launch_position`] for a platform that remembers the client area's
+/// top-left rather than the frame's (macOS, D18): `title_h` above it is the
+/// title bar, which is what has to be on a screen.
+pub fn launch_content_position(
+    saved: (f32, f32),
+    title_h: f32,
+    width: f32,
+    works: &[Rect],
+) -> Option<(f32, f32)> {
+    launch_position((saved.0, saved.1 - title_h), width, works).map(|(x, y)| (x, y + title_h))
+}
+
+/// Your position across ticks (D18): the last one the platform reported,
+/// saved [`SAVE_DELAY`] after it stops changing, and at quit.
+#[derive(Clone, Debug, Default)]
+pub struct PositionMemory {
+    stored: Option<(i32, i32)>,
+    seen: Option<(i32, i32)>,
+    save_at: Option<Instant>,
+}
+
+impl PositionMemory {
+    /// From the stored `windowPosition`: `None` = never saved.
+    pub fn new(stored: Option<(i32, i32)>) -> Self {
+        PositionMemory {
+            stored,
+            ..Default::default()
+        }
+    }
+
+    /// One tick: where the window would restore to now, or `None` while
+    /// the platform can't say (no window yet, or a platform that never
+    /// knows), which changes nothing.
+    pub fn observe(&mut self, pos: Option<(i32, i32)>, now: Instant) {
+        let Some(pos) = pos else {
+            return;
+        };
+        if self.seen != Some(pos) {
+            self.seen = Some(pos);
+            self.save_at = (Some(pos) != self.stored).then_some(now + SAVE_DELAY);
+        }
+    }
+
+    /// The position to store, once its save is due.
+    pub fn take_save(&mut self, now: Instant) -> Option<(i32, i32)> {
+        match self.save_at {
+            Some(at) if now >= at => {
+                self.save_at = None;
+                let pos = self.seen.filter(|p| Some(*p) != self.stored)?;
+                self.stored = Some(pos);
+                Some(pos)
             }
             _ => None,
         }
@@ -788,6 +877,139 @@ mod tests {
         // A window 800 tall whose bottom is 100 up from the primary's bottom.
         let win = from_appkit(Rect::new(200.0, 100.0, 520.0, 800.0), 900.0);
         assert_eq!(win.y, 0.0);
+    }
+
+    // ----- launch_position() and PositionMemory: D18 -----
+
+    /// Two 1080p monitors side by side, taskbars 48 px at the bottom.
+    const LEFT: Rect = WORK;
+    const RIGHT: Rect = Rect {
+        x: 1920.0,
+        y: 0.0,
+        w: 1920.0,
+        h: 1032.0,
+    };
+
+    #[test]
+    fn a_position_on_a_screen_is_kept() {
+        assert_eq!(
+            launch_position((400.0, 100.0), 520.0, &[LEFT, RIGHT]),
+            Some((400.0, 100.0))
+        );
+        assert_eq!(
+            launch_position((2400.0, 50.0), 520.0, &[LEFT, RIGHT]),
+            Some((2400.0, 50.0))
+        );
+    }
+
+    #[test]
+    fn a_position_on_a_monitor_that_is_gone_is_left_to_the_system() {
+        assert_eq!(launch_position((2400.0, 50.0), 520.0, &[LEFT]), None);
+        // Above every screen, and with no screens at all.
+        assert_eq!(launch_position((400.0, -500.0), 520.0, &[LEFT]), None);
+        assert_eq!(launch_position((400.0, 100.0), 520.0, &[]), None);
+    }
+
+    #[test]
+    fn a_window_partly_off_its_screen_is_pulled_in() {
+        // Hanging off the right edge of the only screen.
+        assert_eq!(
+            launch_position((1700.0, 100.0), 520.0, &[LEFT]),
+            Some((1400.0, 100.0))
+        );
+        // Title bar under the taskbar: its top goes up to grab height.
+        assert_eq!(
+            launch_position((400.0, 1020.0), 520.0, &[LEFT]),
+            Some((400.0, 1000.0))
+        );
+        // Wider than the screen: the left edge wins.
+        assert_eq!(
+            launch_position((100.0, 100.0), 2500.0, &[LEFT]),
+            Some((0.0, 100.0))
+        );
+    }
+
+    #[test]
+    fn a_window_across_two_screens_goes_to_the_one_with_more_of_its_title_bar() {
+        // 400 px on the left screen, 120 on the right.
+        assert_eq!(
+            launch_position((1520.0, 100.0), 520.0, &[LEFT, RIGHT]),
+            Some((1400.0, 100.0))
+        );
+        assert_eq!(
+            launch_position((1800.0, 100.0), 520.0, &[LEFT, RIGHT]),
+            Some((1920.0, 100.0))
+        );
+    }
+
+    #[test]
+    fn a_screen_left_of_the_primary_has_negative_coordinates() {
+        let left = Rect::new(-2560.0, -200.0, 2560.0, 1392.0);
+        assert_eq!(
+            launch_position((-1200.0, -150.0), 520.0, &[left, WORK]),
+            Some((-1200.0, -150.0))
+        );
+    }
+
+    #[test]
+    fn a_client_area_position_keeps_its_title_bar_on_the_screen() {
+        // A 1440 × 900 Mac: the menu bar takes the top 25 points.
+        let mac = Rect::new(0.0, 25.0, 1440.0, 875.0);
+        // Client top 28 below the frame's: kept as it was.
+        assert_eq!(
+            launch_content_position((200.0, 53.0), 28.0, 520.0, &[mac]),
+            Some((200.0, 53.0))
+        );
+        // A client top at the menu bar's edge would hide the title bar
+        // under it: pushed down by the title bar's height.
+        assert_eq!(
+            launch_content_position((200.0, 25.0), 28.0, 520.0, &[mac]),
+            Some((200.0, 53.0))
+        );
+        // On a screen that is gone.
+        assert_eq!(
+            launch_content_position((2000.0, 100.0), 28.0, 520.0, &[mac]),
+            None
+        );
+    }
+
+    #[test]
+    fn a_position_is_saved_a_second_after_it_settles() {
+        let t0 = Instant::now();
+        let mut m = PositionMemory::new(None);
+        m.observe(None, t0);
+        assert_eq!(m.take_save(t0 + SAVE_DELAY), None);
+        m.observe(Some((10, 20)), t0);
+        m.observe(Some((30, 40)), t0 + Duration::from_millis(500));
+        assert_eq!(m.take_save(t0 + SAVE_DELAY), None, "still moving");
+        // The same position again doesn't push the save back.
+        m.observe(Some((30, 40)), t0 + Duration::from_millis(1000));
+        assert_eq!(
+            m.take_save(t0 + Duration::from_millis(1500)),
+            Some((30, 40))
+        );
+        assert_eq!(m.take_save(t0 + Duration::from_secs(5)), None, "once");
+    }
+
+    #[test]
+    fn the_stored_position_is_not_saved_again() {
+        let t0 = Instant::now();
+        let mut m = PositionMemory::new(Some((30, 40)));
+        m.observe(Some((30, 40)), t0);
+        assert_eq!(m.take_save(t0 + SAVE_DELAY), None);
+        // Moved away and back before the save was due.
+        m.observe(Some((50, 60)), t0);
+        m.observe(Some((30, 40)), t0 + Duration::from_millis(100));
+        assert_eq!(m.take_save(t0 + Duration::from_secs(3)), None);
+    }
+
+    #[test]
+    fn a_quit_saves_a_move_not_yet_due() {
+        let t0 = Instant::now();
+        let mut m = PositionMemory::new(Some((0, 0)));
+        m.observe(Some((70, 80)), t0);
+        // The shell's quit asks as if the delay had passed.
+        assert_eq!(m.take_save(t0 + SAVE_DELAY), Some((70, 80)));
     }
 
     #[test]

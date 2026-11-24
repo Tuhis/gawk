@@ -126,6 +126,12 @@ func run() error {
 	roomCreate := flag.String("room-create-secret", "", "the relay's room-create secret, for -room-new (env GAWK_ROOM_CREATE_SECRET)")
 	label := flag.String("label", "", "deprecated and ignored: the nickname (-nick) names the tile now")
 	nick := flag.String("nick", "pubsim", "the simulated broadcaster's name in the room: roster entry and tile label")
+	// R87 SG0 (docs/91 §4): the committed clips are far below a real 1080p60
+	// stream, and a throughput measurement needs the real one's bitrate and
+	// keyframe share. Padding with an H.264 filler NAL keeps every AU valid
+	// Annex-B, so nothing downstream can tell it from encoder output.
+	padKeyframe := flag.Int("pad-keyframe-bytes", 0, "pad every keyframe AU to at least this many bytes with an H.264 filler NAL (0 = as committed)")
+	padDelta := flag.Int("pad-delta-bytes", 0, "pad every delta AU to at least this many bytes with an H.264 filler NAL (0 = as committed)")
 	flag.Parse()
 	if *roomCreate == "" {
 		*roomCreate = os.Getenv("GAWK_ROOM_CREATE_SECRET")
@@ -139,6 +145,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	aus = padAUs(aus, *padKeyframe, *padDelta)
 	var packets [][]byte
 	if *audio {
 		if packets, err = fixture.SplitAudio(fixture.Audio); err != nil {
@@ -275,6 +282,34 @@ func fixtureAUs(name string) ([]publisher.AccessUnit, error) {
 		return pubsim.PhasedLoop(aus, pubsim.MagentaPhaseFrames)
 	}
 	return nil, fmt.Errorf("unknown -fixture %q (want default, large or magenta)", name)
+}
+
+// padAUs returns aus with each keyframe grown to at least kfBytes and each
+// delta to at least deltaBytes by appending one filler-data NAL (type 12):
+// 0xFF payload bytes ended by the rbsp stop bit, which a decoder discards.
+func padAUs(aus []publisher.AccessUnit, kfBytes, deltaBytes int) []publisher.AccessUnit {
+	if kfBytes <= 0 && deltaBytes <= 0 {
+		return aus
+	}
+	out := make([]publisher.AccessUnit, len(aus))
+	for i, au := range aus {
+		target := deltaBytes
+		if au.Keyframe {
+			target = kfBytes
+		}
+		out[i] = au
+		const overhead = 4 + 1 + 1 // start code, NAL header, stop bit
+		if n := target - len(au.Data) - overhead; n > 0 {
+			data := make([]byte, 0, target)
+			data = append(data, au.Data...)
+			data = append(data, 0, 0, 0, 1, 0x0C)
+			for range n {
+				data = append(data, 0xFF)
+			}
+			out[i].Data = append(data, 0x80)
+		}
+	}
+	return out
 }
 
 func roomLine(code, creatorTokenHex string) string {

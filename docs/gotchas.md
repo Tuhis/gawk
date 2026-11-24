@@ -713,6 +713,12 @@ Add to it when a new gotcha lands in `docs/`.
   *enter* animation mid-exit, which is worth sampling whenever an exit
   animation "does not play". ([docs/40](40-relay-server-picker.md) §4.3)
 
+- **Shift changes a digit's `KeyboardEvent.key`, and differently per
+  layout**: Shift+2 is `@` on US and `"` on Nordic keyboards, so a
+  `{ key: '2', shift: true }` shortcut never matched by `key`. `useHotkey`
+  matches a Shift shortcut's digit by its number-row `code` (`Digit2`)
+  instead. ([docs/90](90-room-stream-visibility.md) §8)
+
 **Media pipeline**
 
 - **A canvas player gets no free display wake lock — take one explicitly.**
@@ -2562,6 +2568,17 @@ entries still describe code `gawk-pubsim` runs (now
   running on the runtime's own base, caught it. `detect.Init` sets the
   variable itself, so no deployment can forget it.
   ([docs/71](71-content-flagging.md) §9.5)
+- **`RLIMIT_AS` lands on the Go helper before the exec, and the Go
+  runtime is already over it.** The `ffmpeg-exec` helper sets the cap on
+  itself and then execs ffmpeg; any mmap in between is `fatal error:
+  runtime: cannot allocate memory`. Allocating nothing in `ExecHelper` was
+  not enough: the finalizer goroutine, running on another thread, grew its
+  stack in that window, and a blocking `syscall.Syscall` lets sysmon start
+  a new thread. Under `-race` on a loaded CI runner it failed most runs
+  (2026-11-20). The helper builds execve's arguments first, then drops to
+  `GOMAXPROCS(1)` with GC off, and issues the cap and the exec as raw
+  syscalls, so no other goroutine can run.
+  ([docs/71](71-content-flagging.md) D4)
 - **`content_flag.observed` never reaches an unfiltered webhook.** It is
   opt-in: a webhook receives it only when its R49 `events` filter names it,
   so turning on `observe` mode cannot page an existing pager — and a webhook

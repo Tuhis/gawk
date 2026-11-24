@@ -68,3 +68,34 @@ func TestDVRPacerDisabledAndUnknownRate(t *testing.T) {
 		}
 	}
 }
+
+// A write larger than the whole burst must still pass once the bucket is
+// full, or a keyframe bigger than a quarter second at the ceiling wedges the
+// cursor for good. A striped connection's ceiling is 1/N of an unstriped one
+// (docs/91 D4), which puts ordinary keyframes in that range.
+func TestDVRPacerPassesAWriteLargerThanTheBurst(t *testing.T) {
+	now := time.Now()
+	p := newDVRPacer(4.0, func() time.Time { return now })
+	const live = 100_000
+	big := int(2 * p.burst(live))
+	passed := false
+	for range 100 {
+		if p.allow(big, live) {
+			passed = true
+			break
+		}
+		now = now.Add(100 * time.Millisecond)
+	}
+	if !passed {
+		t.Fatalf("a %d-byte write never passed a pacer whose burst is %.0f", big, p.burst(live))
+	}
+	// The overdraft is debt, not a free pass: the next write waits until
+	// the ceiling's rate has repaid it.
+	if p.allow(1, live) {
+		t.Fatal("a write passed straight after an overdraft")
+	}
+	now = now.Add(time.Duration(float64(big) / (4 * live) * float64(time.Second)))
+	if !p.allow(1, live) {
+		t.Fatal("the overdraft was not repaid at the ceiling's rate")
+	}
+}

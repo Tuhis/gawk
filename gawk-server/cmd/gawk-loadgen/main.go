@@ -110,6 +110,9 @@ func main() {
 	delivery := flag.String("delivery", "", "delivery mode: \"\" (datagrams), \"reliable\" (R19 carriers), or \"deep\" (R21 DVR ring)")
 	bufferMs := flag.Int("buffer-ms", 3000, "playout buffer to declare with -delivery=deep (R21)")
 	report := flag.Duration("report", 5*time.Second, "aggregate report interval")
+	// R87 SG0 (docs/91 §4): goodput per connection, the quantity the
+	// per-connection-ceiling question is about. One row per session per second.
+	sessionCSV := flag.String("session-csv", "", "write `t_s,session,bytes` (cumulative bytes per session, every second) to this file")
 	expectClose := flag.Int("expect-close-code", closeExpectOff,
 		"assert every viewer session was closed by the relay with this WebTransport application close code (e.g. 4006 for an operator kill) and exit 1 with a diagnosis otherwise; -1 disables the check")
 	flag.Parse()
@@ -146,11 +149,21 @@ func main() {
 
 	var t totals
 	var wg sync.WaitGroup
+	perSession := make([]atomic.Uint64, *viewers)
+	if *sessionCSV != "" {
+		f, err := os.Create(*sessionCSV)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "gawk-loadgen:", err)
+			os.Exit(2)
+		}
+		defer f.Close()
+		go writeSessionCSV(ctx, f, perSession)
+	}
 	for i := 0; i < *viewers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			runViewer(ctx, subscribeURL, *insecure, observe, &t)
+			runViewer(ctx, subscribeURL, *insecure, observe, &t, &perSession[i])
 		}()
 		select {
 		case <-ctx.Done():
@@ -309,7 +322,26 @@ func printSummary(t *totals, viewers int, elapsed time.Duration) {
 	fmt.Printf("bytes received:    %d (%.1f Mbps aggregate)\n", total, float64(total)*8/1e6/elapsed.Seconds())
 }
 
-func runViewer(ctx context.Context, subscribeURL string, insecure, observe bool, t *totals) {
+// writeSessionCSV logs each session's cumulative bytes once a second until
+// ctx ends.
+func writeSessionCSV(ctx context.Context, f *os.File, perSession []atomic.Uint64) {
+	start := time.Now()
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	fmt.Fprintln(f, "t_s,session,bytes")
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-tick.C:
+			for i := range perSession {
+				fmt.Fprintf(f, "%.1f,%d,%d\n", now.Sub(start).Seconds(), i, perSession[i].Load())
+			}
+		}
+	}
+}
+
+func runViewer(ctx context.Context, subscribeURL string, insecure, observe bool, t *totals, own *atomic.Uint64) {
 	d := &webtransport.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: insecure},
 		QUICConfig: &quic.Config{
@@ -348,6 +380,7 @@ func runViewer(ctx context.Context, subscribeURL string, insecure, observe bool,
 				for {
 					m, err := stream.Read(buf)
 					n += uint64(m)
+					own.Add(uint64(m))
 					if err != nil {
 						break
 					}
@@ -370,6 +403,7 @@ func runViewer(ctx context.Context, subscribeURL string, insecure, observe bool,
 		}
 		t.datagrams.Add(1)
 		t.bytesDatagrams.Add(uint64(len(dgram)))
+		own.Add(uint64(len(dgram)))
 		hdr, _, err := wire.ParseVideoChunk(dgram)
 		if err != nil {
 			continue // config/clock-mapping/etc.

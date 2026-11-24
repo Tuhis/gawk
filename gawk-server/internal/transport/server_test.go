@@ -85,6 +85,7 @@ func startTestServerCfgLogSrv(t *testing.T, ctx context.Context, cfg config.Conf
 		MaxKeyframeBytes:     cfg.MaxKeyframeBytes,
 		KeyframeWriteTimeout: cfg.KeyframeWriteTimeout,
 		StripedDelivery:      cfg.StripedDelivery,
+		StripedDVR:           cfg.StripedDVR,
 		UplinkCarriers:       cfg.UplinkCarriers,
 	})
 	srv = New(cfg, r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &cert, nil }, log,
