@@ -558,26 +558,43 @@ func TestReleaseRetriesThroughAConflict(t *testing.T) {
 	clock := newFakeClock()
 	a := newTestStore(t, client, "pod-a", clock, nil)
 	ctx := context.Background()
-	if err := a.Adopt(ctx, "tuhisroom"); err != nil {
-		t.Fatal(err)
-	}
-	// The concurrent writer, in miniature: the first status write after
-	// this point is told it lost the CAS, whatever version it carried.
-	var conflicts atomic.Int32
+	// The concurrent writer, in miniature: once armed, the first RELEASE
+	// write (an empty holder) is told it lost the CAS, whatever version it
+	// carried. Installed BEFORE Adopt starts the renew loop: the fake's
+	// reactor chain is a plain slice that Invokes reads under a lock
+	// PrependReactor never takes, so prepending under a live renew
+	// goroutine is a data race (seen once under a loaded `go test -race
+	// ./...`, 2026-11-06). Matching only the release write keeps a renew
+	// tick from eating the conflict meant for Release.
+	var armed atomic.Bool
+	var writes, releases atomic.Int32
 	client.PrependReactor("update", "rooms", func(action k8stesting.Action) (bool, runtime.Object, error) {
-		if conflicts.Add(1) == 1 {
+		writes.Add(1)
+		obj := action.(k8stesting.UpdateAction).GetObject().(*unstructured.Unstructured)
+		if holder, _, _ := unstructured.NestedString(obj.Object, "status", "lease", "holder"); !armed.Load() || holder != "" {
+			return false, nil, nil
+		}
+		if releases.Add(1) == 1 {
 			return true, nil, apierrors.NewConflict(rooms.GroupVersionResource.GroupResource(), "tuhisroom", errors.New("a RoomEmpty stamp landed first"))
 		}
 		return false, nil, nil
 	})
+	if err := a.Adopt(ctx, "tuhisroom"); err != nil {
+		t.Fatal(err)
+	}
+	armed.Store(true)
+	// Let a renew tick run first: the interleaving the race needed, and
+	// proof a renew write leaves the conflict to Release.
+	before := writes.Load()
+	waitFor(t, 15*time.Second, func() bool { return writes.Load() > before }, "a renew write")
 	if err := a.Release(ctx, "tuhisroom"); err != nil {
 		t.Fatalf("Release through one conflict: %v", err)
 	}
 	if got := getRoom(t, client, "tuhisroom"); got.Status.Lease.Holder != "" || got.Status.Lease.Generation != 1 {
 		t.Fatalf("lease after a conflicted release = %+v, want empty holder at gen 1", got.Status.Lease)
 	}
-	if n := conflicts.Load(); n != 2 {
-		t.Fatalf("status writes = %d, want the conflicted one and its retry", n)
+	if n := releases.Load(); n != 2 {
+		t.Fatalf("release writes = %d, want the conflicted one and its retry", n)
 	}
 }
 

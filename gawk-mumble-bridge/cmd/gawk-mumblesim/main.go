@@ -46,6 +46,11 @@ type Report struct {
 	Ends     map[string]int   `json:"ends"`
 	Sent     int              `json:"sent"`
 	Users    map[string]uint8 `json:"users"`
+	// AllUsers and Channels are the whole server, for the e2e's "no
+	// observer user anywhere" and "the channel exists" checks (docs/89
+	// MI4): every user's name, and every channel by its slash path.
+	AllUsers []string `json:"allUsers"`
+	Channels []string `json:"channels"`
 }
 
 type options struct {
@@ -257,7 +262,28 @@ func sim(ctx context.Context, o options, stdout io.Writer) error {
 			}
 			users[u.Name] = f
 		}
+		var all []string
+		for _, u := range c.Users() {
+			all = append(all, u.Name)
+		}
+		chans := c.Channels()
+		byID := map[uint32]mumble.Channel{}
+		for _, ch := range chans {
+			byID[ch.ID] = ch
+		}
+		var paths []string
+		for _, ch := range chans {
+			if ch.ID == 0 {
+				continue
+			}
+			p := ch.Name
+			for at, n := byID[ch.Parent], 0; at.ID != 0 && n < 64; at, n = byID[at.Parent], n+1 {
+				p = at.Name + "/" + p
+			}
+			paths = append(paths, p)
+		}
 		mu.Lock()
+		rep.AllUsers, rep.Channels = all, paths
 		rep.Time, rep.Session, rep.Channel, rep.Users = time.Now().Unix(), self.Session, self.Channel, users
 		_ = enc.Encode(rep)
 		mu.Unlock()

@@ -486,6 +486,12 @@ records):
   no stalls — frames superseded in bursts at the viewer's sink. Without
   the gate it read 98.8–99.7 % in all three. Intermittent, and the browser
   Reliable milestone has to explain it before relying on the gate.
+  *Explained 2026-11-10* ([docs/88](88-browser-reliable-uplink.md) F1): the
+  lab's viewer replay locks its presentation phase (an exact 60 Hz vsync
+  under a 60 fps source, nothing drifting), and a run whose frame targets
+  sit on the sink's half-vsync boundary shows 40 frames in 60 for the whole
+  run. It hit an unrelated sender there, and 1 ms of shift removed it. Every
+  viewer table here is a single phase; read differences with that in mind.
 - **Beside a household's upload** (table O) a browser broadcaster does
   about as well as today's native one where the uplink has room, and
   better where it does not: Balanced 90.3 % of frames on Chrome's
@@ -1035,7 +1041,8 @@ preset (§11 tables I, J, K):
 4. **Later, outside this milestone: a browser Reliable mode** (OD5) on
    RU1's relay ingest — its own design, measured on Chrome on the gaming
    PC first, with the keyframe gate's round trip on long clean paths
-   designed away or accepted there (F18).
+   designed away or accepted there (F18). *Designed 2026-11-10 as R84,
+   [docs/88](88-browser-reliable-uplink.md).*
 
 RU6, the lab, comes with this doc.
 

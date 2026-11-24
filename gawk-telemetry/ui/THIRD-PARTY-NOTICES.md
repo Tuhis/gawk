@@ -24,8 +24,8 @@ script for what counts as a dependency here and why.
 
 | Package | Version | License | Copyright |
 |---|---|---|---|
-| `@tanstack/react-virtual` | 3.14.26 | `MIT` | Copyright (c) 2021-present Tanner Linsley |
-| `@tanstack/virtual-core` | 3.19.11 | `MIT` | Copyright (c) 2021-present Tanner Linsley |
+| `@tanstack/react-virtual` | 3.14.28 | `MIT` | Copyright (c) 2021-present Tanner Linsley |
+| `@tanstack/virtual-core` | 3.19.13 | `MIT` | Copyright (c) 2021-present Tanner Linsley |
 | `@types/react` | 19.3.0 | `MIT` | Copyright (c) Microsoft Corporation |
 | `csstype` | 3.2.3 | `MIT` | Copyright (c) 2017-2018 Fredrik Nicol |
 | `echarts` | 6.1.0 | `Apache-2.0` | Copyright 2017-2026 The Apache Software Foundation |
@@ -37,7 +37,7 @@ script for what counts as a dependency here and why.
 | `tslib` | 2.3.0 | `0BSD` | Copyright (c) Microsoft Corporation |
 | `tslib` | 2.3.0 | `0BSD` | Copyright (c) Microsoft Corporation |
 | `zrender` | 6.1.0 | `BSD-3-Clause` | Copyright (c) 2017, Baidu Inc |
-| `zustand` | 5.0.16 | `MIT` | Copyright (c) 2019 Paul Henschel |
+| `zustand` | 5.1.0 | `MIT` | Copyright (c) 2019 Paul Henschel |
 
 ## License texts
 

@@ -351,22 +351,21 @@ jobs:
           import json, os, sys
           devs = json.load(sys.stdin)["devices"]
           kind = os.environ["DEVICE"]
-          # Newest iOS 27 runtime up to 27.1. Runner image 20261103 added
-          # 27.2 simulators, where the accessibility audit of the UI tests and the
-          # room-leave flow fail (BUGS.md); unpin once they pass there.
-          MAX_MINOR = 1
+          # The newest iOS 27 runtime, by its minor version as a number. The
+          # runtime picked goes to the log, as runner images add new ones.
           def minor(rt):
               tail = rt.rsplit("iOS-27", 1)[1].lstrip("-")
               return int(tail.split("-")[0]) if tail else 0
           for rt in sorted(devs, key=lambda r: ("iOS-27" in r, minor(r) if "iOS-27" in r else 0), reverse=True):
-              if "iOS-27" not in rt or minor(rt) > MAX_MINOR:
+              if "iOS-27" not in rt:
                   continue
               for d in devs[rt]:
                   n = d["name"]
                   if n.startswith(kind) and " Pro" in n and "Max" not in n:
+                      print(rt, file=sys.stderr)
                       print(d["udid"]); sys.exit(0)
           sys.exit(1)
-          ') || { echo "::error::no $DEVICE Pro simulator on an iOS 27.0–27.1 runtime"; exit 1; }
+          ') || { echo "::error::no $DEVICE Pro simulator on an iOS 27 runtime"; exit 1; }
           echo "SIM_UDID=$udid" >> "$GITHUB_ENV"
           xcrun simctl list devices available | grep "$udid"
 

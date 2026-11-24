@@ -103,8 +103,9 @@ func glossaryProblems(t *testing.T, glossary string) []string {
 				return true
 			}
 		}
-		// series.<field> and counters.<field> are maps keyed by the catalogue.
-		if head, field, ok := strings.Cut(id, "."); ok && (head == "series" || head == "counters") {
+		// series.<field>, counters.<field> and config.<field> are maps keyed
+		// by the catalogue.
+		if head, field, ok := strings.Cut(id, "."); ok && (head == "series" || head == "counters" || head == "config") {
 			return field == "<field>" || fields[field]
 		}
 		return false
@@ -143,9 +144,9 @@ func TestGlossaryNamesOnlyWhatExists(t *testing.T) {
 // The check must be able to fail: a renamed column, an unknown field and a
 // value sampled from a store are each caught.
 func TestGlossaryCheckCatchesWhatDoesNotExist(t *testing.T) {
-	doctored := Glossary + "\n- `verdict.findingz[].id`, `counters.noSuchCounter`, `Netscape 4`, `Linux Mint`.\n"
+	doctored := Glossary + "\n- `verdict.findingz[].id`, `counters.noSuchCounter`, `config.noSuchConfig`, `Netscape 4`, `Linux Mint`.\n"
 	got := strings.Join(glossaryProblems(t, doctored), ",")
-	if got != "verdict.findingz[].id,counters.noSuchCounter,Netscape 4,Linux Mint" {
+	if got != "verdict.findingz[].id,counters.noSuchCounter,config.noSuchConfig,Netscape 4,Linux Mint" {
 		t.Errorf("problems = %q", got)
 	}
 }

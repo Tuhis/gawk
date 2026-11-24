@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // R79 MV7 (docs/80 §9): room voice end to end, with every real component.
+// R85 MI4 (docs/89): in both roster modes, VOICE_ROSTER=ice (the default)
+// or VOICE_ROSTER=observer.
 //
 //   murmur 1.6 (docker)  ←  two gawk-mumble-bridge pods  ←  the relay
 //          ↑                 behind a UDP "LoadBalancer"      ↑
@@ -33,6 +35,20 @@
 //   6. gawk ban             — an IP ban covering the browsers ends alice's
 //                             voice (4015) on the relay's own ban event
 //
+// Ice mode (docs/89): the roster comes from murmur's Ice, so pass 1 also
+// checks that no user named the observer name exists, pass 5 that the
+// channel is created by the first gawk voice user (not before) and removed
+// once everyone has left, and two passes are added, run before the ban:
+//
+//   7. Ice outage           — the Ice proxy is cut mid-call: alice and the
+//                             native user still hear each other, the relay
+//                             reports the observer unavailable, and once it
+//                             is restored the roster is back, no bot seen
+//   8. a pod SIGKILLed      — the pod watching the static room dies without
+//                             cleaning up: the observer link moves, the
+//                             native user's next mute reaches the roster,
+//                             murmur stays up and drops the dead registration
+//
 // Run it (from the repository root):
 //
 //   mkdir -p e2e/bin
@@ -46,7 +62,8 @@
 // e2e/out/voice/ (gitignored). Assertions are flow-shaped — frames arrive,
 // states change — never latency numbers (docs/25 Decision 6).
 
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
+import net from 'node:net';
 import { createHash } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -82,6 +99,14 @@ const TEMP_PARENT = 'gawk rooms';
 const MURMUR_BASE = 64760;
 const MURMUR = `127.0.0.1:${MURMUR_BASE}`;
 const MURMUR_SU = 'gawk-test-superuser';
+const OBSERVER_NAME = 'gawkBridgeBot';
+const ROSTER = process.env.VOICE_ROSTER ?? 'ice';
+if (!['ice', 'observer'].includes(ROSTER)) throw new Error(`VOICE_ROSTER=${ROSTER}: want ice or observer`);
+const ICE = ROSTER === 'ice';
+// murmur.sh puts Ice at the base port + 3; the bridges reach it through a
+// proxy the outage pass can cut.
+const ICE_PROXY_PORT = 4745;
+const CALLBACK_PORTS = { 'bridge-a': 5503, 'bridge-b': 6503 };
 
 const log = (...a) => console.log('[voice]', ...a);
 const children = [];
@@ -172,7 +197,7 @@ async function admin(name, args) {
     const run = attempt === 1 ? name : `${name}-${attempt}`;
     const e = mumblesim(run, ['-name', 'SuperUser', '-password', MURMUR_SU, '-duration', '3s', ...args]);
     await pollFor(() => e.exited, 15_000, 100, `${run} to finish`);
-    if (e.exited.code === 0) return;
+    if (e.exited.code === 0) return e;
     if (attempt >= 5 || !e.buf.includes('WrongUserPW')) fail(`${run} exited ${e.exited.code} (see out/voice/${run}.log)`);
     log(`${name}: SuperUser refused; setting its password again (attempt ${attempt})`);
     try {
@@ -185,11 +210,70 @@ async function admin(name, args) {
   }
 }
 
+// murmur's log: it writes to stderr, which docker logs replays as stderr.
+function murmurLog() {
+  const r = spawnSync('docker', ['logs', 'gawk-e2e-murmur-main'], { encoding: 'utf8', maxBuffer: 64 << 20 });
+  return `${r.stdout ?? ''}${r.stderr ?? ''}`;
+}
+
+// The whole server as SuperUser sees it: every user's name and every
+// channel's path (gawk-mumblesim's report).
+let looks = 0;
+async function serverView() {
+  const e = await admin(`admin-look-${++looks}`, []);
+  return e.latest();
+}
+
+// G1 (docs/89): with Ice configured, no Mumble user the bridge makes exists
+// except voice users.
+async function noObserverUser(when) {
+  const v = await serverView();
+  const bot = (v.allUsers ?? []).filter((n) => n.startsWith(OBSERVER_NAME));
+  if (bot.length) fail(`Ice mode: ${bot.join(', ')} exists ${when} (docs/89 G1)`);
+}
+
+// A TCP proxy in front of murmur's Ice, for the outage pass.
+function iceProxy(listen, target) {
+  const p = { server: null, sockets: new Set() };
+  p.start = () =>
+    new Promise((resolve, reject) => {
+      p.server = net.createServer((c) => {
+        const u = net.connect(target, '127.0.0.1');
+        p.sockets.add(c);
+        p.sockets.add(u);
+        const end = () => {
+          c.destroy();
+          u.destroy();
+          p.sockets.delete(c);
+          p.sockets.delete(u);
+        };
+        c.on('error', end).on('close', end);
+        u.on('error', end).on('close', end);
+        c.pipe(u);
+        u.pipe(c);
+      });
+      p.server.once('error', reject);
+      p.server.listen(listen, '127.0.0.1', resolve);
+    });
+  p.cut = () => {
+    p.server?.close();
+    p.server = null;
+    for (const s of p.sockets) s.destroy();
+    p.sockets.clear();
+  };
+  return p;
+}
+
 async function relayStatus() {
   return (await fetch(`http://127.0.0.1:${RELAY_OPS}/statusz`)).json();
 }
 async function bridgeStatus(b) {
   return (await fetch(`http://127.0.0.1:${b.ops}/statusz`)).json();
+}
+async function bridgeToBrowser(b) {
+  const m = await (await fetch(`http://127.0.0.1:${b.ops}/metrics`)).text();
+  const line = m.split('\n').find((l) => l.startsWith('gawk_bridge_frames_forwarded_total{direction="to_browser"}'));
+  return line ? Number(line.split(' ')[1]) : 0;
 }
 async function bridgeSessions(b) {
   const m = await (await fetch(`http://127.0.0.1:${b.ops}/metrics`)).text();
@@ -258,6 +342,10 @@ async function main() {
     env: { ...process.env, GAWK_MURMUR_PREFIX: 'gawk-e2e-murmur', GAWK_MURMUR_BASE_PORT: String(MURMUR_BASE) },
   }).toString();
   appendFileSync(join(OUT, 'murmur.env'), murmurEnv);
+  const menv = Object.fromEntries([...murmurEnv.matchAll(/^export (\w+)=(.*)$/gm)].map((m) => [m[1], m[2]]));
+  log(`roster mode: ${ROSTER}`);
+  const proxy = iceProxy(ICE_PROXY_PORT, Number(menv.GAWK_TEST_MURMUR_ICE.split(':')[1]));
+  if (ICE) await proxy.start();
 
   // The static room's channel and the temporary-channel parent with its
   // MakeTempChannel grant for the bridge's access token (docs/80 §5, D10).
@@ -315,6 +403,14 @@ async function main() {
       '-mumble-access-token', TOKEN,
       '-mumble-temp-parent', TEMP_PARENT,
       '-drain-timeout', '5s',
+      ...(ICE
+        ? [
+            '-mumble-ice-addr', `127.0.0.1:${ICE_PROXY_PORT}`,
+            '-mumble-ice-secret', menv.GAWK_TEST_MURMUR_ICE_SECRET,
+            '-mumble-ice-callback-listen', `127.0.0.1:${CALLBACK_PORTS[b.name]}`,
+            '-mumble-ice-callback-host', '127.0.0.1',
+          ]
+        : []),
     ]);
   const bridgeProcs = Object.fromEntries(BRIDGES.map((b) => [b.name, startBridge(b)]));
   for (const b of BRIDGES) await waitForHttp(`http://127.0.0.1:${b.ops}/readyz`, 15_000, b.name);
@@ -351,7 +447,8 @@ async function main() {
       250,
       'a room viewer outside voice to see the native Mumble user',
     );
-    log('1 ok: a viewer who never joined voice sees the native Mumble user in the room');
+    if (ICE) await noObserverUser('beside the static room’s roster');
+    log(`1 ok: a viewer who never joined voice sees the native Mumble user in the room${ICE ? ', and no observer user exists' : ''}`);
 
     // ---- 2. both directions --------------------------------------------
     const alice = await newParticipant(browser, 'alice', certHash);
@@ -426,17 +523,120 @@ async function main() {
       '-url', `https://127.0.0.1:${RELAY_PORT}`, '-insecure', '-duration', '300s', '-room-new', '-room-voice', '-nick', 'dyn',
     ]);
     const code = (await pollFor(() => pub.buf.match(/^ROOM ([A-Z0-9]{6}) /m)?.[1], 30_000, 200, 'the minted voice room')).toLowerCase();
-    const dynNative = mumblesim('dyn-native', ['-temp-under', TEMP_PARENT, '-temp-code', code, '-ticket-secret', SECRET]);
-    await pollFor(() => dynNative.latest()?.channel > 0, 20_000, 250, 'a native user to find the room’s temporary channel by gawk’s name');
     const dave = await newParticipant(browser, 'dave', certHash);
-    await openRoom(dave, code.toUpperCase());
+    const tempChannels = async () => ((await serverView()).channels ?? []).filter((c) => c.startsWith(`${TEMP_PARENT}/`));
+    let dynNative;
+    if (ICE) {
+      // docs/89 D5: nobody keeps the channel, so it does not exist until
+      // the first gawk voice user creates it, and the roster is empty.
+      await pollFor(
+        async () => Object.values((await relayStatus()).rooms ?? {}).filter((r) => r.voiceObserver === 'available').length >= 2,
+        20_000,
+        250,
+        'the dynamic room’s watcher to be available',
+      );
+      if ((await tempChannels()).length) fail(`a temporary channel exists before anyone joined voice: ${await tempChannels()}`);
+      await noObserverUser('before the dynamic room’s first voice user');
+      await openRoom(dave, code.toUpperCase());
+      if ((await voiceRows(dave)).length) fail('the dynamic room’s roster is not empty before anyone joined voice');
+      await dave.page.getByTestId('voice-panel').getByRole('button', { name: 'Join voice' }).click();
+      await pollFor(async () => (await tempChannels()).length === 1, 20_000, 500, 'dave’s join to create the room’s temporary channel');
+      dynNative = mumblesim('dyn-native', ['-temp-under', TEMP_PARENT, '-temp-code', code, '-ticket-secret', SECRET]);
+      await pollFor(() => dynNative.latest()?.channel > 0, 20_000, 250, 'a native user to find the room’s temporary channel by gawk’s name');
+    } else {
+      dynNative = mumblesim('dyn-native', ['-temp-under', TEMP_PARENT, '-temp-code', code, '-ticket-secret', SECRET]);
+      await pollFor(() => dynNative.latest()?.channel > 0, 20_000, 250, 'a native user to find the room’s temporary channel by gawk’s name');
+      await openRoom(dave, code.toUpperCase());
+    }
     await pollFor(
       async () => (await voiceRows(dave)).some((r) => r.text.includes('dyn-native')),
       20_000,
       250,
       'the dynamic room’s roster to show the native user in its temporary channel',
     );
-    log('5 ok: the dynamic room got a temporary channel under the parent, found by its fleet-stable name');
+    if (ICE) {
+      await noObserverUser('after the dynamic room’s first voice user');
+      await dave.page.getByTestId('voice-panel').getByRole('button', { name: 'Leave voice' }).click();
+      dynNative.child.kill('SIGTERM');
+      await pollFor(async () => (await tempChannels()).length === 0, 20_000, 500, 'murmur to remove the temporary channel once everyone left');
+      log('5 ok: the first voice user created the dynamic room’s channel, a native user joined it by its fleet-stable name, no observer user ever existed, and murmur removed it once empty');
+    } else {
+      log('5 ok: the dynamic room got a temporary channel under the parent, found by its fleet-stable name');
+    }
+
+    if (ICE) {
+      // ---- 7. an Ice outage mid-call -----------------------------------
+      const heard = () => native.latest()?.received?.['alice [web]'] ?? 0;
+      proxy.cut();
+      await pollFor(
+        async () => Object.values((await relayStatus()).rooms ?? {}).some((r) => r.voiceObserver === 'unavailable'),
+        20_000,
+        250,
+        'the relay to report the observer unavailable during the Ice outage',
+      );
+      // The roster is unavailable, so the panel has no native row to
+      // light up: alice hearing the native user is the frames her pod
+      // forwards to her browser (the native user's echo of her).
+      const before7 = heard();
+      const alicePod = BRIDGES.find((b) => b.name === other.name);
+      const toAlice = await bridgeToBrowser(alicePod);
+      await pollFor(() => heard() > before7 + 50, 20_000, 250, 'the native user to keep hearing alice during the outage');
+      await pollFor(async () => (await bridgeToBrowser(alicePod)) > toAlice + 50, 20_000, 250, 'alice to keep hearing the native user during the outage');
+      await noObserverUser('during the Ice outage');
+      await proxy.start();
+      await pollFor(
+        async () => (await voiceRows(viewer)).some((r) => r.text.includes('native')),
+        45_000,
+        250,
+        'the roster to come back once Ice is restored',
+      );
+      await noObserverUser('after the Ice outage');
+      log('7 ok: an Ice outage left voice up both ways, the observer reported unavailable, and the roster came back with no bot');
+
+      // ---- 8. the watching pod is SIGKILLed ----------------------------
+      // Two pods again: the one pass 4 drained comes back.
+      bridgeProcs[host.name] = startBridge(host);
+      await waitForHttp(`http://127.0.0.1:${host.ops}/readyz`, 15_000, host.name);
+      lbPublic.restore(host.name);
+      lbInternal.restore(host.name);
+      const watching = async () => {
+        for (const b of BRIDGES) {
+          if (bridgeProcs[b.name].exited) continue;
+          const st = await bridgeStatus(b).catch(() => null);
+          if (Object.values(st?.rooms ?? {}).some((r) => r.observer && !r.observer.temporary)) return b;
+        }
+        return null;
+      };
+      const victim = await pollFor(watching, 20_000, 250, 'a pod to hold the static room’s observer link');
+      const survivor = BRIDGES.find((b) => b !== victim);
+      await pollFor(async () => (await bridgeStatus(victim)).ice?.callbacks === 'registered', 20_000, 250, `${victim.name} to hold its registration`);
+      const removed = () =>
+        murmurLog().split('\n').filter((l) => l.includes('Removed Ice ServerCallback') && l.includes(`-p ${CALLBACK_PORTS[victim.name]} `)).length;
+      const removedBefore = removed();
+      lbPublic.terminate(victim.name);
+      lbInternal.terminate(victim.name);
+      bridgeProcs[victim.name].child.kill('SIGKILL');
+      await pollFor(() => bridgeProcs[victim.name].exited, 10_000, 100, `${victim.name} to die`);
+      await pollFor(
+        async () => (await watching()) === survivor && Object.values((await relayStatus()).rooms ?? {}).some((r) => r.voiceObserver === 'available'),
+        45_000,
+        250,
+        `the static room’s observer link to move to ${survivor.name}`,
+      );
+      await admin('admin-mute-native', ['-mute', 'native']);
+      await pollFor(
+        async () => (await viewer.page.getByTestId('voice-panel').getByLabel('Muted by the server').count()) > 0,
+        15_000,
+        200,
+        'the native user’s server mute to reach the roster through the surviving pod',
+      );
+      await admin('admin-unmute-native', ['-unmute', 'native']);
+      const running = execFileSync('docker', ['inspect', '-f', '{{.State.Running}}', 'gawk-e2e-murmur-main']).toString().trim();
+      if (running !== 'true') fail('murmur is not running after the SIGKILL');
+      await pollFor(() => removed() > removedBefore, 20_000, 500, 'murmur to drop the dead pod’s registration');
+      await noObserverUser('after the SIGKILL');
+      log(`8 ok: ${victim.name} died uncleanly; the observer link moved to ${survivor.name}, the native user’s mute reached the roster, and murmur dropped the dead registration`);
+    }
 
     // ---- 6. a gawk IP ban ends voice -------------------------------------
     writeFileSync(bansFile, JSON.stringify([{ target: { type: 'ip', value: '127.0.0.1/32' }, reason: 'e2e' }]));
@@ -444,13 +644,16 @@ async function main() {
     log('6 ok: a gawk IP ban ends alice’s voice session (4015)');
     await shot(alice, 'alice-banned');
 
-    const bs = await bridgeStatus(other);
+    const live = BRIDGES.find((b) => !bridgeProcs[b.name].exited) ?? other;
+    const bs = await bridgeStatus(live);
+    if (bs.roster !== ROSTER) fail(`the bridge reports roster ${bs.roster}, want ${ROSTER}`);
     if (JSON.stringify(bs).includes(ROOM)) fail('the bridge /statusz names a raw room code');
     log('all voice passes ok');
   } finally {
     await browser.close().catch(() => {});
     lbPublic.close();
     lbInternal.close();
+    proxy.cut();
   }
 }
 
@@ -465,6 +668,11 @@ try {
   for (const c of children) if (!c.exited) c.child.kill('SIGTERM');
   await sleep(500);
   for (const c of children) if (!c.exited) c.child.kill('SIGKILL');
+  try {
+    writeFileSync(join(OUT, 'murmur.log'), murmurLog());
+  } catch {
+    // best effort
+  }
   try {
     execFileSync(join(REPO, 'gawk-mumble-bridge/testdata/murmur.sh'), ['down'], {
       env: { ...process.env, GAWK_MURMUR_PREFIX: 'gawk-e2e-murmur' },

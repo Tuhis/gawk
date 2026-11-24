@@ -292,3 +292,26 @@ func TestEdgeStreamsFailedIngestIsReset(t *testing.T) {
 		st.finish()
 	}
 }
+
+// An edge's upstream never sends a publisher's keyframe carrier (docs/88
+// D2), so on an edge a 0x1F stream is what it was before R84: an unreadable
+// keyframe stream, reset, with nothing cached or forwarded.
+func TestEdgeStreamsKeyframeCarrierIsNotRead(t *testing.T) {
+	rig := newEdgeStreamsRig(t)
+	st := newEdgeTestStream()
+	rig.offer(st)
+	b := append(wire.AppendKeyframeCarrierPrologue(nil), buildStreamKeyframe(t, 10, "avc1.42E02A", 100)...)
+	b, err := wire.AppendCarrierRecord(b, edgeDelta(t, 11))
+	if err != nil {
+		t.Fatalf("AppendCarrierRecord: %v", err)
+	}
+	st.write(b)
+	st.finish()
+	waitFor(t, 5*time.Second, st.isCancelled, "the 0x1F stream to be reset")
+	if n := rig.viewer.keyframeCount(); n != 0 {
+		t.Fatalf("viewer got %d keyframes, want 0", n)
+	}
+	if s := rig.stats(t); s.UplinkCarriers != 0 || s.KeyframeStreamsIn != 0 || s.BadDatagrams != 1 {
+		t.Fatalf("carriers %d keyframes %d bad %d, want 0 / 0 / 1", s.UplinkCarriers, s.KeyframeStreamsIn, s.BadDatagrams)
+	}
+}

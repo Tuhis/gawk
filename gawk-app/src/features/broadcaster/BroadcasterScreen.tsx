@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import styles from './broadcaster.module.css';
 import { LadderPicker } from '../stream/LadderPicker';
+import { DeliveryPicker } from '../stream/DeliveryPicker';
 import { EncoderSettingsPanel } from '../stream/EncoderSettingsPanel';
 import { useCodecMatrices, useSupportMatrix } from '../stream/useSupportMatrix';
 import { Button } from '../../ui/Button';
@@ -27,7 +28,11 @@ import { acquireDisplayStream, type DisplayStreamGrant } from '../../media/captu
 import type { EncoderConfigured } from '../../media/encoder';
 import type { ResolutionSelection } from '../../media/ladder';
 import { DEFAULT_CAPTURE_CONFIG, type CaptureConfig } from '../../media/types';
-import { encoderSettingsFromStore, useBroadcastSettingsStore } from '../../state/broadcastSettingsStore';
+import {
+  deliveryFromStore,
+  encoderSettingsFromStore,
+  useBroadcastSettingsStore,
+} from '../../state/broadcastSettingsStore';
 import { resolvedUrlIsDefault, selectCertHashList, useTransportStore } from '../../state/transportStore';
 import { allowCustomRelays, requiresPublishSecret, SITE_DOWNLOAD_URL } from '../../config';
 import { ServerIndicator } from '../servers/ServerIndicator';
@@ -66,6 +71,7 @@ import { parseGrant, readGrant, type RoomGrant } from '../room/grantHandoff';
 import { takeRoomReturn } from '../room/roomReturn';
 import { BACKGROUND_STOP_NOTE, BackgroundWatchdog } from './backgroundWatchdog';
 import {
+  enterStream,
   leaveUnreachableLocalRelay,
   noteLocalRelay,
   probeHomeForOffer,
@@ -536,6 +542,7 @@ export function BroadcasterScreen({
       }
       pipeline.setLadder(res, framerateSelection);
       pipeline.setEncoderSettings(encoderSettingsFromStore());
+      pipeline.setDelivery(deliveryFromStore());
       pipelineRef.current = pipeline;
       try {
         await pipeline.start();
@@ -581,6 +588,7 @@ export function BroadcasterScreen({
     }
     pipeline.setLadder(res, framerateSelection);
     pipeline.setEncoderSettings(encoderSettingsFromStore());
+    pipeline.setDelivery(deliveryFromStore());
     pipelineRef.current = pipeline;
     try {
       await pipeline.start();
@@ -715,6 +723,9 @@ export function BroadcasterScreen({
   // first /publish. Never while a broadcast runs: its publish session says
   // the same.
   useEffect(() => {
+    // An opt-out (item 43.6) holds for one broadcast: this screen's stream,
+    // ended by setBroadcasterLive(false).
+    enterStream('broadcast');
     if (pipelineRef.current) return;
     void probeHomeForOffer();
   }, [resolvedServerUrl]);
@@ -873,6 +884,7 @@ export function BroadcasterScreen({
             matrix={supportMatrix}
             onChange={(res, fps) => pipelineRef.current?.setLadder(res, fps)}
           />
+          <DeliveryPicker onChange={(delivery) => pipelineRef.current?.setDelivery(delivery)} />
         </section>
 
         <section className={styles.group}>
@@ -1162,7 +1174,8 @@ export function BroadcasterScreen({
   // The preview <video> stays mounted (hidden) so its srcObject survives the
   // hop back; the own tile paints the same stream. No own-tile glass bar —
   // Stop / Settings / Stats are in the topbar, Detach is in the panel — and
-  // the room's footer carries the layout modes (grid, focus, preview only).
+  // the room's footer carries the layout modes (grid, fit, focus) and What to
+  // show, whose None reads Preview only (R86).
   if (roomTarget) {
     const own =
       broadcastId && resumeTokenRef.current && !ownDetached

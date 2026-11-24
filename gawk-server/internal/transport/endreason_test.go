@@ -5,6 +5,10 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/quic-go/quic-go"
+
+	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 )
 
 func requestCtx(connCtx context.Context) context.Context {
@@ -82,5 +86,30 @@ func TestSessionEndReasonIgnoresACauselessCancel(t *testing.T) {
 func TestSessionEndReasonSurvivesAMissingConnContext(t *testing.T) {
 	if got := sessionEndReason(context.Background(), context.Canceled); got != context.Canceled {
 		t.Errorf("sessionEndReason = %v, want the original cancellation", got)
+	}
+}
+
+// R87 SG0: the adapter reports PathStats only when ConnContext stored a
+// reader, and then reports exactly what quic-go said.
+func TestAdapterPathStats(t *testing.T) {
+	tests := []struct {
+		name   string
+		ctx    context.Context
+		wantOK bool
+		want   hub.PathStats
+	}{
+		{"no reader in context", context.Background(), false, hub.PathStats{}},
+		{"reader in context", context.WithValue(context.Background(), connStatsKey{}, connStatsFunc(func() quic.ConnectionStats {
+			return quic.ConnectionStats{SmoothedRTT: 42 * time.Millisecond, MinRTT: 40 * time.Millisecond, BytesSent: 9, PacketsSent: 3, PacketsLost: 1}
+		})), true, hub.PathStats{SmoothedRTT: 42 * time.Millisecond, MinRTT: 40 * time.Millisecond, BytesSent: 9, PacketsSent: 3, PacketsLost: 1}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &webtransportSessionAdapter{stats: pathStatsFrom(tc.ctx)}
+			got, ok := a.PathStats()
+			if ok != tc.wantOK || got != tc.want {
+				t.Errorf("PathStats() = %+v, %v; want %+v, %v", got, ok, tc.want, tc.wantOK)
+			}
+		})
 	}
 }

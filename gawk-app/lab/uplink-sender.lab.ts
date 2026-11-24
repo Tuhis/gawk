@@ -18,6 +18,15 @@
 // way to a late keyframe (a DA line for stale audio), and keyframes go through the shipping
 // KeyframeSender (KQ: it had to wait; K's outcome may also be aborted,
 // replaced or discarded). A dropped frame counts as resolved in the Q lines.
+//
+// `mode=reliable` (docs/88 BR4) is the shipping Reliable mode: every GOP on
+// one stream with its keyframe at the head (KeyframeSender's carrier
+// keyframes, K3) and its deltas behind it through the shipping CarrierSender,
+// under RU9's keyframe rules — exactly what BroadcastPipeline does on a relay
+// that advertises both carrier bits. A shed delta is a D line; a GOP stream's
+// end is its K line (sent on acknowledgement after its FIN, aborted by the
+// 2 s rule, replaced or discarded while it waited).
+import { CarrierSender } from '../src/transport/carrier-sender';
 import { DatagramSender, webTransportInit } from '../src/transport/connection';
 import { KeyframeSender } from '../src/transport/keyframe-sender';
 import { packetizeDecoderConfig, packetizeFrameWithParity, packetizeStreamKeyframe } from '../src/transport/packetizer';
@@ -112,6 +121,8 @@ async function main(): Promise<void> {
       ended: (id, outcome) => log(`K,${id},${kfProduced.get(id) ?? 0n},${nowNs()},${outcome}`),
     },
   });
+  const RELIABLE = MODE === 'reliable';
+  const lane = new CarrierSender(keyframes);
   keyframes.attach(() => wt.createUnidirectionalStream());
   let gop = 0;
   const sender = NOWAIT ? null! : new DatagramSender(wt, { gopBlocked: (g) => keyframes.deltasBlocked(g) });
@@ -275,7 +286,7 @@ async function main(): Promise<void> {
       if (MODE !== 'carrier') {
         gop = frameId;
         kfProduced.set(frameId, t);
-        keyframes.produce(frameId, msg);
+        keyframes.produce(frameId, msg, { carrier: RELIABLE });
         log(`F,${frameId},1,${size},0,0,${t},0`);
         continue;
       }
@@ -296,6 +307,18 @@ async function main(): Promise<void> {
     const all = parity.length > 0 ? [...datagrams, ...parity] : datagrams;
     if (MODE === 'carrier') {
       sendRecords(frameId, all);
+    } else if (RELIABLE) {
+      framesQueued++;
+      lane.send(gop, all).then(
+        (result) => {
+          framesResolved++;
+          if (result === 'dropped') log(`D,${frameId}`);
+        },
+        () => {
+          framesResolved++;
+          log(`E,${frameId},failed`);
+        },
+      );
     } else {
       offered += all.length;
       if (NOWAIT) {

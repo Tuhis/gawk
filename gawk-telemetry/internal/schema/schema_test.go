@@ -207,3 +207,27 @@ func TestWHIPGatewayFieldsAreTyped(t *testing.T) {
 		}
 	}
 }
+
+// A browser broadcaster on the main-thread pipeline says why it is there
+// (pipelineFallbackReason, #722: "MediaStreamTrackProcessor unavailable in
+// worker scope" on Chrome). Arriving as "unknown" would keep it out of the
+// glossary and the typed columns, so "why did this broadcast not offload?"
+// would need the raw sample to answer.
+func TestPipelineFallbackReasonIsTyped(t *testing.T) {
+	sample := map[string]any{
+		"pipelineContext":        "main-thread",
+		"pipelineFallbackReason": "MediaStreamTrackProcessor unavailable in worker scope",
+	}
+	if _, an := SanitizeStats(sample, BroadcasterFields); an.Total() != 0 {
+		t.Errorf("a main-thread broadcaster sample sanitized with anomalies: %+v", an)
+	}
+	byName := map[string]Field{}
+	for _, f := range Catalogue() {
+		byName[f.Name] = f
+	}
+	for name := range sample {
+		if f := byName[name]; f.Desc == "" || f.Semantic != SemText {
+			t.Errorf("%s: catalogue entry %+v, want a described text field", name, f)
+		}
+	}
+}

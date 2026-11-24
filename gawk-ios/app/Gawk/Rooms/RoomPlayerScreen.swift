@@ -106,6 +106,7 @@ struct RoomPlayerScreen: View {
     @ViewBuilder private func content(_ model: RoomPlayerModel, landscape: Bool) -> some View {
         switch model.layout {
         case .grid: grid(model, landscape: landscape)
+        case .fit: fit(model, landscape: landscape)
         case .focus: focus(model, landscape: landscape)
         }
     }
@@ -135,6 +136,36 @@ struct RoomPlayerScreen: View {
         .onTapGesture { controls.toggle() }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("room.grid")
+    }
+
+    /// R83 Fit (docs/87): every stream at its own shape, placed by
+    /// `FitLayout` so as much of the screen as the shapes allow is video.
+    private func fit(_ model: RoomPlayerModel, landscape: Bool) -> some View {
+        let tiles = model.tiles
+        let aspects = model.aspects
+        return VStack(spacing: 8) {
+            RoomFitLayout(aspects: aspects, spacing: 2) {
+                ForEach(tiles, id: \.broadcastId) { tile in
+                    RoomTileView(tile: tile, model: model, controls: controls)
+                }
+            }
+            .animation(.snappy, value: aspects)
+            if tiles.count > RoomPlayerModel.maxPlaying {
+                Text("Four play at once. Tap a paused stream to play it instead.")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.muted)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("room.hint")
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea(edges: landscape ? .all : [])
+        .contentShape(.rect)
+        .onTapGesture { controls.toggle() }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("room.fit")
     }
 
     private func focus(_ model: RoomPlayerModel, landscape: Bool) -> some View {
@@ -237,14 +268,53 @@ struct RoomGridLayout: Layout {
     }
 }
 
-/// Grid / Focus, a glass segmented control with icon and label (docs/70
-/// §3.3, OD9).
+/// R83 Fit (docs/87): each tile at its stream's own shape, where
+/// `FitLayout` puts it in the space offered. The cache keeps the last
+/// result, so a rotation or a resize keeps the arrangement in use unless a
+/// better one is clearly better (D5).
+struct RoomFitLayout: Layout {
+    let aspects: [Double]
+    let spacing: CGFloat
+
+    final class Cache {
+        var previous: FitLayout.Result?
+    }
+
+    func makeCache(subviews: Subviews) -> Cache { Cache() }
+
+    /// Kept across subview changes: `FitLayout` starts fresh by itself when
+    /// the shapes or the count differ.
+    func updateCache(_ cache: inout Cache, subviews: Subviews) {}
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
+        proposal.replacingUnspecifiedDimensions(by: CGSize(width: 393, height: 852))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
+        let result = FitLayout.layout(aspects, in: bounds.size, gap: spacing, previous: cache.previous)
+        cache.previous = result
+        for (i, subview) in subviews.enumerated() {
+            guard i < result.rects.count else {
+                subview.place(at: CGPoint(x: bounds.midX, y: bounds.midY), anchor: .center, proposal: .zero)
+                continue
+            }
+            let rect = result.rects[i]
+            subview.place(
+                at: CGPoint(x: bounds.minX + rect.minX, y: bounds.minY + rect.minY),
+                proposal: ProposedViewSize(rect.size))
+        }
+    }
+}
+
+/// Grid / Fit / Focus, a glass segmented control with icon and label
+/// (docs/70 §3.3, OD9; Fit from R83).
 struct LayoutToggle: View {
     @Binding var layout: RoomPlayerModel.Layout
 
     var body: some View {
         HStack(spacing: 2) {
             segment(.grid, symbol: "square.grid.2x2")
+            segment(.fit, symbol: "rectangle.3.group")
             segment(.focus, symbol: "rectangle.split.3x1")
         }
         .padding(3)
@@ -303,8 +373,8 @@ struct RoomTileView: View {
                 .padding(8)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(.black.opacity(0.55))
-            } else if !playing, model.layout == .grid {
-                // Grid only: in Focus a tap focuses, it doesn't play.
+            } else if !playing, model.layout.showsAll {
+                // Grid and Fit: in Focus a tap focuses, it doesn't play.
                 Image(systemName: "play.fill")
                     .font(.system(size: large ? 22 : 15, weight: .semibold))
                     .foregroundStyle(Theme.text)
@@ -353,6 +423,6 @@ struct RoomTileView: View {
         let name = self.name
         if !tile.live { return "\(name), away" }
         if playing { return "\(name), playing" }
-        return model.layout == .grid ? "\(name), paused. Tap to play" : "\(name). Tap to focus"
+        return model.layout.showsAll ? "\(name), paused. Tap to play" : "\(name). Tap to focus"
     }
 }

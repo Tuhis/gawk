@@ -63,7 +63,7 @@ most of this doc: a party relay sits behind the venue's NAT. So **the PoP
 dials out**, and the home fleet asks it for streams over a control link,
 rather than pulling them itself.
 
-## 2. Owner decisions (2026-10-21; OD15–OD16 2026-10-22; OD17 2026-10-24)
+## 2. Owner decisions (2026-10-21; OD15–OD16 2026-10-22; OD17 2026-10-24; OD18 2026-11-11)
 
 | # | Question | Decision |
 |---|---|---|
@@ -84,6 +84,7 @@ rather than pulling them itself.
 | OD15 | How the uplink leg carries a party stream (asked once R73 had landed) | **R73's carrier whenever home offers it.** Keyframes keep their own streams; deltas and parity ride one carrier per GOP. The leg is leg A for every outside viewer, on a venue uplink shared with the guests' own traffic: docs/75 table O's case (§3). Datagrams stay one flag away (`-pop-leg-delivery`), and PP8 measures the PoP's own sender before the default ships (item 18). *Measured 2026-10-22: the carrier stays (§11.2).* |
 | OD16 | How the downlink leg carries a home stream | **The carrier too, in v1.** Home writes the leg the way the PoP writes its uplink, and the PoP reads it with R73's carrier reader (item 23). |
 | OD17 | Whether a party broadcast that joins a room leaves the wall (asked after the first party, 2026-10-24) | **No: the wall is not a room for R42 D1.** A party broadcast stays on its wall and may also be in one ordinary room; only Hide takes it off. The first party joined its own static room and the wall emptied (item 34). |
+| OD18 | How long "Use gawk.ioio.fi instead" lasts (asked 2026-11-11) | **The current stream only, never stored.** Joining another stream, or starting the next broadcast, follows the PoP's offer again. Supersedes item 43.6's per-handle memory. The web app does this; the native apps still remember it (item 43). |
 
 ## 3. Measured and verified before writing
 
@@ -1191,25 +1192,33 @@ PP8 measured the PoP's own carrier sender in R73's lab on 2026-10-22
        - A browser whose Permissions API doesn't know the name: just probe.
     5. **Failure**: stay on home, mark the PoP unreachable for this tab or
        app session, no retry loop.
-    6. **Opt-out**: the chip's "Use gawk.ioio.fi instead" is remembered per
-       PoP handle; offers from that PoP are then ignored until the user picks
-       it again.
+    6. **Opt-out**: the chip's "Use gawk.ioio.fi instead" holds for the
+       stream it was picked on (OD18). That stream's redials stay on home,
+       and the chip offers the PoP back ("Use it"). The next stream the user
+       joins, or the next broadcast, follows the PoP's offer again. Nothing
+       is stored.
     7. Clients that will follow an offer send `lr=1` on every `CONNECT` to
        home (item 21).
 
     *Built, web:* the permission is queried under `local-network`, then
     `local-network-access`; a browser that knows neither name just probes.
     The candidates' `/echo` are probed in parallel and the first that
-    answers wins. A failed PoP is not retried in that tab, and "Use
-    <home> instead", remembered per PoP handle, also stops `lr=1` for that
-    PoP. Notices on the `/echo` probe each ride their own uni stream, and
+    answers wins. A failed PoP is not retried in that tab. "Use <home>
+    instead" is held in memory against the stream it was picked on (each
+    session screen calls `enterStream`: `viewer:<id>`, `room:<code>`, or
+    `broadcast`, which ends when the broadcast does), and it stops `lr=1`
+    for that PoP on that stream only. Builds before OD18 stored opt-outs
+    under `gawk.popOptOut`; the app clears that key at startup and never
+    reads it. Notices on the `/echo` probe each ride their own uni stream, and
     home's `0x19` can arrive after the `0x10` identity, so the probe keeps
     reading after the identity.
 
     *Built, native:* the desktop Ready page and the iOS start screen and
     player probe home with `lr=1`, switch to a fresh offer's first pinned
     candidate before going live, remember "Use … instead" per PoP handle,
-    and leave a PoP that fails or refuses for the app session. On iOS a
+    and leave a PoP that fails or refuses for the app session. **Not yet
+    changed for OD18:** both still persist the opt-out per PoP handle
+    (`local_relay_opt_outs` in the desktop config). On iOS a
     held PoP applies only to the home relay that offered it, so picking
     another server dials that server; the desktop keeps its own policy.
     **Not built:** the iOS room participant switch (the room client sends

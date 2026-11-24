@@ -42,6 +42,14 @@ Add to it when a new gotcha lands in `docs/`.
   openssl would need the network in the one lane whose claim is that it works
   offline. ([docs/41](41-local-dev-stack.md) §4.7)
 - **`go test -race` needs `CGO_ENABLED=1`** — this environment defaults to 0.
+- **client-go's fake `PrependReactor`/`AddReactor` take no lock**, while
+  `Invokes` reads the chain under one. Adding a reactor while any goroutine
+  of the code under test can still call the client (a `roomcluster` renew
+  loop, an informer) is a data race the detector only sees when that
+  goroutine wins a timing window — it surfaced once in a loaded
+  `go test -race ./...`. Install reactors before starting the goroutine
+  and arm them with an atomic flag, or give the loop an hour-long interval
+  (`TestReleaseRetriesThroughAConflict`, `loggingStore`).
 - **`gawk-telemetry` builds cgo-free by default and its SQL engine does not
   exist in that build.** `internal/sqlengine` sits behind `//go:build duckdb`;
   `go build ./...` on a fresh clone links no DuckDB and the console reports
@@ -77,6 +85,17 @@ Add to it when a new gotcha lands in `docs/`.
   returns it, so the service runs every query in a short-lived worker
   (`sqlengine.OpenIsolated`); never open DuckDB in the service process.
   ([docs/36](36-telemetry-ui-history.md) §TH10)
+- **A first-verb SQL allowlist does not make a DuckDB console read-only.**
+  `SELECT` reaches `read_text`, `glob` and `https://` readers, and
+  `EXPLAIN ANALYZE` executes the statement it explains, `COPY … TO`
+  included. The telemetry console is confined in the engine as well
+  (`sqlengine` `confine`: external access off, the data directory the only
+  allowed directory, configuration locked), and `Check` looks past
+  `EXPLAIN`. Any new DuckDB connection that runs operator SQL needs both.
+  Two side effects: `duckdb_extensions()` no longer answers (it stats the
+  home directory), and the worker inherits an allowlist of environment
+  names (`workerEnvKeep`), so a variable a worker should see must be added
+  there. ([docs/36](36-telemetry-ui-history.md) §TH10)
 - **Registering every telemetry SQL view at once grows with the store, so
   it must never gate the engine.** The open once also built the whole view
   catalogue in a single worker, which sniffs every file under `/data`, and a
@@ -264,13 +283,16 @@ Add to it when a new gotcha lands in `docs/`.
   prehashed (BLAKE2b-512) by default, which `ring` cannot verify, so the
   apps use `minisign-verify`. ([docs/48](48-signed-in-place-update.md) D3,
   D7)
-- **ureq's body limit refuses a body of exactly the limit.** Its limit
-  reader errors on the read after `limit` bytes, even when that read would
+- **ureq before 3.5.2 refused a body of exactly its limit.** Its limit
+  reader errored on the read after `limit` bytes, even when that read would
   only find the end. Passing a file's known size as the limit therefore
-  fails every download, and that is how R47's install failed silently in
-  every release from 2.2.0 to 2.4.0. `update::ureq_limit` adds the one byte
-  of headroom. Test a limit with a body of exactly its size, over real
-  HTTP, not with a stubbed download.
+  failed every download, and that is how R47's install failed silently in
+  every release from 2.2.0 to 2.4.0. The fix was one byte of headroom, until
+  ureq 3.5.2 made the limit inclusive and the headroom let a body one byte
+  *over* the limit through. The engine now passes the limit straight through
+  and pins `ureq = "3.5.2"` as its floor; don't lower it, and don't add
+  headroom back. Test a limit with a body of exactly its size and one byte
+  over, over real HTTP, not with a stubbed download.
   ([docs/48](48-signed-in-place-update.md) §8)
 - **The release signing key has two copies that must change together**: the
   `RELEASE_KEY` constant the apps compile in and
@@ -690,6 +712,12 @@ Add to it when a new gotcha lands in `docs/`.
   The only tell is `getComputedStyle(el).animationName` still naming the
   *enter* animation mid-exit, which is worth sampling whenever an exit
   animation "does not play". ([docs/40](40-relay-server-picker.md) §4.3)
+
+- **Shift changes a digit's `KeyboardEvent.key`, and differently per
+  layout**: Shift+2 is `@` on US and `"` on Nordic keyboards, so a
+  `{ key: '2', shift: true }` shortcut never matched by `key`. `useHotkey`
+  matches a Shift shortcut's digit by its number-row `code` (`Digit2`)
+  instead. ([docs/90](90-room-stream-visibility.md) §8)
 
 **Media pipeline**
 
@@ -1585,6 +1613,17 @@ entries still describe code `gawk-pubsim` runs (now
   Banner` inside a view's body came from code compiled against an older
   layout. Deleting the app's `Intermediates.noindex/Gawk.build` fixed it.
   Rule this out before hunting for a memory bug. ([docs/70](70-ios-ux-redesign.md) §10.1)
+- **From iOS 27.2, a glass view in a `GlassEffectContainer` is framed for
+  accessibility as its content** (text and icon), without its padding or
+  frame, unless a content shape follows the `.glassEffect`. The audit then
+  fails a 30 pt chip as too small to hit. Put `.contentShape(…)` after the
+  glass. ([docs/70](70-ios-ux-redesign.md) §10.5)
+- **XCTest taps a row under a pinned button without scrolling** when the
+  row's centre is in the strip between the button and the tab bar: it
+  finds the row hittable there, and the touch goes to the pinned button.
+  A tap on Leave ended the broadcast that way. Drag the row clear first
+  (`bringAbove` in `UITestSupport.swift`).
+  ([docs/70](70-ios-ux-redesign.md) §10.5)
 
 **Native Linux broadcaster, in the desktop workspace (R56)**
 
@@ -1864,7 +1903,24 @@ entries still describe code `gawk-pubsim` runs (now
   `CUBIC_BYTES` for `low-latency`, `default` and `throughput` alike; a page
   cannot choose BBR. It also caps `maxDatagramSize` at 1024, sends one
   datagram per packet, and exposes neither `getStats()` nor stream
-  `sendOrder` ([docs/75](75-reliable-uplink.md) F18).
+  `sendOrder` ([docs/75](75-reliable-uplink.md) F18). All of it still held
+  on Chrome 158 (docs/88 F6): a browser sender orders a keyframe ahead of
+  its deltas only by putting them on one stream.
+- **The uplink lab's viewer replay can lock onto a bad presentation
+  phase.** It shows a 60 fps source on an exact 60 Hz vsync with a 0.25 ms
+  clock and nothing drifts, so when frame targets land within about a
+  millisecond of the sink's half-vsync due boundary, one vsync in three
+  finds two frames due: 40 of 60 shown every second, without a stall, for
+  the whole run. Which runs land there is luck — it was docs/75 F18's
+  "intermittent Smoother dip behind the gate", and it hit an unrelated
+  sender's Balanced viewer in docs/88 (72.7 % shown; the same trace shifted
+  by 1 ms read 98.0 %). A single replay's "shown" with little stall is not
+  a finding; re-score with `tools/uplinklab/phase.py` and read the median
+  ([docs/88](88-browser-reliable-uplink.md) F1).
+- **The lab's browser sender takes the newest Chrome for Testing it finds**
+  in playwright's cache, so installing a newer one silently changes what a
+  `chrome-*` set measures. Pin one: `CHROME=…`, or `matrix.py`'s
+  `c<major>-*` modes ([docs/88](88-browser-reliable-uplink.md) §4).
 - **Chrome pays per datagram.** On the lab host its datagram packets left
   375–480 µs apart (p50) at 0, 10 and 100 ms RTT alike, so a frame's chunks
   spread out and Chrome topped out near 1 800 datagrams a second with no
@@ -1935,10 +1991,17 @@ entries still describe code `gawk-pubsim` runs (now
   registry HMACs IDs with its own stats key, so a token that verifies under
   home's key must be minted over home's `ObfuscateID(id)` and the hello must
   carry that key, not the PoP's ([docs/78](78-pop-telemetry.md) §2).
-- **`/statusz` is served on the public listener too.** One handler serves
-  the HTTP/3 listener and the ops listener, so anything PoP-identifying goes
-  on an ops-only route (`/internal/telemetry/pops`), never into `/statusz`
+- **`/statusz` is served on the public listener too.** Both listeners serve
+  the same document, so anything PoP-identifying goes on an ops-only route
+  (`/internal/telemetry/pops`), never into `/statusz`
   ([docs/78](78-pop-telemetry.md) D7).
+- **The public `/statusz` is up to one second old; the ops one is current.**
+  A snapshot holds `Registry.mu`, the lock every relayed datagram takes, and
+  the HTTP/3 route is unauthenticated, so it serves a stored document for
+  `ops.PublicStatuszMaxAge`. Read the ops listener when pairing a capture
+  with a client's diagnostics. In `internal/transport` tests the helpers
+  set `testHookStatuszFresh`; a server built with a bare `New` serves the
+  cached route ([docs/13](13-observability.md)).
 - **A party broadcast is observed by two relays under one broadcast key.**
   Home sees its PoP-leg publisher and outside viewers, the PoP its own
   broadcaster and LAN viewers. Every relay-line reader must filter by issuer
@@ -2505,6 +2568,17 @@ entries still describe code `gawk-pubsim` runs (now
   running on the runtime's own base, caught it. `detect.Init` sets the
   variable itself, so no deployment can forget it.
   ([docs/71](71-content-flagging.md) §9.5)
+- **`RLIMIT_AS` lands on the Go helper before the exec, and the Go
+  runtime is already over it.** The `ffmpeg-exec` helper sets the cap on
+  itself and then execs ffmpeg; any mmap in between is `fatal error:
+  runtime: cannot allocate memory`. Allocating nothing in `ExecHelper` was
+  not enough: the finalizer goroutine, running on another thread, grew its
+  stack in that window, and a blocking `syscall.Syscall` lets sysmon start
+  a new thread. Under `-race` on a loaded CI runner it failed most runs
+  (2026-11-20). The helper builds execve's arguments first, then drops to
+  `GOMAXPROCS(1)` with GC off, and issues the cap and the exec as raw
+  syscalls, so no other goroutine can run.
+  ([docs/71](71-content-flagging.md) D4)
 - **`content_flag.observed` never reaches an unfiltered webhook.** It is
   opt-in: a webhook receives it only when its R49 `events` filter names it,
   so turning on `observe` mode cannot page an existing pager — and a webhook
@@ -2608,6 +2682,47 @@ entries still describe code `gawk-pubsim` runs (now
   "mumbled" or crackling from a speaker who restarts often. Restart in the
   decoder's output order, after the old codec drained, or its last outputs
   land on the new timeline. ([docs/80](80-mumble-bridge.md) §12.8)
+
+**Murmur's Ice interface (R85)**
+
+- **Murmur 1.6.870 (1.6.x RC1) segfaults when the most recently
+  registered Ice `ServerCallback` is dead and any server event fires, and
+  with a dead callback earlier in the list it removes the live one after
+  it instead.** A process that registers a callback and can die without
+  `removeCallback` can take the whole Mumble server down. Fixed upstream
+  in `a780cc9259` (#7402), released in 1.6.1001 (RC2); 1.5.939 isn't
+  affected. The bridge never registers a callback on 1.6.870.
+  ([docs/89](89-mumble-ice-roster.md) §3 F1–F3)
+- **Murmur drops an Ice callback registration after one refused delivery
+  and doesn't tell the client.** Events simply stop. Calling `addCallback`
+  again restores it, and is a no-op while it is still registered, so the
+  bridge re-adds it on a timer. ([docs/89](89-mumble-ice-roster.md) §3 F13)
+- **An Ice callback endpoint that blackholes freezes murmur's whole event
+  loop** for about twice the endpoint's `-t` timeout, because murmur
+  delivers callbacks synchronously and Ice retries the connect once. With
+  no timeout (`-t -1`) that was 4.5 minutes for every user on the server.
+  Always register a short timeout. ([docs/89](89-mumble-ice-roster.md) §3
+  F15)
+- **`icesecretread` allows `getUsers` and `getChannels` but not
+  `addCallback`**, which needs `icesecretwrite`.
+  ([docs/89](89-mumble-ice-roster.md) §3 F4)
+- **Murmur 1.6 numbers its default virtual server `0`, 1.5 numbers it
+  `1`.** Ask `Meta.getBootedServers` for its identity instead of
+  hard-coding `s/1`. ([docs/89](89-mumble-ice-roster.md) §3 F8)
+- **Murmur's Ice exceptions have different base types by version**
+  (`ServerException` on 1.6, `MurmurException` on 1.5). Match on the
+  most-derived type ID. ([docs/89](89-mumble-ice-roster.md) §3 F9)
+- **Murmur's login channel tree leaves `temporary` out.** A Mumble client
+  that connects after a temporary channel was created sees it as
+  permanent; only clients connected at its creation, and Ice, know it is
+  temporary. Count temporary channels in Ice, not in a connection's tree.
+  Measured on 1.5.939 and 1.6.1001. ([docs/89](89-mumble-ice-roster.md) §3
+  F18)
+- **A container can't always reach the host through the docker gateway.**
+  On the self-hosted runners and dev machines the host firewall drops it,
+  and an Ice callback to `host-gateway` then fails exactly like a
+  blackholed address. The tests' murmur with Ice runs on the host network
+  instead. ([docs/89](89-mumble-ice-roster.md) MI1)
 
 **RNNoise in the browser (R80)**
 

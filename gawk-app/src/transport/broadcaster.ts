@@ -49,6 +49,14 @@ import {
 } from './connection';
 import { readStreamBytes } from '../lib/bytes';
 import { KeyframeSender } from './keyframe-sender';
+import {
+  CarrierSender,
+  DEFAULT_DELIVERY,
+  engageCarrier,
+  isChromium,
+  type Delivery,
+  type UplinkMode,
+} from './carrier-sender';
 import { UplinkMonitor } from './uplink-monitor';
 import { ConnectionStatsSampler, type TransportConnectionStats } from './net-stats';
 import {
@@ -182,6 +190,16 @@ export interface BroadcastStats {
   // "Your upload can't keep up" (docs/75 §6): the native monitor's rule over
   // the counts above. Not a ladder signal — it asks the broadcaster instead.
   uplinkWarning: boolean;
+  // R84 (docs/88 D7), docs/75 D8's names so a browser broadcaster reads as a
+  // native one: the Delivery setting, how the current GOP's deltas leave
+  // ('carrier' only with both relay bits, Reliable and a Chromium browser),
+  // GOP streams opened and aborted by the 2 s rule, and records (datagrams)
+  // shed unwritten because their GOP was retired or never got a stream.
+  uplinkModeRequested: Delivery;
+  uplinkMode: UplinkMode;
+  uplinkCarriersOpened: number;
+  uplinkCarriersExpired: number;
+  uplinkRecordsShed: number;
   // The HW-aware auto ceiling (null in explicit resolution
   // mode) and the resolved 'auto' framerate (null when the fps selection is
   // an explicit rung).
@@ -291,6 +309,11 @@ const EMPTY_BROADCAST_STATS: BroadcastStats = {
   autoStepUps: 0,
   encoderPressure: false,
   uplinkWarning: false,
+  uplinkModeRequested: DEFAULT_DELIVERY,
+  uplinkMode: 'datagram',
+  uplinkCarriersOpened: 0,
+  uplinkCarriersExpired: 0,
+  uplinkRecordsShed: 0,
   autoCeiling: null,
   autoFps: null,
   pipelineContext: 'main-thread',
@@ -387,6 +410,8 @@ export interface BroadcastSessionLike {
   stop(opts?: BroadcastStopOptions): Promise<void>;
   setLadder(selection: ResolutionSelection, framerate: FramerateSelection): void;
   setEncoderSettings(settings: EncoderSettings): void;
+  // The Delivery setting (docs/88 D6): applies at the next keyframe.
+  setDelivery(delivery: Delivery): void;
 }
 
 // Default media source: the main-thread capture path.
@@ -514,6 +539,17 @@ export class BroadcastPipeline {
   // Keyframe streams on the F-12 rule; lives as long as the pipeline, so its
   // counts survive resumes. Built in the constructor (it needs the clock).
   private keyframes: KeyframeSender;
+  // The carrier lane (docs/88 BR2): GOP streams' records in Reliable mode.
+  private carrier: CarrierSender;
+  // Reliable or Lowest latency, as asked (docs/88 D6); read at each keyframe.
+  private delivery: Delivery = DEFAULT_DELIVERY;
+  // The relay's capability flags on THIS session; null until they arrive, so
+  // a GOP whose keyframe comes first goes as datagrams (as natively).
+  private relayFlags: number | null = null;
+  // OD4: the carrier engages on Chromium only.
+  private readonly chromium = typeof navigator !== 'undefined' && isChromium(navigator.userAgent);
+  // Whether the current GOP's deltas ride its GOP stream.
+  private gopCarrier = false;
   // Latest DecoderConfig datagram; re-sent immediately before every
   // keyframe so a viewer that missed it can always recover at the next
   // keyframe (the relay additionally caches and re-emits it).
@@ -601,6 +637,14 @@ export class BroadcastPipeline {
         },
       },
     });
+    this.carrier = new CarrierSender(this.keyframes);
+  }
+
+  // The Delivery setting (docs/88 D6). Safe any time; the next keyframe
+  // decides its GOP's delivery, so a change applies there, without a restart.
+  setDelivery(delivery: Delivery): void {
+    this.delivery = delivery;
+    this.stats.uplinkModeRequested = delivery;
   }
 
   // Records why this pipeline runs on the main thread instead of the
@@ -804,6 +848,8 @@ export class BroadcastPipeline {
           const caps = parseRelayCapabilities(data);
           this.parityLevel = caps.flags & CAP_PARITY_CHUNKS ? caps.parityLevel : 0;
           this.stats.parityLevel = this.parityLevel;
+          // Carriers (docs/88 D1): only for a session whose relay said so.
+          if (gen === this.connGeneration) this.relayFlags = caps.flags;
           break;
         }
         // The relay is about to close this session with this
@@ -1351,8 +1397,13 @@ export class BroadcastPipeline {
         return;
       }
       if (this.configDatagram) this.stats.configsSent++;
+      // This GOP's delivery, decided now (docs/88 D1, D6): a GOP stream with
+      // the keyframe at its head, or today's keyframe stream and datagrams.
+      const mode = engageCarrier(this.relayFlags, this.delivery, this.chromium);
+      this.gopCarrier = mode === 'carrier';
+      this.stats.uplinkMode = mode;
       // Started now, or waiting its turn — see keyframe-sender.ts.
-      this.keyframes.produce(this.gop, msg);
+      this.keyframes.produce(this.gop, msg, { carrier: this.gopCarrier });
       return;
     }
 
@@ -1381,6 +1432,24 @@ export class BroadcastPipeline {
     // useless before the loss it repairs is known, and sending it first would
     // put it ahead of the frame in the queue for no benefit.
     const all = parity.length > 0 ? [...datagrams, ...parity] : datagrams;
+    if (this.gopCarrier) {
+      // Reliable (docs/88 D1): the same datagrams, as records on the GOP's
+      // stream, one write per frame. A shed frame is the lane's count
+      // (uplinkRecordsShed), not the datagram queue's stale count.
+      this.carrier
+        .send(this.gop, all)
+        .then((result) => {
+          if (result === 'dropped') return;
+          this.stats.bytesSent += bytes;
+          this.stats.parityChunksSent += parity.length;
+          this.stats.parityBytesSent += parityBytes;
+          this.countSent();
+        })
+        .catch(() => {
+          if (!this.stopping) this.stats.droppedFrames++;
+        });
+      return;
+    }
     this.sender
       .send(all, { kind: 'delta', gop: this.gop })
       .then((result) => {
@@ -1502,6 +1571,11 @@ export class BroadcastPipeline {
     // Parity is per relay: the next one states its own level, or none at all.
     this.parityLevel = 0;
     this.stats.parityLevel = 0;
+    // So are carriers: the next session's first GOP waits for its relay's
+    // capabilities (docs/88 BR2, resume).
+    this.relayFlags = null;
+    this.gopCarrier = false;
+    this.stats.uplinkMode = 'datagram';
   }
 
   private scheduleResumeAttempt(closeCode: number | null, reason: string): void {
@@ -1569,6 +1643,9 @@ export class BroadcastPipeline {
     this.stats.keyframeStreamsFailed = kf.failed;
     this.stats.keyframeStreamsSuperseded = kf.superseded;
     this.stats.keyframeBytesSent = kf.bytesSent;
+    this.stats.uplinkCarriersOpened = kf.carriersOpened;
+    this.stats.uplinkCarriersExpired = kf.carriersAborted;
+    this.stats.uplinkRecordsShed = this.carrier.counters.recordsShed;
     const audio = this.audioLane?.getStats();
     if (audio) {
       this.stats.staleAudioDropped = audio.staleDropped;
@@ -1608,7 +1685,10 @@ export class BroadcastPipeline {
     if (dt < 0.95) return;
     const encoded = this.stats.encodedFrames;
     this.stats.uplinkWarning = this.uplink.observe({
-      staleDropped: this.stats.staleFramesDropped + this.stats.staleAudioDropped,
+      // Reliable mode's stale-drop input is the lane's shed records (docs/88
+      // D5); datagram mode's is RU9's. Either way, any drop makes a bad second.
+      staleDropped:
+        this.stats.staleFramesDropped + this.stats.staleAudioDropped + this.carrier.counters.recordsShed,
       keyframeStreamsSuperseded: this.stats.keyframeStreamsSuperseded,
       keyframeStreamsFailed: this.stats.keyframeStreamsFailed,
       encoderFps: (encoded - this.uplinkEncoded) / dt,

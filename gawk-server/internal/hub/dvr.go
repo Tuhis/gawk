@@ -23,6 +23,8 @@ package hub
 // never contends with fan-out.
 
 import (
+	"context"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,6 +52,11 @@ type dvrGop struct {
 	keyframe []byte
 	records  [][]byte
 	bytes    int
+	// kfID is the frameID in the keyframe's StreamFrame header, the GOP's
+	// identity on every pod (docs/91 D2); kfIDOK is false when the keyframe
+	// did not parse.
+	kfID   uint32
+	kfIDOK bool
 	// complete is set when the next keyframe arrives: no more records will
 	// ever be appended to this GOP.
 	complete bool
@@ -133,6 +140,9 @@ func (r *DVRRing) AppendKeyframe(msg []byte, at time.Time) {
 		at:       at,
 		keyframe: append([]byte(nil), msg...),
 		bytes:    len(msg),
+	}
+	if hdr, err := wire.ParseStreamFrameHeader(msg); err == nil {
+		g.kfID, g.kfIDOK = hdr.FrameID, true
 	}
 	r.nextSeq++
 	r.gops = append(r.gops, g)
@@ -223,6 +233,37 @@ func (r *DVRRing) NextGop(c DVRCursor) (DVRCursor, bool) {
 		}
 	}
 	return c, false
+}
+
+// dvrGopIdentity is what a striped connection needs to decide whether the
+// cursor's GOP is its own (dvrServesGop).
+type dvrGopIdentity struct {
+	at     time.Time
+	kfID   uint32
+	kfIDOK bool
+}
+
+// GopIdentity returns the cursor's GOP's arrival time and keyframe frameID.
+// ok is false when the GOP has been evicted or does not exist yet.
+func (r *DVRRing) GopIdentity(c DVRCursor) (dvrGopIdentity, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	g := r.findLocked(c.gopSeq)
+	if g == nil {
+		return dvrGopIdentity{}, false
+	}
+	return dvrGopIdentity{at: g.at, kfID: g.kfID, kfIDOK: g.kfIDOK}, true
+}
+
+// NewestGopSeq is the newest GOP's sequence, or one below the next one when
+// the ring is empty, so every GOP still to arrive is newer.
+func (r *DVRRing) NewestGopSeq() int64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.gops) == 0 {
+		return r.nextSeq - 1
+	}
+	return r.gops[len(r.gops)-1].seq
 }
 
 // FellOffTail reports that the cursor's GOP has been evicted.
@@ -326,7 +367,13 @@ func (r *DVRRing) findLocked(seq int64) *dvrGop {
 // large it is: dropping it would leave the ring with no decodable entry point
 // at all, which is worse than briefly exceeding the cap.
 func (r *DVRRing) evictLocked(now time.Time) {
-	for len(r.gops) > 1 && now.Sub(r.gops[0].at) > r.opts.Window {
+	// A GOP leaves only once all of it is older than the window, which is
+	// when its successor started more than a window ago. Measuring from its
+	// own start dropped a GOP whose first frame was due but whose rest a
+	// viewer's buffer still covered, so a cursor fell off the tail up to a GOP
+	// before the lag check would have resynced it (docs/91 §11.3). The ring
+	// therefore holds the window plus at most one GOP.
+	for len(r.gops) > 1 && now.Sub(r.gops[1].at) > r.opts.Window {
 		r.dropOldestLocked()
 	}
 	for len(r.gops) > 1 && r.opts.MaxBytes > 0 && r.bytes > r.opts.MaxBytes {
@@ -361,9 +408,14 @@ func (s *Subscriber) drainDVR() {
 	defer s.retireCarrier()
 	var scratch []byte
 	s.dvrProgressAt.Store(time.Now().UnixMilli())
+	// A drain wakes a parked loop once; after that the ring's wake does.
+	drain := (<-chan struct{})(s.dvrDrainSig)
 	for {
 		if s.closed.Load() {
 			return
+		}
+		if s.StripeDraining() {
+			drain = nil
 		}
 		// Health in this mode is progress, not position: a cursor legitimately
 		// sits seconds behind live, so the only honest question is whether it
@@ -376,11 +428,28 @@ func (s *Subscriber) drainDVR() {
 		// Take the wake channel BEFORE reading; see DVRRing.Wait.
 		wake := s.dvr.Wait()
 
+		// A draining leg past its point owes nothing more; checked before
+		// any keyframe, so it never serves a GOP newer than the point. One
+		// that falls behind ends its drain there instead of resyncing: the
+		// backlog it abandons was a superseded leg's, not the viewer's
+		// frame loss, so it must not count as a resync.
+		if s.dvrDrainDone() || (s.StripeDraining() && s.dvrFellBehind()) {
+			s.finishDrain()
+			return
+		}
 		if s.dvrFellBehind() {
 			s.dvrResync()
 			continue
 		}
 		if s.dvrCursor.NeedsKeyframe() {
+			if serve, known := s.dvrServesGop(); known && !serve {
+				// Another connection of this viewer's stripe serves this GOP
+				// (docs/91 D3).
+				if !s.dvrSkipGop(wake, drain) {
+					return
+				}
+				continue
+			}
 			if !s.dvrSendKeyframe() {
 				// Either the ring has no keyframe for this cursor yet (a
 				// joiner on an away broadcast sits here for as long as the
@@ -389,6 +458,7 @@ func (s *Subscriber) drainDVR() {
 				_, available := s.dvr.Keyframe(s.dvrCursor)
 				select {
 				case <-wake:
+				case <-drain:
 				case <-s.dvrStop:
 					return
 				}
@@ -417,6 +487,7 @@ func (s *Subscriber) drainDVR() {
 			// next attempt opens a fresh one.
 			select {
 			case <-wake:
+			case <-drain:
 			case <-s.dvrStop:
 				return
 			case <-time.After(dvrRetryFloor):
@@ -437,6 +508,7 @@ func (s *Subscriber) drainDVR() {
 		// broadcaster's can be minutes.
 		select {
 		case <-wake:
+		case <-drain:
 		case <-s.dvrStop:
 			return
 		}
@@ -470,10 +542,33 @@ func (s *Subscriber) dvrFellBehind() bool {
 // dvrResync jumps the cursor to the newest keyframe — the mode's only frame
 // loss, and the one signal operators should watch.
 func (s *Subscriber) dvrResync() {
+	// Debug, not Info: a viewer on a short link resyncs every few seconds,
+	// and fleet-wide that is noise; the counters carry the rate. What only a
+	// log can say is which connection of a striped viewer fell behind, and
+	// why (docs/91 §11).
+	if s.hub.log.Enabled(context.Background(), slog.LevelDebug) {
+		s.hub.log.Debug("dvr resync",
+			"subscriber", s.statsKey,
+			"stripe_leg", s.stripeLeg, "stripe_member", int(s.stripeMember),
+			"off_tail", s.dvr.FellOffTail(s.dvrCursor), "lag_ms", s.dvrResyncLagMs(),
+			"buffer_ms", s.dvrBufferMs, "gop_seq", s.dvrCursor.GopSeq())
+	}
 	s.retireCarrier()
 	s.dvrCursor = s.dvr.ResyncCursor()
 	s.dvrResyncs.Add(1)
 	s.dvrNoteCursor()
+}
+
+// dvrResyncLagMs is the cursor's lag behind the newest GOP right now. It
+// reads the cursor's published GOP time, because a cursor that fell off the
+// tail has no GOP left in the ring to measure from.
+func (s *Subscriber) dvrResyncLagMs() int64 {
+	at := s.dvrCursorAtMs.Load()
+	newest := s.dvr.GopAt(DVRCursor{gopSeq: s.dvr.NewestGopSeq()})
+	if at == 0 || newest.IsZero() {
+		return 0
+	}
+	return newest.UnixMilli() - at
 }
 
 // dvrNoteCursor publishes the cursor's observable position as atomics.
@@ -496,7 +591,7 @@ func (s *Subscriber) dvrSendKeyframe() bool {
 	// The ceiling covers keyframes too: they are the largest single thing a
 	// recovering cursor sends, so exempting them would leave the biggest
 	// bursts unbounded. Not-yet is a wait, not a drop — the caller retries.
-	if !s.dvrPace.allow(len(msg), s.dvr.LiveRateBps()) {
+	if !s.dvrPace.allow(len(msg), s.dvrPaceBps()) {
 		return false
 	}
 	if !s.hub.registry.consumeBandwidth(len(msg)) {
@@ -523,6 +618,7 @@ func (s *Subscriber) dvrSendKeyframe() bool {
 		s.noteKeyframeOutcome(handedAt, false)
 		s.noteKeyframeOpenFailed()
 		s.kfDroppedOpenFailed.Add(1)
+		s.dvrFailing = true
 		s.dvrCursor = s.dvrCursor.AtFirstRecord()
 		s.dvrNoteCursor()
 		return true
@@ -534,13 +630,16 @@ func (s *Subscriber) dvrSendKeyframe() bool {
 	if err != nil {
 		st.CancelWrite()
 		s.kfDroppedSlow.Add(1)
+		s.dvrFailing = true
 	} else if err := st.Close(); err != nil {
 		st.CancelWrite()
 		s.kfDroppedSlow.Add(1)
+		s.dvrFailing = true
 	} else {
 		s.keyframesSent.Add(1)
 		s.egressKeyframeBytes.Add(uint64(len(msg)))
 		s.dvrNoteProgress()
+		s.dvrFailing = false
 	}
 	s.dvrCursor = s.dvrCursor.AtFirstRecord()
 	s.dvrNoteCursor()
@@ -564,7 +663,7 @@ func (s *Subscriber) dvrWriteRecord(rec []byte, scratch *[]byte) bool {
 	}
 	// Catch-up ceiling (see dvrPacer). Checked before the global cap so a
 	// throttled record is a retry rather than a charged drop.
-	if !s.dvrPace.allow(n, s.dvr.LiveRateBps()) {
+	if !s.dvrPace.allow(n, s.dvrPaceBps()) {
 		return false
 	}
 	if !s.hub.registry.consumeBandwidth(n) {
@@ -574,9 +673,11 @@ func (s *Subscriber) dvrWriteRecord(rec []byte, scratch *[]byte) bool {
 	}
 	deadline := time.Now().Add(s.hub.registry.opts.carrierWriteTimeout())
 	if needsOpen && !s.openCarrier(deadline) {
+		s.dvrFailing = true
 		return false
 	}
 	if !s.writeCarrier(framed, deadline) {
+		s.dvrFailing = true
 		return false
 	}
 	s.carrierRecords.Add(1)
@@ -584,6 +685,7 @@ func (s *Subscriber) dvrWriteRecord(rec []byte, scratch *[]byte) bool {
 	s.noteCarrierParity(rec, len(framed))
 	s.dvrCursor = s.dvrCursor.Next()
 	s.dvrNoteProgress()
+	s.dvrFailing = false
 	return true
 }
 

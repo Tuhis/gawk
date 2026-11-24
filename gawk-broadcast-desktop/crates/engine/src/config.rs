@@ -194,6 +194,11 @@ pub struct Config {
     /// Heights that window fit chose are never stored here.
     pub window_width: u32,
     pub window_height: u32,
+    /// Where the window's frame last was, its top-left as `[x, y]`, in the
+    /// platform's own units — physical px on Windows (docs/66 D18). Absent
+    /// = never saved, or a platform that can't say: the system places it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_position: Option<(i32, i32)>,
     /// R74 (docs/76 item 43.6): the party local relays whose offers this
     /// app ignores, by the offer's opaque PoP handle — the chip's "Use …
     /// instead". Consent only: nothing here ever starts a switch.
@@ -1591,14 +1596,23 @@ mod tests {
         let (old, warn) = load(&path, &Plaintext);
         assert!(warn.is_none());
         assert_eq!((old.window_width, old.window_height), (0, 0));
+        assert_eq!(old.window_position, None);
+        save(&path, &old, &Plaintext).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("windowPosition"), "{raw}");
 
         let cfg = Config {
             window_width: 560,
             window_height: 720,
+            window_position: Some((-1200, 40)),
             ..Default::default()
         };
         save(&path, &cfg, &Plaintext).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            raw.contains("\"windowPosition\": [\n    -1200,\n    40\n  ]"),
+            "{raw}"
+        );
         assert!(raw.contains("\"windowWidth\": 560"), "{raw}");
         assert!(raw.contains("\"windowHeight\": 720"), "{raw}");
         let (loaded, _) = load(&path, &Plaintext);

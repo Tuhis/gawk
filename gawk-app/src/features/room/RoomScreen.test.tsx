@@ -4,8 +4,9 @@
 // control session and every tile's media session are faked at the transport
 // seam (the ViewerScreen test's FakeViewerSession pattern), so each test
 // drives RoomState / RoomEvent through the control session's callbacks and
-// asserts the tiles, the roster and the copy that result — and, for hide
-// videos, that NO /subscribe session exists at all.
+// asserts the tiles, the roster and the copy that result — and, for None
+// (the old hide videos) and every stream hidden under Choose, that NO
+// /subscribe session exists for what is not shown.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { StrictMode } from 'react';
@@ -108,7 +109,8 @@ import { TILE_AUTO_RETRIES, TILE_RETRY_DELAYS_MS } from './tileRetry';
 import { NARROW_QUERY } from '../../lib/useMediaMatch';
 import { useRoomStore } from '../../state/roomStore';
 import { useTransportStore } from '../../state/transportStore';
-import { resetSwitchForTest, setSwitchDepsForTest } from '../pop/switch';
+import { optOut, resetSwitchForTest, setSwitchDepsForTest } from '../pop/switch';
+import { usePopStore } from '../pop/popStore';
 import {
   ROOM_CLIENT_WEB_VIEWER,
   ROOM_COMMAND_ATTACH,
@@ -149,6 +151,8 @@ function state(over: Partial<RoomState> = {}): RoomState {
 }
 
 const activeViewerIds = () => viewerSessions.filter((s) => !s.stopped).map((s) => s.id).sort();
+// R86: the footer's What to show pill, whatever it reads.
+const openWhatToShow = () => fireEvent.click(screen.getByRole('button', { name: /^What to show:/ }));
 
 async function joinAs(nickname = 'tuhis', over: Partial<RoomState> = {}) {
   localStorage.setItem('gawk:nickname', nickname);
@@ -329,27 +333,505 @@ describe('RoomScreen modes', () => {
     expect(viewerSessions).toHaveLength(created);
   });
 
-  it('hide videos: no tiles, every /subscribe session closed, the control session kept, the card shown', async () => {
+  it('None: no tiles, every /subscribe session closed, the control session kept, the card shown', async () => {
     const room = await joinAs();
     await waitFor(() => expect(activeViewerIds()).toHaveLength(3));
-    fireEvent.click(screen.getByRole('radio', { name: 'Hide videos' }));
+    openWhatToShow();
+    fireEvent.click(screen.getByRole('radio', { name: 'None' }));
     expect(screen.queryAllByTestId('room-tile')).toHaveLength(0);
     await waitFor(() => expect(activeViewerIds()).toEqual([]));
     expect(room.stopped).toBe(false);
     expect(screen.getByText('You’re still in the room')).toBeTruthy();
     expect(screen.getByText(/Nothing is downloading/)).toBeTruthy();
-    expect(localStorage.getItem('gawk:room-mode')).toBe('hidden');
+    expect(screen.getByRole('button', { name: 'What to show: None' })).toBeTruthy();
+    expect(localStorage.getItem('gawk:room-videos')).toBe('off');
+    // The layout is kept, set aside (docs/90 D8).
+    expect(screen.getByRole('radiogroup', { name: 'Layout' }).getAttribute('data-dim')).toBe('true');
+    expect(screen.getByRole('radio', { name: 'Grid' }).getAttribute('aria-checked')).toBe('true');
 
-    // Back to grid re-dials.
+    // Picking a layout leaves None and re-dials, as clicking Grid left
+    // Hide videos.
     fireEvent.click(screen.getByRole('radio', { name: 'Grid' }));
     await waitFor(() => expect(activeViewerIds()).toHaveLength(3));
+    expect(localStorage.getItem('gawk:room-videos')).toBeNull();
   });
 
-  it('a remembered hidden mode opens no media session at all', async () => {
+  it('a remembered None opens no media session at all, nor does a hidden mode stored before R86', async () => {
+    localStorage.setItem('gawk:room-videos', 'off');
+    await joinAs();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(viewerSessions).toHaveLength(0);
+    cleanup();
+    roomSessions.length = 0;
+    localStorage.clear();
     localStorage.setItem('gawk:room-mode', 'hidden');
     await joinAs();
     await new Promise((r) => setTimeout(r, 20));
     expect(viewerSessions).toHaveLength(0);
+    expect(screen.getByText('You’re still in the room')).toBeTruthy();
+  });
+});
+
+// R86 (docs/90): the What to show pill — All streams · Choose · None — and
+// the keys. A hidden stream is an unmounted tile, so it has no media session.
+describe('RoomScreen What to show', () => {
+  const tileNumbers = () => screen.queryAllByTestId('room-tile').map((t) => t.getAttribute('data-broadcast-index'));
+  const variants = () => screen.queryAllByTestId('room-tile').map((t) => t.getAttribute('data-variant'));
+  const shift = (digit: string) =>
+    fireEvent.keyDown(window, { key: { '1': '!', '2': '@', '3': '#', '4': '$' }[digit], code: `Digit${digit}`, shiftKey: true });
+  const choose = () => {
+    openWhatToShow();
+    fireEvent.click(screen.getByRole('radio', { name: 'Choose' }));
+  };
+
+  it('offers All streams, Choose and None, and under Choose a checkbox per stream, all ticked', async () => {
+    await joinAs();
+    expect(screen.getByRole('button', { name: 'What to show: All streams' }).getAttribute('aria-expanded')).toBe('false');
+    openWhatToShow();
+    const pop = screen.getByRole('dialog', { name: 'What to show' });
+    const group = within(pop).getByRole('radiogroup', { name: 'What to show' });
+    const radios = within(group).getAllByRole('radio');
+    expect(radios.map((r) => r.getAttribute('aria-checked'))).toEqual(['true', 'false', 'false']);
+    expect(within(group).getByRole('radio', { name: 'All streams' })).toBe(radios[0]);
+    expect(within(group).getByRole('radio', { name: 'Choose' })).toBe(radios[1]);
+    expect(within(group).getByRole('radio', { name: 'None' })).toBe(radios[2]);
+    expect(within(pop).queryAllByRole('checkbox')).toHaveLength(0);
+    fireEvent.click(screen.getByRole('radio', { name: 'Choose' }));
+    // The checkboxes are their own group, not members of the radiogroup.
+    expect(within(group).queryAllByRole('checkbox')).toHaveLength(0);
+    const streams = within(pop).getByRole('group', { name: 'Streams · 3 of 3 shown' });
+    expect(within(streams).getAllByRole('checkbox')).toHaveLength(3);
+    for (const name of ['alpha', 'bravo', 'charlie']) {
+      expect((within(pop).getByRole('checkbox', { name }) as HTMLInputElement).checked).toBe(true);
+    }
+    expect(screen.getByRole('button', { name: 'What to show: 3 of 3' })).toBeTruthy();
+    expect(within(pop).getByText('away')).toBeTruthy();
+    expect(within(pop).getByText('Shift+1–4 hides or shows a stream')).toBeTruthy();
+  });
+
+  it('unticking a stream closes its media session only; numbers stay the room’s', async () => {
+    await joinAs();
+    await waitFor(() => expect(activeViewerIds()).toEqual(['AAAAAA', 'BBBBBB', 'CCCCCC']));
+    const created = viewerSessions.length;
+    choose();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'bravo' }));
+    expect(tileNumbers()).toEqual(['1', '3']);
+    await waitFor(() => expect(activeViewerIds()).toEqual(['AAAAAA', 'CCCCCC']));
+    // The others kept their sessions: nothing re-dialed.
+    expect(viewerSessions).toHaveLength(created);
+    expect(screen.getByRole('button', { name: 'What to show: 2 of 3' }).getAttribute('data-vis')).toBe('some');
+    expect((screen.getByRole('checkbox', { name: 'bravo' }) as HTMLInputElement).checked).toBe(false);
+
+    // Ticking it again dials it again.
+    fireEvent.click(screen.getByRole('checkbox', { name: 'bravo' }));
+    expect(tileNumbers()).toEqual(['1', '2', '3']);
+    await waitFor(() => expect(activeViewerIds()).toEqual(['AAAAAA', 'BBBBBB', 'CCCCCC']));
+  });
+
+  it('Shift+number hides and shows; the plain number shows a hidden stream and focuses it (D7)', async () => {
+    await joinAs();
+    shift('2');
+    expect(tileNumbers()).toEqual(['1', '3']);
+    expect(screen.getByRole('button', { name: 'What to show: 2 of 3' })).toBeTruthy();
+    // A peek and its undo leave the room as it was: All streams.
+    shift('2');
+    expect(tileNumbers()).toEqual(['1', '2', '3']);
+    expect(screen.getByRole('button', { name: 'What to show: All streams' })).toBeTruthy();
+    shift('2');
+    fireEvent.keyDown(window, { key: '2' });
+    expect(tileNumbers()).toEqual(['1', '2', '3']);
+    expect(variants()).toEqual(['small', 'focus', 'small']);
+
+    // Under None, a number brings that stream back and the rest as they were.
+    shift('3');
+    openWhatToShow();
+    fireEvent.click(screen.getByRole('radio', { name: 'None' }));
+    expect(tileNumbers()).toEqual([]);
+    fireEvent.keyDown(window, { key: '1' });
+    expect(tileNumbers()).toEqual(['1', '2']);
+    expect(variants()).toEqual(['focus', 'small']);
+  });
+
+  it('Shift+number from All streams hides just that stream, not a set kept from before', async () => {
+    await joinAs();
+    choose();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'alpha' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'All streams' }));
+    expect(tileNumbers()).toEqual(['1', '2', '3']);
+    shift('3');
+    expect(tileNumbers()).toEqual(['1', '2']);
+  });
+
+  it('All streams keeps the set, and Choose brings it back', async () => {
+    await joinAs();
+    choose();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'bravo' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'All streams' }));
+    expect(tileNumbers()).toEqual(['1', '2', '3']);
+    expect(screen.getByRole('button', { name: 'What to show: All streams' }).getAttribute('data-vis')).toBe('all');
+    fireEvent.click(screen.getByRole('radio', { name: 'Choose' }));
+    expect(tileNumbers()).toEqual(['1', '3']);
+    // So does leaving None.
+    fireEvent.click(screen.getByRole('radio', { name: 'None' }));
+    fireEvent.keyDown(window, { key: '0' });
+    expect(tileNumbers()).toEqual(['1', '3']);
+  });
+
+  it('a stream that joins later arrives shown', async () => {
+    const room = await joinAs();
+    shift('2');
+    const base = state();
+    act(() =>
+      room.cbs.onState(
+        state({ seq: 4, attachments: [...base.attachments, { broadcastId: 'DDDDDD', label: 'delta', live: true, viewerCount: 0 }] }),
+      ),
+    );
+    expect(tileNumbers()).toEqual(['1', '3', '4']);
+  });
+
+  it('is remembered for the room: a rejoin opens no session for the hidden stream', async () => {
+    await joinAs();
+    shift('2');
+    cleanup();
+    roomSessions.length = 0;
+    viewerSessions.length = 0;
+    await joinAs();
+    expect(tileNumbers()).toEqual(['1', '3']);
+    await waitFor(() => expect(activeViewerIds()).toEqual(['AAAAAA', 'CCCCCC']));
+    expect(viewerSessions.some((v) => v.id === 'BBBBBB')).toBe(false);
+
+    // Another room starts on All streams.
+    cleanup();
+    roomSessions.length = 0;
+    render(<RoomScreen code="ZZ9ZZ9" />);
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    act(() => roomSessions[0].cbs.onState(state({ code: 'ZZ9ZZ9' })));
+    expect(tileNumbers()).toEqual(['1', '2', '3']);
+  });
+
+  it('every stream unticked is a card that offers them back, never a black stage (D10)', async () => {
+    await joinAs();
+    choose();
+    for (const name of ['alpha', 'bravo', 'charlie']) fireEvent.click(screen.getByRole('checkbox', { name }));
+    expect(tileNumbers()).toEqual([]);
+    await waitFor(() => expect(activeViewerIds()).toEqual([]));
+    expect(screen.getByText('No streams chosen')).toBeTruthy();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'What to show' })).toBeNull();
+    // Choose… opens the popover on the checklist, and Escape from the card's
+    // button, where the click left focus, closes it again.
+    const chooseBtn = screen.getByRole('button', { name: 'Choose…' });
+    fireEvent.click(chooseBtn);
+    expect(screen.getAllByRole('checkbox')).toHaveLength(3);
+    fireEvent.keyDown(chooseBtn, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'What to show' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'All streams' }));
+    expect(tileNumbers()).toEqual(['1', '2', '3']);
+  });
+
+  it('Choose from None dials nothing until a stream is ticked', async () => {
+    localStorage.setItem('gawk:room-videos', 'off');
+    await joinAs();
+    fireEvent.click(screen.getByRole('button', { name: 'Choose…' }));
+    expect(screen.getByText('No streams chosen')).toBeTruthy();
+    for (const box of screen.getAllByRole('checkbox')) expect((box as HTMLInputElement).checked).toBe(false);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(viewerSessions).toHaveLength(0);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'charlie' }));
+    expect(tileNumbers()).toEqual(['3']);
+    await waitFor(() => expect(activeViewerIds()).toEqual(['CCCCCC']));
+    expect(viewerSessions).toHaveLength(1);
+  });
+
+  it('focus skips hidden streams, and showing one again does not take focus back (D9)', async () => {
+    await joinAs();
+    fireEvent.keyDown(window, { key: '1' });
+    expect(variants()).toEqual(['focus', 'small', 'small']);
+    shift('1');
+    expect(tileNumbers()).toEqual(['2', '3']);
+    expect(variants()).toEqual(['focus', 'small']);
+    shift('1');
+    expect(tileNumbers()).toEqual(['1', '2', '3']);
+    expect(variants()).toEqual(['small', 'focus', 'small']);
+  });
+
+  it('moves focus nobody chose for good too, and a stream that left keeps its claim (D9)', async () => {
+    localStorage.setItem('gawk:room-mode', 'focus');
+    const room = await joinAs();
+    expect(variants()).toEqual(['focus', 'small', 'small']);
+    shift('1');
+    expect(variants()).toEqual(['focus', 'small']);
+    shift('1');
+    expect(variants()).toEqual(['small', 'focus', 'small']);
+
+    // Bravo, focused, drops out of a snapshot and comes back: focus returns.
+    const full = state().attachments;
+    act(() => room.cbs.onState(state({ seq: 4, attachments: [full[0], full[2]] })));
+    expect(variants()).toEqual(['focus', 'small']);
+    act(() => room.cbs.onState(state({ seq: 5 })));
+    expect(variants()).toEqual(['small', 'focus', 'small']);
+  });
+
+  it('reads the room’s picks whatever the case of the code in the link', async () => {
+    localStorage.setItem('gawk:room-picks', JSON.stringify([{ code: 'ab2cd3', choose: true, hidden: ['BBBBBB'] }]));
+    await joinAs();
+    expect(tileNumbers()).toEqual(['1', '3']);
+  });
+
+  it('leaves an Escape pressed in another layer to that layer', async () => {
+    await joinAs();
+    openWhatToShow();
+    fireEvent.click(screen.getByRole('button', { name: 'People and chat' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit nickname' }));
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'New nickname' }), { key: 'Escape' });
+    expect(screen.getByRole('dialog', { name: 'What to show' })).toBeTruthy();
+  });
+
+  it('keeps the keys working while a checkbox in the popover has focus', async () => {
+    await joinAs();
+    choose();
+    const bravo = screen.getByRole('checkbox', { name: 'bravo' });
+    bravo.focus();
+    fireEvent.keyDown(bravo, { key: '#', code: 'Digit3', shiftKey: true });
+    expect(tileNumbers()).toEqual(['1', '2']);
+  });
+
+  it('a choice made before a mint’s first state is the new room’s', async () => {
+    render(
+      <RoomView
+        target={{ kind: 'mint', broadcastId: 'AAAAAA', resumeTokenHex: 'b'.repeat(32), label: 'mine' }}
+        presetNickname="me"
+        onLeave={() => {}}
+      />,
+    );
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    openWhatToShow();
+    fireEvent.click(screen.getByRole('radio', { name: 'Choose' }));
+    act(() => roomSessions[0].cbs.onState(state()));
+    expect(screen.getByRole('button', { name: 'What to show: 3 of 3' })).toBeTruthy();
+    expect(JSON.parse(localStorage.getItem('gawk:room-picks')!)).toEqual([{ code: 'ab2cd3', choose: true, hidden: [] }]);
+  });
+
+  it('closes on Escape back onto the pill, and on a press outside', async () => {
+    await joinAs();
+    openWhatToShow();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'What to show' })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'What to show: All streams' }));
+    openWhatToShow();
+    fireEvent.pointerDown(screen.getByTestId('room-header'));
+    expect(screen.queryByRole('dialog', { name: 'What to show' })).toBeNull();
+  });
+});
+
+// R83 (docs/87): Fit, the layout that sizes each tile from its stream's
+// decoded shape. jsdom has no ResizeObserver and no layout, so the stage's
+// size is the window's (1024×768) through useElementSize's fallback.
+describe('RoomScreen Fit layout', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const tiles = () => screen.getAllByTestId('room-tile');
+  const tileOf = (label: string) => tiles().find((t) => t.textContent?.includes(label))!;
+  const box = (t: HTMLElement) => ({
+    x: parseFloat(t.style.left),
+    y: parseFloat(t.style.top),
+    w: parseFloat(t.style.width),
+    h: parseFloat(t.style.height),
+  });
+  const frames = (id: string, width: number, height: number) => {
+    const s = viewerSessions.filter((v) => v.id === id && !v.stopped).at(-1)!;
+    act(() => s.cbs.onStats({ viewerCount: 1, framesCompleted: 5, frameWidth: width, frameHeight: height }));
+  };
+
+  it('the layout segment offers Grid, Fit and Focus, in that order', async () => {
+    await joinAs();
+    const seg = screen.getByRole('radiogroup', { name: 'Layout' });
+    expect(within(seg).getAllByRole('radio').map((r) => r.textContent?.trim())).toEqual(['Grid', 'Fit', 'Focus']);
+  });
+
+  it('Fit places every tile at its stream shape, persisted, without re-dialing', async () => {
+    await joinAs();
+    await waitFor(() => expect(activeViewerIds()).toEqual(['AAAAAA', 'BBBBBB', 'CCCCCC']));
+    const created = viewerSessions.length;
+    const before = tiles();
+    fireEvent.click(screen.getByRole('radio', { name: 'Fit' }));
+    expect(localStorage.getItem('gawk:room-mode')).toBe('fit');
+    expect(localStorage.getItem('gawk:room-grid')).toBe('fit');
+    // The same elements, moved: no tile remounted, no session re-dialed.
+    expect(tiles()).toEqual(before);
+    expect(tiles().map((t) => t.getAttribute('data-variant'))).toEqual(['grid', 'grid', 'grid']);
+    // Before any frame every tile counts as 16:9.
+    for (const t of tiles()) expect(box(t).w / box(t).h).toBeCloseTo(16 / 9, 2);
+
+    frames('AAAAAA', 3840, 1080);
+    const a = tileOf('alpha');
+    expect(a.getAttribute('data-frame-w')).toBe('3840');
+    expect(a.getAttribute('data-frame-h')).toBe('1080');
+    expect(box(a).w / box(a).h).toBeCloseTo(32 / 9, 2);
+    for (const t of tiles()) {
+      const b = box(t);
+      expect(b.x).toBeGreaterThanOrEqual(-0.01);
+      expect(b.y).toBeGreaterThanOrEqual(-0.01);
+      expect(b.x + b.w).toBeLessThanOrEqual(1024.01);
+      expect(b.y + b.h).toBeLessThanOrEqual(768.01);
+    }
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Focus' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Grid' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Fit' }));
+    expect(tiles()).toEqual(before);
+    await act(async () => {});
+    expect(viewerSessions).toHaveLength(created);
+    // Grid's tiles carry no Fit box.
+    fireEvent.click(screen.getByRole('radio', { name: 'Grid' }));
+    expect(tiles()[0].style.left).toBe('');
+  });
+
+  it('ignores a shape change under 2 % and follows a larger one', async () => {
+    localStorage.setItem('gawk:room-mode', 'fit');
+    await joinAs();
+    await waitFor(() => expect(activeViewerIds()).toHaveLength(3));
+    frames('AAAAAA', 1920, 1080);
+    const first = box(tileOf('alpha'));
+    frames('AAAAAA', 1940, 1080); // +1 %
+    expect(box(tileOf('alpha'))).toEqual(first);
+    frames('AAAAAA', 2560, 1080);
+    expect(box(tileOf('alpha')).w / box(tileOf('alpha')).h).toBeCloseTo(2560 / 1080, 2);
+  });
+
+  it('keeps a stream shape across the tile retry that remounts its session', async () => {
+    localStorage.setItem('gawk:room-mode', 'fit');
+    await joinAs();
+    await waitFor(() => expect(activeViewerIds()).toHaveLength(3));
+    frames('AAAAAA', 3840, 1080);
+    const s = viewerSessions.find((v) => v.id === 'AAAAAA')!;
+    act(() => s.cbs.onError(new Error('gone')));
+    fireEvent.click(within(tileOf('alpha')).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(viewerSessions.filter((v) => v.id === 'AAAAAA')).toHaveLength(2));
+    // The new session has no frames yet; the room still knows the shape.
+    expect(tileOf('alpha').getAttribute('data-frame-w')).toBeNull();
+    expect(box(tileOf('alpha')).w / box(tileOf('alpha')).h).toBeCloseTo(32 / 9, 2);
+  });
+
+  it('steps the chrome of a tile inside a band clear of it, by how far it reaches in', async () => {
+    localStorage.setItem('gawk:room-mode', 'fit');
+    await joinAs();
+    // Three 32:9 streams on 1024×768 stack in one column and fill its width.
+    await waitFor(() => expect(activeViewerIds()).toHaveLength(3));
+    for (const id of ['AAAAAA', 'BBBBBB', 'CCCCCC']) frames(id, 3840, 1080);
+    const [t1, t2, t3] = tiles();
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    expect(t1.getAttribute('data-edge-top')).toBe('true');
+    expect(parseFloat(t1.style.getPropertyValue('--edge-top'))).toBeCloseTo(Math.max(0.6 * rem, 4.5 * rem - box(t1).y), 3);
+    expect(t2.getAttribute('data-edge-top')).toBeNull();
+    expect(t2.getAttribute('data-edge-bottom')).toBeNull();
+    expect(t3.getAttribute('data-edge-bottom')).toBe('true');
+    const below = 768 - (box(t3).y + box(t3).h);
+    expect(parseFloat(t3.style.getPropertyValue('--edge-bottom'))).toBeCloseTo(Math.max(0.6 * rem, 4 * rem - below), 3);
+  });
+
+  it('re-lays out on a resize without remounting a tile', async () => {
+    localStorage.setItem('gawk:room-mode', 'fit');
+    await joinAs();
+    await waitFor(() => expect(activeViewerIds()).toHaveLength(3));
+    const before = tiles();
+    const wide = box(before[0]);
+    const { innerWidth, innerHeight } = window;
+    try {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 600 });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: 1000 });
+      act(() => void window.dispatchEvent(new Event('resize')));
+      expect(tiles()).toEqual(before);
+      expect(box(tiles()[0])).not.toEqual(wide);
+      for (const t of tiles()) expect(box(t).x + box(t).w).toBeLessThanOrEqual(600.01);
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: innerWidth });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: innerHeight });
+    }
+  });
+
+  it('measures the stage with a ResizeObserver where there is one', async () => {
+    const observers: { cb: ResizeObserverCallback; el?: Element }[] = [];
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        cb: ResizeObserverCallback;
+        constructor(cb: ResizeObserverCallback) {
+          this.cb = cb;
+          observers.push({ cb });
+        }
+        observe(el: Element) {
+          observers[observers.length - 1].el = el;
+        }
+        disconnect() {}
+      },
+    );
+    localStorage.setItem('gawk:room-mode', 'fit');
+    await joinAs();
+    await waitFor(() => expect(observers.length).toBeGreaterThan(0));
+    const o = observers.at(-1)!;
+    act(() => o.cb([{ contentRect: { width: 1920, height: 1080 } } as ResizeObserverEntry], {} as ResizeObserver));
+    // Three 16:9 tiles on 1920×1080: the best layout reaches past 1024.
+    expect(Math.max(...tiles().map((t) => box(t).x + box(t).w))).toBeGreaterThan(1024);
+  });
+
+  it('0 returns to the last all-POV mode, also after a reload made in focus', async () => {
+    await joinAs();
+    fireEvent.click(screen.getByRole('radio', { name: 'Fit' }));
+    fireEvent.keyDown(window, { key: '2' });
+    expect(localStorage.getItem('gawk:room-mode')).toBe('focus');
+    fireEvent.keyDown(window, { key: '0' });
+    expect(screen.getByRole('radio', { name: 'Fit' }).getAttribute('aria-checked')).toBe('true');
+
+    cleanup();
+    roomSessions.length = 0;
+    localStorage.setItem('gawk:room-mode', 'focus');
+    await joinAs();
+    fireEvent.keyDown(window, { key: '0' });
+    expect(screen.getByRole('radio', { name: 'Fit' }).getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('a hidden mode stored before R86 comes back from None on the last all-POV mode', async () => {
+    localStorage.setItem('gawk:room-grid', 'fit');
+    localStorage.setItem('gawk:room-mode', 'hidden');
+    await joinAs();
+    fireEvent.click(screen.getByRole('button', { name: 'All streams' }));
+    expect(screen.getByRole('radio', { name: 'Fit' }).getAttribute('aria-checked')).toBe('true');
+    expect(tiles()).toHaveLength(3);
+  });
+
+  it("the broadcaster's own preview tile takes the shape of its local video", async () => {
+    localStorage.setItem('gawk:room-mode', 'fit');
+    const preview = { getTracks: () => [] } as unknown as MediaStream;
+    render(
+      <RoomView
+        target={{ kind: 'mint', broadcastId: 'AAAAAA', resumeTokenHex: 'b'.repeat(32), label: 'mine' }}
+        presetNickname="me"
+        own={{ broadcastId: 'AAAAAA', resumeTokenHex: 'b'.repeat(32), attachEpoch: 0, preview, controls: null, onDetach: () => {} }}
+        onLeave={() => {}}
+      />,
+    );
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    act(() => roomSessions[0].cbs.onState(state({ flags: ROOM_STATE_FLAG_DYNAMIC | ROOM_STATE_FLAG_CREATOR | ROOM_STATE_FLAG_ATTACH_OK })));
+    const video = screen.getByTestId('own-preview') as HTMLVideoElement;
+    Object.defineProperty(video, 'videoWidth', { configurable: true, value: 5120 });
+    Object.defineProperty(video, 'videoHeight', { configurable: true, value: 1440 });
+    act(() => void video.dispatchEvent(new Event('resize')));
+    const own = tiles().find((t) => t.getAttribute('data-own') === 'true')!;
+    expect(own.getAttribute('data-frame-w')).toBe('5120');
+    expect(box(own).w / box(own).h).toBeCloseTo(32 / 9, 2);
+  });
+
+  it('shows as focus on a narrow screen, as Grid does', async () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query === NARROW_QUERY,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+    localStorage.setItem('gawk:room-mode', 'fit');
+    await joinAs();
+    expect(tiles().map((t) => t.getAttribute('data-variant'))).toEqual(['focus', 'small', 'small']);
+    expect(screen.getByRole('radio', { name: 'Fit' }).getAttribute('title')).toBe('Fit shows as focus on a narrow screen');
   });
 });
 
@@ -1279,6 +1761,27 @@ describe('RoomScreen and local relays (R74)', () => {
     expect((roomSessions[1].opts as PopOpts).followOffers).toBeFalsy();
   });
 
+  // OD18: "Use … instead" holds for this room. Its tiles are part of the
+  // room, so their sessions must not end the opt-out on the redial it causes.
+  it('"Use … instead" in a room with tiles redials home and stays there', async () => {
+    const first = await joinAs();
+    await act(async () => (first.cbs as PopCbs).onLocalRelay?.({ kind: 'offer', offer: OFFER }));
+    await waitFor(() => expect(roomSessions).toHaveLength(2));
+    act(() => roomSessions[1].cbs.onState(state()));
+    await waitFor(() => expect(activeViewerIds()).toEqual(['AAAAAA', 'BBBBBB', 'CCCCCC']));
+    act(() => optOut());
+    await waitFor(() => expect(roomSessions).toHaveLength(3));
+    const home = roomSessions[2];
+    expect((home.opts as PopOpts).serverUrl).not.toBe(LAN);
+    expect((home.opts as PopOpts).followOffers).toBe(false);
+    act(() => home.cbs.onState(state()));
+    await act(async () => (home.cbs as PopCbs).onLocalRelay?.({ kind: 'offer', offer: OFFER }));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(roomSessions).toHaveLength(3);
+    expect(useTransportStore.getState().resolvedSource).not.toBe('pop');
+    expect(usePopStore.getState().declined).toEqual({ handle: 'pop-uid-1', name: 'Assembly 2026' });
+  });
+
   it('a room session the PoP cannot serve sends the tab back home', async () => {
     useTransportStore.getState().setOfferOverride(LAN, [], 'pop-uid-1', 'Assembly 2026');
     const first = await joinAs();
@@ -1287,5 +1790,83 @@ describe('RoomScreen and local relays (R74)', () => {
     await waitFor(() => expect(roomSessions).toHaveLength(2));
     expect((roomSessions[1].opts as PopOpts).serverUrl).not.toBe(LAN);
     expect(useTransportStore.getState().resolvedSource).not.toBe('pop');
+  });
+});
+
+// A remote tile's own viewer stats, opened from a right-click on the tile
+// (the standalone viewer's menu entry). The panel names the tile it belongs
+// to and lives in the room root, not inside the tile that clips its content.
+describe('RoomScreen tile stats', () => {
+  const statsDialog = () => screen.queryByRole('dialog', { name: /^Stream stats/ });
+
+  it('a right-click on a tile offers Stats, which opens that tile’s stats titled with its name', async () => {
+    await joinAs();
+    await waitFor(() => expect(activeViewerIds()).toEqual(['AAAAAA', 'BBBBBB', 'CCCCCC']));
+    const charlie = viewerSessions.find((v) => v.id === 'CCCCCC')!;
+    act(() => charlie.cbs.onStats({ framesCompleted: 4, frameWidth: 1920, frameHeight: 1080, receivedFps: 60 }));
+    const tile = screen.getAllByTestId('room-tile')[2];
+    fireEvent.contextMenu(tile);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Stats' }));
+    const dialog = statsDialog()!;
+    expect(dialog).toBeTruthy();
+    expect(dialog.getAttribute('aria-label')).toBe('Stream stats — charlie');
+    expect(within(dialog).getByText('charlie')).toBeTruthy();
+    expect(within(dialog).getByText('1920×1080 @ 60')).toBeTruthy();
+    expect(tile.contains(dialog)).toBe(false);
+    // The room's hotkey is not wired, so the footer must not offer it.
+    expect(dialog.textContent).toContain('Right-click the tile to toggle');
+  });
+
+  it('the menu toggles the open tile’s stats and switches to another tile’s', async () => {
+    await joinAs();
+    const tiles = screen.getAllByTestId('room-tile');
+    fireEvent.contextMenu(tiles[0]);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Stats' }));
+    expect(statsDialog()!.getAttribute('aria-label')).toBe('Stream stats — alpha');
+    fireEvent.contextMenu(tiles[2]);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Stats' }));
+    expect(screen.getAllByRole('dialog', { name: /^Stream stats/ })).toHaveLength(1);
+    expect(statsDialog()!.getAttribute('aria-label')).toBe('Stream stats — charlie');
+    fireEvent.contextMenu(tiles[2]);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Hide stats' }));
+    expect(statsDialog()).toBeNull();
+  });
+
+  it('the close button closes it, and the room menu off a tile offers no Stats', async () => {
+    await joinAs();
+    fireEvent.contextMenu(screen.getAllByTestId('room-tile')[0]);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Stats' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close stats' }));
+    expect(statsDialog()).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'More options' }));
+    expect(screen.queryByRole('menuitem', { name: 'Stats' })).toBeNull();
+    expect(screen.getByRole('menuitem', { name: 'Leave room' })).toBeTruthy();
+  });
+
+  it('closes when its tile is hidden (docs/90 D13)', async () => {
+    await joinAs();
+    fireEvent.contextMenu(screen.getAllByTestId('room-tile')[1]);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Stats' }));
+    expect(statsDialog()).toBeTruthy();
+    fireEvent.keyDown(window, { key: '@', code: 'Digit2', shiftKey: true });
+    expect(statsDialog()).toBeNull();
+    fireEvent.keyDown(window, { key: '@', code: 'Digit2', shiftKey: true });
+    expect(statsDialog()).toBeNull();
+  });
+
+  it('closes when its tile’s attachment is removed', async () => {
+    const room = await joinAs();
+    fireEvent.contextMenu(screen.getAllByTestId('room-tile')[1]);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Stats' }));
+    expect(statsDialog()).toBeTruthy();
+    act(() =>
+      room.cbs.onEvent({
+        seq: 4,
+        kind: ROOM_EVENT_ATTACHMENT_REMOVED,
+        attachment: { broadcastId: 'BBBBBB' },
+        reason: ROOM_DETACH_REASON_CREATOR,
+      }),
+    );
+    expect(statsDialog()).toBeNull();
   });
 });

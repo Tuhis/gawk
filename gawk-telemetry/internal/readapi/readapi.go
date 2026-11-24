@@ -643,6 +643,9 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 		if hidden, ok := schema.Bool(last, "documentHidden"); ok {
 			f.SetClient("documentHidden", boolF(hidden))
 		}
+		if idle, ok := schema.Bool(last, "dvrIdle"); ok {
+			f.SetClient("dvrIdle", boolF(idle))
+		}
 		if hw, ok := schema.Bool(last, "isHardwareAccelerated"); ok {
 			f.SetClient("isHardwareAccelerated", boolF(hw))
 		}
@@ -715,6 +718,13 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 	// the funnel medians above stay exactly what they were, and these answer a
 	// different question beside them.
 	setEpisodeFacts(f, row.Episodes, row.Role)
+	// R87 (docs/91 SG3): goodput over the session, overall and per
+	// connection by stripe width — the same derivation the live window runs.
+	if row.Role == "viewer" {
+		for name, v := range rollup.DeriveGoodput(in.Samples).Facts() {
+			f.SetClient(name, v)
+		}
+	}
 
 	// Relay side, joined by sessionId (TM4).
 	coverage := "none"
@@ -725,6 +735,7 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 	// are used: an edge's counter is a different leg, and a re-home would make
 	// the pair a comparison between two unrelated counters.
 	var first, last, anyLast *relayObservation
+	var path pathFacts
 	for _, ln := range relayLines {
 		var o relayObservation
 		if err := json.Unmarshal(ln, &o); err != nil {
@@ -751,6 +762,10 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 			f.SetRelay("dvrResyncs", float64(o.Subscriber.DVRResyncs))
 			f.SetRelay("dvrLagMs", float64(o.Subscriber.DVRLagMs))
 			f.SetRelay("queueDepth", float64(o.Subscriber.QueueDepth))
+			if o.Subscriber.DVR && o.Subscriber.DVRBufferMs > 0 {
+				f.SetRelay("dvrBufferMs", float64(o.Subscriber.DVRBufferMs))
+			}
+			path.observe(o.subscriberPath())
 		}
 		if o.BroadcastKey == row.BroadcastKey && o.Broadcast != nil {
 			f.SetRelay("publisherActive", boolF(o.Broadcast.PublisherActive))
@@ -786,6 +801,16 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 		f.SetRelay("keyframeStreamsIn", float64(bc.KeyframeStreamsIn))
 
 		setAudienceFacts(f, bc)
+	}
+	path.set(f)
+	// The stream's bitrate as the origin ingested it over this session's
+	// span (docs/91 SG3): the supply a viewer's goodput is judged against.
+	if first != nil && last != nil && first.Pod == last.Pod {
+		if bps, fps, ok := relayscrape.StreamRates(first.Broadcast.ingress(), last.Broadcast.ingress(),
+			first.AtMs, last.AtMs); ok {
+			f.SetRelay("streamBitrateBps", bps)
+			f.SetRelay("streamFramesPerSec", fps)
+		}
 	}
 	if first != nil && last != nil && last.AtMs > first.AtMs &&
 		last.Broadcast.FramesRelayed >= first.Broadcast.FramesRelayed {
@@ -857,7 +882,15 @@ type relayBroadcast struct {
 	DatagramsDropped          uint64            `json:"datagramsDropped"`
 	BandwidthDroppedDatagrams uint64            `json:"bandwidthDroppedDatagrams"`
 	KeyframeStreamsIn         uint64            `json:"keyframeStreamsIn"`
+	IngressDatagramBytes      uint64            `json:"ingressDatagramBytes"`
+	KeyframeBytesIn           uint64            `json:"keyframeBytesIn"`
 	SubscriberDetails         []relaySubscriber `json:"subscriberDetails"`
+}
+
+// ingress is the slice relayscrape.StreamRates reads.
+func (b *relayBroadcast) ingress() relayscrape.Broadcast {
+	return relayscrape.Broadcast{IngressDatagramBytes: b.IngressDatagramBytes, KeyframeBytesIn: b.KeyframeBytesIn,
+		FramesRelayed: b.FramesRelayed}
 }
 
 // relaySubscriber is the slice of a stored subscriberDetails entry the read
@@ -987,11 +1020,65 @@ type relayObservation struct {
 		CarrierRecordsDropped uint64 `json:"carrierRecordsDropped"`
 		DVRResyncs            uint64 `json:"dvrResyncs"`
 		DVRLagMs              int64  `json:"dvrLagMs"`
+		DVR                   bool   `json:"dvr"`
+		DVRBufferMs           int    `json:"dvrBufferMs"`
+		// The connection's QUIC counters (R87 SG0, docs/91 §4).
+		PathSRTTMs      float64 `json:"pathSrttMs"`
+		PathMinRTTMs    float64 `json:"pathMinRttMs"`
+		PathBytesSent   uint64  `json:"pathBytesSent"`
+		PathPacketsSent uint64  `json:"pathPacketsSent"`
+		PathPacketsLost uint64  `json:"pathPacketsLost"`
 		// Judged by relayscrape.IsAudience: an edge session or a stripe leg
 		// is plumbing, never the viewer the row describes.
 		Internal  bool `json:"internal"`
 		StripeLeg bool `json:"stripeLeg"`
 	} `json:"subscriber"`
+}
+
+// pathFacts folds one session's path observations into its facts (docs/91
+// §9.3): the smoothed RTT as the MEDIAN of the session's scrapes, since a
+// single scrape catches one moment of a queue that comes and goes; the
+// minimum RTT and the loss ratio from the latest, both cumulative per
+// connection (a session is one connection: a reconnect is a new session).
+type pathFacts struct {
+	srtt []float64
+	last relayscrape.Subscriber
+	have bool
+}
+
+func (p *pathFacts) observe(s relayscrape.Subscriber) {
+	if s.PathSRTTMs <= 0 && s.PathPacketsSent == 0 {
+		return
+	}
+	if s.PathSRTTMs > 0 {
+		p.srtt = append(p.srtt, s.PathSRTTMs)
+	}
+	p.last, p.have = s, true
+}
+
+func (p *pathFacts) set(f *rules.Facts) {
+	if !p.have {
+		return
+	}
+	if len(p.srtt) > 0 {
+		f.SetRelay("pathSrttMs", median(p.srtt))
+	}
+	if p.last.PathMinRTTMs > 0 {
+		f.SetRelay("pathMinRttMs", p.last.PathMinRTTMs)
+	}
+	if loss, ok := p.last.PathLossRatio(relayscrape.Subscriber{}); ok {
+		f.SetRelay("pathLossRatio", loss)
+	}
+}
+
+// subscriberPath is the subscriber record's path counters in the scraper's
+// type, whose PathLossRatio is the one definition of the ratio.
+func (o *relayObservation) subscriberPath() relayscrape.Subscriber {
+	s := o.Subscriber
+	return relayscrape.Subscriber{
+		PathSRTTMs: s.PathSRTTMs, PathMinRTTMs: s.PathMinRTTMs, PathBytesSent: s.PathBytesSent,
+		PathPacketsSent: s.PathPacketsSent, PathPacketsLost: s.PathPacketsLost,
+	}
 }
 
 // viewerOf reports whether o is the relay's view of the viewer session
@@ -1199,6 +1286,15 @@ func JoinRelay(row *rollup.Row, relayLines [][]byte, interval time.Duration) {
 			relay["carrierQueueOverflow"] = float64(o.Subscriber.CarrierQueueOverflow)
 			relay["carrierRecordsDropped"] = float64(o.Subscriber.CarrierRecordsDropped)
 			relay["dvrResyncs"] = float64(o.Subscriber.DVRResyncs)
+			// R87 (docs/91 §4): the connection's own QUIC counters, as they
+			// stood at the last scrape — cumulative, like the rest.
+			if p := o.subscriberPath(); p.PathPacketsSent > 0 {
+				relay["pathBytesSent"] = float64(p.PathBytesSent)
+				relay["pathPacketsSent"] = float64(p.PathPacketsSent)
+				relay["pathPacketsLost"] = float64(p.PathPacketsLost)
+				relay["pathSrttMs"] = p.PathSRTTMs
+				relay["pathMinRttMs"] = p.PathMinRTTMs
+			}
 		}
 		if o.BroadcastKey == row.BroadcastKey && o.Broadcast != nil {
 			if row.Role == "broadcaster" && o.SessionID == row.SessionID {
@@ -1383,6 +1479,10 @@ var factClientFields = []string{
 	"stripeActive", "stripeNeeded",
 	// D17: what the broadcast was asked to be, so a shortfall is computable.
 	"targetFps", "targetBitrateBps",
+	// R21: the deep buffer the relay granted, as the client heard it — the
+	// deep profile's playout floor (docs/91 §2) — and the stripe width that
+	// reads beside it (R87).
+	"dvrBufferMs", "dvrStripeWidth",
 	// Tab visibility: renderedFps beside it means nothing without it, because
 	// a hidden tab stops firing rAF while decode carries on.
 	"documentHiddenMs",

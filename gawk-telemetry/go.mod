@@ -10,7 +10,7 @@ replace github.com/Tuhis/gawk/gawk-server => ../gawk-server
 
 require (
 	github.com/Tuhis/gawk/gawk-server v0.0.0-00010101000000-000000000000
-	github.com/anthropics/anthropic-sdk-go/v2 v2.6.0
+	github.com/anthropics/anthropic-sdk-go/v2 v2.14.0
 	github.com/marcboeker/go-duckdb/v2 v2.4.3
 )
 
@@ -33,7 +33,7 @@ require (
 	github.com/google/flatbuffers v25.2.10+incompatible // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
-	github.com/klauspost/compress v1.20.3 // indirect
+	github.com/klauspost/compress v1.20.4 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/marcboeker/go-duckdb/arrowmapping v0.0.21 // indirect
 	github.com/marcboeker/go-duckdb/mapping v0.0.21 // indirect
@@ -54,7 +54,7 @@ require (
 	golang.org/x/mod v0.27.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/sync v0.16.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/tools v0.36.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 )

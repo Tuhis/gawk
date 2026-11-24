@@ -843,3 +843,15 @@ func (c *Client) RemoveChannel(id uint32) error {
 func (c *Client) Move(session, channel uint32) error {
 	return c.send(msgUserState, encodeUserState(userStateUpdate{Session: session, Channel: &channel}))
 }
+
+// SendText sends a text message to a channel. The bridge never sends one;
+// the tests use it to make murmur fire userTextMessage (docs/89 MI1).
+func (c *Client) SendText(channel uint32, text string) error {
+	return c.send(msgTextMessage, pbString(pbUint(nil, 3, uint64(channel)), 5, text))
+}
+
+// SetChannelDescription changes a channel's description. Needs Write: an
+// operator action (the tests' channelStateChanged).
+func (c *Client) SetChannelDescription(id uint32, description string) error {
+	return c.send(msgChannelState, pbString(pbUint(nil, 1, uint64(id)), 5, description))
+}

@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.9.1](https://github.com/Tuhis/gawk/compare/gawk-ios/v1.9.0...gawk-ios/v1.9.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* **broadcast-desktop:** take ureq 3.5.2 and pass the update size limit straight through ([#778](https://github.com/Tuhis/gawk/issues/778)) ([f00cd0d](https://github.com/Tuhis/gawk/commit/f00cd0d71654d9215bf83995c268b72807bb96ee))
+
+## [1.9.0](https://github.com/Tuhis/gawk/compare/gawk-ios/v1.8.0...gawk-ios/v1.9.0) (2026-11-10)
+
+
+### Features
+
+* **ios:** Fit, the room layout that follows the streams' shapes (R83) ([#763](https://github.com/Tuhis/gawk/issues/763)) ([00dc640](https://github.com/Tuhis/gawk/commit/00dc640cff4a4f8577fa3228f213a20e498a9828))
+
+
+### Bug Fixes
+
+* **ios:** pass the UI tests on the iOS 27.2 Simulator and lift the 27.1 pin ([#744](https://github.com/Tuhis/gawk/issues/744)) ([e6957bb](https://github.com/Tuhis/gawk/commit/e6957bb76f01fa47664352b9212376b55671ec84))
+* **relay:** tell a viewer refused for capacity that the stream is full (4018/4019) ([#728](https://github.com/Tuhis/gawk/issues/728)) ([139555c](https://github.com/Tuhis/gawk/commit/139555c6ab8b34879431c08b36a6099abd2075f6))
+* **relay:** tell a wedged viewer its video cannot be delivered ([#729](https://github.com/Tuhis/gawk/issues/729)) ([2c91622](https://github.com/Tuhis/gawk/commit/2c916223eebc76f67c706c1d36ae6a778344d55a))
+
 ## [1.8.0](https://github.com/Tuhis/gawk/compare/gawk-ios/v1.7.1...gawk-ios/v1.8.0) (2026-11-05)
 
 

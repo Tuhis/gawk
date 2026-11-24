@@ -15,6 +15,11 @@
 # (autobanAttempts=0) or above the bridge's connection rate, `users` sized
 # for native plus bridged users, and an ACL on the temporary-channel parent
 # granting the access token's group (#<token>) MakeTempChannel and Enter.
+#
+# Recommended: Ice mode (R85, docs/89). Set mumble.ice.addr and
+# mumble.ice.secretRef and the roster comes from murmur's Ice: no
+# gawkBridgeBot appears in Mumble. Unset, the bridge keeps R79's visible
+# observer user.
 
 image:
   repository: ghcr.io/tuhis/gawk-mumble-bridge
@@ -134,7 +139,8 @@ mumble:
   # `username` rule must allow it (spaces, brackets), else the bridge falls
   # back to a sanitized form ("Alice_[web]").
   nameTemplate: "{nick} [web]"
-  # OD33: the observer's name.
+  # OD33: the observer's name. Observer mode only: with ice.addr set no
+  # such user ever exists (docs/89 D13).
   observerName: gawkBridgeBot
   # Path of the channel dynamic rooms' temporary channels go under; empty is
   # the root. Its ACL must grant #<accessToken> MakeTempChannel and Enter.
@@ -143,6 +149,40 @@ mumble:
   tempChannelTemplate: "gawk {key}"
   # Below 1.5.0, so murmur sends the legacy voice format the bridge speaks.
   clientVersion: "1.4.0"
+  # Ice mode (R85, docs/89): the roster from murmur's Ice instead of a
+  # visible observer user. Needs murmur 1.5, or 1.6.1001 and later (on
+  # 1.6.870 the bridge never registers callbacks and the roster updates
+  # every `reconcile`), `ice=` on the private network, and murmur able to
+  # reach every bridge pod's IP on callbackPort. Everything travels in
+  # clear text: keep Ice and the callback port on the private network.
+  ice:
+    # murmur's Ice endpoint, host:port over TCP, e.g. mumble-ice.mumble:6502.
+    # Empty = observer mode.
+    addr: ""
+    # murmur's icesecretwrite (callbacks need the write secret), literal or
+    # Ref (Ref wins). It grants all of Ice's administration: handle it like
+    # the access token.
+    secret: ""
+    secretRef: {}
+    #   name: mumble-ice
+    #   key: icesecretwrite
+    # The virtual server's Ice ID; empty = the one booted server (1.6
+    # numbers its default server 0, 1.5 numbers it 1).
+    serverId: ""
+    # Deadline on each Ice call and the dial.
+    timeout: 2s
+    # The TCP port murmur dials on each pod (the pod IP, from the downward
+    # API). networkPolicy lets only murmur in.
+    callbackPort: 6503
+    # The timeout murmur uses to reach a pod, 20ms-1s. A pod that dies
+    # without cleaning up, at an address that blackholes, stalls murmur for
+    # about twice this once (docs/89 F15): keep it low.
+    callbackTimeout: 100ms
+    # The full re-read that repairs what callbacks can lose, 5s-5m.
+    reconcile: 30s
+    # After giving up on callbacks (murmur can't reach the pod), the first
+    # retry; it doubles up to 2h. 30s-2h.
+    callbackProbe: 10m
 
 # D23 caps, per pod.
 maxVoiceSessions: 200
@@ -166,8 +206,9 @@ metrics:
     scrapeTimeout: 10s
 
 # Egress/ingress policy. Ingress: the public port from anywhere, the
-# internal ports from the relay's pods and the monitoring namespace.
-# Egress: murmur, the relay, DNS.
+# internal ports from the relay's pods and the monitoring namespace, and in
+# Ice mode the callback port from murmur. Egress: murmur (and its Ice port
+# in Ice mode), the relay, DNS.
 networkPolicy:
   enabled: false
   relay:
@@ -179,6 +220,15 @@ networkPolicy:
     # An address block, since murmur usually runs outside the cluster.
     cidr: 0.0.0.0/0
     port: 64738
+    # Ice mode: egress to murmur's Ice port, and ingress to the callback
+    # port from murmur only: from these selectors (murmur in the cluster),
+    # or else from callbackCidr (murmur's own address). Not from `cidr`,
+    # whose permissive default suits egress only; with Ice on and neither
+    # set, the chart refuses to render rather than open the port to all.
+    icePort: 6502
+    callbackCidr: ""
+    podSelector: {}
+    namespaceSelector: {}
   dns:
     podSelector:
       k8s-app: kube-dns

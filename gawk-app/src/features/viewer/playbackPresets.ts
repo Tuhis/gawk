@@ -152,15 +152,22 @@ export type AdvancedField = 'parity' | 'striping' | 'interpolation';
  * function, so a surface cannot gray something out without saying why.
  * `null` means applicable.
  *
- * The delivery rule restates what the pipeline already does: only datagram
+ * The delivery rule restates what the pipeline already does: datagram
  * delivery is striped, because the carrier modes recover leg-B loss by
- * retransmission. Parity applies in every mode: the relay serves it to the
+ * retransmission — except Most stable against a relay that can stripe its
+ * ring (`dvrStriping`, CAP_STRIPED_DVR), where striping spreads GOPs over
+ * connections when one connection can't carry the stream (docs/91 D10).
+ * Smoother never stripes (docs/91 OD4). Parity applies in every mode: the relay serves it to the
  * carrier modes too, since a chunk the broadcaster's uplink lost is lost for
  * every viewer and only parity brings it back (docs/75 D11). A control that
  * does not apply is disabled with a reason rather than removed, so it stays
  * findable in every mode.
  */
-export function notApplicable(field: AdvancedField, config: PlaybackConfig): string | null {
+export function notApplicable(
+  field: AdvancedField,
+  config: PlaybackConfig,
+  env: { dvrStriping?: boolean } = {},
+): string | null {
   if (field === 'interpolation') {
     // The *effective* pacing mode, never the stored one: a carrier delivery
     // mode implies adaptive pacing inside playout.ts, so a resilient viewer
@@ -171,7 +178,20 @@ export function notApplicable(field: AdvancedField, config: PlaybackConfig): str
       : 'Needs paced playback — available on Balanced and smoother.';
   }
   if (field === 'parity' || config.delivery === 'live') return null;
+  if (config.delivery === 'deep' && env.dvrStriping) return null;
   return 'Not used in this mode — reliable delivery already handles bursts.';
+}
+
+/** The Striping control's hint on Most stable, where it means something else. */
+export const DVR_STRIPING_HINT = 'Spreads the stream over several connections when one can’t carry it.';
+
+/**
+ * The note under an applicable Striping control: the chosen option's cost on
+ * live edge, and what striping is for on Most stable (docs/91 §7).
+ */
+export function stripingNote(config: PlaybackConfig): string {
+  if (config.delivery === 'deep') return DVR_STRIPING_HINT;
+  return STRIPE_OPTIONS.find((o) => o.value === config.striping)?.sub ?? '';
 }
 
 /**

@@ -160,6 +160,12 @@ type Server struct {
 	// Atomic, as above.
 	testHookPublishDatagramLoop atomic.Pointer[func()]
 
+	// testHookStatuszFresh makes the public /statusz build a snapshot per
+	// request, as the ops listener does, so a test can read the state right
+	// after changing it. Production leaves it false: the route is cached
+	// for ops.PublicStatuszMaxAge. Atomic, as above.
+	testHookStatuszFresh atomic.Bool
+
 	// testHookRateLimitLoopback disables the limiter's loopback bypass so
 	// tests (dialing from 127.0.0.1) can hit the 429 path. Atomic, as above.
 	testHookRateLimitLoopback atomic.Bool
@@ -362,8 +368,18 @@ func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
 	})
-	// Same handler as the TCP ops endpoint (single definition; see ops).
-	mux.HandleFunc("GET /statusz", ops.StatuszHandler(r, roomStatsSource{s}, log))
+	// The ops listener's document, but this route is public and
+	// unauthenticated, so it serves a stored snapshot (see
+	// ops.PublicStatuszMaxAge).
+	statuszFresh := ops.StatuszHandler(r, roomStatsSource{s}, log)
+	statuszCached := ops.CachedStatuszHandler(r, roomStatsSource{s}, log, ops.PublicStatuszMaxAge)
+	mux.HandleFunc("GET /statusz", func(w http.ResponseWriter, req *http.Request) {
+		if s.testHookStatuszFresh.Load() {
+			statuszFresh(w, req)
+			return
+		}
+		statuszCached(w, req)
+	})
 	mux.HandleFunc("CONNECT /echo", s.handleEcho)
 	mux.HandleFunc("CONNECT /publish", s.handlePublish)
 	mux.HandleFunc("CONNECT /publish/{id}", s.handlePublish)
@@ -1157,7 +1173,8 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 // requests no parity. Nothing is sent when there is nothing to advertise.
 // Growth is new bits in the flags word, never new bytes: both producer
 // mirrors parse it strictly by size. CapUplinkCarriers is a publisher's
-// business only (docs/75 D2), so a subscriber's message is unchanged by it.
+// business only (docs/75 D2), so a subscriber's message is unchanged by it;
+// CapKeyframeCarriers rides beside it and nowhere else (docs/88 D2).
 func (s *Server) sendRelayCapabilities(sess *webtransport.Session, log *slog.Logger, publish bool) {
 	caps := wire.RelayCapabilities{}
 	if s.cfg.ParityDefault > 0 {
@@ -1166,9 +1183,13 @@ func (s *Server) sendRelayCapabilities(sess *webtransport.Session, log *slog.Log
 	}
 	if s.cfg.StripedDelivery {
 		caps.Flags |= wire.CapStripedDelivery
+		// A viewer's business only, like the bit above (docs/91 D8).
+		if s.cfg.StripedDVR && !publish {
+			caps.Flags |= wire.CapStripedDVR
+		}
 	}
 	if publish && s.cfg.UplinkCarriers {
-		caps.Flags |= wire.CapUplinkCarriers
+		caps.Flags |= wire.CapUplinkCarriers | wire.CapKeyframeCarriers
 	}
 	if caps.Flags == 0 {
 		return
@@ -1263,7 +1284,8 @@ const maxConcurrentKeyframeStreams = 4
 
 // acceptKeyframeStreams reads the publisher's uni streams and hands each to
 // the hub: keyframe streams for ingestion + fan-out and, with
-// -uplink-carriers on, R73 uplink carriers to the carrier reader. It returns
+// -uplink-carriers on, R73 uplink carriers and R84 keyframe carriers to the
+// carrier readers. It returns
 // when the session's context is cancelled (AcceptUniStream errors). Any
 // stream whose ingest fails is reset; records a carrier delivered before
 // its error were forwarded.
@@ -1289,8 +1311,9 @@ func (s *Server) acceptKeyframeStreams(ctx context.Context, sess *webtransport.S
 				// The edge pump's classification (edge_streams.go), so a
 				// publisher and a PoP's downlink read streams one way: the
 				// prologue (docs/75 D2) tells a carrier, which gives its slot
-				// back, from a keyframe stream, replayed byte for byte.
-				classifyUniStream(st, reset, sem, pub, log)
+				// back, from a keyframe stream, replayed byte for byte. A
+				// publisher may also open R84 keyframe carriers (docs/88 D2).
+				classifyUniStream(st, reset, sem, pub, true, log)
 				return
 			}
 			// Carriers off: nothing is peeked, every stream is a keyframe
@@ -1324,17 +1347,28 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ?delivery=reliable opts into carrier delivery (a query param: the
+	// WebTransport JS API can't set headers); ?buffer=<ms> additionally opts
+	// into DVR delivery (docs/26) from the ring at this subscriber's own
+	// cursor — the viewer's guaranteed minimum playout offset. A mode change
+	// is a reconnect, and no value rejects: unusable ones degrade to a
+	// working mode (except on a leg, below).
+	reliable := r.URL.Query().Get("delivery") == "reliable"
+	mode, bufferMs := hub.NegotiateDelivery(reliable, r.URL.Query().Get("buffer"), s.cfg.DVRWindow)
+
 	// ?stripe=N&leg=j (docs/35 §5.3) marks a stripe leg. Validated strictly
 	// pre-upgrade, unlike every other parameter: a mis-striped leg can't
 	// degrade to anything useful (a wrong share manufactures holes), so
-	// rejection is graceful — the viewer stays unstriped. Reliable/DVR legs
-	// are rejected too (striping is live-edge only). ?owner= ties a viewer's
-	// sessions together: required on legs (an unowned leg is an unreapable
-	// orphan); invalid elsewhere it just means an unowned session.
+	// rejection is graceful — the viewer stays unstriped. Plain reliable
+	// legs are rejected too, and DVR legs unless this relay stripes DVR
+	// (docs/91 D8). ?owner= ties a viewer's sessions together: required on
+	// legs (an unowned leg is an unreapable orphan); invalid elsewhere it
+	// just means an unowned session.
 	ownerParam := r.URL.Query().Get("owner")
 	stripeLeg, isStripeLeg, stripeErr := hub.NegotiateStripe(
 		r.URL.Query().Get("stripe"), r.URL.Query().Get("leg"), ownerParam,
-		s.cfg.StripedDelivery, r.URL.Query().Get("delivery") == "reliable" || r.URL.Query().Get("buffer") != "")
+		s.cfg.StripedDelivery, reliable || r.URL.Query().Get("buffer") != "",
+		hub.StripeDVRDial{Enabled: s.cfg.StripedDVR, Mode: mode, BufferMs: bufferMs})
 	if stripeErr != nil {
 		s.log.Warn("stripe leg rejected pre-upgrade",
 			"id", id, "remote", r.RemoteAddr, "err", stripeErr)
@@ -1403,14 +1437,6 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		(*hook)(id)
 	}
 
-	// ?delivery=reliable opts into carrier delivery (a query param: the
-	// WebTransport JS API can't set headers); ?buffer=<ms> additionally opts
-	// into DVR delivery (docs/26) from the ring at this subscriber's own
-	// cursor — the viewer's guaranteed minimum playout offset. A mode change
-	// is a reconnect, and no value rejects: unusable ones degrade to a
-	// working mode.
-	reliable := r.URL.Query().Get("delivery") == "reliable"
-	mode, bufferMs := hub.NegotiateDelivery(reliable, r.URL.Query().Get("buffer"), s.cfg.DVRWindow)
 	// ?parity=0|1|2 opts a viewer down from the fleet default, in every
 	// delivery mode: carrier retransmission repairs this leg, but a chunk the
 	// broadcaster's uplink lost reaches no viewer except through parity
@@ -1419,23 +1445,26 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	// A stripe leg gets no close notice: the viewer reads no streams on a
 	// leg (the relay sends legs none), and a leg's death is handled by the
 	// primary's fallback whatever its code.
-	adapter := &webtransportSessionAdapter{Session: sess, closeNotice: !isStripeLeg}
+	adapter := &webtransportSessionAdapter{Session: sess, closeNotice: !isStripeLeg, stats: pathStatsFrom(r.Context())}
+	owner := ""
+	if hub.ValidOwnerToken(ownerParam) {
+		owner = ownerParam
+	}
 	var sub *hub.Subscriber
 	switch {
 	case isStripeLeg:
-		// A leg is a plain datagram subscriber with a per-leg share filter;
-		// its parity prefix matches the primary's negotiation so the parity
-		// share composes unchanged.
+		// A datagram leg is a plain datagram subscriber with a per-leg share
+		// filter, a DVR leg a DVR subscriber over its GOP residue (docs/91
+		// D3); either way its parity prefix matches the primary's
+		// negotiation so the parity share composes unchanged.
 		sub, err = s.registry.SubscribeStripeLeg(id, adapter, stripeLeg, parityServed)
 	case mode == wire.DeliveryDVR:
-		sub, err = s.registry.SubscribeDVR(id, adapter, bufferMs, parityServed)
+		// The owner lets a DVR primary stripe and reaps its legs with it
+		// (docs/91 D7).
+		sub, err = s.registry.SubscribeDVR(id, adapter, bufferMs, parityServed, owner)
 	case mode == wire.DeliveryReliable:
 		sub, err = s.registry.SubscribeReliable(id, adapter, parityServed)
 	default:
-		owner := ""
-		if hub.ValidOwnerToken(ownerParam) {
-			owner = ownerParam
-		}
 		sub, err = s.registry.SubscribeParity(id, adapter, parityServed, owner)
 	}
 	if err != nil {
@@ -1489,8 +1518,15 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			// Any inbound datagram renews the leg's liveness lease (the viewer's
-			// 1 Hz StripeState refresh); only TimeSync is answered.
+			// 1 Hz StripeState refresh). An unstriped StripeState drains a DVR
+			// leg (docs/91 D11) and is inert on any other; TimeSync is answered.
 			sub.NoteLegAlive()
+			if len(dgram) == wire.StripeStateSize && dgram[1] == wire.TypeStripeState {
+				if st, err := wire.ParseStripeState(dgram); err == nil {
+					sub.ApplyStripeState(st)
+				}
+				continue
+			}
 			maybeAnswerTimeSync(sess, dgram, legLimiter)
 		}
 	}
@@ -1551,8 +1587,9 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		// is discarded.
 		if s.cfg.StripedDelivery && len(dgram) == wire.StripeStateSize && dgram[1] == wire.TypeStripeState {
 			if st, err := wire.ParseStripeState(dgram); err == nil {
-				// ApplyStripeState is inert on reliable/DVR/leg sessions; on
-				// this route sub is always external. Level state: the 1 Hz
+				// ApplyStripeState is inert on reliable and leg sessions, and
+				// on DVR ones unless -striped-dvr is on (docs/91 D7); on this
+				// route sub is always external. Level state: the 1 Hz
 				// refresh re-arms the TTL, a flip is counted once.
 				sub.ApplyStripeState(st)
 			}
@@ -1799,6 +1836,24 @@ type webtransportSessionAdapter struct {
 	// first (closenotice.go). False on /internal/subscribe, whose edge
 	// client reads every uni stream as a keyframe.
 	closeNotice bool
+	// stats reads the QUIC connection's counters (R87 SG0); nil when the
+	// request context carried none.
+	stats connStatsFunc
+}
+
+// PathStats implements hub.PathStatser.
+func (w *webtransportSessionAdapter) PathStats() (hub.PathStats, bool) {
+	if w.stats == nil {
+		return hub.PathStats{}, false
+	}
+	cs := w.stats()
+	return hub.PathStats{
+		SmoothedRTT: cs.SmoothedRTT,
+		MinRTT:      cs.MinRTT,
+		BytesSent:   cs.BytesSent,
+		PacketsSent: cs.PacketsSent,
+		PacketsLost: cs.PacketsLost,
+	}, true
 }
 
 func (w *webtransportSessionAdapter) CloseWithError(code uint32, reason string) error {

@@ -24,8 +24,11 @@ import readline from 'node:readline';
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 const OUT = process.env.UPLINK_OUT ?? path.join(HERE, '..', 'out');
 const PAGE_DIR = process.env.UPLINK_SENDER_DIR ?? path.join(OUT, 'chrome-sender');
+// The page inside it: gawk-app's lab page, or a lab-only variant beside it
+// (build.sh: carrier-inline, docs/88).
+const PAGE = process.env.UPLINK_SENDER_PAGE ?? 'lab/uplink-sender.html';
 
-const args = { mode: 'datagram', cc: 'low-latency', seconds: '100', fps: '60', parity: '2', writes: 'await', kforder: '', maxage: '', hwm: '' };
+const args = { mode: 'datagram', cc: 'low-latency', seconds: '100', fps: '60', parity: '2', writes: 'await', kforder: '', maxage: '', hwm: '', retire: '' };
 for (let i = 2; i < process.argv.length; i += 2) {
   const k = process.argv[i].replace(/^--/, '');
   if (k === 'datagram-buffer' || k === 'id-file') continue; // native-sender knobs with no browser analogue
@@ -197,7 +200,9 @@ const server = http.createServer((req, res) => {
   res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
   if (u.pathname === '/trace') return res.end(fs.readFileSync(args.trace));
   const file = path.join(PAGE_DIR, path.normalize(u.pathname).replace(/^(\.\.[/\\])+/, ''));
-  if (!file.startsWith(PAGE_DIR) || !fs.existsSync(file)) {
+  if (process.env.UPLINK_SENDER_DEBUG) console.error(`GET ${u.pathname}`);
+  // A directory (Chrome asks for one now and then) is a 404, not a crash.
+  if (!file.startsWith(PAGE_DIR) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
     res.statusCode = 404;
     return res.end();
   }
@@ -205,7 +210,7 @@ const server = http.createServer((req, res) => {
   res.end(fs.readFileSync(file));
 });
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
-const qs = new URLSearchParams({ url: args.url, hash, mode: args.mode, cc: args.cc, seconds: args.seconds, fps: args.fps, parity: args.parity, writes: args.writes, kforder: args.kforder, maxage: args.maxage, hwm: args.hwm });
+const qs = new URLSearchParams({ url: args.url, hash, mode: args.mode, cc: args.cc, seconds: args.seconds, fps: args.fps, parity: args.parity, writes: args.writes, kforder: args.kforder, maxage: args.maxage, hwm: args.hwm, retire: args.retire });
 const netlog = path.join(dir, 'netlog.json');
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'uplinklab-chrome-'));
 const chrome = spawn(
@@ -220,7 +225,7 @@ const chrome = spawn(
     '--disable-component-update',
     `--user-data-dir=${profile}`,
     `--log-net-log=${netlog}`,
-    `http://127.0.0.1:${server.address().port}/lab/uplink-sender.html?${qs}`,
+    `http://127.0.0.1:${server.address().port}/${PAGE}?${qs}`,
   ],
   { stdio: ['ignore', 'ignore', 'ignore'] },
 );

@@ -35,6 +35,7 @@ function makeFakePipeline() {
     stop: vi.fn(() => Promise.resolve()),
     setLadder: vi.fn(),
     setEncoderSettings: vi.fn(),
+    setDelivery: vi.fn(),
   };
   return { pipeline, resolveStart, rejectStart };
 }
@@ -99,6 +100,14 @@ describe('BroadcastWorkerCore start', () => {
     const changed = { ...settings, codecOverride: 'vp8' };
     core.setEncoderSettings(changed);
     expect(fake.pipeline.setEncoderSettings).toHaveBeenCalledWith(changed);
+  });
+
+  it('forwards the Delivery setting on start and via the live command (docs/88 D6)', () => {
+    const { core, fake } = makeCore();
+    core.start({ ...START_PARAMS, delivery: 'reliable' });
+    expect(fake.pipeline.setDelivery).toHaveBeenCalledWith('reliable');
+    core.setDelivery('lowest-latency');
+    expect(fake.pipeline.setDelivery).toHaveBeenLastCalledWith('lowest-latency');
   });
 
   it('accepts the R13 FramerateSelection auto on both ladder paths', () => {

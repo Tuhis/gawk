@@ -36,8 +36,9 @@ import (
 //	t_ns,kind,frame,index,count,len
 //
 // kinds: D video chunk datagram, P parity datagram, R video chunk carrier
-// record, Q parity carrier record, K keyframe stream complete, A audio
-// datagram, O carrier opened, X carrier ended with an error, F carrier
+// record, Q parity carrier record, K keyframe complete (a keyframe stream at
+// its FIN, a keyframe carrier's at its declared length), A audio datagram, O
+// carrier opened (either kind), X stream ended with an error, F carrier
 // finished cleanly.
 type eventLog struct {
 	mu sync.Mutex
@@ -202,7 +203,7 @@ func logDatagram(log *eventLog, d []byte, video, parity byte) {
 	}
 }
 
-func readUni(st *webtransport.ReceiveStream, log *eventLog) {
+func readUni(st io.Reader, log *eventLog) {
 	br := bufio.NewReaderSize(st, 64<<10)
 	pro, err := br.Peek(2)
 	if err != nil {
@@ -234,30 +235,60 @@ func readUni(st *webtransport.ReceiveStream, log *eventLog) {
 			return
 		}
 		log.add('K', h.FrameID, 0, 1, int(body))
+	case wire.TypeKeyframeCarrier:
+		// R84 (docs/88 D2): a GOP stream with its keyframe at the head. The
+		// keyframe is complete — and the relay hands it on — once its
+		// declared length is in; the records follow as on 0x0A.
+		if _, err := br.Discard(2); err != nil {
+			return
+		}
+		log.add('O', 0, 0, 0, 0)
+		hdr := make([]byte, wire.StreamFrameHeaderSize)
+		if _, err := io.ReadFull(br, hdr); err != nil {
+			log.add('X', 0, 0, 0, 0)
+			return
+		}
+		h, err := wire.ParseStreamFrameHeader(hdr)
+		if err != nil {
+			log.add('X', 0, 0, 0, 0)
+			return
+		}
+		body := int64(h.ConfigLen) + int64(h.PayloadLen)
+		if _, err := io.CopyN(io.Discard, br, body); err != nil {
+			log.add('X', h.FrameID, 0, 0, 0)
+			return
+		}
+		log.add('K', h.FrameID, 0, 1, int(body))
+		readRecords(br, log)
 	case wire.TypeReliableCarrier:
 		if _, err := br.Discard(2); err != nil {
 			return
 		}
 		log.add('O', 0, 0, 0, 0)
-		var lenBuf [2]byte
-		rec := make([]byte, 0, wire.MaxDatagramSize)
-		for {
-			if _, err := io.ReadFull(br, lenBuf[:]); err != nil {
-				if errors.Is(err, io.EOF) {
-					log.add('F', 0, 0, 0, 0)
-				} else {
-					log.add('X', 0, 0, 0, 0)
-				}
-				return
-			}
-			n := int(lenBuf[0])<<8 | int(lenBuf[1])
-			rec = rec[:n]
-			if _, err := io.ReadFull(br, rec); err != nil {
+		readRecords(br, log)
+	}
+}
+
+// readRecords logs a carrier's records (uint16 length ‖ datagram) to its end.
+func readRecords(br *bufio.Reader, log *eventLog) {
+	var lenBuf [2]byte
+	rec := make([]byte, 0, wire.MaxDatagramSize)
+	for {
+		if _, err := io.ReadFull(br, lenBuf[:]); err != nil {
+			if errors.Is(err, io.EOF) {
+				log.add('F', 0, 0, 0, 0)
+			} else {
 				log.add('X', 0, 0, 0, 0)
-				return
 			}
-			logDatagram(log, rec, 'R', 'Q')
+			return
 		}
+		n := int(lenBuf[0])<<8 | int(lenBuf[1])
+		rec = rec[:n]
+		if _, err := io.ReadFull(br, rec); err != nil {
+			log.add('X', 0, 0, 0, 0)
+			return
+		}
+		logDatagram(log, rec, 'R', 'Q')
 	}
 }
 

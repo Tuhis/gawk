@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import styles from './stream.module.css';
 import { LadderPicker } from './LadderPicker';
+import { DeliveryPicker } from './DeliveryPicker';
 import { ServerSettings } from './ServerSettings';
 import { StatsGrid } from './StatsGrid';
 import { fmt } from '../../lib/format';
@@ -9,7 +10,8 @@ import { BroadcastPipeline, BroadcastStartError, type BroadcastStats } from '../
 import type { EncoderConfigured } from '../../media/encoder';
 import type { ResolutionSelection } from '../../media/ladder';
 import { DEFAULT_CAPTURE_CONFIG } from '../../media/types';
-import { useBroadcastSettingsStore } from '../../state/broadcastSettingsStore';
+import { deliveryFromStore, useBroadcastSettingsStore } from '../../state/broadcastSettingsStore';
+import { DELIVERY_LABELS } from '../../transport/carrier-sender';
 import { useTransportStore } from '../../state/transportStore';
 import { log } from '../../lib/logger';
 import { sentQuality, uplinkNoticeSentence } from '../broadcaster/uplinkNotice';
@@ -88,6 +90,7 @@ export function BroadcastPage() {
         activeId,
       );
       pipeline.setLadder(resolutionSelection, framerateRung);
+      pipeline.setDelivery(deliveryFromStore());
       pipelineRef.current = pipeline;
       try {
         await pipeline.start();
@@ -121,6 +124,7 @@ export function BroadcastPage() {
       makeCallbacks(triedReclaim),
     );
     pipeline.setLadder(resolutionSelection, framerateRung);
+    pipeline.setDelivery(deliveryFromStore());
     pipelineRef.current = pipeline;
     try {
       await pipeline.start();
@@ -171,6 +175,7 @@ export function BroadcastPage() {
       <ServerSettings disabled={running} />
 
       <LadderPicker onChange={(res, fps) => pipelineRef.current?.setLadder(res, fps)} />
+      <DeliveryPicker onChange={(delivery) => pipelineRef.current?.setDelivery(delivery)} />
 
       <div className={styles.controls}>
         {!running ? (
@@ -262,6 +267,10 @@ export function BroadcastPage() {
           ['Keyframe streams', String(stats?.keyframeStreamsSent ?? '—')],
           ['Keyframe streams failed', String(stats?.keyframeStreamsFailed ?? '—')],
           ['Keyframes superseded', String(stats?.keyframeStreamsSuperseded ?? '—')],
+          ['Delivery (requested)', stats ? DELIVERY_LABELS[stats.uplinkModeRequested] : '—'],
+          ['Delivery (in use)', stats?.uplinkMode ?? '—'],
+          ['Carriers opened / aborted', stats ? `${stats.uplinkCarriersOpened} / ${stats.uplinkCarriersExpired}` : '—'],
+          ['Records shed', String(stats?.uplinkRecordsShed ?? '—')],
           ['Sent', `${fmt((stats?.bytesSent ?? 0) / 1_000_000, 1)} MB`],
           ['Configs sent', String(stats?.configsSent ?? '—')],
           ['Encoder queue', String(stats?.encoderQueueDepth ?? '—')],

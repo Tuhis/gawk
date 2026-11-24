@@ -35,6 +35,7 @@ vi.mock('./workerBroadcastSession', () => ({
       stop: async () => callbacks.onEnded(),
       setLadder: () => {},
       setEncoderSettings: () => {},
+      setDelivery: () => {},
     };
     created.push(session);
     return session;

@@ -3,9 +3,9 @@
 // whose public address matches a linked PoP's. This module decides, once per
 // fresh offer, whether to follow it:
 //
-//   1. Only a fresh offer switches. Nothing about a PoP is remembered except
-//      consent (the opt-out); the followed PoP lives in transportStore memory,
-//      so a laptop back home never dials a dead LAN address.
+//   1. Only a fresh offer switches. Nothing about a PoP is remembered: the
+//      followed PoP and the opt-out live in memory, so a laptop back home
+//      never dials a dead LAN address.
 //   2. The candidates are probed over /echo in parallel; the first that
 //      answers wins.
 //   3. Viewers and room participants switch at once: the store change is the
@@ -17,13 +17,16 @@
 //      stays home with a note, and a browser that knows neither name probes.
 //   5. Failure stays on home and marks the PoP unreachable for this tab, with
 //      no retry loop.
-//   6. "Use … instead" is remembered per PoP handle until picked again.
+//   6. "Use … instead" holds for the stream it was picked on: the redials of
+//      that stream stay on home, and joining another stream (enterStream) or
+//      ending the broadcast offers the PoP again. Never stored.
 //   7. A client that will follow offers says lr=1 on every CONNECT to home.
 
 import { log } from '../../lib/logger';
-import { readStored, writeStored } from '../../lib/storage';
+import { writeStored } from '../../lib/storage';
 import { bytesToHex } from '../../transport/connection';
 import type { LocalRelayEvent } from '../../transport/local-relay';
+import type { RoomTarget } from '../../transport/room-session';
 import type { LocalRelayOfferMessage } from '../../transport/wire';
 import { useTransportStore } from '../../state/transportStore';
 import { probeRelay, sanitizeIdentityName, type ProbeOptions, type ProbeResult, type ProbeTransportFactory } from '../servers/probe';
@@ -32,10 +35,9 @@ import { INITIAL_POP_STATE, usePopStore } from './popStore';
 
 export type SessionRole = 'viewer' | 'room' | 'broadcaster';
 
-// The opted-out PoP handles (the Pop CR's uid: random, stable across pods,
-// restarts and re-pairs). Bounded so a wandering laptop cannot grow it.
-export const OPT_OUT_KEY = 'gawk.popOptOut';
-const MAX_OPT_OUTS = 32;
+// Where builds before the per-stream opt-out stored it. Cleared at startup
+// and never read.
+export const LEGACY_OPT_OUT_KEY = 'gawk.popOptOut';
 
 // A candidate probe in a browser that will prompt waits for the person to
 // answer Chrome's prompt, far past the picker's 4 s handshake budget.
@@ -66,6 +68,10 @@ let deps: SwitchDeps = defaultDeps;
 const unreachable = new Set<string>();
 // The PoP this tab last heard of (an offer, or the one it followed).
 let lastHandle: string | null = null;
+// The stream this tab's sessions are for (enterStream), and the PoP the user
+// chose "Use … instead" on while there (item 43.6): one, in memory.
+let currentStream: string | null = null;
+let optedOut: { handle: string; stream: string | null } | null = null;
 
 export function setSwitchDepsForTest(d: Partial<SwitchDeps>): void {
   deps = { ...defaultDeps, ...d };
@@ -75,6 +81,8 @@ export function resetSwitchForTest(): void {
   deps = defaultDeps;
   unreachable.clear();
   lastHandle = null;
+  currentStream = null;
+  optedOut = null;
   usePopStore.setState({ ...INITIAL_POP_STATE });
 }
 
@@ -114,19 +122,29 @@ export function offerName(offer: { name: string }): string {
   return sanitizeIdentityName(offer.name) || 'This party';
 }
 
-// ---- Opt-outs ----------------------------------------------------------------
+// ---- Opt-out ------------------------------------------------------------------
 
-function readOptOuts(): string[] {
-  try {
-    const v: unknown = JSON.parse(readStored(OPT_OUT_KEY) ?? '[]');
-    return Array.isArray(v) ? v.filter((h): h is string => typeof h === 'string') : [];
-  } catch {
-    return [];
-  }
+function isOptedOut(handle: string): boolean {
+  return optedOut !== null && optedOut.handle === handle;
 }
 
-function writeOptOuts(handles: string[]): void {
-  writeStored(OPT_OUT_KEY, JSON.stringify(handles.slice(-MAX_OPT_OUTS)));
+function clearOptOut(): void {
+  optedOut = null;
+  if (usePopStore.getState().declined !== null) usePopStore.setState({ declined: null });
+}
+
+// Every session screen names the stream it dials before its first CONNECT:
+// `viewer:<id>`, `room:<target>` or `broadcast`. The redials of one stream
+// (a reconnect, the return home after an opt-out) name the same one; any
+// other stream ends the opt-out, so its offer is followed again.
+export function roomStreamKey(target: RoomTarget): string {
+  return target.kind === 'join' ? `room:${target.code}` : 'room:mint';
+}
+
+export function enterStream(key: string): void {
+  if (key === currentStream) return;
+  currentStream = key;
+  if (optedOut !== null && optedOut.stream !== key) clearOptOut();
 }
 
 // ---- The switch ----------------------------------------------------------------
@@ -149,12 +167,13 @@ export function willFollowOffers(): boolean {
   const s = usePopStore.getState();
   if (s.permission === 'denied') return false;
   const last = s.declined?.handle ?? s.offer?.handle ?? lastHandle;
-  if (last != null && (unreachable.has(last) || readOptOuts().includes(last))) return false;
+  if (last != null && (unreachable.has(last) || isOptedOut(last))) return false;
   return true;
 }
 
 // Asks once at startup so the first CONNECT's lr=1 already knows a denial.
 export async function primeLocalNetworkPermission(): Promise<void> {
+  writeStored(LEGACY_OPT_OUT_KEY, null);
   try {
     const permission = await deps.queryPermission();
     usePopStore.setState({ permission });
@@ -179,7 +198,7 @@ export async function considerOffer(offer: LocalRelayOfferMessage, role: Session
   if (unreachable.has(offer.handle)) return;
   if (expired(offer, at)) return;
   const name = offerName(offer);
-  if (readOptOuts().includes(offer.handle)) {
+  if (isOptedOut(offer.handle)) {
     usePopStore.setState({ declined: { handle: offer.handle, name }, offer, offerAt: at });
     return;
   }
@@ -264,11 +283,20 @@ export async function probeHomeForOffer(): Promise<void> {
 }
 
 // The broadcaster screen reports going live and back. An offer kept while
-// live is acted on once the broadcast ends, if it is still valid.
+// live is acted on once the broadcast ends, if it is still valid, and so is
+// one opted out of for that broadcast: the next broadcast is another stream.
 export function setBroadcasterLive(live: boolean): void {
   const s = usePopStore.getState();
   if (s.broadcasterLive === live) return;
   usePopStore.setState({ broadcasterLive: live });
+  if (!live && optedOut !== null && optedOut.stream === 'broadcast' && currentStream === 'broadcast') {
+    clearOptOut();
+    if (s.offer && s.offer.handle === lastHandle) {
+      usePopStore.setState({ phase: 'idle', note: null });
+      void considerOffer(s.offer, 'broadcaster', s.offerAt);
+    }
+    return;
+  }
   if (!live && s.phase === 'deferred' && s.offer) {
     const { offer, offerAt } = s;
     usePopStore.setState({ phase: 'idle', note: null });
@@ -290,15 +318,17 @@ export function leaveUnreachableLocalRelay(): void {
   usePopStore.setState({ phase: 'failed', note: null, toast: null });
 }
 
-// The chip's "Use gawk.ioio.fi instead" (item 43.6).
+// The chip's "Use gawk.ioio.fi instead" (item 43.6): for this stream only.
+// The followed offer is kept, so "Use it" and the next stream can act on it.
 export function optOut(): void {
   const t = useTransportStore.getState();
   const handle = t.offerOverride?.handle;
   if (!handle) return;
   const name = offerName(t.offerOverride!);
-  writeOptOuts([...readOptOuts().filter((h) => h !== handle), handle]);
+  optedOut = { handle, stream: currentStream };
+  lastHandle = handle;
   t.clearOfferOverride();
-  usePopStore.setState({ phase: 'idle', offer: null, declined: { handle, name }, note: null, toast: null });
+  usePopStore.setState({ phase: 'idle', declined: { handle, name }, note: null, toast: null });
 }
 
 // Picking an opted-out PoP again: forget the opt-out and follow its last
@@ -307,8 +337,7 @@ export async function pickLocalRelayAgain(): Promise<void> {
   const s = usePopStore.getState();
   const handle = s.declined?.handle ?? s.offer?.handle;
   if (!handle) return;
-  writeOptOuts(readOptOuts().filter((h) => h !== handle));
-  usePopStore.setState({ declined: null });
+  clearOptOut();
   if (s.offer && s.offer.handle === handle) {
     await considerOffer(s.offer, s.broadcasterLive ? 'broadcaster' : 'viewer', s.offerAt);
   }

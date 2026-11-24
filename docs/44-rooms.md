@@ -44,7 +44,7 @@ The integrations are why the model is shaped the way it is.
 | D8 | **Authority: an attach secret for static rooms, a creator token for dynamic rooms. Viewers are gated by nothing beyond the code or link.** Anyone with a dynamic code may attach; the creator token may detach anyone. | Mirrors `-publish-secret` (fleet-level gate) and the R17 resume token (stateless HMAC, any pod verifies) so no new secret-handling machinery appears. |
 | D9 | **Proof of broadcast ownership at attach is the broadcast's resume token.** | It already exists, it is already stateless, and it is exactly the credential that says "I am this broadcast's publisher" (`internal/transport/resume.go`). |
 | D10 | **Participants have a nickname per session, no authentication.** Remembered in the browser, unique only within the room (the relay suffixes collisions). | Enough for a roster, chat, and a voice speaker label. Leaves an explicit slot for a stronger identity later (a browser keypair, or a Mumble certificate hash through the bridge) without forcing it now. |
-| D11 | **Room view layout: grid of all attached POVs by default, a focus mode (one large, rest small), and a "hide videos" toggle** that keeps the participant in the room with no media sessions at all. Low-rate thumbnails for the non-focused tiles are a listed future enhancement, not v1. | Owner's call. Hide-videos is the "join for control or for a future feature, save bandwidth" mode and it is what the voice-only phone participant will use. |
+| D11 | **Room view layout: grid of all attached POVs by default, a focus mode (one large, rest small), and a "hide videos" toggle** that keeps the participant in the room with no media sessions at all. Low-rate thumbnails for the non-focused tiles are a listed future enhancement, not v1. | Owner's call. Hide-videos is the "join for control or for a future feature, save bandwidth" mode and it is what the voice-only phone participant will use. *2026-11-10: R83 adds a fourth mode, **Fit**, beside Grid (Grid unchanged and still the default): tiles at their streams' own shapes ([docs/87](87-room-fit-layout.md)).* *2026-11-19: R86 moves hide videos out of the layout segment into a What to show pill, as its None beside All streams and Choose, which hides individual streams ([docs/90](90-room-stream-visibility.md)).* |
 | D12 | **The broadcaster's room experience is the participant room view plus their own broadcast's controls.** Attaching from the web broadcaster page transitions that page into the room view. | One view, not two products. The Claude Design pass (§12) decides how the controls sit inside the view. |
 | D13 | **Native broadcasters attach via a flag/profile field and get an "open room view" action** that launches the browser room view with the broadcaster's room credentials applied. | Owner's choice of the widest option. The native apps get no room UI of their own; the browser is the room UI. *Revised 2026-09-28 by [docs/60](60-desktop-redesign.md) D9: the Rust desktop apps show a read-only roster and give a room's creator Remove and End room. The browser is still the room UI for watching.* |
 | D14 | **Room control travels over a new WebTransport route, `CONNECT /room/{code}`, as length-prefixed `wire` records on one bidirectional stream.** Media stays on ordinary per-broadcast `/subscribe` sessions. | Keeps the datagram path byte-identical and the relay a byte forwarder for media. Four new wire types, mirrored in all four implementations with golden vectors (D15). |
@@ -460,7 +460,10 @@ chosen: *the room's stage under the broadcaster's own topbar*.
   ring, muted. **Focus** with yourself focused is the plain live view.
   The third mode reads **Preview only** for a broadcaster — their own
   screen full bleed and no media sessions to the others (the same
-  persisted `hidden` mode as a viewer's hide-videos).
+  persisted `hidden` mode as a viewer's hide-videos). *(Revision
+  2026-11-19, R86: Preview only and Hide videos moved out of the layout
+  segment into a What to show pill as its None, beside All streams and
+  Choose; [docs/90](90-room-stream-visibility.md).)*
 - Dropped: the own-bar's "Change source" (Stop, then Start, re-picks the
   source; it was never on the live view).
 
@@ -571,6 +574,11 @@ viewer uses today. Concretely:
   bottom sheet.
 - **Own tile**: an accent ring and a glass bar inside the tile with
   Stop, Source, Quality, Stats and Detach; it fades with the chrome.
+- **Tile stats** (added 2026-11-11): right-clicking a remote tile adds
+  Stats / Hide stats to the room menu. It opens the standalone viewer's
+  stats overlay for that tile's own session, titled with the tile's label,
+  one tile at a time; detaching the tile closes it. The broadcaster's own
+  preview tile has no entry (their stats are in the topbar).
 - **Keys**: 1–4 focus that POV, 0 returns to grid; the number sits on
   each tile while the chrome is shown. Focus shows the other POVs as
   small tiles in a glass strip at the top right, on the lowest-cost
@@ -579,7 +587,9 @@ viewer uses today. Concretely:
   every tile, each with its own volume pill on the tile, and the footer
   speaker is the master. Own tile muted by default.
 - **Hide videos** shows a centred card ("you are still in the room,
-  nothing is downloading") with the panel beside it.
+  nothing is downloading") with the panel beside it. *(Revision
+  2026-11-19, R86: it is now None in the footer's What to show pill, and
+  Choose hides individual streams; [docs/90](90-room-stream-visibility.md).)*
 - **States drawn**: room ended (4007), reconnecting after a home-pod
   move, attachment removed (toast), room full, wrong attach key on a
   static room, and the first-join nickname prompt.

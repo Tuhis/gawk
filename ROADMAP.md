@@ -61,7 +61,7 @@ feature set exists).
 | R40 | [Automatic content flagging (NSFW keyframe screening)](#r40--automatic-content-flagging-nsfw-keyframe-screening) | 🔶 designed 2026-10-12 (owner decisions OD1–OD14); **CF0–CF8 implemented 2026-10-13 in one PR** — CF0's licence check passed (NudeNet's code and weights are AGPL-3.0; the weights are fetched at deploy time and run unmodified, never redistributed, and no NudeNet code is ported). A fifth module, `gawk-sampler`, scores every live broadcast's cached keyframe every 5 s from a new token-gated relay route, decoding in an ffmpeg subprocess and inferring with ONNX Runtime, sharded across a two-pod StatefulSet; `gawk-admin` turns its posts into content flags that page, re-page until acknowledged and pin the broadcast, with the auto-kill and deadline-kill tiers built but off, a calibration replay over stored samples, and room exemptions. Every broadcaster surface shows a one-line notice when the relay screens. Ships in `observe` mode; the compose stack's screening lane and its CI tier run the whole flag path on a generated test model. **CF9 pending** — calibration on the reference deployment, then the switch to `flag` ([docs/71](docs/71-content-flagging.md)) |
 | R41 | [Test coverage measurement and badges](#r41--test-coverage-measurement-and-badges) | 🔧 designed + **CV1–CV6 implemented 2026-09-02** — every component's job measures its own coverage, gates itself against a floor in `coverage-floors.json`, and pushes to `main` publish shields.io endpoints to an orphan `badges` branch (no third-party service, no token beyond `GITHUB_TOKEN`). Root README carries the size-weighted aggregate; each component README carries its own ([docs/43](docs/43-coverage-reporting.md)) |
 | R42 | [Rooms](#r42--rooms) | ✅ **implemented 2026-09-04** (RM1–RM9 in one PR): wire types 0x13–0x16 + close code 4007 in all four mirrors, single-pod relay + `Room` CRD cluster mode (home-pod lease, proxy, adoption, janitor, kind assert), SPA room view (grid / focus / hide videos, people panel, broadcaster Room panel), native attach on Linux and Windows, admin static-room CRUD + webhooks, telemetry room key. `-rooms` defaults off and off is byte-identical. Open: the §10 manual pass on the reference deployment ([docs/44](docs/44-rooms.md) §11) |
-| R43 | [Relay refusal reasons the browser can see](#r43--relay-refusal-reasons-the-browser-can-see) | 🔧 designed 2026-09-05, not started (RR1–RR5) — non-mandatory follow-up to R42: a refused `CONNECT`'s HTTP status is invisible to the WebTransport JS API, so every relay refusal reads "connection rejected" in the browser; answer policy refusals after the upgrade with new close codes 4008–4011 + a reason, keep rate limiting pre-upgrade ([docs/45](45-relay-refusal-reasons.md)) |
+| R43 | [Relay refusal reasons the browser can see](#r43--relay-refusal-reasons-the-browser-can-see) | 🔧 designed 2026-09-05, not started (RR1–RR5) — non-mandatory follow-up to R42: a refused `CONNECT`'s HTTP status is invisible to the WebTransport JS API, so every relay refusal reads "connection rejected" in the browser; answer policy refusals after the upgrade with new close codes 4008–4011 + a reason, keep rate limiting pre-upgrade ([docs/45](docs/45-relay-refusal-reasons.md)) |
 | R44 | [App icons for the native broadcasters](#r44--app-icons-for-the-native-broadcasters) | 🔧 designed + **IC1–IC5 implemented 2026-09-18** — one SVG (`assets/icon/gawk.svg`) with a Go generator whose PNG/ICO/RES derivatives are committed and pixel-drift-checked in CI; Linux gets `app.ID` + a desktop entry and hicolor set in the tarball with `install-desktop.sh`, and the notifier uses the icon when installed; Windows gets Slint `Window.icon` plus a `.res` linked directly (no resource compiler), with CI walking the EXE's resource tree to prove it landed. **Remaining: the on-desktop manual pass** (docs/53 §4). Packaging + GUI only, zero wire/relay/pipeline change ([docs/53](docs/53-app-icons.md)) |
 | R45 | [Update notification for the desktop broadcasters](#r45--update-notification-for-the-desktop-broadcasters) | 🔧 **implemented 2026-09-30** (AU3–AU5 in one PR; AU1/AU2 dropped with the Go app's freeze, docs/58 OD6): all three desktop shells fetch their R46 `latest.json` at launch, at most every 15 minutes (owner change 2026-09-30; the last answer is cached across relaunches), with a fixed User-Agent and nothing identifying, and show a "vX.Y.Z available — release notes" line under Go live that Dismiss hides until restart (a card at the top of Ready since 2026-10-02, docs/48 §8); Settings → Updates → Check now asks immediately; launch-check opt-out in Advanced or `GAWK_NO_UPDATE_CHECK=1`; one sentence added to terms §7 without a `termsVersion` bump. Live-checked against the real v2.0.0 manifest under Xvfb; the Windows-VM glance (AU4 manual) is the owner's. Installing from inside the app is R47 ([docs/47](docs/47-desktop-update-check.md)) |
 | R46 | [Download section on the project site](#r46--download-section-on-the-project-site) | ✅ **implemented 2026-09-14** (DL1–DL4 in one PR): the attach jobs publish `releases/<component>/latest.json` to the `badges` branch after a successful attach, and the landing page's new Download section reads it — newest version, date, size, direct link and sha256 per platform, with a working no-script fallback. DL5 (same day): the SPA's landing footer links to the site and straight to that section ([docs/46](docs/46-site-downloads.md)) |
@@ -100,6 +100,11 @@ feature set exists).
 | R80 | [RNNoise noise suppression for room voice](#r80--rnnoise-noise-suppression-for-room-voice) | 🔧 **implemented 2026-10-27** (NS1–NS4, after the NS0 measurement spike and owner decisions OD1–OD5 the same day); open: NS5's owner pass on five platforms with real microphones — RNNoise 0.2, built from source to a committed, CI-verified wasm, denoises web voice in the capture AudioWorklet on every browser, on by default; its speech probability with a level floor drives the talk gate (default on 0.90, floor −50 dBFS); an Audio section switches RNNoise · Browser · Off and the threshold mid-call with Hear yourself. Measured: +20 ms, ~0.3 ms CPU per 10 ms frame; with nobody talking, a keyboard ends 10 dB below its input where Chromium as opened today (auto gain on) sends it 11–13 dB louder; NS4 replaced the designed linear 44.1→48 kHz resampler with a windowed sinc after measuring it send a third more keyboard ([docs/81](docs/81-noise-suppression.md) §12) |
 | R81 | [Room voice UX and a learned talk gate](#r81--room-voice-ux-and-a-learned-talk-gate) | 🔧 **implemented 2026-10-28** (VX0–VX3, owner decisions OD1–OD5 the same day); open: VX4, the owner's pass with real microphones — voice gets its own panel (a header Voice button with the count, a flyout that pins beside the stage, People and Voice as tabs on a phone), an invite chip or a one-time hint so new users find it, a first-join talk-mode card, a Microphone popover on the dock, and per-person volume to 200 % behind a limiter; RNNoise's gate floor follows the speaker's learned level, auto gain is off under RNNoise with our own gain after the gate. Measured first: Chromium's auto gain lifts a hum in a pause to the speaker's own level, so no floor worked with it on; with it off, a person humming 15 dB below the speaker went from 91 % sent to 40 %, a background voice from 90 % to 20 % ([docs/82](docs/82-voice-ux-and-learned-gate.md) §12) |
 | R82 | [Ask in English in the telemetry SQL console](#r82--ask-in-english-in-the-telemetry-sql-console) | 🔧 **implemented 2026-11-05** (NQ1–NQ4, after the NQ0 spike, NQ0b's NaN fix and owner decisions OD1–OD5 on 2026-11-01/02); open: NQ5, the owner pass on the reference deployment and an Ollama on a GPU — an optional question box above `#/sql`: a model drafts DuckDB SQL from English, checks it with `EXPLAIN` in a shadow catalogue of empty tables built from the learned schema, and puts it in the editor with one line on how it read the question; the operator runs it. The model never sees a row. Anthropic (official SDK) or any OpenAI-compatible server (Ollama, llama.cpp, vLLM), server-side on the read listener, default off. Measured: with a curated glossary, Claude Opus 5.5, Sonnet 5.5 and Haiku 5.5 each drafted 19 of 20 questions right (the owner's four included) at about $0.028, $0.013 and $0.001 a question; without it, Sonnet got 14, every miss from not knowing what the values mean; a 7B local model on CPU gave no answer to the full prompt in 30 min and 3 of 5 right on a slim one; the spike also found that a NaN or ±Inf result killed the SQL worker (fixed in NQ0b) ([docs/84](docs/84-telemetry-ask-in-english.md) §12) |
+| R83 | [Fit: a room layout that follows the streams' shapes](#r83--fit-a-room-layout-that-follows-the-streams-shapes) | 🔧 **implemented 2026-11-10** (FL1–FL3 web, FL5 iOS; owner decisions OD1: a choice, not a replacement, and OD2: iOS too), open: FL4, the owner pass — a fourth room layout mode, **Fit**, beside Grid: tiles take each stream's decoded aspect ratio and are arranged in order-preserving rows or columns, scored by Σ ln(tile area), so two 32:9 broadcasters stack on a 16:9 viewer instead of sitting side by side. Prototype: 25 % → 100 % of a 1080p stage is video for that case; over ten mixes at four stage sizes, more of the screen is video in 32 of 40 and the same in the rest, and Grid's own geometry is a candidate, so Fit never scores below it. The web app and the iOS app's room player (one algorithm, ported to Swift and pinned to the same table): no wire, relay or Rust-core change ([docs/87](docs/87-room-fit-layout.md)) |
+| R84 | [Browser Reliable uplink](#r84--browser-reliable-uplink) | 🔧 **designed 2026-11-10** from a lab pass on Chrome's own QUIC stack (Chrome for Testing 151 and 158, the shipping viewer replayed at four presentation phases); **owner decisions taken 2026-11-10** (OD1 = K3, "get rid of the extra round trip"); **Reliable the browser's default since 2026-11-11** (OD2, owner, ahead of BR0 and BR5: the field data reviewed after a few weeks); the owner chose to build before BR0, which now gates the default, not the code; **BR1–BR4 built** (relay and wire, the browser's carrier lane and its Delivery setting, Chromium only, and the lab and e2e on the shipping code: Reliable costs nothing on a clean path at 10–100 ms on Chrome 151, 157 and 158) — the browser broadcaster gets docs/75's per-GOP carrier on RU1's relay ingest, so its *Smoother* and *Most stable* viewers stop freezing on uplink bursts and outages (99.0–100 % shown at 10 ms where today's datagrams give 71.6–80.1 %); Chrome 151–158 expose no stream priority, so docs/75's keyframe gate cost a round trip per GOP (83 against 67 ms on screen at 40 ms, 167 against 100 ms at 100 ms), and putting the keyframe at the head of the GOP's own stream removes it (67 and 100 ms) at the price of one stream type and one capability bit on the relay; that stream follows RU9's keyframe rules, because docs/75's 150 ms reset left 136 of 199 keyframes unacknowledged where Chrome's Cubic collapses; docs/75's intermittent *Smoother* dip behind the gate is the lab replay locking onto a bad presentation phase, not the uplink ([docs/88](docs/88-browser-reliable-uplink.md)) |
+| R85 | [A Mumble roster without a visible bot](#r85--a-mumble-roster-without-a-visible-bot) | 🔶 **MI1–MI4 implemented 2026-11-15**, MI5 (the owner pass on the reference deployment) open; **designed 2026-11-15** from the MI0 spike on real murmur 1.5.939 and 1.6.870, **redesigned around Ice callbacks the same day** after the reference murmur moved to 1.6.1001 (MI0b), **owner decisions OD1–OD7 taken 2026-11-15** (Ice, the first voice user creates the temporary channel, read-write allowed, the visible observer as the fallback without Ice, both modes tested, no bot on an Ice outage, callbacks rather than polling), R79's `gawkBridgeBot` observer leaves Mumble: each bridge pod registers an Ice `ServerCallback` with murmur through a minimal first-party Ice client and endpoint, keeps a mirror of the server's users and channels from the events, and re-registers and re-reads it every 30 s; a dynamic room's temporary channel is created by its first gawk voice user; without Ice the visible observer stays; no relay, wire or app change. Measured: callbacks arrive in 0.22 ms, faster than a Mumble client sees the same change; **murmur 1.6.870 segfaults when the newest callback is dead** (fixed upstream in 1.6.1001, so the bridge never registers on 1.6.870); murmur drops a registration after one refused delivery without telling the client; **an endpoint that blackholes freezes murmur's whole event loop** for about twice its timeout, 4.5 min with no timeout, so the bridge registers a 100 ms timeout (0.22 s freeze) and removes its registration on every clean exit; 1.6 numbers its default server 0, 1.5 numbers it 1; two first joins racing for one temporary channel end up in one channel; found while implementing, murmur's login channel tree leaves `temporary` out, so the temporary-channel cap counts in the Ice mirror ([docs/89](docs/89-mumble-ice-roster.md)) |
+| R86 | [Choose which streams to watch in a room](#r86--choose-which-streams-to-watch-in-a-room) | 🔧 **implemented 2026-11-19** (VS1–VS3; owner decision OD1 the same day: of five designs mocked on a design canvas, visibility as its own control), open: VS4, the owner pass — the room footer's segment keeps the layouts (Grid · Fit · Focus) and a new pill beside it says what is shown: **All streams**, **Choose** (a checkbox per stream) or **None**, the old Hide videos (a broadcaster's Preview only). An unticked stream has no tile and no media session, new streams arrive shown, numbers keep the room's order, `Shift`+`1`–`4` hide or show a stream, and the choice is remembered per room on the device; a stored `hidden` mode loads as None. Verified on a real relay by the e2e rooms pass: one stream hidden reads 0 subscribers on `/statusz` while the other keeps its own. Web app only: no relay, wire or iOS change ([docs/90](docs/90-room-stream-visibility.md)) |
+| R87 | [Striped deep-buffer delivery](#r87--striped-deep-buffer-delivery) | 🔧 **implemented 2026-11-20** (SG1–SG4; owner decision OD1 the same day: build ahead of SG0's field half), open: SG0's field run and SG5, the owner pass on the owner's mobile path — a *Most stable* viewer whose one connection can't carry the stream now spreads whole GOPs over the primary and up to three R30 legs: GOP *k* goes to connection `fmix32(keyframe frameID) mod N`, each connection runs its own ring cursor, the client reorders GOPs against the playout deadline, and Auto engages only on measured undersupply and keeps a wider step only if it raised goodput 20 %. Measured first (SG0, lab): at 40 ms one deep-buffer connection gets 8.4 Mbit/s at 0.5 % random loss and 6.0 at 1 % against a 10.7 Mbit/s 1080p60 stream, every added connection adds its own share, Firefox matches quic-go's client, and a full link instead stays flat while its RTT climbs 4–5×; the field case's two concurrent connections each held 5.05 Mbit/s through the owner's VPN. Also: per-connection RTT and loss on `/statusz`, a latent DVR pacer wedge on keyframes larger than its burst, and `resilient-undersupply`, which fired on every deep-buffer viewer, fixed beside a new `per-connection-ceiling` rule ([docs/91](docs/91-striped-dvr.md)) |
 
 ---
 
@@ -3837,7 +3842,7 @@ refusal reads "WebTransport connection rejected" on the broadcaster and
 relay at its broadcast cap, an opaque error in the page, the real reason
 only in the container log.
 
-**Scope sketch** ([docs/45](45-relay-refusal-reasons.md) §2): the one
+**Scope sketch** ([docs/45](docs/45-relay-refusal-reasons.md) §2): the one
 reason-bearing channel a browser has is an accepted session closed with an
 application code and a reason string, which the relay already uses for the
 post-upgrade capacity race. Policy refusals move behind the upgrade and
@@ -3855,7 +3860,7 @@ evidence.
 must not put words in the UI); any preflight endpoint; changing what the
 relay decides — only how it says it.
 
-**Status**: designed 2026-09-05 ([docs/45](45-relay-refusal-reasons.md)),
+**Status**: designed 2026-09-05 ([docs/45](docs/45-relay-refusal-reasons.md)),
 chunks RR1–RR5, not started. Non-mandatory; proposed as a follow-up PR to
 R42 because it changes relay behaviour every client depends on.
 
@@ -5158,7 +5163,8 @@ some screens, so the buttons can't be part of what scrolls.
 **Non-goals**: a Settings switch for window fit (OD3: a manual resize
 overrides it); growing the window on Linux (docs/66 D14: neither Wayland nor
 winit 0.30 says where the window or the work area is); remembering the
-window's position; changing the width.
+window's position (since added on Windows and macOS as WF5–WF6,
+docs/66 D18, owner 2026-11-19); changing the width.
 
 **Status**: 🔧 implemented 2026-10-02 (WF1–WF3) — designed the same day,
 owner decisions OD1–OD5. The layout is verified headless: at 440 × 600 the
@@ -5734,6 +5740,161 @@ client change.
 **Status**: 🔧 implemented 2026-11-05: NQ0 (results in docs/84 §12), NQ0b
 (2026-11-02) and NQ1–NQ4 (docs/84 §13) done, owner decisions OD1–OD5
 taken. Open: NQ5, the owner pass.
+
+## R83 — Fit: a room layout that follows the streams' shapes
+
+**Goal**: a room viewer can pick a layout that makes as much of their
+screen video as the streams' shapes allow.
+
+**Why**: the room grid (R42, docs/44 D11) is `ceil(√n)` equal cells with
+every video letterboxed inside its cell. Two broadcasters sharing 32:9
+ultrawide screens land side by side on a 16:9 viewer, and three
+quarters of the screen is black; stacked, they fill it.
+
+**Design**: [docs/87](docs/87-room-fit-layout.md) — a fourth `RoomMode`,
+**Fit** (Grid · Fit · Focus · Hide videos), Grid unchanged and still the
+default. A pure `fitLayout` tries rows and columns over every
+order-preserving split (even splits only above 10 tiles), each sized
+justified or balanced, plus Grid's own geometry, and keeps the best
+Σ ln(tile area) with 3 % stickiness. Shapes come from the decoded frames (16:9 until the first
+one, a 2 % deadband). The web app, and since OD2 the iOS room player
+(FL5: the same algorithm in Swift, pinned to the same table).
+
+**Acceptance**: docs/87 §1 and §9.
+
+**Status**: 🔧 implemented 2026-11-10 (FL1–FL3 web, FL5 iOS; notes in
+docs/87 §13–§14).
+Open: FL4, the owner pass.
+
+## R84 — Browser Reliable uplink
+
+**Goal**: a broadcast from the browser survives bursts and outages on the
+broadcaster's uplink as a native one does since R73, at no latency cost on
+a clean path, so its *Smoother* and *Most stable* viewers stop freezing to
+the next keyframe.
+
+**Why**: docs/75 OD5 (owner, 2026-10-19) fixed the browser's send queue in
+R73 (RU9) and left "a browser Reliable mode on RU1's relay ingest" to a
+milestone of its own, measured on the gaming PC first, with two things to
+settle: an intermittent *Smoother* dip behind docs/75's keyframe gate, and
+the gate's round trip per GOP on long clean paths. `BUGS.md` "Smoother and
+Most stable viewers freeze on uplink loss that Balanced viewers never see"
+is still open for the browser broadcaster.
+
+**Design**: [docs/88](docs/88-browser-reliable-uplink.md). A per-GOP carrier
+whose records are the browser's datagrams byte for byte (RU1, unchanged);
+the keyframe at the head of the GOP's stream instead of a gate, as a new
+stream type behind a new capability bit (OD1); that stream under RU9's
+keyframe rules (OD5); the native Delivery control and copy (OD3), Reliable
+the default after the lab and field passes (OD2), Chromium first (OD4).
+
+**Scope** (chunks BR0–BR5): **BR0** the gaming-PC measurement (gates the
+default, OD2 and G8); **BR1** relay and wire, the keyframe carrier (OD1 took it);
+**BR2** the browser's carrier lane; **BR3** the setting, Diagnostics and
+telemetry; **BR4** the lab and CI on the shipping code; **BR5** the field
+pass and the default.
+
+**Non-goals**: a viewer change; a browser congestion controller; changing
+*Lowest latency*; the native engine adopting the inline keyframe; a
+keyframe request; changing the rung on loss.
+
+**Acceptance**: docs/88 §8 (goals G1–G8 and the per-chunk tables).
+
+**Status**: 🔧 designed 2026-11-10; owner decisions taken 2026-11-10
+(docs/88 §3); built before BR0 by the owner's choice (docs/88 §8
+*Order*); **Reliable the default since 2026-11-11** (owner, ahead of BR0
+and BR5; the field data reviewed after a few weeks). BR1–BR4 built 2026-11-10: on the shipping code G1 (no cost on a clean path at 10–100 ms), G2, G4 and G5 met on Chrome 151, 157 and 158, G3 on 157 and 158 and missed by 0.02 point on 151 (docs/88 §8 BR4). BR0 and BR5 not run.
+
+## R85 — A Mumble roster without a visible bot
+
+**Goal**: nobody in Mumble sees a gawk bot. Gawk users in voice show up as
+`Alice [web]`, as they do today, and the room still shows who is in
+Mumble.
+
+**Why**: R79's observer is a visible Mumble user, `gawkBridgeBot`, in every
+voice room's channel, numbered when there are several (docs/80 OD33 and
+§10). The owner: a better experience if Mumble users didn't see it.
+
+**Design**: [docs/89](docs/89-mumble-ice-roster.md). The roster comes from
+murmur's Ice callbacks, with a 30 s reconciliation for what murmur can
+drop silently, and none on 1.6.870, whose callback handling crashes
+(§3). A dynamic room's temporary channel is created by its first gawk
+voice user. The observer link to the relay is unchanged, and without Ice
+the visible observer stays.
+
+**Scope** (chunks MI0–MI5): **MI0** the spikes (done); **MI1** the minimal
+Ice client and callback endpoint; **MI2** the bridge's Ice mode; **MI3** config, chart and docs;
+**MI4** the voice e2e in both modes; **MI5** the owner pass on the
+reference deployment.
+
+**Non-goals**: polling as the primary path; Ice for moderation or channel
+creation; any relay, wire or web app change.
+
+**Acceptance**: docs/89 §7 (goals G1–G8 and the per-chunk tables).
+
+**Status**: 🔶 designed 2026-11-15 and redesigned around callbacks the
+same day; owner decisions OD1–OD7 taken 2026-11-15; no open questions;
+MI0 done; **MI1–MI4 implemented 2026-11-15** (docs/89 §10: the Ice client
+and endpoint, Ice mode, the chart and docs, the voice e2e in both modes);
+MI5, the owner pass on the reference deployment, open.
+
+---
+
+## R86 — Choose which streams to watch in a room
+
+**Goal**: a room participant can hide individual streams, not only all of
+them, and a hidden stream costs nothing.
+
+**Why**: the room footer's segment mixed two questions — the layout (Grid,
+Fit, Focus) and what to show (Hide videos) — and the second was all or
+nothing. The owner asked for a way to hide individual streams with good UX
+in the current look.
+
+**Design**: [docs/90](docs/90-room-stream-visibility.md). Two controls: the
+segment keeps Grid · Fit · Focus, and a pill beside it opens All streams ·
+Choose · None, with a checkbox per stream under Choose. Hiding is
+unsubscribing (the tile unmounts, its media session closes), the choice is
+a set of hidden broadcast IDs so new streams arrive shown, remembered per
+room by code (20 rooms, 64 IDs each); None is global and replaces Hide
+videos, migrating a stored `hidden` mode. Numbers keep the room's order;
+`Shift`+`1`–`4` hide or show; a layout pick leaves None.
+
+**Acceptance**: docs/90 §1 and §7.
+
+**Status**: 🔧 implemented 2026-11-19 (VS1–VS3, notes in docs/90 §8).
+Open: VS4, the owner pass.
+
+---
+
+## R87 — Striped deep-buffer delivery
+
+**Goal**: a *Most stable* viewer whose single connection can't carry the
+stream, on a link that can, plays without DVR resyncs.
+
+**Why**: on 2026-11-19 the owner watched a room on a mobile link in
+Firefox. The 1080p60 stream needed 10.7 Mbit/s and each deep-buffer
+connection delivered 5.05 Mbit/s, two connections at once, so the link had
+room. The ring jumped the viewer forward 622 times in 55 minutes. R30's
+stripe legs are refused in reliable and DVR modes (docs/35 §3) because
+they were built for burst loss, not for a throughput ceiling.
+
+**Design**: [docs/91](docs/91-striped-dvr.md). GOPs are striped across the
+primary and up to three legs by a static hash of the keyframe's frameID.
+Each connection runs its own ring cursor over its residue, and the
+client reorders GOPs against the playout deadline. Auto engages on measured
+undersupply and grows only while the aggregate rises. SG0 first measures
+whether the ceiling is per connection (build this) or per stream (pipeline
+GOP carriers on one connection instead), against kill criteria registered
+in docs/91 §9.
+
+**Acceptance**: docs/91 §1 and §8.
+
+**Status**: 🔧 implemented 2026-11-20 (SG1–SG4; SG0's lab half and
+instruments 2026-11-19, docs/91 §11.1; where the code differs from the plan,
+docs/91 §12). Open: SG0's field run and SG5, the owner pass on the owner's
+mobile path.
+
+---
 
 ## Explicitly out of scope (unchanged from CLAUDE.md)
 

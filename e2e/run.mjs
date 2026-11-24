@@ -29,8 +29,9 @@
 //                             a real relay with -rooms and two gawk-pubsim
 //                             publishers (one mints the room, one attaches):
 //                             the grid shows both tiles advancing, a number
-//                             key focuses one, Hide videos closes every
-//                             /subscribe session (asserted on the relay's
+//                             key focuses one, hiding one under Choose
+//                             closes its /subscribe sessions only and None
+//                             closes every one (R86, asserted on the relay's
 //                             per-broadcast subscriber count while the room's
 //                             control session stays), Leave. Skips cleanly
 //                             when the pubsim binary predates -room-new.
@@ -183,6 +184,13 @@ const MAX_VIEWER_RETRIES = 5;
 // needs that long again of *decoded* samples before the fps floors mean
 // anything. Sized to fill medianRecent's ≤6-sample (3 s) window twice over.
 const DEEP_BUFFER_SETTLE_MS = 6000;
+// The deep-buffer pass's deployment config.dvrBufferMs: deliberately not the
+// app's 3000 ms default, so the pass proves the configured value reaches the
+// relay from the viewer worker (a worker has no window; it gets the page's
+// config at init). The local relay's -dvr-window is raised above it, or the
+// grant would clamp to the 3 s default window and hide a wrong request.
+const DEEP_BUFFER_CONFIG_MS = 4000;
+const DEEP_BUFFER_DVR_WINDOW = '5s';
 // The R19 resilient-mode pass (below) runs only in the plain tier-1 mode: the
 // relay and publisher are already up there, so it costs one browser session.
 // External/cluster mode and the browser-broadcast step spend their budget
@@ -236,7 +244,9 @@ const MAX_RESILIENT_RETRIES = 1;
 // leaves room for the retries to run before it aborts (still well under the
 // CI job's own timeout-minutes). The plain tier-1 mode gets the same headroom
 // as browser-broadcast because of its second (resilient) viewer pass.
-const WATCHDOG_MS = EXTERNAL ? 300_000 : 360_000;
+// The browser-broadcast mode also runs R84's two uplink-outage passes (two
+// more broadcasters and viewers, ~40 s each), hence its extra two minutes.
+const WATCHDOG_MS = EXTERNAL ? 300_000 : BROWSER_BROADCAST ? 480_000 : 360_000;
 
 // Z5: the tab the headless broadcaster captures. The flag matches by title
 // substring, so the value must never be a substring of the app's own title
@@ -527,7 +537,16 @@ function launchBrowser(extraArgs = []) {
 // client → relay is the lossy direction, which is where a broadcaster's
 // uplink loses chunks — and setLoss() lets the pass arm it after the
 // handshake and disarm it before the publisher says goodbye.
+//
+// R84 BR4: setOutage({ everyMs, forMs }) drops EVERY packet in the lossy
+// direction for forMs out of each everyMs — a radio going away, the burst a
+// Smoother viewer cannot ride out on datagrams (docs/88 F4) — and null
+// disarms it.
 function startLossyLink(relayPort, lossPercent, { uplink = false } = {}) {
+  let outage = null;
+  const t0 = Date.now();
+  const inOutage = () => outage !== null && (Date.now() - t0) % outage.everyMs < outage.forMs;
+  const drops = () => inOutage() || rnd() * 100 < lossPercent;
   const front = dgram.createSocket('udp4');
   const peers = new Map(); // "ip:port" of the client → its upstream socket
   let seed = 0x2545f491;
@@ -548,12 +567,12 @@ function startLossyLink(relayPort, lossPercent, { uplink = false } = {}) {
       // The lossy direction. Dropping here rather than on the uplink is what
       // makes every absence at the viewer attributable to this link.
       up.on('message', (reply) => {
-        if (!uplink && rnd() * 100 < lossPercent) return;
+        if (!uplink && drops()) return;
         front.send(reply, rinfo.port, rinfo.address);
       });
       peers.set(key, up);
     }
-    if (uplink && rnd() * 100 < lossPercent) return;
+    if (uplink && drops()) return;
     up.send(msg, relayPort, '127.0.0.1');
   });
 
@@ -563,6 +582,9 @@ function startLossyLink(relayPort, lossPercent, { uplink = false } = {}) {
         port: front.address().port,
         setLoss: (percent) => {
           lossPercent = percent;
+        },
+        setOutage: (spec) => {
+          outage = spec;
         },
         close: () => {
           for (const up of peers.values()) up.close();
@@ -688,16 +710,59 @@ function assertStripeFlow(d1, d2) {
   );
 }
 
+// R87 (docs/91 SG2): a Most stable viewer with Striping seeded On, on the
+// clean loopback. On engages ×2 at join without evidence (D10), so this is
+// deterministic where Auto would correctly stay at ×1 here. What only a real
+// browser against a real relay shows: CAP_STRIPED_DVR arriving, the DVR leg
+// dial (leg=1, stripe=2, the primary's delivery/buffer/owner) being accepted,
+// GOPs arriving on BOTH connections, and the reorder buffer playing the
+// interleave back — assertFlow's fps floors and assertDvrFlow's 1:1
+// keyframe/carrier invariant (both counted across connections) still hold.
+function assertDvrStripeFlow(d1, d2) {
+  const problems = [];
+  const check = (ok, msg) => {
+    if (!ok) problems.push(msg);
+  };
+  const s1 = latest(d1);
+  const s2 = latest(d2);
+
+  check(s2.stripeDvrCapable === true, `stripeDvrCapable = ${s2.stripeDvrCapable}, want true (CAP_STRIPED_DVR not seen)`);
+  check(s2.stripeMode === 'on', `stripeMode = ${s2.stripeMode}, want the seeded 'on'`);
+  check(s2.dvrStripeWidth >= 2, `dvrStripeWidth = ${s2.dvrStripeWidth}, want >= 2 (DVR legs engaged)`);
+  check((s2.stripeLegDials ?? 0) >= 1, `stripeLegDials = ${s2.stripeLegDials}, want >= 1`);
+  check((s2.stripeLegDeaths ?? 0) === 0, `stripeLegDeaths = ${s2.stripeLegDeaths}, want 0 on a loopback`);
+  // Every connection carries GOPs, not just the primary: the hash spreads
+  // ~10 GOPs per capture gap over two connections.
+  const b1 = s1.connectionBytesReceived ?? [];
+  const b2 = s2.connectionBytesReceived ?? [];
+  check(b2.length >= 2, `connectionBytesReceived = ${JSON.stringify(b2)}, want one entry per connection`);
+  for (let i = 0; i < b2.length; i++) {
+    check(
+      b2[i] - (b1[i] ?? 0) > 0,
+      `connection ${i} received no video between the captures (${b1[i] ?? 0} → ${b2[i]})`,
+    );
+  }
+
+  if (problems.length > 0) {
+    fail(`striped deep-buffer assertions failed:\n  - ${problems.join('\n  - ')}`);
+  }
+  log(
+    `striped deep buffer: ×${s2.dvrStripeWidth}, bytes per connection ${JSON.stringify(b2)}, ` +
+      `${s2.dvrDuplicateFrames ?? 0} duplicate / ${s2.dvrLateFramesDropped ?? 0} late frames, ` +
+      `${s2.reorderGapResyncs ?? 0} gap resyncs`,
+  );
+}
+
 // A context with the persisted transport settings seeded (the keys
 // useTransportStore owns), the clipboard stubbed (the ViewerScreen.test.tsx
 // precedent), and the publish-secret prompt disabled (loopback hosts count as
 // dev environments, where the prompt defaults on) — all before any app code
 // runs. `resilient` seeds R19's persisted toggle, which is the only way in:
 // the mode is negotiated at connect, so it has to be set before the app runs.
-async function newAppContext(browser, { relayUrl, certHash, delivery = null, telemetryUrl = null, parity = null, stripe = null }) {
+async function newAppContext(browser, { relayUrl, certHash, delivery = null, telemetryUrl = null, parity = null, stripe = null, dvrBufferMs = null }) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   await context.addInitScript(
-    ({ serverUrl, hash, deliveryMode, tmUrl, parityLevel, stripeMode }) => {
+    ({ serverUrl, hash, deliveryMode, tmUrl, parityLevel, stripeMode, bufferMs }) => {
       // R37 (docs/40): the test relay is configured the way a real
       // deployment's is — config.relayUrl — so the app resolves it as the
       // pinned DEFAULT server rather than a migrated custom entry. (The
@@ -733,6 +798,8 @@ async function newAppContext(browser, { relayUrl, certHash, delivery = null, tel
       // telemetry pass — every other pass leaves it unset, which is what makes
       // the zero-request assertion below a real check rather than a tautology.
       if (tmUrl) window.__GAWK_CONFIG__.telemetryUrl = tmUrl;
+      // The deep-buffer pass's non-default buffer (DEEP_BUFFER_CONFIG_MS).
+      if (bufferMs != null) window.__GAWK_CONFIG__.dvrBufferMs = bufferMs;
       localStorage.setItem('gawk:terms-accepted', 'e2e');
       window.__gawkClipboard = [];
       Object.defineProperty(Navigator.prototype, 'clipboard', {
@@ -745,7 +812,7 @@ async function newAppContext(browser, { relayUrl, certHash, delivery = null, tel
         }),
       });
     },
-    { serverUrl: relayUrl, hash: certHash, deliveryMode: delivery, tmUrl: telemetryUrl, parityLevel: parity, stripeMode: stripe },
+    { serverUrl: relayUrl, hash: certHash, deliveryMode: delivery, tmUrl: telemetryUrl, parityLevel: parity, stripeMode: stripe, bufferMs: dvrBufferMs },
   );
   return context;
 }
@@ -778,7 +845,7 @@ function wirePageLogs(page, name) {
 // tell was the ratio: keyframes arriving at ~2x the carrier-rotation rate.
 // assertFlow would have failed on the frozen decoder, but the ratio names the
 // cause instead of just the symptom.
-function assertDvrFlow(d1, d2) {
+function assertDvrFlow(d1, d2, expectBufferMs) {
   const problems = [];
   const check = (ok, msg) => {
     if (!ok) problems.push(msg);
@@ -794,6 +861,13 @@ function assertDvrFlow(d1, d2) {
     `deliveryMode = ${s2.deliveryMode}, want "dvr" (the ?buffer= negotiation did not take)`,
   );
   check(s2.dvrBufferMs > 0, `dvrBufferMs = ${s2.dvrBufferMs}, want > 0 (the ack carried no buffer)`);
+  // The grant echoes what the viewer asked for (the relay's window is wider).
+  // 3000 here means the viewer worker asked with the default, not the
+  // deployment's config.dvrBufferMs.
+  check(
+    s2.dvrBufferMs === expectBufferMs,
+    `dvrBufferMs = ${s2.dvrBufferMs}, want ${expectBufferMs} (config.dvrBufferMs did not reach the relay)`,
+  );
 
   const growth = (key) => s2[key] - s1[key];
   const carriers = growth('carrierStreams');
@@ -931,11 +1005,11 @@ function assertCarrierFlow(d1, d2) {
 async function browserScenario({
   relayUrl, certHash, id, attempt, expectedCodec, delivery = null, telemetryUrl = null,
   dwellMs = 0, duringDwell = null, expectAudio = false, parity = null, expectParity = null,
-  stripe = null, expectStripe = false,
+  stripe = null, expectStripe = false, expectDvrStripe = false, dvrBufferMs = null,
 }) {
   const browser = await launchBrowser();
   try {
-    const context = await newAppContext(browser, { relayUrl, certHash, delivery, telemetryUrl, parity, stripe });
+    const context = await newAppContext(browser, { relayUrl, certHash, delivery, telemetryUrl, parity, stripe, dvrBufferMs });
     const page = await context.newPage();
     wirePageLogs(page, `console-${attempt}`);
 
@@ -1015,10 +1089,11 @@ async function browserScenario({
     const diag2 = await captureDiagnostics(page, `diagnostics-${attempt}-2`);
     assertFlow(diag1, diag2, expectedCodec);
     if (delivery === 'resilient') assertCarrierFlow(diag1, diag2);
-    if (delivery === 'deep') assertDvrFlow(diag1, diag2);
+    if (delivery === 'deep') assertDvrFlow(diag1, diag2, dvrBufferMs);
     if (expectAudio) assertAudioFlow(diag1, diag2);
     if (expectParity != null) assertParityFlow(diag1, diag2, { expectParity });
     if (expectStripe) assertStripeFlow(diag1, diag2);
+    if (expectDvrStripe) assertDvrStripeFlow(diag1, diag2);
 
     const shot = await page.locator('canvas').first().screenshot();
     writeFileSync(join(OUT, `viewer-${attempt}.png`), shot);
@@ -1306,7 +1381,13 @@ function assertBroadcastFlow(d1, d2) {
   const encoded = growth('encodedFrames');
   check(encoded > 0, 'no frames encoded between the captures');
   check(growth('keyframes') >= 1, 'no keyframe encoded between the captures (GOP is 500 ms)');
-  check(growth('datagramsSent') > 0, 'no datagrams sent between the captures');
+  // R84 (docs/88 OD2): this pass seeds no Delivery, so it runs the browser's
+  // default, Reliable since 2026-11-11, against a relay with carriers on
+  // under Chromium. Pinned, not read from the stats: a silent fallback to
+  // datagrams must fail here, as this is the one CI check of the default.
+  check(s2.uplinkModeRequested === 'reliable', `uplinkModeRequested = ${s2.uplinkModeRequested}, want the default "reliable" (docs/88 OD2)`);
+  check(s2.uplinkMode === 'carrier', `uplinkMode = ${s2.uplinkMode}, want "carrier" (Chromium, relay advertises carriers)`);
+  check(growth('uplinkCarriersOpened') > 0, 'no carrier streams opened between the captures (Reliable)');
   check(growth('keyframeStreamsSent') >= 1, 'no keyframe streams sent between the captures');
   check(growth('bytesSent') > 0, 'no bytes sent between the captures');
   // Loopback link: a keyframe stream that fails to open here is a real bug,
@@ -1323,7 +1404,7 @@ function assertBroadcastFlow(d1, d2) {
   log(
     `broadcast flow ok: capture/encode/sent ≈ ${medianRecent(d2, 'captureFps')}/${medianRecent(d2, 'encoderFps')}/${medianRecent(d2, 'sentFps')} fps, ` +
       `codec ${d2.encoder.codec} (${d2.encoder.acceleration}), ${encoded} frames encoded between captures, ` +
-      `pipeline ${s2.pipelineContext}`,
+      `pipeline ${s2.pipelineContext}, delivery ${s2.uplinkModeRequested} as ${s2.uplinkMode}`,
   );
 }
 
@@ -1336,12 +1417,17 @@ function assertBroadcastFlow(d1, d2) {
 // Z5's front half: a browser on the production broadcaster surface, LIVE with
 // a minted ID. Shared with the gated-rooms pass, which then keeps driving the
 // same page — so this returns it rather than closing over it.
-async function startBrowserBroadcast({ relayUrl, certHash, attempt }) {
+async function startBrowserBroadcast({ relayUrl, certHash, attempt, delivery = null }) {
   const browser = await launchBrowser([
     `--auto-select-tab-capture-source-by-title=${ANIM_TITLE}`,
   ]);
   try {
     const context = await newAppContext(browser, { relayUrl, certHash });
+    // R84 (docs/88 D6): the Delivery setting, as the Settings control stores
+    // it. Unset leaves the default (Reliable since 2026-11-11, docs/88 OD2).
+    if (delivery) {
+      await context.addInitScript((d) => localStorage.setItem('gawk.uplinkDelivery', d), delivery);
+    }
 
     // The capture source. Tab capture keeps a captured background tab
     // painting (spike-verified: full 30 fps with the tab unfocused).
@@ -1368,6 +1454,130 @@ async function startBrowserBroadcast({ relayUrl, certHash, attempt }) {
   } catch (err) {
     await browser.close();
     throw err;
+  }
+}
+
+// R84 BR4 (docs/88 §8): the browser broadcaster's uplink loses whole bursts —
+// every packet for UPLINK_OUTAGE.forMs of each everyMs, a radio going away —
+// on a link between it and the relay, and a Smoother viewer (reliable
+// delivery, no loss allowance) watches. On Lowest latency the chunks lost in
+// an outage are gone before the relay (BUGS.md's cause: frames reach it with
+// holes) and the viewer freezes to the next keyframe; on Reliable the GOP
+// rides one stream behind its keyframe and QUIC retransmits, so no frame
+// reaches the relay with a hole. What remains on Reliable is docs/75 D2's
+// trade: when an outage straddles a rotation, the next GOP's keyframe can land
+// before the old GOP's retransmitted tail, which the relay then drops as stale
+// and the viewer skips (a jump to that keyframe, not a wait for one) — the
+// share of docs/88 table S5's 98–99 % that is not 100. So Reliable must show
+// fewer gap resyncs than Lowest latency under the same outages, and any it
+// shows must come with the relay dropping a stale GOP tail. (The relay's
+// ingress-loss window finalizes a frame only 1024 frames later, ~34 s, so it
+// cannot judge a 12 s pass; its stale-record counter is immediate.)
+// Flow-shaped (docs/25 Decision 6): counters that move or stay put, never a
+// rate.
+const UPLINK_OUTAGE = { everyMs: 1500, forMs: 150 };
+const UPLINK_OUTAGE_WATCH_MS = 12_000;
+
+// This pass's broadcast on /statusz: the one key that was not there before it
+// started (the relay keys broadcasts by an HMAC of their ID).
+async function statuszBroadcasts(opsUrl) {
+  return (await (await fetch(`${opsUrl}/statusz`)).json()).broadcasts ?? {};
+}
+
+async function uplinkOutagePass({ certHash, opsUrl, delivery }) {
+  const before = new Set(Object.keys(await statuszBroadcasts(opsUrl)));
+  const link = await startLossyLink(RELAY_PORT, 0, { uplink: true });
+  const lossyUrl = `https://127.0.0.1:${link.port}`;
+  const { browser: pubBrowser, page: pubPage, id } = await startBrowserBroadcast({
+    relayUrl: lossyUrl, certHash, attempt: `uplink-${delivery}`, delivery,
+  });
+  let viewerBrowser = null;
+  try {
+    await pubPage.getByRole('button', { name: 'Show stats' }).click();
+    await pollFor(
+      async () => {
+        const v = (await rowValue(pubPage, 'Encoded'))?.trim();
+        return /^\d+$/.test(v) && Number(v) >= WARMUP_FRAMES;
+      },
+      30_000,
+      500,
+      `${WARMUP_FRAMES} encoded frames (uplink-${delivery})`,
+    );
+
+    viewerBrowser = await launchBrowser();
+    const context = await newAppContext(viewerBrowser, { relayUrl: `https://127.0.0.1:${RELAY_PORT}`, certHash, delivery: 'resilient' });
+    const page = await context.newPage();
+    wirePageLogs(page, `console-uplink-${delivery}-viewer`);
+    await page.goto(`${APP_URL}/#/view/${id}`);
+    const overlay = page.locator('[role="dialog"][aria-label="Stream stats"]');
+    await pollFor(
+      async () => {
+        if (await overlay.isVisible()) return true;
+        await page.keyboard.press('Control+Alt+Shift+D');
+        await sleep(300);
+        return overlay.isVisible();
+      },
+      15_000,
+      500,
+      'the stats overlay',
+    );
+    await pollFor(
+      async () => {
+        const v = (await rowValue(page, 'Completed'))?.trim();
+        return /^\d+$/.test(v) && Number(v) > 0;
+      },
+      30_000,
+      1000,
+      'the first completed frame',
+    );
+    await sleep(2000);
+
+    // Armed once both ends run, so the handshakes and the priming keyframe
+    // are not what gets lost.
+    const all = await statuszBroadcasts(opsUrl);
+    const key = Object.keys(all).find((k) => !before.has(k) && all[k].publisherActive);
+    if (!key) fail(`uplink-${delivery}: its broadcast is not on /statusz`);
+    const ingress = async () => (await statuszBroadcasts(opsUrl))[key] ?? {};
+
+    link.setOutage(UPLINK_OUTAGE);
+    const r1 = await ingress();
+    const v1 = latest(await captureDiagnostics(page, `diagnostics-uplink-${delivery}-1`));
+    await sleep(UPLINK_OUTAGE_WATCH_MS);
+    const v2 = latest(await captureDiagnostics(page, `diagnostics-uplink-${delivery}-2`));
+    const r2 = await ingress();
+    const pub = latest(await captureDiagnostics(pubPage, `broadcast-diagnostics-uplink-${delivery}`));
+    link.setOutage(null);
+
+    const d = (o1, o2, k) => (o2[k] ?? 0) - (o1[k] ?? 0);
+    const result = {
+      pub,
+      resyncs: d(v1, v2, 'reorderGapResyncs'),
+      completed: d(v1, v2, 'framesCompleted'),
+      stale: d(r1, r2, 'uplinkRecordsStale'),
+    };
+    log(
+      `uplink outages (${UPLINK_OUTAGE.forMs} ms every ${UPLINK_OUTAGE.everyMs} ms), ${delivery}: ` +
+        `broadcaster ${pub.uplinkMode} (${pub.uplinkCarriersOpened} carriers, ${pub.uplinkRecordsShed} records shed); ` +
+        `relay ${result.stale} stale records dropped; ` +
+        `Smoother viewer ${result.completed} frames completed, ${result.resyncs} gap resyncs`,
+    );
+    return result;
+  } finally {
+    link.setOutage(null);
+    await viewerBrowser?.close();
+    await pubBrowser.close();
+    // The broadcast must read inactive before assertRelaySide, which counts
+    // the active publishers and holds each to zero ingress loss.
+    await pollFor(
+      async () => {
+        const st = await (await fetch(`${opsUrl}/statusz`)).json();
+        return Object.values(st.broadcasts ?? {}).filter((b) => b.publisherActive).length === 1;
+      },
+      40_000,
+      250,
+      `the uplink-${delivery} broadcaster to leave`,
+    );
+    link.close();
   }
 }
 
@@ -1759,8 +1969,10 @@ async function assertRelaySide(opsUrl, expectedActive = 1) {
 // control and media sessions. What only real processes can show is the
 // contract BETWEEN them — that a browser participant's tiles are ordinary
 // /subscribe sessions the relay counts like any other, that focus is a gain
-// change rather than a re-dial, and that Hide videos really does close every
-// media session while the room keeps the participant. The subscriber count
+// change rather than a re-dial, that a stream hidden under Choose loses its
+// subscriber while the other keeps its own, and that None (the old Hide
+// videos, R86) really does close every media session while the room keeps
+// the participant. The subscriber count
 // on /statusz is the load-bearing number: it is the relay's own view, not
 // the page's claim about itself.
 
@@ -1780,9 +1992,35 @@ async function readTiles(page) {
       frames: Number(el.getAttribute('data-frames')),
       variant: el.getAttribute('data-variant'),
       status: el.getAttribute('data-status'),
+      // R83 Fit: the decoded frame size and the tile's box on the page.
+      frameW: Number(el.getAttribute('data-frame-w') ?? 0),
+      frameH: Number(el.getAttribute('data-frame-h') ?? 0),
+      boxW: el.getBoundingClientRect().width,
+      boxH: el.getBoundingClientRect().height,
     })),
   );
 }
+
+// The tiles' primary sessions' subscriber keys (random per session, stable
+// for its life): unchanged keys across a layout switch mean no tile
+// re-dialed. Stripe legs (striped delivery is on by default, and the large
+// fixture engages it) are left out: the stripe controller adds and replaces
+// them on its own, with no tile remount.
+// One sorted key list per active broadcast, in a stable order.
+async function relaySubscriberKeys(opsUrl) {
+  const { active } = await relayRooms(opsUrl);
+  return active
+    .map((b) =>
+      (b.subscriberDetails ?? [])
+        .filter((d) => !d.internal && !d.stripeLeg)
+        .map((d) => d.key)
+        .filter(Boolean)
+        .sort(),
+    )
+    .sort((a, b) => (a[0] ?? '').localeCompare(b[0] ?? ''));
+}
+
+const sameKeys = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 async function relayRooms(opsUrl) {
   const st = await (await fetch(`${opsUrl}/statusz`)).json();
@@ -1802,7 +2040,10 @@ async function roomsPass({ relayUrl, certHash, opsUrl }) {
   const code = await waitForLine(pubA, /^ROOM ([A-Z0-9]{6}) [0-9a-f]{32}$/m, 20_000, 'the minted room code');
   log(`pubsim A publishing as ${idA}, minted a room`);
   const pubB = launch('pubsim-room-b', PUBSIM_BIN, [
+    // The large (1280×720, 16:9) fixture beside A's 320×240 (4:3): two
+    // shapes for the Fit step (R83, docs/87).
     '-url', relayUrl, '-insecure', '-duration', '300s', '-room', code, '-label', 'bravo', '-nick', 'bravo',
+    '-fixture', 'large',
   ]);
   const idB = await waitForLine(pubB, /GAWK_PUBSIM_ID=([A-Z0-9]{6})/, 20_000, 'publisher B\'s broadcast code');
   log(`pubsim B publishing as ${idB}, attached to the room`);
@@ -1821,10 +2062,13 @@ async function roomsPass({ relayUrl, certHash, opsUrl }) {
   try {
     const context = await newAppContext(browser, { relayUrl, certHash });
     // The nickname prompt is unit-tested; the pass seeds one so the room
-    // dials on load, and pins grid so a stale mode preference cannot steer it.
+    // dials on load, and pins grid and every stream shown so a stale
+    // preference cannot steer it (R86: None and the per-room picks).
     await context.addInitScript(() => {
       localStorage.setItem('gawk:nickname', 'e2e');
       localStorage.setItem('gawk:room-mode', 'grid');
+      localStorage.removeItem('gawk:room-videos');
+      localStorage.removeItem('gawk:room-picks');
     });
     const page = await context.newPage();
     wirePageLogs(page, 'console-rooms');
@@ -1854,6 +2098,38 @@ async function roomsPass({ relayUrl, certHash, opsUrl }) {
       if (b.subscribers < 1) fail(`relay shows ${b.subscribers} subscribers on an active broadcast while the grid shows it`);
     }
     writeFileSync(join(OUT, 'room-grid.png'), await page.screenshot());
+    const gridKeys = await relaySubscriberKeys(opsUrl);
+    if (gridKeys.length !== 2 || gridKeys.some((k) => k.length === 0)) {
+      fail(`grid: expected primary subscriber keys on both broadcasts, got ${JSON.stringify(gridKeys)}`);
+    }
+
+    // R83 Fit (docs/87): each tile's box takes its decoded frame's shape
+    // (4:3 and 16:9 here), and the switch moves tiles without a re-dial.
+    // The footer has faded over the grid's sampling gap; any pointer
+    // activity brings it back.
+    await page.mouse.move(40, 40);
+    await page.mouse.move(60, 60);
+    await page.getByRole('radio', { name: 'Fit' }).click();
+    await pollFor(
+      async () => {
+        const tiles = await readTiles(page);
+        return (
+          tiles.length === 2 &&
+          tiles.every(
+            (t) => t.variant === 'grid' && t.frameW > 0 && t.frameH > 0 && Math.abs(t.boxW / t.boxH / (t.frameW / t.frameH) - 1) < 0.02,
+          )
+        );
+      },
+      5_000,
+      200,
+      'every Fit tile to take its stream\'s shape',
+    );
+    const fitTiles = await readTiles(page);
+    const shapesSeen = new Set(fitTiles.map((t) => (t.frameW / t.frameH).toFixed(2)));
+    if (shapesSeen.size !== 2) fail(`Fit step expected two stream shapes, saw ${[...shapesSeen].join(', ')}`);
+    if (!sameKeys(await relaySubscriberKeys(opsUrl), gridKeys)) fail('Fit re-dialed: a subscriber session changed on the switch');
+    log(`fit ok: ${fitTiles.map((t) => `${t.frameW}×${t.frameH} in ${Math.round(t.boxW)}×${Math.round(t.boxH)}`).join(', ')}`);
+    writeFileSync(join(OUT, 'room-fit.png'), await page.screenshot());
 
     // Focus by number key. The sessions persist across the switch (docs/44
     // §4.7: audio follows the mode, media does not re-dial), so the newly
@@ -1884,14 +2160,36 @@ async function roomsPass({ relayUrl, certHash, opsUrl }) {
     for (const b of relayFocus.active) {
       if (b.subscribers < 1) fail('focus re-dialed: an active broadcast lost its subscriber on the switch');
     }
+    if (!sameKeys(await relaySubscriberKeys(opsUrl), gridKeys)) fail('focus re-dialed: a subscriber session changed on the switch');
     log('focus ok: key 2 focused tile 2 and it kept advancing');
     writeFileSync(join(OUT, 'room-focus.png'), await page.screenshot());
 
-    // Hide videos: no tiles, and — the relay's word for it — zero
-    // subscribers on both broadcasts, while the room still counts the
-    // browser's control session among its participants.
+    // R86 (docs/90): hide bravo under Choose. Its tile goes and the relay
+    // counts no subscriber on its broadcast, while alpha keeps its own: a
+    // hidden stream is unsubscribed, not just not drawn. /statusz keys
+    // broadcasts by an HMAC, so the check is "one at zero, one not".
     const participantsBefore = relayFocus.rooms.find((r) => r.attachments === 2)?.participants ?? 0;
-    await page.getByRole('radio', { name: 'Hide videos' }).click();
+    await page.getByRole('button', { name: /^What to show:/ }).click();
+    await page.getByRole('radio', { name: 'Choose' }).click();
+    await page.getByRole('checkbox', { name: 'bravo' }).click();
+    await pollFor(async () => (await readTiles(page)).length === 1, 5_000, 200, "bravo's tile to unmount");
+    await pollFor(
+      async () => {
+        const { active } = await relayRooms(opsUrl);
+        const subs = active.map((b) => b.subscribers).sort((a, b) => a - b);
+        return active.length === 2 && subs[0] === 0 && subs[1] >= 1;
+      },
+      15_000,
+      500,
+      'the relay to count zero subscribers on the hidden broadcast and at least one on the other',
+    );
+    log('choose ok: bravo hidden, its broadcast has no subscriber, alpha kept its own');
+    writeFileSync(join(OUT, 'room-choose.png'), await page.screenshot());
+
+    // None (the old Hide videos): no tiles, and — the relay's word for it —
+    // zero subscribers on both broadcasts, while the room still counts the
+    // browser's control session among its participants.
+    await page.getByRole('radio', { name: 'None' }).click();
     await pollFor(async () => (await readTiles(page)).length === 0, 5_000, 200, 'the tiles to unmount');
     await pollFor(
       async () => {
@@ -1900,16 +2198,16 @@ async function roomsPass({ relayUrl, certHash, opsUrl }) {
       },
       15_000,
       500,
-      'the relay to count zero subscribers on both broadcasts after Hide videos',
+      'the relay to count zero subscribers on both broadcasts after None',
     );
     const { rooms: roomsHidden } = await relayRooms(opsUrl);
     const room = roomsHidden.find((r) => r.attachments === 2);
     if (!room) fail('the room disappeared from /statusz while a participant was in it');
     if (room.participants !== participantsBefore) {
-      fail(`Hide videos changed the room's participant count (${participantsBefore} → ${room.participants}); the control session must stay`);
+      fail(`None changed the room's participant count (${participantsBefore} → ${room.participants}); the control session must stay`);
     }
     if (room.participants < 1) fail('the room counts no participants while the browser is in it');
-    log(`hide videos ok: zero subscribers on both broadcasts, room still holds ${room.participants} participant(s) (2 are the publishers)`);
+    log(`none ok: zero subscribers on both broadcasts, room still holds ${room.participants} participant(s) (2 are the publishers)`);
     writeFileSync(join(OUT, 'room-hidden.png'), await page.screenshot());
 
     // Leave: the participant count drops by exactly one.
@@ -2102,6 +2400,9 @@ async function main() {
     if (TELEMETRY_CHECK) relayArgs.push('-telemetry-key', TELEMETRY_KEY);
     // R42: the room routes exist only with the flag on (docs/44 D17).
     if (ROOMS_CHECK || ROOMS_GATED_CHECK) relayArgs.push('-rooms');
+    // The deep-buffer pass asks for DEEP_BUFFER_CONFIG_MS, above the 3 s
+    // default window.
+    if (RESILIENT_VIEWER_PASS) relayArgs.push('-dvr-window', DEEP_BUFFER_DVR_WINDOW);
     // R40: the screening notice is off unless asked for; every other pass is
     // its control.
     if (SCREENING_NOTICE_CHECK) relayArgs.push('-screening-notice');
@@ -2301,6 +2602,40 @@ async function main() {
         : {},
     );
 
+    // R84 BR4 (docs/88 §8): the browser broadcaster behind uplink outages, in
+    // each delivery mode, each watched by a Smoother viewer. Lowest latency is
+    // the control: the outages must bite there (gap resyncs), or the Reliable
+    // half proves nothing. Tier 1 only: it needs the forwarder in front of the
+    // relay this harness owns.
+    if (BROWSER_BROADCAST && !EXTERNAL) {
+      log('running the uplink-outage passes: Lowest latency (control), then Reliable (R84)');
+      const control = await uplinkOutagePass({ certHash, opsUrl, delivery: 'lowest-latency' });
+      const reliable = await uplinkOutagePass({ certHash, opsUrl, delivery: 'reliable' });
+      const problems = [];
+      if (control.pub.uplinkMode !== 'datagram') problems.push(`Lowest latency sent as ${control.pub.uplinkMode}`);
+      // The control must bite: the outages froze the Smoother viewer.
+      if (control.resyncs <= 0) problems.push('the Smoother viewer never froze on Lowest latency — the control did not bite');
+      if (reliable.pub.uplinkMode !== 'carrier' || !(reliable.pub.uplinkCarriersOpened > 0)) {
+        problems.push(`Reliable did not engage: uplinkMode ${reliable.pub.uplinkMode}, ${reliable.pub.uplinkCarriersOpened} carriers`);
+      }
+      if (reliable.completed <= 0) problems.push('no frames completed for the Smoother viewer on Reliable');
+      // The milestone's claim: QUIC repairs what the outages took, so the
+      // viewer resyncs less than on Lowest latency. Resyncs with no stale tail
+      // at the relay are tracked in BUGS.md (below).
+      if (reliable.resyncs >= control.resyncs) {
+        problems.push(`the Smoother viewer resynced ${reliable.resyncs} times on Reliable, not fewer than Lowest latency's ${control.resyncs}`);
+      }
+      // Recorded, not asserted: Reliable also resyncs where the relay dropped
+      // no stale tail (1 of 3 local runs on main, 2026-11-11; BUGS.md "Reliable
+      // browser broadcast: Smoother viewers resync on uplink outages with no
+      // stale tail at the relay"). The assertion above is the milestone's claim.
+      if (reliable.resyncs > 0 && reliable.stale === 0) {
+        log(`note: the Smoother viewer resynced ${reliable.resyncs} times on Reliable with no stale GOP tail at the relay (BUGS.md)`);
+      }
+      if (reliable.pub.uplinkRecordsShed !== 0) problems.push(`Reliable shed ${reliable.pub.uplinkRecordsShed} records on a link that keeps up`);
+      if (problems.length > 0) fail(`uplink-outage assertions failed:\n  - ${problems.join('\n  - ')}`);
+    }
+
     // R19 resilient mode, on the same live broadcast (PRODUCT-1): the only
     // automated exercise of the browser's carrier reader and of the
     // ?delivery=reliable negotiation end to end. Reuses the running relay,
@@ -2318,7 +2653,19 @@ async function main() {
       // 1) was catchable by the assertions already here — the mode simply was
       // never run. A mode with no pass is a mode nobody tests.
       log('running the deep-buffer viewer pass (R21 DVR ring)');
-      await runViewer('deep', MAX_RESILIENT_RETRIES, { delivery: 'deep' });
+      await runViewer('deep', MAX_RESILIENT_RETRIES, { delivery: 'deep', dvrBufferMs: DEEP_BUFFER_CONFIG_MS });
+
+      // R87 (docs/91 SG2): the same, striped. On, not Auto: Auto correctly
+      // dials nothing on a clean loopback, and SG4 owns that claim.
+      log('running the striped deep-buffer viewer pass (R87, Striping On)');
+      await runViewer('deep-striped', MAX_RESILIENT_RETRIES, {
+        delivery: 'deep',
+        stripe: 'on',
+        expectDvrStripe: true,
+        // assertDvrFlow checks the grant against it, so the striped pass also
+        // proves the legs ask with the configured buffer, not the default.
+        dvrBufferMs: DEEP_BUFFER_CONFIG_MS,
+      });
     }
 
     // R29 (docs/34 FP8): the parity pass, behind a link that actually loses

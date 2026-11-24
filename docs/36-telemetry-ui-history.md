@@ -805,6 +805,19 @@ date from the listing that already knows it.
      one-statement rule is what refuses `COPY … TO`. Tested in **both** builds,
      since a security-relevant rule that only exists in the configuration
      nobody runs locally is a rule nobody checks.
+     **Revised 2026-11-13:** the allowlist was the only gate, and it has two
+     holes. It checks a statement's first verb, so a `SELECT` over
+     `read_text`, `read_csv`, `glob` or an `https://` path read any file the
+     pod could open (its own environment through `/proc` included) and
+     fetched any URL it could reach. And `EXPLAIN ANALYZE` runs what it
+     explains, so `EXPLAIN ANALYZE COPY … TO` wrote into the store. Both were
+     reproduced against the shipping engine. Now the allowlist looks past
+     `EXPLAIN` to the statement behind it, and the engine itself is confined:
+     `enable_external_access=false` with the data directory as the one
+     `allowed_directories` entry, no on-demand extension loading, and
+     `lock_configuration=true` last. The query worker also starts with an
+     allowlisted environment instead of the service's. The views, and a
+     file under the data directory read by path, answer as before.
 
 2. **UD22 (SSE) — RESOLVED 2026-07-29 (owner): keep it, with the poll as
    fallback.** As built, `GET /live/stream` hashes the marshalled projection

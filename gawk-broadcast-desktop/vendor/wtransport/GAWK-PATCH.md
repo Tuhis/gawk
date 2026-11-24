@@ -1,13 +1,13 @@
-# Vendored wtransport 0.7.1 + gawk patches
+# Vendored wtransport 0.7.2 + gawk patches
 
 > **Modification notice** (Apache-2.0 §4(b)): the files in this directory are
-> a copy of upstream `wtransport` 0.7.1 **modified by the gawk authors**. The
+> a copy of upstream `wtransport` 0.7.2 **modified by the gawk authors**. The
 > changed files are `src/error.rs`, `src/endpoint.rs`, `src/connection.rs`,
 > `src/driver/mod.rs` and `src/driver/streams/connect.rs`; every changed site
 > carries a `GAWK PATCH` marker. Upstream's own license texts are alongside
 > this file as `LICENSE-MIT` and `LICENSE-APACHE`.
 
-This is `wtransport` 0.7.1 from crates.io (MIT OR Apache-2.0, © Biagio
+This is `wtransport` 0.7.2 from crates.io (MIT OR Apache-2.0, © Biagio
 Festa and contributors — license declared in Cargo.toml), vendored via
 `[patch.crates-io]` in the workspace root, with four functional changes.
 The first three were found by running the WB2 integration tests against the real
@@ -62,4 +62,7 @@ honest (docs/38 D2/D18).
    (`ConnectStream::close_session`).
 
 When bumping wtransport: re-apply (or hopefully drop) these; the
-integration suite fails loudly if any regresses.
+integration suite fails loudly if any regresses. Re-derived on 0.7.2
+(2026-11): upstream's one change to `wtransport` itself, skipping non-DATA
+frames in the CONNECT-stream reader, is a subset of patch 3, so the
+rewritten `connect.rs` was kept as it was.

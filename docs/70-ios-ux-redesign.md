@@ -225,7 +225,7 @@ for).
 | D16 | **Add to a room (C3)**, the broadcaster's sheet: one field, "Room code or link" (with Paste), **Create a new room** ("You get a code for friends to join"), and **Your rooms** (saved first, then recent, at most 8; swipe to save or remove). Footer: "Your stream joins the room when you go live." A pasted link's `?rt=` grant is honoured as on the desktop (docs/60 D8). A gated static room asks for its key in an alert with a text field: "This room needs a key to add your stream". | The desktop's sheet (docs/60 D8), the same rules. |
 | D17 | **Live in a room (C4).** The Room group shows the room's name, "3 streaming · 3 watching", up to three avatars and **Manage ›** (D18). Under it are **Copy room link** (tinted) and **Leave** (ghost). Live's primary stays Copy link (docs/64 OD2). | docs/64 D6: a room adds a card; it doesn't rearrange Live. |
 | D18 | **The room sheet (C5).** Title: the room's name, with "Room CODE · You made this room" for its creator. **Copy room link**. **Streaming**: each stream with live or away and its viewer count; **Remove** for the creator (Detach with that stream's ID). **Watching**: the nicknames. **Leave room** (glass) and, for the creator, **End room for everyone** (danger outline). **There is no "Watch the room" button.** The phone broadcasts its whole screen, so an in-app room player opened while live would send the room, a mirror of your own stream included, to everyone watching you. | docs/60 D9 and docs/64 D16, minus the one action a whole-screen capture can't allow. |
-| D19 | **The room player (C1, C2, C1b, C2b)** is the single-stream player with more tiles, laid out like the web room screen (OD9). Black, tiles edge to edge with 2 pt gaps, and controls that hide after 3 s. **Top left**: X (leave the room) and the streaming count chip ("3 streaming", counting away streams as the web does). **Top right**: the room code chip and **People** (D20). The code chip copies the room link, as the web room's does and as the stream's pill does (D5a). **Bottom left**: **Grid / Focus**, a glass segmented control. **Bottom right**: settings (Latency, Share…) and full screen, in the same place as on a single stream. Each tile has a name chip at the top left, with a red dot when live and an amber dot when away. An away tile reads "Mika is away" / "Their stream comes back here on its own." A tap on a tile focuses it.<br>**Grid, portrait**: one column of 16:9 tiles up to four streams, two columns above four. **Grid, landscape**: 2 × 2 up to four, three columns above four.<br>**Focus**: the focused stream where a single stream sits, with the others in a strip under it that scrolls sideways.<br>**At most four tiles play** (docs/67 D21). In Grid the others show their last frame with a play badge, and a tap swaps that one in, pausing the playing tile that was swapped in longest ago. A one-line hint explains it: "Four play at once. Tap a paused stream to play it instead." In Focus the strip's tiles hold their last frame and only the focused one decodes. | The web room's anatomy and toggle (OD9), the single-stream player's chrome, docs/67 D21's decode budget. |
+| D19 | **The room player (C1, C2, C1b, C2b)** is the single-stream player with more tiles, laid out like the web room screen (OD9). Black, tiles edge to edge with 2 pt gaps, and controls that hide after 3 s. **Top left**: X (leave the room) and the streaming count chip ("3 streaming", counting away streams as the web does). **Top right**: the room code chip and **People** (D20). The code chip copies the room link, as the web room's does and as the stream's pill does (D5a). **Bottom left**: **Grid / Focus**, a glass segmented control. **Bottom right**: settings (Latency, Share…) and full screen, in the same place as on a single stream. Each tile has a name chip at the top left, with a red dot when live and an amber dot when away. An away tile reads "Mika is away" / "Their stream comes back here on its own." A tap on a tile focuses it.<br>**Grid, portrait**: one column of 16:9 tiles up to four streams, two columns above four. **Grid, landscape**: 2 × 2 up to four, three columns above four.<br>**Focus**: the focused stream where a single stream sits, with the others in a strip under it that scrolls sideways.<br>**At most four tiles play** (docs/67 D21). In Grid the others show their last frame with a play badge, and a tap swaps that one in, pausing the playing tile that was swapped in longest ago. A one-line hint explains it: "Four play at once. Tap a paused stream to play it instead." In Focus the strip's tiles hold their last frame and only the focused one decodes. | The web room's anatomy and toggle (OD9), the single-stream player's chrome, docs/67 D21's decode budget. *2026-11-10: R83 adds **Fit** between Grid and Focus: tiles at their streams' own shapes, plays like Grid ([docs/87](87-room-fit-layout.md) D12).* |
 | D20 | **People (C2c)** is the web room's people panel as a sheet, opened by People. Title: the room's name and "Room CODE". **Streaming**: dot, name and viewer count; a tap focuses that stream. **People**: avatar, name, Streaming or Watching. Your own row reads "Sam (you)" with **Edit**, which opens an alert with a text field. The new nickname (at most 32 bytes, the wire's `MaxRoomNicknameLen`) goes to the room as the web's does (`SetNickname`, 0x03) and becomes Settings' nickname. This is where the "Watching as …" bar went (OD9). | The web panel's sections (`RoomPanel.tsx`), without its chat placeholder. |
 | D21 | **The phone never shows a player while broadcasting without asking.** Opening any stream or room from Watch, a saved room or a link while live asks first: "You're live. Everything on screen is broadcast, so this stream would be too." with **Watch anyway** and **Cancel**. | D18's reason holds for every entry point, not only the room sheet. |
 | D22 | **Settings (D1).** **Server**: one row per server with its probe status ("Checking…", "Connected · 24 ms" with a green dot, "Can't reach server" with an amber dot), a checkmark on the selected one, and an info button that opens Edit (D23). A tap on a row selects it. Then **Add a server** (accent action row). Footer: "The default is the official gawk fleet. A publish secret is only sent to the server it was saved for." **You**: Nickname (inline field; "Shown to others in a room."). **Privacy**: Send diagnostics (switch; "Off by default. Session statistics go to the server's operator, never what's on your screen."). **About**: Version and Terms of use (opens in Safari). Debug builds keep their Development section. | docs/64 D15: every server has Edit, and the secret lives there (*revises docs/67 D23's inline field*). |
@@ -490,3 +490,40 @@ couldn't outlast it:
   or the Stats drawer.
 - **Spotlight is off** for the job; it indexed the checkout and the build
   products throughout.
+
+### 10.5 The iOS 27.2 Simulator, 2026-11-07
+
+Runner image `20261103.629` added iOS 27.2 Simulators, and two UI tests
+failed on every run there (`ios.yml` was held at 27.1 meanwhile, #730).
+
+- **A glass chip in the player's chrome lost its frame.** On 27.2, inside a
+  `GlassEffectContainer`, a view with `.glassEffect` and no content shape
+  is framed for accessibility as its text and icon alone: the viewer count,
+  the server chip and the code pill read 14–16 pt tall, not 30 pt, and the
+  audit failed them as too small to hit. The glass circles, which set
+  `.contentShape(.circle)` after the glass, kept 44 × 44. `Chip` sets
+  `.contentShape(.capsule)` after its glass. The code pill, a button, now
+  has a 44 pt hit area round its 30 pt capsule (D27), with the content
+  shape on it. The viewer count and server chips are read and never tapped,
+  so they carry the static-text trait, as the combined chips (LIVE,
+  "3 streaming") do. `PlayerUITests` pins the pill's 44 pt and the server
+  chip's 30 pt.
+
+| Goal | Verified by |
+|---|---|
+| The player's and the room player's chips and pill pass the audit on 27.2 | `AccessibilityUITests.testThePlayers` on the 27.2 Simulator in `ios.yml` |
+| The code pill takes a tap across 44 pt | `PlayerUITests.testTheCodePillCopiesAndKeepsTheCode` asserts its frame |
+| `ios.yml` takes the newest iOS 27 runtime again and logs it | The `Pick a simulator` step's output |
+| Leave leaves the room without ending the broadcast | `BroadcastRoomUITests.testLeaveReturnsToNotInARoom`, with its "still live" check |
+
+- **Leave's tap ended the broadcast.** Not a timing or state bug in the
+  leave flow: the failure's hierarchy showed "Broadcast ended" with the
+  room still pending, and the recording showed "Ending…" right after the
+  tap. Live, the room card sits under the pinned End broadcast, and on
+  27.2 Leave's centre fell in the strip between that button and the tab
+  bar (y 790 of 874). XCTest scrolls only to an element it finds
+  unhittable, found Leave hittable there, and tapped; the touch went to
+  End broadcast. The test now drags Leave clear of the pinned button first
+  (`bringAbove` in `UITestSupport.swift`) and checks the broadcast is
+  still live after it. A person sees Leave under the button and scrolls,
+  so the app is unchanged here.

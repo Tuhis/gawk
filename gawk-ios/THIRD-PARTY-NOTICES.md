@@ -56,17 +56,17 @@ script for what counts as a dependency here and why.
 | `bitflags` | 2.13.2 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
 | `block-buffer` | 0.12.1 | `MIT OR Apache-2.0` | Copyright (c) 2018-2025 The RustCrypto Project Developers |
 | `block2` | 0.6.2 | `MIT` | — |
-| `bytes` | 1.12.1 | `MIT` | Copyright (c) 2018 Carl Lerche |
+| `bytes` | 1.12.2 | `MIT` | Copyright (c) 2018 Carl Lerche |
 | `camino` | 1.2.6 | `MIT OR Apache-2.0` | Copyright (c) The camino Contributors |
 | `cargo-platform` | 0.3.3 | `MIT OR Apache-2.0` | — |
 | `cargo_metadata` | 0.23.1 | `MIT` | — |
 | `cfg-if` | 1.0.5 | `MIT OR Apache-2.0` | Copyright (c) 2014 Alex Crichton |
 | `chacha20` | 0.10.2 | `MIT OR Apache-2.0` | Copyright (c) 2019-2026 The RustCrypto Project Developers |
-| `const-oid` | 0.10.2 | `Apache-2.0 OR MIT` | Copyright (c) 2020-2026 The RustCrypto Project Developers |
+| `const-oid` | 0.10.3 | `Apache-2.0 OR MIT` | Copyright (c) 2020-2026 The RustCrypto Project Developers |
 | `core-foundation` | 0.10.1 | `MIT OR Apache-2.0` | Copyright (c) 2012-2013 Mozilla Foundation |
 | `core-foundation-sys` | 0.8.7 | `MIT OR Apache-2.0` | Copyright (c) 2012-2013 Mozilla Foundation |
 | `cpufeatures` | 0.3.1 | `MIT OR Apache-2.0` | Copyright (c) 2020-2026 The RustCrypto Project Developers |
-| `crc32fast` | 1.5.4 | `MIT OR Apache-2.0` | Copyright (c) 2018 Sam Rijs, Alex Crichton and contributors |
+| `crc32fast` | 1.5.5 | `MIT OR Apache-2.0` | Copyright (c) 2018 Sam Rijs, Alex Crichton and contributors |
 | `crypto-common` | 0.2.2 | `MIT OR Apache-2.0` | Copyright (c) 2021-2026 RustCrypto Developers |
 | `data-encoding` | 2.11.1 | `MIT` | Copyright (c) 2015-2020 Julien Cretin<br>Copyright (c) 2017-2020 Google Inc |
 | `der-parser` | 10.0.0 | `MIT OR Apache-2.0` | Copyright (c) 2017 Pierre Chifflier |
@@ -74,13 +74,13 @@ script for what counts as a dependency here and why.
 | `digest` | 0.11.3 | `MIT OR Apache-2.0` | Copyright (c) 2017-2025 RustCrypto Developers<br>Copyright (c) 2017 Artyom Pavlov |
 | `dispatch2` | 0.3.1 | `Zlib OR Apache-2.0 OR MIT` | — |
 | `equivalent` | 1.0.3 | `Apache-2.0 OR MIT` | Copyright (c) 2016--2023 |
-| `errno` | 0.3.14 | `MIT OR Apache-2.0` | Copyright (c) 2014 Chris Wong |
+| `errno` | 0.3.15 | `MIT OR Apache-2.0` | Copyright (c) 2014 Chris Wong |
 | `fastrand` | 2.5.0 | `Apache-2.0 OR MIT` | — |
-| `flate2` | 1.1.10 | `MIT OR Apache-2.0` | Copyright (c) 2014-2026 Alex Crichton |
-| `form_urlencoded` | 1.2.2 | `MIT OR Apache-2.0` | Copyright (c) 2013-2016 The rust-url developers |
+| `flate2` | 1.1.11 | `MIT OR Apache-2.0` | Copyright (c) 2014-2026 Alex Crichton |
+| `form_urlencoded` | 1.2.3 | `MIT OR Apache-2.0` | Copyright (c) 2013-2016 The rust-url developers |
 | `getrandom` | 0.2.17 | `MIT OR Apache-2.0` | Copyright (c) 2018-2024 The rust-random Project Developers<br>Copyright (c) 2014 The Rust Project Developers |
 | `getrandom` | 0.4.3 | `MIT OR Apache-2.0` | Copyright (c) 2018-2026 The rust-random Project Developers<br>Copyright (c) 2014 The Rust Project Developers |
-| `hashbrown` | 0.17.1 | `MIT OR Apache-2.0` | Copyright (c) 2016 Amanieu d'Antras |
+| `hashbrown` | 0.17.2 | `MIT OR Apache-2.0` | Copyright (c) 2016 Amanieu d'Antras |
 | `heck` | 0.5.0 | `MIT OR Apache-2.0` | Copyright (c) 2015 The Rust Project Developers |
 | `httlib-huffman` | 0.3.4 | `MIT` | — |
 | `http` | 1.5.0 | `MIT OR Apache-2.0` | Copyright 2017 http-rs authors<br>Copyright (c) 2017 http-rs authors |
@@ -96,7 +96,7 @@ script for what counts as a dependency here and why.
 | `idna` | 1.1.0 | `MIT OR Apache-2.0` | Copyright (c) 2013-2025 The rust-url developers |
 | `idna_adapter` | 1.2.2 | `Apache-2.0 OR MIT` | Copyright (c) The rust-url developers |
 | `indexmap` | 2.14.2 | `Apache-2.0 OR MIT` | Copyright (c) 2016--2017 |
-| `itoa` | 1.0.18 | `MIT OR Apache-2.0` | — |
+| `itoa` | 1.0.19 | `MIT OR Apache-2.0` | — |
 | `lazy_static` | 1.5.1 | `MIT OR Apache-2.0` | Copyright 2016 lazy-static.rs Developers |
 | `libc` | 0.2.191 | `MIT OR Apache-2.0` | Copyright (c) The Rust Project Developers |
 | `libopus` | 1.6.1 | `BSD-3-Clause` | Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, |
@@ -107,7 +107,7 @@ script for what counts as a dependency here and why.
 | `memchr` | 2.8.3 | `Unlicense OR MIT` | Copyright (c) 2015 Andrew Gallant |
 | `minimal-lexical` | 0.2.1 | `MIT/Apache-2.0` | Copyright (c) 2009 The Go Authors. All rights reserved |
 | `miniz_oxide` | 0.9.1 | `MIT OR Zlib OR Apache-2.0` | Copyright 2013-2014 RAD Game Tools and Valve Software<br>Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC<br>Copyright (c) 2017 Frommi<br>Copyright (c) 2017-2024 oyvindln<br>Copyright (c) 2020 Frommi |
-| `mio` | 1.2.4 | `MIT` | Copyright (c) 2014 Carl Lerche and other MIO contributors |
+| `mio` | 1.2.5 | `MIT` | Copyright (c) 2014 Carl Lerche and other MIO contributors |
 | `nom` | 7.1.3 | `MIT` | Copyright (c) 2014-2019 Geoffroy Couprie |
 | `num-bigint` | 0.4.8 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
 | `num-conv` | 0.2.2 | `MIT OR Apache-2.0` | Copyright (c) Jacob Pratt |
@@ -129,18 +129,18 @@ script for what counts as a dependency here and why.
 | `once_cell` | 1.21.4 | `MIT OR Apache-2.0` | — |
 | `openssl-probe` | 0.2.2 | `MIT OR Apache-2.0` | Copyright (c) 2014 Alex Crichton |
 | `opus` | 0.4.0 | `MIT/Apache-2.0` | Copyright (c) 2016 Tad Hardesty |
-| `opusic-sys` | 0.7.6 | `BSD-3-Clause` | Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, |
+| `opusic-sys` | 0.7.7 | `BSD-3-Clause` | Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, |
 | `pem` | 4.0.0 | `MIT` | Copyright (c) 2016 Jonathan Creekmore |
 | `percent-encoding` | 2.3.2 | `MIT OR Apache-2.0` | Copyright (c) 2013-2025 The rust-url developers |
-| `pin-project-lite` | 0.2.17 | `Apache-2.0 OR MIT` | — |
+| `pin-project-lite` | 0.2.18 | `Apache-2.0 OR MIT` | — |
 | `potential_utf` | 0.1.6 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `powerfmt` | 0.2.1 | `MIT OR Apache-2.0` | Copyright 2023 Jacob Pratt et al<br>Copyright (c) 2023 Jacob Pratt et al |
 | `quinn` | 0.11.12 | `MIT OR Apache-2.0` | Copyright (c) 2018 The quinn Developers |
 | `quinn-proto` | 0.11.19 | `MIT OR Apache-2.0` | Copyright (c) 2018 The quinn Developers |
 | `quinn-udp` | 0.5.16 | `MIT OR Apache-2.0` | Copyright (c) 2018 The quinn Developers |
-| `rand` | 0.10.3 | `MIT OR Apache-2.0` | Copyright 2018 Developers of the Rand project<br>Copyright (c) 2014 The Rust Project Developers |
+| `rand` | 0.10.4 | `MIT OR Apache-2.0` | Copyright 2018 Developers of the Rand project<br>Copyright (c) 2014 The Rust Project Developers |
 | `rand_core` | 0.10.1 | `MIT OR Apache-2.0` | Copyright (c) 2018-2026 The Rand Project Developers |
-| `rand_pcg` | 0.10.2 | `MIT OR Apache-2.0` | Copyright (c) 2014-2017 Melissa O'Neill and PCG Project contributors<br>Copyright 2018 Developers of the Rand project |
+| `rand_pcg` | 0.10.3 | `MIT OR Apache-2.0` | Copyright (c) 2014-2017 Melissa O'Neill and PCG Project contributors<br>Copyright 2018 Developers of the Rand project |
 | `rcgen` | 0.14.10 | `MIT OR Apache-2.0` | Copyright (c) 2019-2026 est31 <MTest31@outlook.com> and contributors |
 | `ring` | 0.17.14 | `Apache-2.0 AND ISC` | Copyright (c) 2009 The Go Authors. All rights reserved<br>Copyright 2015 The Chromium Authors. All rights reserved<br>Copyright 2015-2025 Brian Smith |
 | `rustc-hash` | 2.1.3 | `Apache-2.0 OR MIT` | — |
@@ -148,9 +148,9 @@ script for what counts as a dependency here and why.
 | `rustix` | 1.1.6 | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | — |
 | `rustls` | 0.23.46 | `Apache-2.0 OR ISC OR MIT` | Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com><br>Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com> |
 | `rustls-native-certs` | 0.8.5 | `Apache-2.0 OR ISC OR MIT` | Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com><br>Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com> |
-| `rustls-pki-types` | 1.15.1 | `MIT OR Apache-2.0` | Copyright 2023 Dirkjan Ochtman<br>Copyright (c) 2023 Dirkjan Ochtman <dirkjan@ochtman.nl> |
+| `rustls-pki-types` | 1.16.0 | `MIT OR Apache-2.0` | Copyright 2023 Dirkjan Ochtman<br>Copyright (c) 2023 Dirkjan Ochtman <dirkjan@ochtman.nl> |
 | `rustls-platform-verifier` | 0.7.1 | `MIT OR Apache-2.0` | Copyright (c) 2022 1Password |
-| `rustls-webpki` | 0.103.16 | `ISC` | Copyright 2015 Brian Smith |
+| `rustls-webpki` | 0.103.17 | `ISC` | Copyright 2015 Brian Smith |
 | `security-framework` | 3.7.0 | `MIT OR Apache-2.0` | Copyright (c) 2015 Steven Fackler |
 | `security-framework-sys` | 2.17.0 | `MIT OR Apache-2.0` | Copyright (c) 2015 Steven Fackler |
 | `semver` | 1.0.28 | `MIT OR Apache-2.0` | — |
@@ -161,7 +161,7 @@ script for what counts as a dependency here and why.
 | `shiguredo_libvpx` | 2026.2.0-canary.3 | `Apache-2.0` | — |
 | `simd-adler32` | 0.3.10 | `MIT` | — |
 | `slab` | 0.4.12 | `MIT` | Copyright (c) 2019 Carl Lerche |
-| `smallvec` | 1.16.4 | `MIT OR Apache-2.0` | Copyright (c) 2018 The Servo Project Developers |
+| `smallvec` | 1.16.6 | `MIT OR Apache-2.0` | Copyright (c) 2018 The Servo Project Developers |
 | `socket2` | 0.6.5 | `MIT OR Apache-2.0` | Copyright (c) 2014 Alex Crichton |
 | `stable_deref_trait` | 1.2.1 | `MIT OR Apache-2.0` | Copyright (c) 2017 Robert Grosse |
 | `static_assertions` | 1.1.0 | `MIT OR Apache-2.0` | Copyright (c) 2017 Nikolai Vazquez |
@@ -180,21 +180,21 @@ script for what counts as a dependency here and why.
 | `uniffi_core` | 0.32.2 | `MPL-2.0` | — |
 | `uniffi_pipeline` | 0.32.2 | `MPL-2.0` | — |
 | `untrusted` | 0.9.0 | `ISC` | Copyright 2015-2021 Brian Smith |
-| `ureq` | 3.5.0 | `MIT OR Apache-2.0` | Copyright (c) 2019 Martin Algesten |
-| `ureq-proto` | 0.6.5 | `MIT OR Apache-2.0` | Copyright 2022 Martin Algesten |
-| `url` | 2.5.8 | `MIT OR Apache-2.0` | Copyright (c) 2013-2025 The rust-url developers |
+| `ureq` | 3.5.2 | `MIT OR Apache-2.0` | Copyright (c) 2019 Martin Algesten |
+| `ureq-proto` | 0.7.1 | `MIT OR Apache-2.0` | Copyright 2022 Martin Algesten |
+| `url` | 2.5.9 | `MIT OR Apache-2.0` | Copyright (c) 2013-2025 The rust-url developers |
 | `utf8-zero` | 0.8.1 | `MIT OR Apache-2.0` | — |
 | `utf8_iter` | 1.1.0 | `Apache-2.0 OR MIT` | — |
 | `utf_types` | 1.0.0 | `Apache-2.0 OR MIT` | — |
-| `webpki-roots` | 1.0.11 | `CDLA-Permissive-2.0` | — |
+| `webpki-roots` | 1.0.12 | `CDLA-Permissive-2.0` | — |
 | `writeable` | 0.6.4 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
-| `wtransport` | 0.7.1 | `MIT OR Apache-2.0` | Copyright (c) 2023 Biagio Festa |
-| `wtransport-proto` | 0.7.1 | `MIT OR Apache-2.0` | Copyright (c) 2023 Biagio Festa |
+| `wtransport` | 0.7.2 | `MIT OR Apache-2.0` | Copyright (c) 2023 Biagio Festa |
+| `wtransport-proto` | 0.7.2 | `MIT OR Apache-2.0` | Copyright (c) 2023 Biagio Festa |
 | `x509-parser` | 0.18.1 | `MIT OR Apache-2.0` | Copyright (c) 2017 Pierre Chifflier |
 | `yasna` | 0.6.0 | `MIT OR Apache-2.0` | Copyright (c) 2016 Masaki Hara |
 | `yoke` | 0.8.4 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `zerofrom` | 0.1.8 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
-| `zeroize` | 1.9.1 | `Apache-2.0 OR MIT` | Copyright (c) 2018-2026 The RustCrypto Project Developers |
+| `zeroize` | 1.9.2 | `Apache-2.0 OR MIT` | Copyright (c) 2018-2026 The RustCrypto Project Developers |
 | `zerotrie` | 0.2.5 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `zerovec` | 0.11.9 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `zmij` | 1.0.23 | `MIT` | — |

@@ -1,5 +1,40 @@
 # Changelog
 
+## [2.18.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.17.0...gawk-broadcast-desktop/v2.18.0) (2026-11-20)
+
+
+### Features
+
+* **relay:** striped deep-buffer delivery (R87) ([#814](https://github.com/Tuhis/gawk/issues/814)) ([caf1213](https://github.com/Tuhis/gawk/commit/caf1213fd1d8776f5250cb1e0499a070b47537d6))
+
+## [2.17.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.16.1...gawk-broadcast-desktop/v2.17.0) (2026-11-19)
+
+
+### Features
+
+* **broadcast-desktop:** remember the window's position on macOS ([#813](https://github.com/Tuhis/gawk/issues/813)) ([adb3632](https://github.com/Tuhis/gawk/commit/adb36322e855ab2b08e8b43aeee3acf1e65caaac))
+* **broadcast-desktop:** remember the window's position on Windows ([#811](https://github.com/Tuhis/gawk/issues/811)) ([e877325](https://github.com/Tuhis/gawk/commit/e8773252e2b67c9918c6217a7ebfa366b50c1a1d))
+
+## [2.16.1](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.16.0...gawk-broadcast-desktop/v2.16.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* **broadcast-desktop:** take ureq 3.5.2 and pass the update size limit straight through ([#778](https://github.com/Tuhis/gawk/issues/778)) ([f00cd0d](https://github.com/Tuhis/gawk/commit/f00cd0d71654d9215bf83995c268b72807bb96ee))
+
+## [2.16.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.15.0...gawk-broadcast-desktop/v2.16.0) (2026-11-10)
+
+
+### Features
+
+* **relay:** ingest the browser's keyframe carriers (R84 BR1) ([#764](https://github.com/Tuhis/gawk/issues/764)) ([86cddb9](https://github.com/Tuhis/gawk/commit/86cddb9f4322a89bf59e3f0aa49a4d912c348eab))
+
+
+### Bug Fixes
+
+* **relay:** tell a viewer refused for capacity that the stream is full (4018/4019) ([#728](https://github.com/Tuhis/gawk/issues/728)) ([139555c](https://github.com/Tuhis/gawk/commit/139555c6ab8b34879431c08b36a6099abd2075f6))
+* **relay:** tell a wedged viewer its video cannot be delivered ([#729](https://github.com/Tuhis/gawk/issues/729)) ([2c91622](https://github.com/Tuhis/gawk/commit/2c916223eebc76f67c706c1d36ae6a778344d55a))
+
 ## [2.15.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.14.1...gawk-broadcast-desktop/v2.15.0) (2026-11-05)
 
 

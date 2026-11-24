@@ -26,19 +26,12 @@ impl Headers {
 
     /// Generates a [`Frame`] with these headers.
     pub fn generate_frame(&self) -> Frame<'static> {
-        // GAWK PATCH (see GAWK-PATCH.md): the backing store is a HashMap, so
-        // iteration order is arbitrary — but RFC 9114 §4.3.1 requires every
-        // pseudo-header field to precede regular fields, and quic-go's http3
-        // server enforces it (H3_MESSAGE_ERROR stream reset). Encode
-        // pseudo-headers first, then the rest.
-        let pseudo = self.0.iter().filter(|(k, _)| k.starts_with(':'));
-        let regular = self.0.iter().filter(|(k, _)| !k.starts_with(':'));
-        let payload = Encoder::encode(pseudo.chain(regular));
+        let headers = self.sorted_headers();
+        let payload = Encoder::encode(headers);
         Frame::new_headers(Cow::Owned(payload.to_vec()))
     }
 
     /// Returns a reference to the value associated with the key.
-    #[inline(always)]
     pub fn get<K>(&self, key: K) -> Option<&str>
     where
         K: AsRef<str>,
@@ -49,13 +42,24 @@ impl Headers {
     /// Inserts a field (key, value) in the headers.
     ///
     /// If the headers did have this key present, the value is updated.
-    #[inline(always)]
     pub fn insert<K, V>(&mut self, key: K, value: V)
     where
         K: ToString,
         V: ToString,
     {
         self.0.insert(key.to_string(), value.to_string());
+    }
+
+    fn sorted_headers(&self) -> Vec<(&str, &str)> {
+        let mut headers = self
+            .0
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect::<Vec<_>>();
+
+        headers.sort_by_key(|(name, _)| (!name.starts_with(':'), *name));
+
+        headers
     }
 }
 

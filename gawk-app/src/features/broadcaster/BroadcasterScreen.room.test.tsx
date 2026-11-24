@@ -23,6 +23,7 @@ const { created, scripts, roomSessions, FakeRoomSession } = vi.hoisted(() => {
     stop(): Promise<void>;
     setLadder(): void;
     setEncoderSettings(): void;
+    setDelivery(): void;
   }
   const created: FakeSession[] = [];
   const scripts: Array<(cbs: BroadcastCallbacks) => Promise<void>> = [];
@@ -78,6 +79,7 @@ vi.mock('./workerBroadcastSession', () => ({
       stop: async () => callbacks.onEnded(),
       setLadder: () => {},
       setEncoderSettings: () => {},
+      setDelivery: () => {},
     };
     created.push(session);
     return session;
@@ -218,10 +220,13 @@ describe('BroadcasterScreen Room panel (RM5)', () => {
     // The attach is (re)sent on join — idempotent on the relay.
     expect(room.sent).toContainEqual({ kind: 'attach', broadcastId: 'AB2CD3', resumeTokenHex: TOKEN, label: 'my desk' });
 
-    // The room's layout modes are the broadcaster's too; the third reads
-    // "Preview only" and shows the own screen alone, no /subscribe to anyone.
-    expect(screen.queryByRole('radio', { name: /hide videos/i })).toBeNull();
-    fireEvent.click(screen.getByRole('radio', { name: /preview only/i }));
+    // The room's layout modes and What to show are the broadcaster's too;
+    // None reads "Preview only" and shows the own screen alone, no
+    // /subscribe to anyone (R86, docs/90 D2).
+    fireEvent.click(screen.getByRole('button', { name: /^What to show:/ }));
+    expect(screen.queryByRole('radio', { name: 'None' })).toBeNull();
+    fireEvent.click(screen.getByRole('radio', { name: 'Preview only' }));
+    expect(screen.getByRole('button', { name: 'What to show: Preview only' })).toBeTruthy();
     expect(screen.getByTestId('own-preview')).toBeTruthy();
     expect(screen.getByTestId('room-tile').getAttribute('data-variant')).toBe('focus');
     expect(screen.queryByText(/still in the room/i)).toBeNull();

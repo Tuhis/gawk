@@ -134,7 +134,12 @@ var fieldMeta = map[string]meta{
 	"stripeLegDeaths":              counter("legs", "Striped connections that died."),
 
 	// --- viewer: delivery + audio ------------------------------------------
-	"dvrBufferMs":           gauge("ms", "Depth of the relay-side DVR ring this viewer is reading from."),
+	"dvrBufferMs":    gauge("ms", "Depth of the relay-side DVR ring this viewer is reading from."),
+	"dvrStripeWidth": gauge("connections", "Connections carrying this deep-buffer viewer's GOPs, the primary included (R87). 1 is unstriped; absent outside deep mode."),
+	"dvrGoodputBps":  gauge("bps", "Video this deep-buffer viewer received over the last 2 s, on the same meter as dvrLiveRateBps (complete frames, deduplicated, no parity or audio). 0 while the broadcaster is paused."),
+	"dvrLiveRateBps": gauge("bps", "The stream's live video rate as this deep-buffer viewer measures it (frame sizes over media time): what it should be receiving. Goodput under it is undersupply."),
+	"connectionBytesReceived": {SemObject, "bytes",
+		"Cumulative video bytes per connection in deep mode, primary first (R87). Goodput per connection is its rate; diagnose() derives it."},
 	"carrierStreams":        counter("streams", "Carrier streams opened (resilient delivery)."),
 	"carrierRecords":        counter("records", "Records delivered over carrier streams."),
 	"carrierStreamsAborted": counter("streams", "Carrier streams aborted."),
@@ -186,11 +191,11 @@ var fieldMeta = map[string]meta{
 	"uplinkMinRttMs": gauge("ms",
 		"The native broadcaster's connection's minimum round trip as QUIC measured it. Over 50 ms (a third of the carrier deadline) the upload-bandwidth warning stops reading carrier expiries, which a loss there causes whatever the capacity (R75)."),
 	"uplinkCarriersOpened": counter("streams",
-		"Uplink carriers the native broadcaster opened, one per GOP in Reliable delivery (R73)."),
+		"Uplink carriers the broadcaster opened, one per GOP in Reliable delivery: the native apps' (R73) and, since R84, the browser's GOP streams, which carry the keyframe at their head."),
 	"uplinkCarriersExpired": counter("streams",
-		"Uplink carriers reset before the relay acknowledged all of them: past the 150 ms retire deadline, or abandoned when a newer keyframe superseded a blocked write (R73). Video viewers lost."),
+		"Uplink carriers reset before the relay acknowledged all of them. Native apps (R73): past the 150 ms retire deadline, or abandoned when a newer keyframe superseded a blocked write. Browser (R84): a GOP stream still unacknowledged 2 s after it opened when a newer keyframe came, its keyframe counted failed too (a retired one superseded by a newer keyframe's stream is counted as superseded, not here). Video viewers lost."),
 	"uplinkRecordsShed": counter("records",
-		"Delta records that never reached a carrier: shed with a superseded GOP or abandoned mid-write (R73). In Reliable delivery this, not lost packets, is what leg A cost viewers."),
+		"Delta records that never reached a carrier: shed with a superseded GOP or abandoned mid-write (R73), or, from a browser (R84), still queued when the next keyframe retired their GOP's stream, or shed because their GOP's keyframe had to wait and the GOP got no stream. In Reliable delivery this, not lost packets, is what leg A cost viewers."),
 	"encoderQueueDepth":   gauge("frames", "Frames waiting inside the encoder. A rising depth is the encoder losing the race."),
 	"lastEncodeLatencyMs": gauge("ms", "Wall time the last frame spent inside the encoder."),
 	"keyframeIntervalMs":  gauge("ms", "Interval between keyframes."),
@@ -283,14 +288,17 @@ var fieldMeta = map[string]meta{
 	"memAvailable":     {SemBool, "", "Whether the OS reported the process's memory (R76)."},
 	"memHeapAvailable": {SemBool, "", "Whether the Rust heap is counted: the shell runs the counting allocator (R76)."},
 	"memGpuAvailable":  {SemBool, "", "Whether the process's video memory is measured: Windows and Apple, not Linux (R76)."},
-	"uplinkMode":       {SemText, "", "How the native broadcaster's deltas leave: datagram or carrier (R73)."},
+	"uplinkMode":       {SemText, "", "How the broadcaster's deltas leave: datagram or carrier (R73; the browser's since R84, carrier only on Chromium with Reliable asked)."},
 	"uplinkModeRequested": {SemText, "",
-		"The Delivery setting asked for: reliable or lowest-latency (R73). Differs from uplinkMode on a relay without carriers."},
+		"The Delivery setting asked for: reliable or lowest-latency (R73, and the browser's since R84). Differs from uplinkMode on a relay without carriers, and on a browser other than Chromium."},
+	"pipelineFallbackReason": {SemText, "",
+		"Why a browser broadcaster runs its pipeline on the main thread instead of the worker, e.g. \"MediaStreamTrackProcessor unavailable in worker scope\" (Chrome); absent on the worker path. Pairs with pipelineContext."},
 	"uplinkCongestion": {SemText, "", "The QUIC congestion controller of the publish connection: cubic or bbr (R73)."},
 	"codec":            {SemText, "", "Negotiated video codec."},
 	"acceleration":     {SemText, "", "Hardware-acceleration preference the encoder was configured with."},
 
 	// --- bools --------------------------------------------------------------
+	"dvrIdle":                   {SemBool, "", "Whether this deep-buffer viewer's last window carried no video bytes on any connection — a broadcaster pause, not starvation (R87)."},
 	"documentHidden":            {SemBool, "", "Whether the tab was in the background at this sample. renderedFps means nothing without it."},
 	"isHardwareAccelerated":     {SemBool, "", "Whether the decoder reported itself hardware-accelerated."},
 	"stripeCapable":             {SemBool, "", "Whether this client can stripe at all."},
@@ -344,7 +352,7 @@ func semanticFor(k Kind) Semantic {
 		return SemBool
 	case KindString:
 		return SemText
-	case KindObject, KindAny:
+	case KindObject, KindAny, KindNumbers:
 		return SemObject
 	default:
 		return SemGauge

@@ -360,7 +360,7 @@ spike's schema snapshot and re-checks everything:
 |---|---|---|
 | `SELECT nosuchcol FROM (PIVOT rollups ON os …)` | candidates include `"Linux"` | column names only |
 | `SELECT "Windows" FROM (PIVOT rollups ON os …)` | `OK` | binder error, as for any name |
-| `read_csv`, `read_json_auto`, `glob` on a path | allowed by `Check`; would read at bind (not probed on the deployment) | `Permission Error`, file access disabled |
+| `read_csv`, `read_json_auto`, `glob` on a path | allowed by `Check`; would read at bind (not probed on the deployment). Since 2026-11-13 only under the data directory ([docs/36](36-telemetry-ui-history.md) §TH10) | `Permission Error`, file access disabled |
 | `SET enable_external_access = true` | (refused by `Check`) | refused: configuration locked |
 | the spike's 169 final statements | 168 ran; one (the local model's q03, §12.4) bound but failed at run time on the NaN result (fixed in NQ0b) | all bind |
 

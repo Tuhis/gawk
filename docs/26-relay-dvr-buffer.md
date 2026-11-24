@@ -158,8 +158,10 @@ and the value is the viewer's guaranteed FLOOR, not its current offset.**
 Query params are the established negotiation surface (publish secret, then
 `delivery` itself) because the WebTransport JS API cannot set headers.
 
-`buffer` carries the Deep-buffer floor (`DVR_BUFFER_MS`, a deploy-time value —
-see Decision 16) and is sent **only by a viewer on the Deep buffer step**
+`buffer` carries the Deep-buffer floor (`getDvrBufferMs()`, a deploy-time value —
+see Decision 16; *revised 2026-11-20:* until then a module constant, which in
+the viewer's Web Worker always read the 3000 ms default, whatever the
+deployment set — the worker now gets the page's runtime config at `init`) and is sent **only by a viewer on the Deep buffer step**
 (Decision 15). It is the viewer's *minimum* playout offset, not the one it
 happens to be running. The distinction is
 load-bearing: the viewer's offset is adaptive (`PlayoutController` slews between
@@ -403,7 +405,7 @@ Three tuning changes, all in `playout.ts`:
   under-specified here as "raise `RESILIENT_AUDIO_PROFILE.maxMs`", which would
   have leaked deep depth into plain resilient mode; as built, audio mirrors the
   video profile split instead — a dedicated `DVR_AUDIO_PROFILE`
-  (`seed = min = B`, `max ≥ B`) selected by `audioProfileForDeliveryMode`, and
+  (since 2026-11-20 `getDvrAudioProfile()`) (`seed = min = B`, `max ≥ B`) selected by `audioProfileForDeliveryMode`, and
   `MAX_ALIGNMENT_HOLD_MS` becomes a floor under a profile-tracking
   `alignmentHoldCapMs()` (`profile.maxMs + margin`). See the A/V field finding
   below — the original constants shipped unchanged and the mode desynced.
@@ -517,7 +519,7 @@ arrives ahead of video, so the first release was gated by the depth floor alone.
 Compounding it, a plain truthy check on the (now three-valued) delivery mode
 always returned the resilient profile — so live-edge viewers silently got the
 resilient floor too. Fixed viewer-only, test-first: a dedicated
-`DVR_AUDIO_PROFILE` (`seed = min = B`) selected by `audioProfileForDeliveryMode`
+`DVR_AUDIO_PROFILE` (now `getDvrAudioProfile()`) (`seed = min = B`) selected by `audioProfileForDeliveryMode`
 so the depth floor equals the video offset even before the schedule lands, and
 `alignmentHoldCapMs()` (`max(3000, profile.maxMs + 1000)`) so the safety net
 tracks the profile instead of preempting a deep hold. Live and resilient modes

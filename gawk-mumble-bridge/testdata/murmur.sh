@@ -3,7 +3,8 @@
 # against, and prints the environment that enables them.
 #
 #   eval "$(gawk-mumble-bridge/testdata/murmur.sh up)"          # murmur 1.5
-#   eval "$(gawk-mumble-bridge/testdata/murmur.sh up 1.6)"      # murmur 1.6
+#   eval "$(gawk-mumble-bridge/testdata/murmur.sh up 1.6)"      # murmur 1.6.1001
+#   eval "$(gawk-mumble-bridge/testdata/murmur.sh up 1.6.870)"  # the callback-unsafe RC1
 #   (cd gawk-mumble-bridge && go test -race ./...)
 #   gawk-mumble-bridge/testdata/murmur.sh down
 #
@@ -24,6 +25,14 @@
 #   autoban  a low autoban threshold (3 connections a minute, banned 10 s),
 #            for the 4016 autoban case (D18).
 #
+# `main` also has Ice on (R85, docs/89 MI1), with both secrets, on
+# 127.0.0.1:$base+3. Murmur dials the tests' callback endpoints, so `main`
+# runs on the host's network and the endpoints listen on loopback
+# (GAWK_TEST_MURMUR_CALLBACK_HOST): a container reaching the host through
+# the docker gateway (host-gateway) is dropped by the host firewall on the
+# self-hosted runners and the dev machines (measured 2026-11-15: the
+# delivery times out exactly like a blackholed address).
+#
 # Every server gets the same SuperUser password (the tests create the
 # temporary-channel parent and kick or mute as SuperUser). Nothing here is a
 # secret: the servers listen on 127.0.0.1 only and live as long as the test.
@@ -33,12 +42,15 @@ cmd="${1:-up}"
 version="${2:-1.5}"
 case "$version" in
   1.5) image="mumblevoip/mumble-server:v1.5.939" ;;
-  1.6) image="mumblevoip/mumble-server:v1.6.870" ;;
-  *) echo "unknown murmur version $version (want 1.5 or 1.6)" >&2; exit 2 ;;
+  1.6) image="mumblevoip/mumble-server:v1.6.1001" ;;
+  1.6.870) image="mumblevoip/mumble-server:v1.6.870" ;;
+  *) echo "unknown murmur version $version (want 1.5, 1.6 or 1.6.870)" >&2; exit 2 ;;
 esac
 prefix="${GAWK_MURMUR_PREFIX:-gawk-test-murmur}"
 base="${GAWK_MURMUR_BASE_PORT:-64740}"
 supw="${GAWK_MURMUR_SUPERUSER_PASSWORD:-gawk-test-superuser}"
+icew="${GAWK_MURMUR_ICE_SECRET:-gawk-test-ice-write}"
+icer="${GAWK_MURMUR_ICE_READ_SECRET:-gawk-test-ice-read}"
 
 down() {
   for n in main strict autoban; do
@@ -49,8 +61,12 @@ down() {
 start() { # name port extra-env...
   local name="$1" port="$2"
   shift 2
+  local net=(-p "127.0.0.1:$port:64738/tcp")
+  if [[ "$name" == main ]]; then
+    net=(--network host -e MUMBLE_CONFIG_HOST=127.0.0.1 -e MUMBLE_CONFIG_PORT="$port")
+  fi
   docker run -d --rm --name "$prefix-$name" \
-    -p "127.0.0.1:$port:64738/tcp" \
+    "${net[@]}" \
     -e MUMBLE_SUPERUSER_PASSWORD="$supw" \
     -e MUMBLE_CONFIG_WELCOMETEXT="" \
     "$@" "$image" >/dev/null
@@ -75,6 +91,8 @@ case "$cmd" in
   up)
     down
     start main "$base" \
+      -e "MUMBLE_CONFIG_ICE=tcp -h 127.0.0.1 -p $((base + 3))" \
+      -e MUMBLE_CONFIG_ICESECRETWRITE="$icew" -e MUMBLE_CONFIG_ICESECRETREAD="$icer" \
       -e MUMBLE_CONFIG_AUTOBANATTEMPTS=0 \
       -e 'MUMBLE_CONFIG_USERNAME=[-=\\w\\[\\]\\{\\}\\(\\)\\@\\|\\. ]+' \
       -e MUMBLE_CONFIG_MESSAGELIMIT=100 -e MUMBLE_CONFIG_MESSAGEBURST=200
@@ -122,6 +140,11 @@ case "$cmd" in
     echo "export GAWK_TEST_MURMUR_AUTOBAN=127.0.0.1:$((base + 2))"
     echo "export GAWK_TEST_MURMUR_SUPERUSER_PASSWORD=$supw"
     echo "export GAWK_TEST_MURMUR_VERSION=$version"
+    echo "export GAWK_TEST_MURMUR_ICE=127.0.0.1:$((base + 3))"
+    echo "export GAWK_TEST_MURMUR_ICE_SECRET=$icew"
+    echo "export GAWK_TEST_MURMUR_ICE_READ_SECRET=$icer"
+    echo "export GAWK_TEST_MURMUR_CALLBACK_HOST=127.0.0.1"
+    echo "export GAWK_TEST_MURMUR_CONTAINER=$prefix-main"
     ;;
   down) down ;;
   *) echo "usage: $0 up [1.5|1.6] | down" >&2; exit 2 ;;

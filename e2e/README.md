@@ -133,6 +133,17 @@ worker offload path doesn't engage headlessly (no worker MSTP, no track
 transfer — finding 12), so the broadcaster runs the main-thread pipeline;
 the placement is recorded, not asserted.
 
+Then R84's uplink-outage passes (docs/88 BR4): two more browser broadcasters,
+each publishing through a forwarder that drops every uplink packet for
+150 ms of each 1.5 s, one on *Lowest latency* and one on *Reliable* (seeded
+through the Delivery setting's storage key), each watched by a *Smoother*
+viewer. The *Lowest latency* pass is the control: its viewer must freeze.
+On *Reliable* the broadcaster must run its carrier and shed nothing, and
+its viewer must resync less often than the control's, and only where the
+relay dropped a GOP's stale tail behind the next keyframe (docs/75 D2). The
+relay's ingress-loss window finalizes ~34 s later, too late for a 12 s pass,
+so it is not read.
+
 ## Rooms (R42)
 
 ```sh
@@ -142,27 +153,30 @@ cd e2e && node run.mjs --rooms
 Its own mode, like `--telemetry`: the relay starts with `-rooms`, and two
 `gawk-pubsim` publishers stand in for two broadcasters — the first with
 `-room-new -label alpha` (it prints `ROOM <CODE> <creatorTokenHex>` on stdout,
-which the harness scrapes), the second with `-room <CODE> -label bravo`. A
-headless viewer then opens `#/room/<CODE>` with a seeded nickname and walks
-the three modes:
+which the harness scrapes), the second with `-room <CODE> -label bravo
+-fixture large` (16:9 beside A's 4:3, for Fit). A headless viewer then opens
+`#/room/<CODE>` with a seeded nickname and walks the modes:
 
 | Step | Assertion (flow-shaped, docs/25 Decision 6) |
 |---|---|
 | Grid | two tiles, each tile's `data-frames` advancing across a ~5 s gap; every active broadcast on `/statusz` has ≥ 1 subscriber |
-| Key `2` | tile 2 becomes `data-variant="focus"`, tile 1 `small`, within 3 s; the focused tile keeps advancing and neither broadcast loses its subscriber — focus is a gain change, never a re-dial (docs/44 §4.7) |
-| Hide videos | no tiles; **both broadcasts read `subscribers: 0` on `/statusz`** while the `rooms` row still counts the same participants (the browser's control session stayed) |
+| Fit | each tile's box has its decoded frame's shape (`data-frame-w/h`, within 2 %), two different shapes seen; every primary session's `/statusz` `key` (stripe legs excluded) unchanged from Grid — the switch moved tiles, never re-dialed (docs/87) |
+| Key `2` | tile 2 becomes `data-variant="focus"`, tile 1 `small`, within 3 s; the focused tile keeps advancing and the subscriber keys are still Grid's — focus is a gain change, never a re-dial (docs/44 §4.7) |
+| Choose, bravo unticked (R86) | one tile; **one broadcast reads `subscribers: 0` on `/statusz` and the other ≥ 1** — a hidden stream is unsubscribed, not just not drawn (docs/90 D3) |
+| None (the old Hide videos) | no tiles; **both broadcasts read `subscribers: 0` on `/statusz`** while the `rooms` row still counts the same participants (the browser's control session stayed) |
 | Leave | the room's participant count drops by exactly one |
 
 The subscriber count is the relay's own view, which is why it is the
 load-bearing assertion: the unit suite proves the room view *opens no
-media session* in hide-videos against a fake, this proves the relay agrees.
+media session* for a hidden stream or under None against a fake, this
+proves the relay agrees.
 Note the participant count is 3 while everyone is in (both pubsims hold
 their room control session for the process lifetime), so the pass asserts
-"unchanged by Hide videos, minus one on Leave" rather than a literal 1.
+"unchanged by None, minus one on Leave" rather than a literal 1.
 
 Skips cleanly (prints `SKIP` and passes) when `gawk-pubsim -h` lists no
 `-room-new` — rebuild it from `gawk-server/` first. Artifacts:
-`room-grid.png`, `room-focus.png`, `room-hidden.png`, `console-rooms.log`,
+`room-grid.png`, `room-fit.png`, `room-focus.png`, `room-hidden.png`, `console-rooms.log`,
 `pubsim-room-{a,b}.log`.
 
 ## Gated static room (R42 D8)
@@ -329,7 +343,11 @@ N real voice participants in one channel, three talking, with delivery, join
 latency and CPU per N appended to `docs/assets/80/load/results.jsonl`.
 
 `e2e/voice-panel.mjs` is MV6's: the voice panel against an in-page fake relay
-and bridge, with screenshots at phone and desktop widths.
+and bridge, with screenshots at phone and desktop widths. CI runs it in
+`e2e-voice`'s rnnoise leg. Its no-overflow check (`overflowAt` in
+`voice-fake.mjs`) measures only once every finite animation has ended: the
+pinned column slides in with a transform, and a measurement mid-slide puts
+its head off the right edge.
 
 ## RNNoise in room voice (R80, docs/81 NS4)
 

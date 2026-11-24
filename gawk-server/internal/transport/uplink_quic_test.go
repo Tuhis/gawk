@@ -399,6 +399,72 @@ func TestUplinkHostilePublisherHoleIsBounded(t *testing.T) {
 	if testing.Short() {
 		t.Skip("writes until flow control stops a hostile publisher")
 	}
+	recs := carrierStreamBytes(t, uplinkRecords(t, 1, 64))[wire.CarrierPrologueSize:]
+	h := holdHostileHoles(t, func(car *webtransport.SendStream) {
+		if _, err := car.Write(wire.AppendCarrierPrologue(nil)); err != nil {
+			return
+		}
+		for {
+			if _, err := car.Write(recs); err != nil {
+				return // the session closing at the end of the test
+			}
+		}
+	})
+	if h.stats.UplinkRecords == 0 || h.stats.UplinkCarriers != hub.MaxUplinkCarriers {
+		t.Fatalf("carriers %d records %d: the records before the holes should have been ingested", h.stats.UplinkCarriers, h.stats.UplinkRecords)
+	}
+}
+
+// docs/88 BR1: the same with the hole inside a keyframe carrier's keyframe.
+// Each of the publisher's MaxUplinkCarriers keyframe carriers declares a
+// keyframe of the relay's whole MaxKeyframeBytes and holds a hole 64 KiB
+// into its stream, inside that keyframe, then writes until flow control stops
+// it. Neither what QUIC holds past the holes nor the process heap may exceed
+// the connection receive window: the relay must not allocate the declared
+// length up front (three carriers × 8 MiB would be 24 MiB).
+func TestKeyframeCarrierHostileHoleIsBounded(t *testing.T) {
+	if testing.Short() {
+		t.Skip("writes until flow control stops a hostile publisher")
+	}
+	header, err := wire.AppendStreamFrameHeader(nil, wire.StreamFrameHeader{
+		Keyframe: true, FrameID: 1, PayloadLen: wire.MaxKeyframeBytes - wire.StreamFrameHeaderSize,
+	})
+	if err != nil {
+		t.Fatalf("AppendStreamFrameHeader: %v", err)
+	}
+	piece := make([]byte, 16<<10) // written in pieces: the publisher holds no keyframe of its own
+	h := holdHostileHoles(t, func(car *webtransport.SendStream) {
+		if _, err := car.Write(append(wire.AppendKeyframeCarrierPrologue(nil), header...)); err != nil {
+			return
+		}
+		for {
+			if _, err := car.Write(piece); err != nil {
+				return
+			}
+		}
+	})
+	if h.heapGrowth > quicDefaultMaxConnectionWindow {
+		t.Fatalf("process heap grew %d bytes behind %d keyframe holes, more than the %d-byte connection receive window",
+			h.heapGrowth, hub.MaxUplinkCarriers, quicDefaultMaxConnectionWindow)
+	}
+	if h.stats.UplinkCarriers != hub.MaxUplinkCarriers || h.stats.KeyframeStreamsIn != 0 {
+		t.Fatalf("carriers %d keyframes %d, want %d open and none complete", h.stats.UplinkCarriers, h.stats.KeyframeStreamsIn, hub.MaxUplinkCarriers)
+	}
+}
+
+// hostileHoles is what holdHostileHoles measured.
+type hostileHoles struct {
+	held, heapGrowth int64
+	stats            hub.Stats
+}
+
+// holdHostileHoles opens hub.MaxUplinkCarriers uni streams on a tapped
+// publisher, each with a hole 64 KiB in, runs write on each until the
+// session closes, and returns once the bytes the relay holds past the holes
+// stop growing. It fails the test when they exceed the connection receive
+// window, or when nothing got past a hole.
+func holdHostileHoles(t *testing.T, write func(car *webtransport.SendStream)) hostileHoles {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	port, clientTLS, r, _ := startTestServerCfg(t, ctx, uplinkTestConfig(true))
@@ -411,7 +477,6 @@ func TestUplinkHostilePublisherHoleIsBounded(t *testing.T) {
 	var before runtime.MemStats
 	runtime.ReadMemStats(&before)
 
-	recs := carrierStreamBytes(t, uplinkRecords(t, 1, 64))[wire.CarrierPrologueSize:]
 	var writers sync.WaitGroup
 	for range hub.MaxUplinkCarriers {
 		car, err := pub.OpenUniStream()
@@ -422,17 +487,9 @@ func TestUplinkHostilePublisherHoleIsBounded(t *testing.T) {
 		writers.Add(1)
 		go func() {
 			defer writers.Done()
-			if _, err := car.Write(wire.AppendCarrierPrologue(nil)); err != nil {
-				return
-			}
-			for {
-				if _, err := car.Write(recs); err != nil {
-					return // the session closing at the end of the test
-				}
-			}
+			write(car)
 		}()
 	}
-
 	// quic-go's own loss recovery would otherwise stall the publisher: once
 	// the only packets in flight are probes carrying the hole, nothing is
 	// acknowledged and the probe timeout backs off without end. A hostile
@@ -486,9 +543,7 @@ func TestUplinkHostilePublisherHoleIsBounded(t *testing.T) {
 	if held > quicDefaultMaxConnectionWindow {
 		t.Fatalf("relay holds %d bytes behind the holes, more than the %d-byte connection receive window", held, quicDefaultMaxConnectionWindow)
 	}
-	if st.UplinkRecords == 0 || st.UplinkCarriers != hub.MaxUplinkCarriers {
-		t.Fatalf("carriers %d records %d: the records before the holes should have been ingested", st.UplinkCarriers, st.UplinkRecords)
-	}
 	pub.CloseWithError(0, "")
 	writers.Wait()
+	return hostileHoles{held: held, heapGrowth: heapGrowth, stats: st}
 }

@@ -8,6 +8,7 @@
 // whole thing be unit-tested synchronously with a fake host — no real Worker,
 // no OffscreenCanvas, no DOM.
 
+import type { GawkRuntimeConfig } from '../config';
 import type { ViewerDeliveryMode } from './resilient';
 import type { StripeMode } from './stripe';
 import type { ConnectOptions } from './connection';
@@ -33,8 +34,11 @@ export type ViewerWorkerCommand =
   // `presentationMux` is sent ONLY on gated (element-fullscreen-less)
   // devices. It routes the reorder buffer's released frames through the host
   // frame tap so the (arm-created) fMP4 muxer can feed the iPhone
-  // native-fullscreen video.
-  | { type: 'init'; canvas: OffscreenCanvas; presentationMux?: boolean }
+  // native-fullscreen video. `config` is the page's runtime config
+  // (window.__GAWK_CONFIG__): a worker has no window of its own, so this is
+  // the only way the deployment's dvrBufferMs, maxDecoderQueueSize and the
+  // rest reach it. Init precedes every start, so nothing reads config first.
+  | { type: 'init'; canvas: OffscreenCanvas; presentationMux?: boolean; config?: GawkRuntimeConfig }
   | { type: 'start'; serverUrl: string; broadcastId: string; connectOpts: ConnectOptions }
   | { type: 'stop' }
   // Set the playout mode in the worker's context (the reorder buffer and

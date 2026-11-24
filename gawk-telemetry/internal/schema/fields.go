@@ -115,8 +115,25 @@ var ViewerFields = map[string]Kind{
 	"decodeJitterMs":        KindNumber,
 
 	// R19/R21 delivery.
-	"deliveryMode":          KindString,
-	"dvrBufferMs":           KindNumber,
+	"deliveryMode": KindString,
+	"dvrBufferMs":  KindNumber,
+	// R87 striped deep-buffer delivery (docs/91 §8 SG3): the stripe width
+	// including the primary (1 when a deep-buffer session is unstriped,
+	// absent outside deep mode) and each connection's cumulative video
+	// bytes, primary first — what tells a per-connection ceiling from a full
+	// link on the client side.
+	"dvrStripeWidth":          KindNumber,
+	"connectionBytesReceived": KindNumbers,
+	// The client's own live rate of the video it is meant to receive in deep
+	// mode, from frame sizes over media time: what its goodput is judged
+	// against, since the relay's ingress count also carries audio and parity.
+	"dvrLiveRateBps": KindNumber,
+	// Same meter, the last 2 s: what this viewer actually received. 0 during
+	// a broadcaster pause.
+	"dvrGoodputBps": KindNumber,
+	// True when the last window had no video bytes on any connection (the
+	// broadcaster paused); false otherwise, starvation included.
+	"dvrIdle":               KindBool,
 	"carrierStreams":        KindNumber,
 	"carrierRecords":        KindNumber,
 	"carrierStreamsAborted": KindNumber,
@@ -201,6 +218,10 @@ var BroadcasterFields = map[string]Kind{
 
 	"pipelineContext": KindString,
 	"viewerCount":     KindNumber,
+	// #722 (docs/16): why a browser broadcaster runs on the main thread,
+	// e.g. "MediaStreamTrackProcessor unavailable in worker scope"; null on
+	// the worker path.
+	"pipelineFallbackReason": KindString,
 
 	// R15 audio lane.
 	"audioState": KindString,

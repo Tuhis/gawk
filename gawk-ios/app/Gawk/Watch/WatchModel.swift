@@ -134,6 +134,7 @@ final class WatchModel {
             // R74: the offer rides the session; the stats tick reads it.
             if followOffers, let offer = engine.takeLocalRelayOffer() { onOffer?(offer) }
         case .unsupportedCodec(let c): unsupportedCodec = c
+        case .videoSize: break
         }
     }
 

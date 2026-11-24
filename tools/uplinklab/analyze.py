@@ -130,7 +130,12 @@ def analyze(run, skip_s=5.0, tail_s=1.0):
     for fid in ids:
         f = frames[fid]
         if f["key"]:
-            done[fid] = done_np[fid] = kdone.get(fid)
+            # A keyframe on a stream of its own is complete when that stream
+            # has been read to its end (K); one sent as chunk records at the
+            # head of its GOP's carrier (docs/88, carrier-inline) declares
+            # its chunks in its F line and is complete when all have arrived.
+            done[fid] = done_np[fid] = kdone.get(fid) if f["n"] == 0 or fid in kdone else \
+                complete_time(dict(f, key=False), data, parity, use_parity=False)
         else:
             done[fid] = complete_time(f, data, parity)
             done_np[fid] = complete_time(f, data, parity, use_parity=False)

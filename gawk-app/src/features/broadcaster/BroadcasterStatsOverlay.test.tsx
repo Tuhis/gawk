@@ -78,6 +78,11 @@ function fullStats(): BroadcastStats {
     staleFramesDropped: 41,
     staleAudioDropped: 7,
     keyframeStreamsSuperseded: 3,
+    uplinkModeRequested: 'reliable',
+    uplinkMode: 'carrier',
+    uplinkCarriersOpened: 12,
+    uplinkCarriersExpired: 1,
+    uplinkRecordsShed: 37,
     uplinkWarning: true,
   };
 }
@@ -117,6 +122,38 @@ describe('BroadcasterStatsOverlay', () => {
     expect(screen.getByText('Encode mode').nextSibling?.textContent).toBe('hardware');
     // The relay's live audience push.
     expect(screen.getByText('Watching').nextSibling?.textContent).toBe('4');
+  });
+
+  // docs/88 §7: the delivery asked for and the one in use, carriers opened
+  // and aborted, records shed — exempt from principle 3, as natively.
+  it('shows the Delivery rows (R84)', () => {
+    const { rerender } = render(
+      <BroadcasterStatsOverlay
+        stats={fullStats()}
+        encoderInfo={encoderInfo}
+        bitrateBps={null}
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    expect(screen.getByText('Delivery (requested)').nextSibling?.textContent).toBe('Reliable');
+    expect(screen.getByText('Delivery (in use)').nextSibling?.textContent).toBe('Reliable (carrier)');
+    expect(screen.getByText('Carriers opened').nextSibling?.textContent).toBe('12');
+    expect(screen.getByText('Carriers aborted').nextSibling?.textContent).toBe('1');
+    expect(screen.getByText('Records shed').nextSibling?.textContent).toBe('37');
+    // Reliable asked, a relay without carriers: datagrams in use.
+    rerender(
+      <BroadcasterStatsOverlay
+        stats={{ ...fullStats(), uplinkMode: 'datagram' }}
+        encoderInfo={encoderInfo}
+        bitrateBps={null}
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    expect(screen.getByText('Delivery (in use)').nextSibling?.textContent).toBe('Lowest latency (datagrams)');
   });
 
   // docs/16 Decision 1: a main-thread pipeline

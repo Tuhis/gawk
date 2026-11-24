@@ -56,6 +56,18 @@ pub const CAP_STRIPED_DELIVERY: u16 = 1 << 1;
 /// bit; a relay without it rejects the stream as bad input.
 pub const CAP_UPLINK_CARRIERS: u16 = 1 << 2;
 
+/// The relay also ingests keyframe carriers (R84, docs/88 D2): a uni stream
+/// with the prologue `0x01 0x1F`, the GOP's keyframe StreamFrame at its head
+/// and carrier records after it. Advertised only beside
+/// `CAP_UPLINK_CARRIERS`. The browser broadcaster uses it; this engine keeps
+/// its keyframe stream at priority 1 instead (docs/88 §10).
+pub const CAP_KEYFRAME_CARRIERS: u16 = 1 << 3;
+
+/// The relay stripes DVR delivery across connections (R87, docs/91 D8).
+/// Viewer-side, like `CAP_STRIPED_DELIVERY`: this producer never reads it and
+/// only needs the flags word to keep parsing when it is set.
+pub const CAP_STRIPED_DVR: u16 = 1 << 4;
+
 // --- GF(2^8), primitive polynomial 0x11D, generator 2 ------------------------
 
 /// Exp/log tables built at compile time; the exp cycle is duplicated so

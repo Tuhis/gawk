@@ -17,7 +17,9 @@
 // relay, answers the first-join card, opens the dock's Microphone popover and
 // pins the panel, then saves
 // screenshots at 360, 390, 430 and 1280 px into e2e/out/voice-panel/
-// (gitignored, e2e/out*/), asserting no horizontal overflow at each width.
+// (gitignored, e2e/out*/), asserting no horizontal overflow at each width
+// (measured once the layout has settled; see settled in voice-fake.mjs). CI
+// runs it in e2e-voice's rnnoise leg.
 //
 // Run it (from the repository root):
 //

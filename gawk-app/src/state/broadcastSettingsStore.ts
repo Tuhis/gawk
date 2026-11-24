@@ -10,6 +10,7 @@ import {
 import type { HwPreference } from '../media/probe';
 import { DEFAULT_CODEC_PREFERENCES } from '../media/types';
 import { readStored, writeStored } from '../lib/storage';
+import { DEFAULT_DELIVERY, DELIVERIES, type Delivery } from '../transport/carrier-sender';
 
 // The broadcaster's encoder choices, persisted so they survive reloads.
 // Stored values are validated on load; anything stale or unrecognised falls
@@ -19,6 +20,8 @@ const LS_FRAMERATE_RUNG = 'gawk.framerateRung';
 const LS_HW_PREFERENCE = 'gawk.hwPreference';
 const LS_BITRATE_OVERRIDE = 'gawk.bitrateOverride';
 const LS_CODEC_OVERRIDE = 'gawk.codecOverride';
+// docs/88 D6: the Delivery setting, under the native broadcast.json's name.
+const LS_UPLINK_DELIVERY = 'gawk.uplinkDelivery';
 
 const HW_PREFERENCES: readonly HwPreference[] = ['auto', 'hardware', 'software'];
 
@@ -45,18 +48,28 @@ function loadCodecOverride(): string | null {
   return raw !== null && DEFAULT_CODEC_PREFERENCES.includes(raw) ? raw : null;
 }
 
+// A stored Delivery word, or null (blank: follows DEFAULT_DELIVERY).
+function loadDelivery(): Delivery | null {
+  const raw = readStored(LS_UPLINK_DELIVERY);
+  return raw !== null && (DELIVERIES as readonly string[]).includes(raw) ? (raw as Delivery) : null;
+}
+
 interface BroadcastSettingsState {
   resolutionSelection: ResolutionSelection;
   framerateSelection: FramerateSelection;
   hwPreference: HwPreference;
   bitrateOverride: number | null;
   codecOverride: string | null;
+  // null = blank: the delivery follows DEFAULT_DELIVERY, so a change of the
+  // default reaches everyone who never chose (docs/88 D6, as natively).
+  uplinkDelivery: Delivery | null;
 
   setResolutionSelection: (selection: ResolutionSelection) => void;
   setFramerateSelection: (selection: FramerateSelection) => void;
   setHwPreference: (preference: HwPreference) => void;
   setBitrateOverride: (bps: number | null) => void;
   setCodecOverride: (codec: string | null) => void;
+  setUplinkDelivery: (delivery: Delivery) => void;
 }
 
 export const useBroadcastSettingsStore = create<BroadcastSettingsState>((set) => ({
@@ -65,6 +78,7 @@ export const useBroadcastSettingsStore = create<BroadcastSettingsState>((set) =>
   hwPreference: loadRung(LS_HW_PREFERENCE, HW_PREFERENCES),
   bitrateOverride: loadBitrateOverride(),
   codecOverride: loadCodecOverride(),
+  uplinkDelivery: loadDelivery(),
 
   setResolutionSelection: (resolutionSelection) => {
     writeStored(LS_RESOLUTION_RUNG, String(resolutionSelection));
@@ -88,7 +102,20 @@ export const useBroadcastSettingsStore = create<BroadcastSettingsState>((set) =>
     writeStored(LS_CODEC_OVERRIDE, codecOverride);
     set({ codecOverride });
   },
+  // A word is stored only once the broadcaster picks something other than
+  // what a blank shows (the native Quality page's rule).
+  setUplinkDelivery: (delivery) =>
+    set((s) => {
+      if (s.uplinkDelivery === null && delivery === DEFAULT_DELIVERY) return {};
+      writeStored(LS_UPLINK_DELIVERY, delivery);
+      return { uplinkDelivery: delivery };
+    }),
 }));
+
+// The delivery the pipeline is asked for: the stored word, or the default.
+export function deliveryFromStore(): Delivery {
+  return useBroadcastSettingsStore.getState().uplinkDelivery ?? DEFAULT_DELIVERY;
+}
 
 // The EncoderSettings snapshot the pipeline consumes, derived in one place so
 // its callers can't drift.

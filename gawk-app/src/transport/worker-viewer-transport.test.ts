@@ -256,6 +256,35 @@ describe('WorkerViewerTransport striping (R30)', () => {
     transport.close();
   });
 
+  // docs/91: the deep-buffer layout crosses with the command, and a leg's
+  // media arrives with its connection index; the primary's without one.
+  it('forwards the stripe layout and passes connection indexes through', async () => {
+    const worker = new FakeWorker();
+    const transport = new WorkerViewerTransport(() => worker, 'https://r/subscribe/x', {});
+    const cbs = makeCallbacks();
+    const p = transport.connect(cbs);
+    worker.emit({ type: 'connected' });
+    await p;
+    transport.setStripe(2, 'dvr');
+    expect(worker.sent).toContainEqual({ type: 'stripe', n: 2, layout: 'dvr' });
+    const leg = new Uint8Array([1]);
+    worker.emit({ type: 'datagram', data: leg, conn: 2 });
+    worker.emit({
+      type: 'keyframe',
+      frameId: 9,
+      timestampUs: 1n,
+      config: null,
+      data: new Uint8Array([2]),
+      streamBytes: 10,
+      conn: 2,
+    });
+    const primary = new Uint8Array([3]);
+    worker.emit({ type: 'datagram', data: primary });
+    expect(cbs.onDatagram.mock.calls).toEqual([[leg, 2], [primary]]);
+    expect(cbs.onKeyframe.mock.calls[0][1]).toBe(2);
+    transport.close();
+  });
+
   it('relays capabilities, stripe changes and the stripe stats sample', async () => {
     const worker = new FakeWorker();
     const transport = new WorkerViewerTransport(() => worker, 'https://r/subscribe/x', {});

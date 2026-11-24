@@ -5,6 +5,8 @@ import {
   advancedChanges,
   effectivePlayout,
   notApplicable,
+  stripingNote,
+  DVR_STRIPING_HINT,
   presetConfig,
   presetLabel,
   resolvePreset,
@@ -103,6 +105,27 @@ describe('playbackPresets — notApplicable', () => {
     for (const delivery of ['resilient', 'deep'] as const) {
       expect(notApplicable('striping', { ...DEFAULT_CONFIG, delivery })).toMatch(/not used in this mode/i);
     }
+  });
+
+  // R87 (docs/91 §7): Most stable stripes GOPs when the relay can stripe its
+  // ring; Smoother never does (OD4), whatever the relay says.
+  it('enables striping on Most stable only against a relay with CAP_STRIPED_DVR', () => {
+    const cases: { delivery: 'live' | 'resilient' | 'deep'; dvrStriping: boolean; applicable: boolean }[] = [
+      { delivery: 'deep', dvrStriping: true, applicable: true },
+      { delivery: 'deep', dvrStriping: false, applicable: false },
+      { delivery: 'resilient', dvrStriping: true, applicable: false },
+      { delivery: 'live', dvrStriping: false, applicable: true },
+    ];
+    for (const c of cases) {
+      const reason = notApplicable('striping', { ...DEFAULT_CONFIG, delivery: c.delivery }, { dvrStriping: c.dvrStriping });
+      expect(reason === null, `${c.delivery}, dvrStriping ${c.dvrStriping}`).toBe(c.applicable);
+    }
+  });
+
+  it('notes what striping is for: the option cost on live edge, the hint on Most stable', () => {
+    expect(stripingNote({ ...DEFAULT_CONFIG, delivery: 'deep' })).toBe(DVR_STRIPING_HINT);
+    expect(DVR_STRIPING_HINT).toMatch(/several connections when one can.t carry it/);
+    expect(stripingNote({ ...DEFAULT_CONFIG, striping: 'off' })).toBe('one connection');
   });
 
   // A resilient viewer whose *stored* pacing is 'off' still has interpolation

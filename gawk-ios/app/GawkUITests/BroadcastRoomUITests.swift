@@ -131,8 +131,11 @@ final class BroadcastRoomUITests: XCTestCase {
         app.buttons["room.create"].tap()
         goLive()
         XCTAssertTrue(roomCard.waitForExistence(timeout: UIWait.media))
-        app.buttons["broadcast.leaveRoom"].tap()
+        let leave = app.buttons["broadcast.leaveRoom"]
+        bringAbove(app.buttons["broadcast.end"], leave, in: app)
+        leave.tap()
         XCTAssertTrue(app.buttons["broadcast.room"].waitForExistence(timeout: UIWait.step))
+        XCTAssertTrue(app.descendants(matching: .any)["broadcast.live"].exists, "still live")
         end()
     }
 

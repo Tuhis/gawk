@@ -4,53 +4,6 @@ Confirmed, not-yet-fixed defects. Each entry says how it was found, what the
 impact is, and where a fix would start. Remove entries when fixed (and move
 anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 
-## iOS UI tests fail on the iOS 27.2 simulator (CI pinned to 27.1)
-
-- **Found**: 2026-11-06, on PR #729's `xcode (iPhone)` job. GitHub's macOS
-  runner image `20261103.629` added iOS 27.2 simulators, and `ios.yml`'s
-  `Pick a simulator` step took the newest iOS 27 runtime. Every iPhone run on
-  that image fails the same way, on main too (run 42083194691, 7fc677aa).
-  Every run on the older image `20261021.618` passes.
-- **What fails**: `AccessibilityUITests.testThePlayers`, with 8× "Hit area is
-  too small" for the player header's "1 watching", "Copy link to …" and
-  "Server 127.0.0.1" labels, on the Player, Stats and Room player screens.
-  Also `BroadcastRoomUITests.testLeaveReturnsToNotInARoom` at line 135: after
-  Leave, the "Not in a room" button doesn't appear in time.
-- **Impact**: CI only, for now. `ios.yml` pins the picker to iOS 27.0–27.1
-  (`MAX_MINOR`). Users on iOS 27.2 likely see the same small hit areas, and
-  possibly the room-leave behaviour.
-- **Fix would start**: run the UI tests on a 27.2 simulator. Give those
-  labels a ≥ 44 pt hit area, or make them non-interactive if nothing should
-  tap them. Find out what 27.2 changed in the leave flow (timing or a real
-  state bug). Then remove the pin.
-
-## Room header squeezed into the top-left corner while the phone sheet is open
-
-- **Found**: 2026-11-06, in `e2e/voice-panel.mjs`'s `in-voice-360.png` while
-  fixing the room footer's narrow layout.
-- **What**: below 720 px the side panel is a full-width bottom sheet, but
-  `.header[data-panel='true']` still sets `right: var(--panel-w)` (the
-  desktop column's width), so with the sheet open the header is ~40 px wide
-  and its room code, counts and icons pile up over one another at the top
-  left. `.center` and `.footer` reset this on phones; the header does not.
-- **Impact**: cosmetic while the sheet is open; the header's controls are
-  hard to hit until it closes.
-- **Fix would start**: the `@media (max-width: 719px)` rules in
-  `room.module.css` (`right: 0` for `.header[data-panel='true']`), with a
-  header check beside the footer one in `e2e/voice-fake.mjs` `overflowAt`.
-
-## Voice panel head overflows at 1280 px in `e2e/voice-panel.mjs`
-
-- **Found**: 2026-11-06: `node e2e/voice-panel.mjs` fails 4 of 4 runs on main
-  at 32437418 with `horizontal overflow at 1280px` in the panel head
-  (`panelHead`, `panelHeadActions`, the pin button, sometimes the
-  Leave voice row). The harness is not in CI (only `voice-rnnoise.mjs` is).
-- **What**: unconfirmed whether it is real or the harness: the check runs
-  400 ms after resizing from 430 to 1280 px, when the phone sheet turns back
-  into the pinned column (which slides in), so it may be catching the slide.
-- **Fix would start**: take a screenshot at the moment of the failure; if the
-  column is mid-slide, wait for its animation to end before the check.
-
 ## Windows broadcaster: viewers black for the first minute (keyframe supersede livelock)
 
 - **Found**: 2026-07-31, first working field broadcast from the RTX 2070
@@ -457,10 +410,42 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 - **Fix would start**: docs/75 RU3 (the carrier uplink) shipped in the
   native broadcasters on 2026-10-21 and has been their default delivery
   since 2026-11-05 (docs/75 D4), so their viewers are covered unless the
-  broadcaster picks *Lowest latency*. Still open for the browser
-  broadcaster, which has no carrier until its own Reliable milestone
-  (docs/75 OD5), and for native broadcasters on *Lowest latency* or on a
-  relay without carriers.
+  broadcaster picks *Lowest latency*. For the browser broadcaster the fix
+  is R84, [docs/88](docs/88-browser-reliable-uplink.md): its browser half
+  is built (2026-11-10), Chromium only, and *Reliable* is the default since
+  2026-11-11 (owner, ahead of the gaming-PC pass BR0); the field data
+  decides after a few weeks whether it stays (BR5). Remove this entry's
+  browser half once that review holds. Its
+  lab pass shows *Smoother* at 99.0–99.9 % under bursts and outages at
+  10 ms on a browser carrier, against 71.6–79.0 % on today's datagrams.
+  Still open for browser broadcasters who pick *Lowest latency*, for
+  Firefox and Safari, and for native broadcasters on *Lowest latency*
+  or on a relay without carriers.
+
+## Reliable browser broadcast: Smoother viewers resync on uplink outages with no stale tail at the relay
+
+- **Found**: 2026-11-11, running `e2e/run.mjs --browser-broadcast`'s R84
+  uplink-outage pass (150 ms uplink outage every 1.5 s, a *Smoother* viewer)
+  while flipping the browser's default to *Reliable* (#774). It isn't caused
+  by the flip: main at efb7c5ed shows it too.
+- **What**: docs/88 BR4 expected *Reliable*'s viewer to resync only where the
+  relay drops an old GOP's tail as stale (docs/75 D2). In 4 of 7 local runs
+  the viewer resynced 1–3 times with **zero** stale records dropped at the
+  relay (*Lowest latency* in the same runs: 7–10 resyncs). The relay shed
+  nothing and the carrier was engaged throughout.
+- **Impact**: fewer freezes than *Lowest latency*, but not the near-zero the
+  lab predicted. The pass's "only where the relay dropped a stale tail"
+  assertion was flaky for this reason, so it now logs the case instead. It
+  still asserts fewer resyncs than the control.
+- **Hypothesis (unconfirmed)**: the outage plus QUIC's retransmit delay
+  outlasts what the *Smoother* viewer's reorder buffer waits for, so the
+  repaired data arrives after the viewer has given up on that frame. If so,
+  it's a viewer-buffer budget question, not an uplink one.
+- **Fix would start**: log the viewer's reason per resync (reorder deadline
+  vs a missing keyframe) and the relay's per-GOP arrival times in that pass.
+  Compare the outage-plus-PTO time against *Smoother*'s playout budget
+  (docs/24, docs/26). Then either widen what *Smoother* waits for on a
+  carrier-fed broadcast or accept it, and restore the assertion.
 
 ## Desktop broadcaster: every stream reset mid-`finish()` leaks a quinn waiter
 

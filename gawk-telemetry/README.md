@@ -111,7 +111,8 @@ The landing view lists every live broadcast with its broadcaster and each
 viewer, severity-sorted, with anything obviously wrong highlighted before
 you click anything. Peer sections cover single-session drill-down,
 whole-broadcast comparison, history, field explorer, fleet trends, the
-rule trace, and a read-only SQL console over the stored partitions. An
+rule trace, and a read-only SQL console over the stored partitions (it
+reads files under the data directory and nothing else on the pod). An
 optional Ask box above the console drafts its SQL from a question in
 English; the model sees the schema, never a row, and the operator runs
 the draft ([docs/84](../docs/84-telemetry-ask-in-english.md)).

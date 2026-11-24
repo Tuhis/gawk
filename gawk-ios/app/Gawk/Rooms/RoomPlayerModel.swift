@@ -9,7 +9,12 @@ import Observation
 final class RoomPlayerModel {
     enum Layout: String, CaseIterable {
         case grid = "Grid"
+        /// R83 (docs/87): every stream at its own shape. Plays like Grid.
+        case fit = "Fit"
         case focus = "Focus"
+
+        /// Grid and Fit show every stream, up to four playing.
+        var showsAll: Bool { self != .focus }
     }
 
     /// docs/67 D21's decode budget.
@@ -44,6 +49,20 @@ final class RoomPlayerModel {
     private(set) var engines: [String: PlayerEngine] = [:]
     /// The streams playing, oldest swap first.
     private(set) var playing: [String] = []
+    /// Each stream's shape (width ÷ height) by broadcast ID, from its decoded
+    /// video (docs/87 D7). Kept here, not in the engine, so a paused or
+    /// restarted stream keeps it; a move within the deadband is ignored.
+    private(set) var shapes: [String: Double] = [:]
+
+    /// The shapes in room order, 16:9 for a stream not seen yet.
+    var aspects: [Double] { tiles.map { shapes[$0.broadcastId] ?? FitLayout.defaultAspect } }
+
+    /// A stream's decoded size (docs/87 D7).
+    func noteVideoSize(_ id: String, width: Int, height: Int) {
+        guard width > 0, height > 0 else { return }
+        let next = FitLayout.clampAspect(Double(width) / Double(height))
+        if FitLayout.aspectChanged(shapes[id], next) { shapes[id] = next }
+    }
 
     @ObservationIgnored private var watcher: RoomWatcher?
     /// Called with each new room picture, and whether it's the first.
@@ -86,7 +105,7 @@ final class RoomPlayerModel {
         playing = []
     }
 
-    /// A tap on a tile: Focus focuses it; Grid swaps a paused one in for the
+    /// A tap on a tile: Focus focuses it; Grid and Fit swap a paused one in for the
     /// one that has played longest (D19). False when that changes nothing
     /// (the focused stream, a playing tile): the tap was on the video.
     @discardableResult
@@ -95,7 +114,7 @@ final class RoomPlayerModel {
         case .focus:
             guard focused?.broadcastId != id else { return false }
             focusedId = id
-        case .grid:
+        case .grid, .fit:
             guard !playing.contains(id) else { return false }
             if playing.count >= Self.maxPlaying {
                 pauseEngine(playing.removeFirst())
@@ -135,18 +154,21 @@ final class RoomPlayerModel {
         stop()
     }
 
-    /// Which streams play: in Grid the ones already playing that are still
+    /// Which streams play: in Grid and Fit the ones already playing that are still
     /// here, topped up in room order to four; in Focus the focused one only.
     private func reconcile() {
         let ids = tiles.map(\.broadcastId)
         for gone in engines.keys where !ids.contains(gone) {
             engines.removeValue(forKey: gone)?.stop()
         }
+        for gone in shapes.keys where !ids.contains(gone) {
+            shapes.removeValue(forKey: gone)
+        }
         let want: [String]
         switch layout {
         case .focus:
             want = focused.map { [$0.broadcastId] } ?? []
-        case .grid:
+        case .grid, .fit:
             var kept = playing.filter(ids.contains)
             for id in ids where kept.count < Self.maxPlaying && !kept.contains(id) {
                 kept.append(id)
@@ -164,8 +186,11 @@ final class RoomPlayerModel {
             return
         }
         // A tile's own state is the roster's (live or away), so the
-        // player's events have nowhere to go.
-        let engine = PlayerEngine { _ in }
+        // player's only event a tile uses is its video size (Fit).
+        let engine = PlayerEngine { [weak self] event in
+            guard case .videoSize(let width, let height) = event else { return }
+            Task { @MainActor in self?.noteVideoSize(id, width: width, height: height) }
+        }
         engines[id] = engine
         engine.start(options(id))
     }

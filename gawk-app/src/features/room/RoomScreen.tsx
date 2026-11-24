@@ -8,6 +8,7 @@ import { Toast } from '../../ui/Toast';
 import { VolumeControl } from '../../ui/VolumeControl';
 import {
   CopyIcon,
+  FitIcon,
   FocusIcon,
   FullscreenExitIcon,
   FullscreenIcon,
@@ -17,12 +18,12 @@ import {
   PeopleIcon,
   ScreenIcon,
   SpeakerIcon,
-  VideoOffIcon,
   CloseIcon,
 } from '../../ui/Icons';
 import { PRESETS, presetConfig, presetLabel, type PresetId } from '../viewer/playbackPresets';
 import { useAutoHide } from '../../lib/useAutoHide';
 import { NARROW_QUERY, useMediaMatch } from '../../lib/useMediaMatch';
+import { useElementSize } from '../../lib/useElementSize';
 import { useFullscreen } from '../../lib/useFullscreen';
 import { useHotkey } from '../../lib/useHotkey';
 import { useWakeLock } from '../../lib/useWakeLock';
@@ -61,6 +62,7 @@ import {
   EMPTY_ROOM_CARD,
   HIDDEN_CARD,
   LINK_COPIED_TOAST,
+  NONE_CHOSEN_CARD,
   OWN_REMOVED_CARD,
   endedCard,
   errorCard,
@@ -69,15 +71,36 @@ import {
 } from './roomCopy';
 import {
   loadNickname,
+  loadRoomAllMode,
   loadRoomMode,
+  loadRoomPicks,
   loadRoomPreset,
+  loadVideosOff,
   sanitizeNickname,
   sanitizeRoomText,
   saveNickname,
+  saveRoomAllMode,
   saveRoomMode,
+  saveRoomPicks,
   saveRoomPreset,
+  saveVideosOff,
+  type RoomAllMode,
   type RoomMode,
+  type RoomVisibility,
 } from './roomPrefs';
+import {
+  numberStreams,
+  revealStream,
+  setVisibility,
+  shownStreams,
+  toggleStream,
+  toggleStreamByKey,
+  visibilityOf,
+  type VisState,
+} from './roomVisibility';
+import { VisibilityControl } from './VisibilityControl';
+import { DEFAULT_ASPECT, aspectChanged, clampAspect, fitLayout, type FitResult } from './fitLayout';
+import type { TileEdges } from './RoomTile';
 import { readGrant, stashGrant, type RoomGrant } from './grantHandoff';
 import { AttachSecretPrompt } from './AttachSecretPrompt';
 import { stashRoomReturn } from './roomReturn';
@@ -87,6 +110,7 @@ import { VoiceButton, VoiceDock, VoiceInvite, VoicePanel, VoiceThumbBar } from '
 import { inVoice, useVoiceStore } from './voice/voiceStore';
 import { loadTalkModeChosen, loadVoiceHintSeen, loadVoicePinned, saveVoiceHintSeen, saveVoicePinned } from './voice/voicePrefs';
 import voiceStyles from './voice/voice.module.css';
+import { enterStream, roomStreamKey } from '../pop/switch';
 
 // The viewer's idle period (ViewerScreen CONTROL_IDLE_MS): the dock fades
 // after the same 3 s.
@@ -164,11 +188,20 @@ export interface RoomViewProps {
   header?: (ctx: RoomHeaderContext) => ReactNode;
 }
 
+// The root font size in px: the chrome bands are in rem (docs/87 D10).
+function rootFontPx(): number {
+  if (typeof document === 'undefined') return 16;
+  const px = parseFloat(getComputedStyle(document.documentElement).fontSize);
+  return Number.isFinite(px) && px > 0 ? px : 16;
+}
+
 // The cinematic dock. Video edge to edge, a header and a footer overlay that
 // fade after the viewer's idle period, an optional people-and-chat panel that
-// stays until closed. Three modes: grid (every POV, all mixed), focus (one
-// large + the rest small in a glass strip, focused audio only), hide videos
-// (no media sessions at all; the control session stays).
+// stays until closed. Two choices in the footer: the layout — grid or fit
+// (every POV shown, all mixed), focus (one large + the rest small in a glass
+// strip, focused audio only) — and what is shown (R86, docs/90): all
+// streams, the ones chosen, or none (no media sessions at all; the control
+// session stays).
 export function RoomView({
   target,
   grant = null,
@@ -180,6 +213,12 @@ export function RoomView({
   header,
 }: RoomViewProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
+  // The root as state too: a tile portals its stats panel into it.
+  const [rootEl, setRootEl] = useState<HTMLDivElement | null>(null);
+  const setRoot = useCallback((el: HTMLDivElement | null) => {
+    rootRef.current = el;
+    setRootEl(el);
+  }, []);
   const status = useRoomStore((s) => s.status);
   const snapshot = useRoomStore((s) => s.snapshot);
   const retryNote = useRoomStore((s) => s.retryNote);
@@ -280,25 +319,102 @@ export function RoomView({
   const secretRefused =
     status === 'error' && attachSecret !== null && (errorKind === 'refused' || errorKind === 'forbidden');
 
-  // Layout mode, persisted; the grid degrades to focus on a narrow screen.
-  const [mode, setModeState] = useState<RoomMode>(loadRoomMode);
-  const narrow = useMediaMatch(NARROW_QUERY);
-  const effectiveMode: RoomMode = mode === 'grid' && narrow ? 'focus' : mode;
-  const setMode = useCallback((next: RoomMode) => {
-    setModeState(next);
-    saveRoomMode(next);
+  // R86 (docs/90): what is shown — None (global, as Hide videos was) and
+  // this room's picks, with the room they belong to (D5). One state, changed
+  // only through roomVisibility's transitions, so two in one event (a layout
+  // pick, then a reveal) compose; each fact is saved from the state, so once
+  // per change whatever made it. When the room becomes known or changes, its
+  // picks are loaded (adjusted during render, like the fit result below) —
+  // except a choice made before a mint's first state, which is this room's
+  // and carries over. Keyed by the code in lower case, as the grant handoff
+  // is: a link's code may be typed in either case before the relay's own
+  // form of it arrives.
+  const code = snapshot?.code ?? (target.kind === 'join' ? target.code : '');
+  const picksKey = code.toLowerCase();
+  const [visState, setVisState] = useState<VisState & { key: string; touched: boolean }>(() => ({
+    key: picksKey,
+    touched: false,
+    videosOff: loadVideosOff(),
+    picks: loadRoomPicks(picksKey),
+  }));
+  let vis = visState;
+  if (visState.key !== picksKey) {
+    const carried = visState.key === '' && visState.touched;
+    vis = { ...visState, key: picksKey, picks: carried ? visState.picks : loadRoomPicks(picksKey) };
+    setVisState(vis);
+  }
+  const visibility: RoomVisibility = visibilityOf(vis);
+  const updateVis = useCallback((change: (s: VisState) => VisState) => {
+    setVisState((prev) => {
+      const next = change(prev);
+      if (next === prev) return prev;
+      return { key: prev.key, touched: prev.touched || next.picks !== prev.picks, videosOff: next.videosOff, picks: next.picks };
+    });
   }, []);
+  useEffect(() => saveVideosOff(vis.videosOff), [vis.videosOff]);
+  useEffect(() => saveRoomPicks(vis.key, vis.picks), [vis.key, vis.picks]);
+  const [visOpen, setVisOpen] = useState(false);
+
+  // Layout mode, persisted; grid and fit degrade to focus on a narrow screen.
+  // allMode is the last all-POV mode chosen (grid or fit), where 0 returns
+  // to (docs/87 D2).
+  const [mode, setModeState] = useState<RoomMode>(loadRoomMode);
+  const [allMode, setAllMode] = useState<RoomAllMode>(() => {
+    const m = loadRoomMode();
+    return m === 'grid' || m === 'fit' ? m : loadRoomAllMode();
+  });
+  const narrow = useMediaMatch(NARROW_QUERY);
+  const effectiveMode: RoomMode = (mode === 'grid' || mode === 'fit') && narrow ? 'focus' : mode;
+  const setMode = useCallback(
+    (next: RoomMode) => {
+      setModeState(next);
+      saveRoomMode(next);
+      if (next === 'grid' || next === 'fit') {
+        setAllMode(next);
+        saveRoomAllMode(next);
+      }
+      // D8: picking a layout leaves None, as clicking Grid left Hide videos.
+      updateVis((s) => revealStream(s, null));
+    },
+    [updateVis],
+  );
 
   const attachments: RoomAttachment[] = snapshot?.attachments ?? NO_ATTACHMENTS;
+  // Every stream with its room number, and the ones on the stage (D4, D7).
+  const numbered = useMemo(() => numberStreams(attachments), [attachments]);
+  const roomIds = useMemo(() => new Set(attachments.map((a) => a.broadcastId)), [attachments]);
+  const shown = useMemo(() => shownStreams(numbered, vis), [numbered, vis]);
+  const shownIds = useMemo(() => new Set(shown.map((s) => s.attachment.broadcastId)), [shown]);
   const [focusedId, setFocusedId] = useState<string | null>(null);
-  const focused = attachments.find((a) => a.broadcastId === focusedId) ?? attachments[0] ?? null;
+  // D9: focus skips hidden streams.
+  const focused =
+    shown.find((s) => s.attachment.broadcastId === focusedId)?.attachment ?? shown[0]?.attachment ?? null;
+  // ...and moves for good when the user hides the focused stream, so showing
+  // it again doesn't pull focus (and audio) back from the stream being
+  // watched. Only a hidden one: a stream that left the room keeps its claim,
+  // and focus returns when it is attached again. Adjusted during render, like
+  // the fit result below.
+  if (focusedId !== null && focused !== null && roomIds.has(focusedId) && !shownIds.has(focusedId)) {
+    setFocusedId(focused.broadcastId);
+  }
+  // Every visibility change the user makes first pins focus nobody chose (the
+  // first stream shown), so it can't move when a stream ahead of it comes and
+  // goes. A chosen one is left alone: if it has left the room, its claim
+  // stands.
+  const changeVis = (change: (s: VisState) => VisState) => {
+    if (focusedId === null && focused !== null) setFocusedId(focused.broadcastId);
+    updateVis(change);
+  };
   const focus = useCallback(
     (id: string) => {
       setFocusedId(id);
       setMode('focus');
+      updateVis((s) => revealStream(s, id));
     },
-    [setMode],
+    [setMode, updateVis],
   );
+  // D7: a number is the stream's place in the room, hidden or not. The
+  // plain key shows and focuses it; with Shift it hides or shows it.
   const focusIndex = useCallback(
     (i: number) => {
       const a = attachments[i];
@@ -306,11 +422,19 @@ export function RoomView({
     },
     [attachments, focus],
   );
+  const toggleIndex = (i: number) => {
+    const a = attachments[i];
+    if (a) changeVis((s) => toggleStreamByKey(s, a.broadcastId, roomIds));
+  };
   useHotkey({ key: '1' }, () => focusIndex(0));
   useHotkey({ key: '2' }, () => focusIndex(1));
   useHotkey({ key: '3' }, () => focusIndex(2));
   useHotkey({ key: '4' }, () => focusIndex(3));
-  useHotkey({ key: '0' }, () => setMode('grid'));
+  useHotkey({ key: '1', shift: true }, () => toggleIndex(0));
+  useHotkey({ key: '2', shift: true }, () => toggleIndex(1));
+  useHotkey({ key: '3', shift: true }, () => toggleIndex(2));
+  useHotkey({ key: '4', shift: true }, () => toggleIndex(3));
+  useHotkey({ key: '0' }, () => setMode(allMode));
 
   // Presets per tile: the focused / grid tiles on the user's choice, the
   // small tiles as cheap as they can be without a re-dial. Delivery and parity
@@ -328,11 +452,21 @@ export function RoomView({
   }, [mainConfig]);
 
   // A control-session reconnect keeps the stage: media sessions are independent of it.
-  const tilesShown = (joined || status === 'reconnecting') && effectiveMode !== 'hidden' && attachments.length > 0;
-  // A broadcaster's "hide videos" is "preview only": their own screen full
-  // bleed, no /subscribe to anyone (the bandwidth saver), the control
-  // session kept. Same persisted mode as a viewer's hide-videos.
-  const previewOnly = effectiveMode === 'hidden' && own?.preview != null && (joined || status === 'reconnecting');
+  const tilesShown = (joined || status === 'reconnecting') && shown.length > 0;
+
+  // R83 Fit (docs/87): each stream's shape by broadcast ID, from its decoded
+  // frames (D7). Kept here, not in the tile, so a tile's retry (a remount) or
+  // a mode switch never forgets it; a move under the deadband is ignored.
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const [shapes, setShapes] = useState<Record<string, number>>({});
+  const onAspect = useCallback((id: string, width: number, height: number) => {
+    const next = clampAspect(width / height);
+    setShapes((prev) => (aspectChanged(prev[id], next) ? { ...prev, [id]: next } : prev));
+  }, []);
+  // A broadcaster's None is "preview only": their own screen full bleed, no
+  // /subscribe to anyone (the bandwidth saver), the control session kept.
+  // Same persisted None as a viewer's (docs/90 D2).
+  const previewOnly = visibility === 'none' && own?.preview != null && (joined || status === 'reconnecting');
   const audioOutput = useMemo(() => (tilesShown ? (mixerRef.current?.output() ?? null) : null), [tilesShown]);
   const [masterMuted, setMasterMuted] = useState(false);
   const [masterVolume, setMasterVolume] = useState(1);
@@ -412,7 +546,16 @@ export function RoomView({
     if (!panelOpen) setConfirmingEnd(false);
   }, [panelOpen]);
 
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  // `tile`: the remote tile the menu was opened on, which adds its Stats.
+  const [menu, setMenu] = useState<{ x: number; y: number; tile?: string } | null>(null);
+  // The one tile whose stats panel is open, by broadcast ID.
+  const [statsTile, setStatsTile] = useState<string | null>(null);
+  const openTileMenu = useCallback((tile: string, x: number, y: number) => setMenu({ x, y, tile }), []);
+  const closeStats = useCallback(() => setStatsTile(null), []);
+  // A detached tile's panel closes for good, so its stats never reappear
+  // on their own when the same broadcast is attached again; so does a hidden
+  // one's (docs/90 D13). Adjusted during render, like the fit result below.
+  if (statsTile !== null && !shownIds.has(statsTile)) setStatsTile(null);
   const [presetMenu, setPresetMenu] = useState<{ x: number; y: number } | null>(null);
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
   const presetButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -463,6 +606,7 @@ export function RoomView({
   const anyOverlayOpen =
     !!menu ||
     !!presetMenu ||
+    visOpen ||
     masterOpen ||
     editingNick ||
     (creatorHelpOpen && isRoomCreator(snapshot));
@@ -470,7 +614,6 @@ export function RoomView({
   const chromeVisible = useAutoHide(CONTROL_IDLE_MS, stageLive && !anyOverlayOpen);
   const showChrome = chromeVisible || !stageLive || anyOverlayOpen;
 
-  const code = snapshot?.code ?? (target.kind === 'join' ? target.code : '');
   const roomKey = snapshot && snapshot.key.length > 0 ? bytesToHex(snapshot.key) : null;
 
   const leave = useCallback(() => {
@@ -624,7 +767,16 @@ export function RoomView({
     checked: preset === p.id,
     onSelect: () => setPreset(p.id),
   }));
+  const menuTile = menu?.tile;
   const menuItems: MenuItem[] = [
+    ...(menuTile
+      ? [
+          {
+            label: statsTile === menuTile ? 'Hide stats' : 'Stats',
+            onSelect: () => setStatsTile((t) => (t === menuTile ? null : menuTile)),
+          },
+        ]
+      : []),
     { label: 'Copy room link', onSelect: copyLink },
     ...(dynamic ? [{ label: 'Copy room code', onSelect: copyCode }] : []),
     { label: 'Change nickname…', onSelect: () => setEditingNick(true) },
@@ -683,38 +835,74 @@ export function RoomView({
     ) : null;
 
   // The stage: one flat list keyed by broadcast ID so a mode switch moves
-  // tiles instead of remounting their media sessions. Hidden ⇒ no tiles.
-  const cols = Math.max(1, Math.ceil(Math.sqrt(attachments.length)));
-  const rows = Math.max(1, Math.ceil(attachments.length / cols));
+  // tiles instead of remounting their media sessions. Only the shown streams
+  // have tiles, so a hidden one has no media session (docs/90 D3).
+  const cols = Math.max(1, Math.ceil(Math.sqrt(shown.length)));
+  const rows = Math.max(1, Math.ceil(shown.length / cols));
+  const fitOn = effectiveMode === 'fit' && tilesShown;
+  const stageSize = useElementSize(stageRef, fitOn);
+  const aspects = shown.map(({ attachment: a }) => shapes[a.broadcastId] ?? DEFAULT_ASPECT);
+  const aspectsKey = aspects.join(',');
+  // D5 needs the previous result: kept in state and recomputed during render
+  // when its inputs change (React's "information from previous renders").
+  const fitKey = fitOn ? `${aspectsKey}|${stageSize.width}|${stageSize.height}` : '';
+  const [fitState, setFitState] = useState<{ key: string; result: FitResult | null }>({ key: '', result: null });
+  let fit = fitState.result;
+  if (fitState.key !== fitKey) {
+    fit = fitOn ? fitLayout(aspects, stageSize.width, stageSize.height, { previous: fitState.result }) : null;
+    setFitState({ key: fitKey, result: fit });
+  }
+  const fitEdges = (i: number): TileEdges | undefined => {
+    const r = fit?.rects[i];
+    if (!r) return undefined;
+    // docs/87 D10: the chrome bands (--chrome-top 4.5rem, --chrome-bottom
+    // 4rem) and the label's own inset (0.6rem), in px at the root font size.
+    const rem = rootFontPx();
+    const topBand = 4.5 * rem;
+    const bottomBand = 4 * rem;
+    const inset = 0.6 * rem;
+    const below = stageSize.height - (r.y + r.h);
+    return {
+      top: r.y < topBand,
+      bottom: below < bottomBand,
+      topOffset: Math.max(inset, topBand - r.y),
+      bottomOffset: Math.max(inset, bottomBand - below),
+    };
+  };
   let strip = 0;
   const tiles =
     !tilesShown
       ? null
-      : attachments.map((a, i) => {
+      : shown.map(({ attachment: a, index }, i) => {
           const isFocused = effectiveMode === 'focus' && focused?.broadcastId === a.broadcastId;
-          const variant = effectiveMode === 'grid' ? 'grid' : isFocused ? 'focus' : 'small';
+          const variant = effectiveMode === 'grid' || effectiveMode === 'fit' ? 'grid' : isFocused ? 'focus' : 'small';
           const stripIndex = variant === 'small' ? strip++ : undefined;
           // Which stage edges this grid tile touches: its label (top) and
           // controls (bottom) step inside the header / footer bands there,
           // so the video stays edge to edge and nothing sits under the
           // room's own chrome.
           const edges =
-            variant === 'grid'
-              ? { top: Math.floor(i / cols) === 0, bottom: Math.floor(i / cols) === rows - 1 }
-              : undefined;
+            effectiveMode === 'fit'
+              ? fitEdges(i)
+              : variant === 'grid'
+                ? { top: Math.floor(i / cols) === 0, bottom: Math.floor(i / cols) === rows - 1 }
+                : undefined;
+          const box = effectiveMode === 'fit' ? fit?.rects[i] : undefined;
           if (own && own.preview && a.broadcastId === own.broadcastId) {
             return (
               <OwnPreviewTile
                 key={a.broadcastId}
                 attachment={a}
-                index={i + 1}
+                index={index}
                 stripIndex={stripIndex}
                 variant={variant}
                 edges={edges}
+                box={box}
                 preview={own.preview}
                 ownControls={ownControls}
                 showChrome={showChrome}
                 onFocus={focus}
+                onAspect={onAspect}
               />
             );
           }
@@ -722,7 +910,7 @@ export function RoomView({
             <RoomTile
               key={a.broadcastId}
               attachment={a}
-              index={i + 1}
+              index={index}
               stripIndex={stripIndex}
               variant={variant}
               edges={edges}
@@ -734,6 +922,12 @@ export function RoomView({
               showChrome={showChrome}
               roomKey={roomKey}
               onFocus={focus}
+              box={box}
+              onAspect={onAspect}
+              statsOpen={statsTile === a.broadcastId}
+              statsHost={rootEl}
+              onTileMenu={openTileMenu}
+              onCloseStats={closeStats}
             />
           );
         });
@@ -757,10 +951,27 @@ export function RoomView({
       />
     ) : null;
 
-  // The gated-out state takes the empty stage's card; with tiles (or in hide
-  // videos, where a card already owns the middle) it is a pill instead, so it
+  // The gated-out state takes the empty stage's card; with tiles (or under
+  // None, where a card already owns the middle) it is a pill instead, so it
   // never covers video.
-  const gatedCardShown = gatedOut && effectiveMode !== 'hidden' && attachments.length === 0;
+  const gatedCardShown = gatedOut && visibility !== 'none' && attachments.length === 0;
+  // The two ways back from an empty stage the viewer chose (D10).
+  const chooseOpen = () => {
+    changeVis((s) => setVisibility(s, 'some', roomIds));
+    setMenu(null);
+    setPresetMenu(null);
+    setVisOpen(true);
+  };
+  const showBackActions = (
+    <>
+      <Button variant="secondary" onClick={() => changeVis((s) => setVisibility(s, 'all', roomIds))}>
+        All streams
+      </Button>
+      <Button variant="secondary" onClick={chooseOpen}>
+        Choose…
+      </Button>
+    </>
+  );
 
   const voiceButton =
     hasVoice && snapshot ? (
@@ -809,7 +1020,7 @@ export function RoomView({
 
   return (
     <div
-      ref={rootRef}
+      ref={setRoot}
       className={[styles.root, isFullscreen && tier === 'pseudo' ? styles.pseudoFullscreen : ''].join(' ')}
       data-mode={effectiveMode}
       data-status={status}
@@ -820,8 +1031,11 @@ export function RoomView({
       }}
     >
       <div
+        ref={stageRef}
         className={styles.stage}
         data-mode={effectiveMode}
+        // The preview-only stage's CSS keys on None (docs/90 D2).
+        data-vis={visibility}
         data-panel={sideOpen ? 'true' : 'false'}
         style={{ '--cols': cols } as CSSProperties}
       >
@@ -871,23 +1085,18 @@ export function RoomView({
         card(OWN_REMOVED_CARD.title, OWN_REMOVED_CARD.body, <Button onClick={leave}>Back to my stream</Button>)}
       {(joined || status === 'reconnecting') &&
         !ownRemoved &&
-        effectiveMode === 'hidden' &&
+        visibility === 'none' &&
         !previewOnly &&
-        card(
-          HIDDEN_CARD.title,
-          HIDDEN_CARD.body,
-          <>
-            <Button variant="secondary" onClick={() => setMode('grid')}>
-              <GridIcon /> Grid
-            </Button>
-            <Button variant="secondary" onClick={() => setMode('focus')}>
-              <FocusIcon /> Focus
-            </Button>
-          </>,
-        )}
+        card(HIDDEN_CARD.title, HIDDEN_CARD.body, showBackActions)}
       {(joined || status === 'reconnecting') &&
         !ownRemoved &&
-        effectiveMode !== 'hidden' &&
+        visibility === 'some' &&
+        attachments.length > 0 &&
+        shown.length === 0 &&
+        card(NONE_CHOSEN_CARD.title, NONE_CHOSEN_CARD.body, showBackActions)}
+      {(joined || status === 'reconnecting') &&
+        !ownRemoved &&
+        visibility !== 'none' &&
         attachments.length === 0 &&
         !gatedOut &&
         card(
@@ -984,7 +1193,11 @@ export function RoomView({
           showChrome,
         })
       ) : (
-      <div className={[styles.header, showChrome ? '' : styles.headerHidden].join(' ')} data-panel={sideOpen ? 'true' : 'false'}>
+      <div
+        className={[styles.header, showChrome ? '' : styles.headerHidden].join(' ')}
+        data-panel={sideOpen ? 'true' : 'false'}
+        data-testid="room-header"
+      >
         <div className={styles.headerLeft}>
           {/* The code chip is the share control, as the stream code chip
               is on a plain stream: click copies the room link (the More
@@ -1026,10 +1239,19 @@ export function RoomView({
       <div
         className={[styles.footer, showChrome ? '' : styles.footerHidden].join(' ')}
         data-panel={sideOpen ? 'true' : 'false'}
+        // The What to show popover opens over the voice dock's band.
+        data-raised={visOpen ? 'true' : undefined}
         data-testid="room-footer"
       >
         <div className={styles.footerLeft}>
-          <div className={styles.segment} role="radiogroup" aria-label="Layout">
+          {/* Dimmed under None: the layout is kept, nothing is laid out
+              (picking one leaves None, D8). */}
+          <div
+            className={styles.segment}
+            role="radiogroup"
+            aria-label="Layout"
+            data-dim={visibility === 'none' ? 'true' : undefined}
+          >
             <button
               type="button"
               role="radio"
@@ -1043,30 +1265,34 @@ export function RoomView({
             <button
               type="button"
               role="radio"
+              aria-checked={mode === 'fit'}
+              className={styles.segmentBtn}
+              onClick={() => setMode('fit')}
+              title={narrow ? 'Fit shows as focus on a narrow screen' : 'Size each stream to its own shape'}
+            >
+              <FitIcon /> <span className={styles.segmentLabel}>Fit</span>
+            </button>
+            <button
+              type="button"
+              role="radio"
               aria-checked={mode === 'focus'}
               className={styles.segmentBtn}
               onClick={() => setMode('focus')}
             >
               <FocusIcon /> <span className={styles.segmentLabel}>Focus</span>
             </button>
-            <button
-              type="button"
-              role="radio"
-              aria-checked={mode === 'hidden'}
-              className={styles.segmentBtn}
-              onClick={() => setMode('hidden')}
-            >
-              {own?.preview ? (
-                <>
-                  <ScreenIcon /> <span className={styles.segmentLabel}>Preview only</span>
-                </>
-              ) : (
-                <>
-                  <VideoOffIcon /> <span className={styles.segmentLabel}>Hide videos</span>
-                </>
-              )}
-            </button>
           </div>
+          <VisibilityControl
+            visibility={visibility}
+            streams={numbered}
+            shownIds={shownIds}
+            ownId={ownId}
+            preview={own?.preview != null}
+            open={visOpen}
+            onOpenChange={setVisOpen}
+            onVisibility={(v) => changeVis((s) => setVisibility(s, v, roomIds))}
+            onToggle={(id) => changeVis((s) => toggleStream(s, id, roomIds))}
+          />
           <button
             ref={presetButtonRef}
             type="button"
@@ -1197,6 +1423,11 @@ export function RoomView({
 export function RoomScreen({ code, linkNickname = null }: { code: string; linkNickname?: string | null }) {
   const target = useMemo<RoomTarget>(() => ({ kind: 'join', code }), [code]);
   const [grant] = useState(() => readGrant(code));
+  // R74 (docs/76 item 43.6, OD18): an opt-out holds for this room, its tiles
+  // included. One key per screen: tiles and the broadcaster's embedded room
+  // never name a stream of their own. The room dials a macrotask later, so
+  // this runs first.
+  useEffect(() => enterStream(roomStreamKey({ kind: 'join', code })), [code]);
   return (
     <RoomView
       target={target}

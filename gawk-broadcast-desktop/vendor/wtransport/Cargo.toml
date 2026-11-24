@@ -13,7 +13,7 @@
 edition = "2021"
 rust-version = "1.88"
 name = "wtransport"
-version = "0.7.1"
+version = "0.7.2"
 authors = ["Biagio Festa"]
 build = false
 autolib = false
@@ -54,14 +54,13 @@ allowed_external_types = [
     "quinn_proto::config::ServerConfig",
     "quinn_proto::config::transport::TransportConfig",
     "quinn_proto::connection::ConnectionError",
-    "quinn_proto::crypto::HandshakeTokenKey",
     "rustls",
     "rustls::client::client_conn::ClientConfig",
     "rustls::server::server_conn::ServerConfig",
     "rustls::verify::ServerCertVerifier",
     "rustls::webpki::anchors::RootCertStore",
     "time",
-    "time::duration::Duration",
+    "time::Duration",
     "time::offset_date_time::OffsetDateTime",
     "tokio::io::async_read::AsyncRead",
     "tokio::io::async_write::AsyncWrite",
@@ -179,7 +178,7 @@ version = "0.1.37"
 version = "2.4.0"
 
 [dependencies.wtransport-proto]
-version = "0.7.1"
+version = "0.7.2"
 features = ["async"]
 
 [dependencies.x509-parser]

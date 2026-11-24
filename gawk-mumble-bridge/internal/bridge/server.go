@@ -63,6 +63,9 @@ type Server struct {
 
 	linkTr *webtransport.Transport
 
+	// ice is Ice mode's roster source (docs/89 D1); nil in observer mode.
+	ice *iceMirror
+
 	started   atomic.Bool
 	draining  atomic.Bool
 	drainDone atomic.Bool
@@ -120,6 +123,9 @@ func New(opts Options) (*Server, error) {
 			return nil, fmt.Errorf("relay CA file: %w", err)
 		}
 		s.relayRoot = pool
+	}
+	if opts.Mumble.Ice.Addr != "" {
+		s.ice = newIceMirror(s)
 	}
 	s.linkTr = &webtransport.Transport{
 		TLSClientConfig: &tls.Config{ServerName: opts.Relay.ServerName, RootCAs: s.relayRoot},
@@ -216,6 +222,14 @@ func (s *Server) Listen() error {
 		s.internalConn.Close()
 		return fmt.Errorf("ops-listen %s: %w", s.opts.OpsListen, err)
 	}
+	if s.ice != nil {
+		if err := s.ice.listen(); err != nil {
+			s.publicConn.Close()
+			s.internalConn.Close()
+			s.opsLn.Close()
+			return err
+		}
+	}
 	return nil
 }
 
@@ -266,9 +280,18 @@ func (s *Server) Serve(ctx context.Context) error {
 			errCh <- err
 		}
 	}()
+	if s.ice != nil {
+		ictx, cancel := context.WithCancel(context.Background())
+		s.ice.cancel = cancel
+		go s.ice.run(ictx)
+	}
 	s.started.Store(true)
 	pub, in, ops := s.Addrs()
-	s.log.Info("listening", "public", pub, "internal", in, "ops", ops)
+	if s.ice != nil {
+		s.log.Info("listening", "public", pub, "internal", in, "ops", ops, "roster", "ice", "ice_callback", s.ice.callbackAddr().String())
+	} else {
+		s.log.Info("listening", "public", pub, "internal", in, "ops", ops, "roster", "observer")
+	}
 
 	var err error
 	select {
@@ -327,6 +350,10 @@ func (s *Server) Drain() {
 	case <-time.After(time.Until(deadline)):
 		s.log.Warn("drain timed out")
 	}
+	// D17: removeCallback before the callback listener closes (shutdown).
+	if s.ice != nil {
+		s.ice.leave()
+	}
 	s.drainDone.Store(true)
 }
 
@@ -344,6 +371,9 @@ func (s *Server) shutdown() {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	_ = s.ops.Shutdown(ctx)
+	if s.ice != nil {
+		s.ice.close()
+	}
 	s.wg.Wait()
 }
 

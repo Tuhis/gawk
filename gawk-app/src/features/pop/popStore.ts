@@ -1,7 +1,6 @@
 // What this tab knows about local relays (R74, docs/76 §6.12 and §7.3): the
 // state of the switch, the one-line copy the session screens show, and the
-// LocalRelayInfo of the PoP this tab is talking to. Memory only, except the
-// opt-outs, which switch.ts persists itself.
+// LocalRelayInfo of the PoP this tab is talking to. Memory only.
 
 import { create } from 'zustand';
 
@@ -25,7 +24,8 @@ export interface PopState {
   toast: string | null;
   // The quiet note: denied, failed on a Mac, or "your next broadcast".
   note: string | null;
-  // An offer from a PoP the user opted out of, so the chip can offer it back.
+  // An offer from a PoP the user opted out of on this stream, so the chip
+  // can offer it back.
   declined: { handle: string; name: string } | null;
   // The LocalRelayInfo (0x18) last received, and the relay that sent it.
   info: { relayUrl: string; info: LocalRelayInfoMessage } | null;

@@ -8,6 +8,10 @@ enum PlayerEvent: Sendable {
     case status(ViewerStatus)
     case stats(ViewerStats)
     case unsupportedCodec(String)
+    /// The decoded video's size, sent when it changes (R83 Fit, docs/87
+    /// D7): from the H.264 parameter sets the renderer decodes with, or
+    /// from the VP8/VP9 frame itself.
+    case videoSize(width: Int, height: Int)
 }
 
 /// The native player (docs/67 D15, D22): the viewer core's output, presented
@@ -62,6 +66,7 @@ final class PlayerEngine: ViewerListener, @unchecked Sendable {
     private var videoEnabled = true
     private var counters = Counters()
     private var lastStats: ViewerStats?
+    private var lastVideoSize: (width: Int, height: Int)?
     private var ticks = 0
 
     /// What the engine has done, for the stats sheet and the smoke test.
@@ -214,6 +219,13 @@ final class PlayerEngine: ViewerListener, @unchecked Sendable {
 
     // MARK: Media (queue)
 
+    private func reportVideoSize(width: Int, height: Int) {
+        guard width > 0, height > 0 else { return }
+        if let last = lastVideoSize, last.width == width, last.height == height { return }
+        lastVideoSize = (width, height)
+        onEvent(.videoSize(width: width, height: height))
+    }
+
     private func pts(_ presentAtMs: Double) -> CMTime {
         let host = mapping.hostTime(forPresentAtMs: presentAtMs)
         return CMSyncConvertTime(host, from: CMClockGetHostTimeClock(), to: synchronizer.timebase)
@@ -223,6 +235,11 @@ final class PlayerEngine: ViewerListener, @unchecked Sendable {
         if let format = sample.format {
             do {
                 h264Format = try MediaSamples.h264FormatDescription(format)
+                if let described = h264Format {
+                    let size = CMVideoFormatDescriptionGetPresentationDimensions(
+                        described, usePixelAspectRatio: true, useCleanAperture: true)
+                    reportVideoSize(width: Int(size.width), height: Int(size.height))
+                }
             } catch {
                 log.error("H.264 format description: \(String(describing: error))")
                 h264Format = nil
@@ -254,6 +271,7 @@ final class PlayerEngine: ViewerListener, @unchecked Sendable {
     }
 
     private func enqueueNv12(_ frame: Nv12Frame) {
+        reportVideoSize(width: Int(frame.width), height: Int(frame.height))
         let pts = pts(frame.presentAtMs)
         presentation.record(pts: pts, timestampUs: frame.timestampUs)
         guard videoEnabled else { return }

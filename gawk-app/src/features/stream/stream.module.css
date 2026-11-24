@@ -234,3 +234,56 @@
   color: var(--accent);
   margin-left: 0.25rem;
 }
+
+/* The Delivery control (docs/88 §7): a two-choice segmented control in the
+   room screen's idiom, with the selected choice's hint under it. */
+.fieldLabel {
+  color: var(--muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.segment {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  padding: 0.15rem;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border, var(--border));
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.segmentBtn {
+  padding: 0.3rem 0.75rem;
+  border-radius: 999px;
+  border: none;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.segmentBtn:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.segmentBtn[aria-checked='true'] {
+  color: #0a0b0d;
+  background: var(--text);
+}
+
+.segmentBtn:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+.fieldHint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}

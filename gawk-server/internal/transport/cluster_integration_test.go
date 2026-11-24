@@ -106,11 +106,14 @@ func startClusteredPod(t *testing.T, ctx context.Context, cs *fake.Clientset, po
 	}
 
 	r := hub.NewRegistry(discardLog, hub.Options{
-		MaxSubscribers: cfg.MaxSubscribers,
-		BroadcastGrace: cfg.BroadcastGrace,
+		MaxSubscribers:  cfg.MaxSubscribers,
+		BroadcastGrace:  cfg.BroadcastGrace,
+		StripedDelivery: cfg.StripedDelivery,
+		StripedDVR:      cfg.StripedDVR,
 	})
 	srv = New(cfg, r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &cert, nil }, discardLog,
 		metrics.NewServerMetrics(prometheus.NewRegistry()))
+	srv.testHookStatuszFresh.Store(true)    // tests read state right after changing it
 	srv.drainSleep = func(time.Duration) {} // drain instantly in tests
 	srv.SetCluster(coord, podName)
 	// The production dialer trusts the system roots; the test fleet's cert is

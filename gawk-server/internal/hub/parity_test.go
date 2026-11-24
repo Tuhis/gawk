@@ -146,7 +146,7 @@ func subscribeCarrier(t *testing.T, r *Registry, id string, f *fakeSender, dvr b
 	var s *Subscriber
 	var err error
 	if dvr {
-		s, err = r.SubscribeDVR(id, f, 3000, k)
+		s, err = r.SubscribeDVR(id, f, 3000, k, "")
 	} else {
 		s, err = r.SubscribeReliable(id, f, k)
 	}

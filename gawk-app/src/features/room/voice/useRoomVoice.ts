@@ -6,6 +6,7 @@
 // refs.
 
 import { useEffect, useMemo, useRef, type RefObject } from 'react';
+import { isEditable } from '../../../lib/useHotkey';
 import { webTransportInit } from '../../../transport/connection';
 import { selectCertHashList, useTransportStore } from '../../../state/transportStore';
 import { roomHasVoice, useRoomStore } from '../../../state/roomStore';
@@ -67,15 +68,19 @@ export function roomVoiceReadiness(): RoomVoiceReadiness {
   return 'gone';
 }
 
-function speakerName(session: number): string | null {
-  return useRoomStore.getState().voiceRoster?.find((e) => e.session === session)?.name ?? null;
+// Typing in a field is not talking (isEditable). A focused checkbox or slider
+// is not typing — R86's What to show leaves focus on one — so the PTT key
+// talks there, except a key the control uses itself: Space ticks a checkbox
+// or radio, the arrows, Page and Home/End move a slider.
+function controlKey(target: EventTarget | null, code: string): boolean {
+  const el = target as HTMLInputElement | null;
+  if (!el || el.tagName !== 'INPUT') return false;
+  if (el.type === 'range') return /^(Arrow|Page|Home|End)/.test(code);
+  return (el.type === 'checkbox' || el.type === 'radio') && code === 'Space';
 }
 
-// Typing in a field is not talking.
-function isEditable(target: EventTarget | null): boolean {
-  const el = target as HTMLElement | null;
-  if (!el || typeof el.tagName !== 'string') return false;
-  return el.isContentEditable || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT';
+function speakerName(session: number): string | null {
+  return useRoomStore.getState().voiceRoster?.find((e) => e.session === session)?.name ?? null;
 }
 
 export function useRoomVoice({
@@ -149,7 +154,7 @@ export function useRoomVoice({
   useEffect(() => {
     if (!pttLive) return;
     const down = (e: KeyboardEvent) => {
-      if (e.code !== pttKey || isEditable(e.target)) return;
+      if (e.code !== pttKey || isEditable(e.target) || controlKey(e.target, e.code)) return;
       e.preventDefault();
       if (!e.repeat) ctrlRef.current?.setPttHeld(true);
     };

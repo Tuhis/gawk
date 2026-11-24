@@ -25,6 +25,10 @@ interface Props {
   // collects nothing. The row it feeds is how a viewer on the phone tells an
   // operator which dashboard row is them.
   telemetrySessionId?: string | null;
+  // A room tile's name: titles the panel and its accessible name.
+  streamName?: string;
+  // How the panel toggles, when that is not the viewer's hotkey and menu.
+  footer?: string;
   onClose: () => void;
   onCopy: () => void;
   copied: boolean;
@@ -39,7 +43,7 @@ const SESSION_ID_DISPLAY_CHARS = 8;
 // The viewer stats overlay — "is it the stream or my machine". Sections
 // follow the pipeline funnel: video (decode), delivery (frames
 // arriving/dropping), network (this leg's health).
-export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentationSurface, telemetrySessionId, onClose, onCopy, copied }: Props) {
+export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentationSurface, telemetrySessionId, streamName, footer, onClose, onCopy, copied }: Props) {
   const conn = stats?.connection ?? null;
   const surface = presentationSurface ?? null;
   const sections: StatsSection[] = [
@@ -93,8 +97,9 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
         // degraded "reliable requested / datagrams served" state. 'dvr' is the
         // relay's own word for it (the join-time DeliveryAck) — a replayed GOP
         // looks exactly like a live one, so nothing the viewer can observe
-        // would tell these two apart.
-        ['Delivery mode', stats == null ? '—' : stats.deliveryMode === 'dvr' ? `ring-backed (buffer ${fmtInt(stats.dvrBufferMs)} ms)` : stats.deliveryMode === 'reliable' ? 'reliable (resilient)' : stats.deliveryMode === 'reliable-requested' ? 'reliable requested / datagrams served' : 'datagrams (live-edge)'],
+        // would tell these two apart. A striped ring names its width, the
+        // connections carrying GOPs with the primary (docs/91 §7).
+        ['Delivery mode', stats == null ? '—' : stats.deliveryMode === 'dvr' ? `ring-backed (buffer ${fmtInt(stats.dvrBufferMs)} ms)${(stats.dvrStripeWidth ?? 1) > 1 ? ` · striped ×${stats.dvrStripeWidth}` : ''}` : stats.deliveryMode === 'reliable' ? 'reliable (resilient)' : stats.deliveryMode === 'reliable-requested' ? 'reliable requested / datagrams served' : 'datagrams (live-edge)'],
         ...(stats?.deliveryMode !== 'datagrams' && stats != null
           ? ([
               ['Carrier streams', stats.carrierStreams == null ? '—' : `${stats.carrierStreams} (${stats.carrierStreamsAborted ?? 0} aborted)`],
@@ -442,9 +447,10 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
 
   return (
     <StatsPanel
-      ariaLabel="Stream stats"
+      ariaLabel={streamName ? `Stream stats — ${streamName}` : 'Stream stats'}
+      subject={streamName}
       sections={sections}
-      footer={`${formatHotkey(STATS_HOTKEY)} or right-click to toggle`}
+      footer={footer ?? `${formatHotkey(STATS_HOTKEY)} or right-click to toggle`}
       onClose={onClose}
       onCopy={onCopy}
       copied={copied}

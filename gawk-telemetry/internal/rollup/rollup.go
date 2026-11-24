@@ -183,6 +183,8 @@ var viewerSeries = []string{
 	// are what the burst-threshold-loss rule reads.
 	"stripeActive", "stripeNeeded", "stripeLargeLossPct", "stripeSmallLossPct",
 	"stripeLargeChunks",
+	// R87 (docs/91 SG3): the deep-buffer stripe width over the session.
+	"dvrStripeWidth", "dvrLiveRateBps", "dvrGoodputBps",
 }
 
 var broadcasterSeries = []string{
@@ -284,6 +286,8 @@ var viewerConfig = []string{
 
 var broadcasterConfig = []string{
 	"autoRung", "autoCeiling", "pipelineContext", "audioState", "audioCodec",
+	// #722: why a browser broadcaster stayed on the main thread.
+	"pipelineFallbackReason",
 	// Native-engine config, in the lowerCamelCase engine.Stats now tags. Its
 	// `encoder` (a GStreamer element name) stays its own key rather than being
 	// folded into the browser's `acceleration` (a tri-state setting): the two
