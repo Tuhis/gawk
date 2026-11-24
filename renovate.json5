@@ -132,5 +132,11 @@
       matchUpdateTypes: ["major"],
       enabled: false,
     },
+    {
+      description: "Skip oxlint 1.95.0. Its linux-x64-gnu binding was built on GitHub's ubuntu-26.04 image, which compiled the bundled mimalloc with BMI2, so it dies with SIGILL (exit 132) while loading on CPUs without BMI2, our self-hosted runners included (PR #835; oxc-project/oxc#30164). Later releases still get PRs, and the lint jobs on those runners show whether the fix (oxc-project/oxc#30165) took. Drop this rule once a later oxlint has landed.",
+      matchManagers: ["npm"],
+      matchPackageNames: ["oxlint"],
+      allowedVersions: "!/^1\\.95\\.0$/",
+    },
   ],
 }
