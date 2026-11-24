@@ -92,8 +92,23 @@ declare global {
   }
 }
 
+// Where the config lives: `window` in a page, the worker's own global scope
+// (`self`) in a Web Worker. A worker has no `window`, so config.js never runs
+// there; the main thread hands it the page's config at init and the worker
+// installs it with installRuntimeConfig. Getters read it on every call, so a
+// value read after init is the deployment's, never the default.
+function configScope(): { __GAWK_CONFIG__?: GawkRuntimeConfig } {
+  return typeof window !== 'undefined' ? window : (globalThis as { __GAWK_CONFIG__?: GawkRuntimeConfig });
+}
+
 export function getRuntimeConfig(): GawkRuntimeConfig {
-  return (typeof window !== 'undefined' && window.__GAWK_CONFIG__) || {};
+  return configScope().__GAWK_CONFIG__ || {};
+}
+
+// Worker side of the hand-over: the config the main thread read from its
+// window (getRuntimeConfig there), sent in the worker's init message.
+export function installRuntimeConfig(config: GawkRuntimeConfig | undefined): void {
+  configScope().__GAWK_CONFIG__ = config ?? {};
 }
 
 // The relay this deployment talks to, or '' when nothing is configured — in

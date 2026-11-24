@@ -71,6 +71,7 @@ type SanitizedConfig struct {
 	LiveEdgeAudioOnReliableStream bool    `json:"liveEdgeAudioOnReliableStream"`
 	ParityDefault                 int     `json:"parityDefault"`
 	StripedDelivery               bool    `json:"stripedDelivery"`
+	StripedDVR                    bool    `json:"stripedDvr"`
 	UplinkCarriers                bool    `json:"uplinkCarriers"`
 	UplinkMaxBitrateBytes         int64   `json:"uplinkMaxBitrateBytes"`
 
@@ -189,6 +190,7 @@ func (c Config) Sanitized() SanitizedConfig {
 		LiveEdgeAudioOnReliableStream: c.LiveEdgeAudioOnReliableStream,
 		ParityDefault:                 c.ParityDefault,
 		StripedDelivery:               c.StripedDelivery,
+		StripedDVR:                    c.StripedDVR,
 		UplinkCarriers:                c.UplinkCarriers,
 		UplinkMaxBitrateBytes:         c.UplinkMaxBitrateBytes,
 

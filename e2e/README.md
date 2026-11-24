@@ -162,15 +162,17 @@ which the harness scrapes), the second with `-room <CODE> -label bravo
 | Grid | two tiles, each tile's `data-frames` advancing across a ~5 s gap; every active broadcast on `/statusz` has ≥ 1 subscriber |
 | Fit | each tile's box has its decoded frame's shape (`data-frame-w/h`, within 2 %), two different shapes seen; every primary session's `/statusz` `key` (stripe legs excluded) unchanged from Grid — the switch moved tiles, never re-dialed (docs/87) |
 | Key `2` | tile 2 becomes `data-variant="focus"`, tile 1 `small`, within 3 s; the focused tile keeps advancing and the subscriber keys are still Grid's — focus is a gain change, never a re-dial (docs/44 §4.7) |
-| Hide videos | no tiles; **both broadcasts read `subscribers: 0` on `/statusz`** while the `rooms` row still counts the same participants (the browser's control session stayed) |
+| Choose, bravo unticked (R86) | one tile; **one broadcast reads `subscribers: 0` on `/statusz` and the other ≥ 1** — a hidden stream is unsubscribed, not just not drawn (docs/90 D3) |
+| None (the old Hide videos) | no tiles; **both broadcasts read `subscribers: 0` on `/statusz`** while the `rooms` row still counts the same participants (the browser's control session stayed) |
 | Leave | the room's participant count drops by exactly one |
 
 The subscriber count is the relay's own view, which is why it is the
 load-bearing assertion: the unit suite proves the room view *opens no
-media session* in hide-videos against a fake, this proves the relay agrees.
+media session* for a hidden stream or under None against a fake, this
+proves the relay agrees.
 Note the participant count is 3 while everyone is in (both pubsims hold
 their room control session for the process lifetime), so the pass asserts
-"unchanged by Hide videos, minus one on Leave" rather than a literal 1.
+"unchanged by None, minus one on Leave" rather than a literal 1.
 
 Skips cleanly (prints `SKIP` and passes) when `gawk-pubsim -h` lists no
 `-room-new` — rebuild it from `gawk-server/` first. Artifacts:

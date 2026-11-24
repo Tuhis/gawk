@@ -33,9 +33,16 @@ import {
 import { LiveEdgeTracker } from './live-edge';
 import { getDeepBuffer } from './resilient';
 import { StripeController, getStripeMode, type StripeMode } from './stripe';
-import { CAP_STRIPED_DELIVERY } from './parity';
+import { CAP_STRIPED_DELIVERY, CAP_STRIPED_DVR } from './parity';
 import {
-  DVR_BUFFER_MS,
+  DvrGoodputMeter,
+  DvrStripePolicy,
+  dvrStripeAllowed,
+  DVR_STRIPE_DIAL_TIMEOUT_MS,
+  DVR_STRIPE_REENGAGE_BACKOFF_MS,
+  type DvrStripePhase,
+} from './dvr-stripe';
+import {
   setDvrGranted,
   getPlayoutMode,
   getPlayoutOffsetMs,
@@ -61,6 +68,8 @@ import {
   TYPE_AUDIO_FRAME,
   TYPE_DELIVERY_ACK,
   TYPE_VIDEO_UNDELIVERABLE,
+  TYPE_VIDEO_CHUNK,
+  TYPE_PARITY_CHUNK,
   frameIdAhead,
   parseDeliveryAck,
   parseVideoUndeliverable,
@@ -69,12 +78,16 @@ import {
   type DeliveryServedMode,
   type TelemetryHelloMessage,
 } from './wire';
-import { getMaxDecoderQueueSize } from '../config';
+import { getDvrBufferMs, getMaxDecoderQueueSize } from '../config';
 import { appendClientIdentity } from './client-identity';
 
 // How often the reorder buffer is advanced (its bounded waits and the
 // decoder-backpressure resync are time-based). ~1 frame at 60 fps.
 const REORDER_TICK_MS = 16;
+
+// How long after a stripe request the transport's sampled target may still
+// show the previous one: the worker path pushes its sample every 500 ms.
+const DVR_RECONCILE_SAMPLE_LAG_MS = 1000;
 
 // Keyframe-stall watchdog. A viewer's stream path can wedge (seen on Safari)
 // while datagrams keep flowing — QUIC datagrams are not flow-controlled,
@@ -191,8 +204,22 @@ const MAPPINGS_PROVING_LIVE = 2;
 // Whether a datagram belongs to the audio lane. Used only to keep audio bytes
 // out of the *video* byte counter; a too-short datagram is left to the
 // reassembler's strict parsing.
+// What the deep-buffer stripe decision measured this tick.
+interface DvrRates {
+  goodputBps: number | null;
+  liveRateBps: number | null;
+  idle: boolean;
+}
+
 function isAudioDatagram(dgram: Uint8Array): boolean {
   return dgram.length >= 2 && (dgram[1] === TYPE_AUDIO_FRAME || dgram[1] === TYPE_AUDIO_CONFIG);
+}
+
+// Video media proper — chunks and their parity, whether or not they ever
+// complete a frame. Control datagrams (counts, clock mappings) keep flowing
+// while a broadcaster is paused, so they must not read as video arriving.
+function isVideoMediaDatagram(dgram: Uint8Array): boolean {
+  return dgram.length >= 2 && (dgram[1] === TYPE_VIDEO_CHUNK || dgram[1] === TYPE_PARITY_CHUNK);
 }
 
 // The worker muxer's counters as merged into stats by the worker shell.
@@ -361,6 +388,47 @@ export interface ViewerStats extends ReassemblerStats {
   stripeShapeDetected: boolean;
   stripeLegDials: number;
   stripeLegDeaths: number;
+  // R87 (docs/91): striped deep-buffer delivery. stripeDvrCapable is the
+  // relay's CAP_STRIPED_DVR, which is what enables the Striping setting for
+  // Most stable. The rest is set only on a deep-buffer session and absent
+  // everywhere else:
+  //   dvrStripeWidth           connections actually carrying GOPs, the
+  //                            primary included (1 = unstriped)
+  //   connectionBytesReceived  cumulative video bytes per connection: the
+  //                            primary first, then legs 1 … width−1 by index.
+  //                            An index is a slot, not a session: a leg that
+  //                            replaces another at the same index in a width
+  //                            transition keeps adding to the same count, and
+  //                            slots beyond the current width are left out
+  //                            (kept, and resumed if the width grows back)
+  //   dvrStripePhase           the Auto policy's state (docs/91 D10): held
+  //                            means a step did not help and was undone, and
+  //                            the policy is cooling down before it retries
+  //                            the next width (stepping again)
+  //   dvrDuplicateFrames       frames served twice (StripeState expiry, a
+  //                            width transition), dropped by frameId
+  //   dvrLateFramesDropped     frames of a GOP that arrived after its
+  //                            deadline had been skipped
+  stripeDvrCapable?: boolean;
+  dvrStripeWidth?: number;
+  connectionBytesReceived?: number[];
+  dvrStripePhase?: DvrStripePhase;
+  dvrDuplicateFrames?: number;
+  dvrLateFramesDropped?: number;
+  //   dvrLiveRateBps           the stream's own video rate, bits/s: complete
+  //                            frames' bytes over media time, keyframe to
+  //                            keyframe (no audio, no parity); absent until
+  //                            measurable
+  //   dvrGoodputBps            complete-frame video goodput over the last 2 s,
+  //                            bits/s, every connection, duplicates once;
+  //                            absent before the first frame
+  dvrLiveRateBps?: number;
+  dvrGoodputBps?: number;
+  //   dvrIdle                  the policy's last window held no video bytes
+  //                            on any connection: a broadcaster pause. False
+  //                            whenever bytes arrived, including starvation
+  //                            (bytes but no complete frame, dvrGoodputBps 0)
+  dvrIdle?: boolean;
   // The audio lane, as observed by this pipeline. It leaves 'absent' on the
   // first AudioConfig/packet, which is what gates every piece of viewer audio
   // UI. 'unsupported' means audio arrived but this scope has no AudioDecoder;
@@ -589,14 +657,33 @@ export class ViewerPipeline {
   // The relay's latest "N watching" push (last one wins).
   private viewerCount: number | null = null;
   // The stripe controller and its transport truth. The controller decides a
-  // target at the stats cadence; the transport owns every transition. Striping
-  // applies to datagram delivery only — reliable/DVR ride retransmitting
-  // carriers — so the capability is gated on the requested mode at the one
-  // place both are known (onRelayCapabilities).
+  // target at the stats cadence; the transport owns every transition. Chunk
+  // striping applies to datagram delivery only — reliable/DVR ride
+  // retransmitting carriers — so the capability is gated on the requested mode
+  // at the one place both are known (onRelayCapabilities). Deep-buffer
+  // sessions stripe whole GOPs under the policy below instead.
   private stripe = new StripeController();
   private stripeCapable = false;
   private stripeActive = 0;
   private lastStripeRequested = 0;
+  // Striped deep-buffer delivery (docs/91). `deep` is fixed at start: the
+  // ring is negotiated at subscribe time. The policy replaces the live
+  // controller on such a session; `dvrStriped` latches the first time legs are
+  // asked for, from which point GOPs may arrive out of order (D9) — including
+  // after an unstripe, while the last legs' GOPs drain.
+  private deep = false;
+  private capFlags = 0;
+  private dvrPolicy = new DvrStripePolicy();
+  private dvrMeter = new DvrGoodputMeter();
+  private dvrStriped = false;
+  private dvrStripeWidth = 1;
+  private connectionBytes: number[] = [0];
+  // Leg-dial failures already answered with a retry, and when the next retry
+  // is due (null: none pending).
+  private dvrDialFailuresSeen = 0;
+  private dvrRetryAt: number | null = null;
+  private dvrRequestedAt = 0;
+  private dvrKeyframeBytesSeen = 0;
   // The audio lane. Built lazily on the first audio message —
   // a video-only stream never constructs it, so nothing about this pipeline
   // changes for broadcasts without audio.
@@ -649,6 +736,8 @@ export class ViewerPipeline {
     // in the reorder buffer, not race the setup.
     this.decoder = this.newDecoder();
 
+    this.deep = this.connectOpts.deliveryMode === 'reliable' && getDeepBuffer();
+
     this.reorder = new ReorderBuffer(
       (frame) => this.decodeReleased(frame),
       () => performance.now(),
@@ -657,6 +746,7 @@ export class ViewerPipeline {
         // drift baseline must rebuild against it.
         onRestart: () => this.handleBroadcasterRestart(),
         isDeltaFrame: (frameId) => this.reassembler?.sawDelta(frameId) ?? false,
+        gopsOutOfOrder: () => this.dvrStriped,
       },
     );
 
@@ -695,6 +785,7 @@ export class ViewerPipeline {
       },
       // Per-frame arrival truth for the stripe detector.
       onFrameAccounting: (expected, arrived) => this.stripe.observeFrame(expected, arrived),
+      framesOutOfOrder: () => this.dvrStriped,
       onAudioFrame: (packet) => {
         // The media-stall watchdog's reference medium: audio is continuous
         // where video is damage-driven (see MEDIA_STALL_MS).
@@ -714,6 +805,9 @@ export class ViewerPipeline {
         if (!this.reorder) return;
         this.lastFrameReceivedAt = performance.now();
         this.noteMediaArrived();
+        if (this.deep) {
+          this.dvrMeter.observeFrame(frame.frameId, frame.timestampUs, frame.data.byteLength, frame.keyframe);
+        }
         if (frame.keyframe) {
           this.lastKeyframeReceivedAt = this.lastFrameReceivedAt;
           this.noteKeyframeId(frame.frameId);
@@ -744,7 +838,7 @@ export class ViewerPipeline {
       // ends disagreeing about how far behind the viewer is. A relay that
       // does not know the parameter ignores it and serves plain carriers,
       // which is the degradation we want.
-      if (getDeepBuffer()) url.searchParams.set('buffer', String(DVR_BUFFER_MS));
+      if (getDeepBuffer()) url.searchParams.set('buffer', String(getDvrBufferMs()));
     }
     // Only an explicit opt-DOWN travels: omitting the parameter is what lets
     // the fleet default apply.
@@ -768,7 +862,7 @@ export class ViewerPipeline {
     this.transport = transport;
     try {
       await transport.connect({
-        onDatagram: (dgram) => {
+        onDatagram: (dgram, conn) => {
           if (this.stopping) return;
           // Liveness first, and for every datagram kind: the count keepalive
           // is the only thing an away broadcaster's viewer receives, and it is
@@ -782,10 +876,14 @@ export class ViewerPipeline {
           if (this.handleVideoUndeliverable(dgram)) return;
           // Audio rides the same datagram path but is not video; keep it out
           // of "Video bitrate (recv)".
-          if (!isAudioDatagram(dgram)) this.videoBytesReceived += dgram.byteLength;
+          if (!isAudioDatagram(dgram)) {
+            this.videoBytesReceived += dgram.byteLength;
+            this.addConnectionBytes(conn, dgram.byteLength);
+          }
+          if (this.deep && isVideoMediaDatagram(dgram)) this.dvrMeter.observeBytes(dgram.byteLength);
           this.reassembler?.push(dgram);
         },
-        onKeyframe: (kf) => this.handleKeyframeStream(kf),
+        onKeyframe: (kf, conn) => this.handleKeyframeStream(kf, conn),
         // Pass the session's telemetry identity straight through. The pipeline
         // neither collects nor sends — it is the wrong context for both (it may
         // be inside two nested workers), and keeping the token off ViewerStats
@@ -794,9 +892,11 @@ export class ViewerPipeline {
         onTelemetryEndpoint: (url) => this.cb.onTelemetryEndpoint?.(url),
         onLocalRelay: (ev) => this.cb.onLocalRelay?.(ev),
         // The striping gate. A relay without striping never sends the bit, so
-        // a viewer against it never dials a leg — and a reliable/DVR viewer
-        // never stripes regardless (nothing to win there).
+        // a viewer against it never dials a leg — and a reliable viewer never
+        // stripes live-edge chunks (nothing to win there). A deep-buffer
+        // session stripes GOPs instead, on its own bit (decideDvrStripe).
         onRelayCapabilities: (caps) => {
+          this.capFlags = caps.flags;
           this.stripeCapable = (caps.flags & CAP_STRIPED_DELIVERY) !== 0;
           this.stripe.noteCapable(
             this.stripeCapable && this.connectOpts.deliveryMode !== 'reliable',
@@ -804,7 +904,12 @@ export class ViewerPipeline {
         },
         onStripeChange: (active) => {
           this.stripeActive = active;
-          this.stripe.noteActive(active);
+          if (this.deep) {
+            this.dvrStripeWidth = active + 1;
+            this.dvrPolicy.noteActive(this.dvrStripeWidth);
+          } else {
+            this.stripe.noteActive(active);
+          }
         },
         onClosed: (info) => this.handleClosed(info),
       });
@@ -930,7 +1035,15 @@ export class ViewerPipeline {
     }
   }
 
-  private handleKeyframeStream(kf: KeyframeStreamFrame): void {
+  // Per-connection video bytes, deep-buffer sessions only (docs/91 SG3).
+  private addConnectionBytes(conn: number | undefined, bytes: number): void {
+    if (!this.deep) return;
+    const i = conn ?? 0;
+    while (this.connectionBytes.length <= i) this.connectionBytes.push(0);
+    this.connectionBytes[i] += bytes;
+  }
+
+  private handleKeyframeStream(kf: KeyframeStreamFrame, conn?: number): void {
     if (this.stopping || !this.reorder) return;
     // Keyframes bypass the datagram reassembler, so sync its late-delta
     // watermark here — this is what makes a broadcaster restart (frameIds
@@ -939,11 +1052,16 @@ export class ViewerPipeline {
     this.reassembler?.noteStreamKeyframe(kf.frameId);
     this.keyframeStreamsReceived++;
     this.videoBytesReceived += kf.streamBytes;
+    this.addConnectionBytes(conn, kf.streamBytes);
+    if (this.deep) this.dvrMeter.observeFrame(kf.frameId, kf.timestampUs, kf.data.byteLength, true);
     this.lastFrameReceivedAt = performance.now();
     this.lastKeyframeReceivedAt = this.lastFrameReceivedAt;
     this.lastInboundAt = this.lastFrameReceivedAt;
     this.noteMediaArrived();
-    this.noteKeyframeId(kf.frameId);
+    // The undeliverable notice is the primary's own (docs/91 D5): a leg's
+    // keyframe says nothing about whether the primary can still deliver, and
+    // across connections keyframes arrive out of order anyway.
+    if (!conn) this.noteKeyframeId(kf.frameId);
     this.reorder.pushKeyframe({
       frameId: kf.frameId,
       timestampUs: kf.timestampUs,
@@ -1184,7 +1302,9 @@ export class ViewerPipeline {
   // drift baseline AND the clock mapping (the new session's mapping arrives
   // with its first re-send / relay prime).
   private handleBroadcasterRestart(): void {
+    this.reassembler?.noteRestart();
     this.liveEdge.reset();
+    this.dvrMeter.reset();
     this.broadcastClockOffsetUs = null;
     this.lastCapToRenderMs = null;
     // Audio timestamps live on the same restarted timeline — the sink must drop
@@ -1336,10 +1456,15 @@ export class ViewerPipeline {
     // per frame, so any parity in the session sizes as the full k=2 —
     // conservative by at most one leg at a share boundary.
     this.stripe.noteParityActive((reasm?.parityChunksReceived ?? 0) > 0 ? 2 : 0);
-    const stripeTarget = this.stripe.decide();
-    if (stripeTarget !== this.lastStripeRequested && this.transport?.setStripe) {
-      this.lastStripeRequested = stripeTarget;
-      this.transport.setStripe(stripeTarget);
+    let dvrRates: DvrRates | null = null;
+    if (this.deep) {
+      dvrRates = this.decideDvrStripe(reorder);
+    } else {
+      const stripeTarget = this.stripe.decide();
+      if (stripeTarget !== this.lastStripeRequested && this.transport?.setStripe) {
+        this.lastStripeRequested = stripeTarget;
+        this.transport.setStripe(stripeTarget);
+      }
     }
     const stripeDetector = this.stripe.snapshot();
     const stripeTransport = this.transport?.sampleStripe?.() ?? null;
@@ -1451,7 +1576,87 @@ export class ViewerPipeline {
       stripeShapeDetected: stripeDetector.shapeDetected,
       stripeLegDials: stripeTransport?.legDials ?? 0,
       stripeLegDeaths: stripeTransport?.legDeaths ?? 0,
+      stripeDvrCapable: (this.capFlags & CAP_STRIPED_DVR) !== 0,
+      ...(this.deep
+        ? {
+            dvrStripeWidth: this.dvrStripeWidth,
+            connectionBytesReceived: this.connectionBytes.slice(0, this.dvrStripeWidth),
+            dvrStripePhase: this.dvrPolicy.snapshot().phase,
+            dvrDuplicateFrames:
+              (reorder?.duplicateFrames ?? 0) + (this.reassembler?.duplicateFramesDropped() ?? 0),
+            dvrLateFramesDropped: reorder?.lateFramesDropped ?? 0,
+            ...(dvrRates?.liveRateBps != null ? { dvrLiveRateBps: dvrRates.liveRateBps } : {}),
+            ...(dvrRates?.goodputBps != null ? { dvrGoodputBps: dvrRates.goodputBps } : {}),
+            dvrIdle: dvrRates?.idle ?? true,
+          }
+        : {}),
     });
+  }
+
+  // The deep-buffer stripe decision (docs/91 D10), at the stats cadence. The
+  // policy states a width; the transport takes a leg count.
+  //
+  // The policy's width can stay the same while the transport has fewer legs
+  // than asked for: a transition whose dial failed (a 429 at capacity) leaves
+  // the old state in place and asks nobody again. So the request is
+  // reconciled against what is actually up, retried once per failure after
+  // the same backoff a leg death takes.
+  private decideDvrStripe(reorder: ReorderStats | undefined): DvrRates {
+    const mode = getStripeMode();
+    // Keyframe bytes still arriving count as video arriving: a big keyframe on
+    // a starved link is starvation, not a pause.
+    const kfBytes = this.transport?.sampleCarrierStats?.()?.keyframeBytesReceived ?? 0;
+    if (kfBytes > this.dvrKeyframeBytesSeen) this.dvrMeter.observeBytes(kfBytes - this.dvrKeyframeBytesSeen);
+    this.dvrKeyframeBytesSeen = Math.max(this.dvrKeyframeBytesSeen, kfBytes);
+    const goodputBps = this.dvrMeter.goodputBps();
+    const liveRateBps = this.dvrMeter.liveRateBps();
+    const idle = this.dvrMeter.idle();
+    const width = this.dvrPolicy.decide({
+      allowed: dvrStripeAllowed({
+        deep: this.deep,
+        dvrGranted: this.servedDelivery === 'dvr',
+        capFlags: this.capFlags,
+        mode,
+      }),
+      mode,
+      goodputBps,
+      liveRateBps,
+      resyncs: reorder?.holeSkips ?? 0,
+      idle,
+    });
+    const legs = width - 1;
+    const now = performance.now();
+    const sample = this.transport?.sampleStripe?.() ?? null;
+    const failures = sample?.legDialFailures ?? 0;
+    if (failures > this.dvrDialFailuresSeen) {
+      this.dvrDialFailuresSeen = failures;
+      this.dvrRetryAt = now + DVR_STRIPE_REENGAGE_BACKOFF_MS;
+    }
+    // Reconcile what is up against what is wanted. A mismatch is re-requested
+    // when the transport is not working toward the wanted width (a stale
+    // transition committed; checked only once its sample has had time to show
+    // the last request), after a failed dial's backoff, or once a transition
+    // has been dialing longer than the policy's own dial timeout. A
+    // transition still dialing toward the right width is left alone:
+    // re-requesting it would restart its dials.
+    const changed = legs !== this.lastStripeRequested;
+    const mismatch = legs !== this.stripeActive;
+    const sinceRequest = now - this.dvrRequestedAt;
+    const reconcile =
+      !changed &&
+      mismatch &&
+      ((sample !== null && sample.target !== legs && sinceRequest >= DVR_RECONCILE_SAMPLE_LAG_MS) ||
+        (this.dvrRetryAt !== null && now >= this.dvrRetryAt) ||
+        (this.dvrRetryAt === null && sinceRequest >= DVR_STRIPE_DIAL_TIMEOUT_MS));
+    if (!mismatch) this.dvrRetryAt = null;
+    if ((changed || reconcile) && this.transport?.setStripe) {
+      if (legs > 0) this.dvrStriped = true;
+      this.lastStripeRequested = legs;
+      this.dvrRequestedAt = now;
+      this.dvrRetryAt = null;
+      this.transport.setStripe(legs, 'dvr');
+    }
+    return { goodputBps, liveRateBps, idle };
   }
 
   private fail(err: Error): void {

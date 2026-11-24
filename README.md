@@ -12,6 +12,7 @@
 [![Admin](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-admin*&label=admin)](https://github.com/Tuhis/gawk/releases)
 [![Sampler](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-sampler*&label=sampler)](https://github.com/Tuhis/gawk/releases)
 [![Mumble bridge](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-mumble-bridge*&label=mumble-bridge)](https://github.com/Tuhis/gawk/releases)
+[![WHIP gateway](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-whip-gateway*&label=whip-gateway)](https://github.com/Tuhis/gawk/releases)
 [![iOS](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-ios*&label=ios)](https://github.com/Tuhis/gawk/releases)
 
 Self-hosted, low-latency live game streaming for the browser. A broadcaster
@@ -257,6 +258,7 @@ mode, verification, and upgrades.
 | [`gawk-admin/`](gawk-admin/) | Optional moderation portal — fleet-wide kill, durable ID/IP bans, OIDC-gated operator SPA, signed webhooks. Off by default. Image + Helm chart. |
 | [`gawk-sampler/`](gawk-sampler/) | Optional content screening — scores each live broadcast's keyframe for explicit content and raises content flags in the portal for a person to judge. Off by default; ships observing, not paging. Image + Helm chart. |
 | [`gawk-mumble-bridge/`](gawk-mumble-bridge/) | Optional room voice through your own Mumble server — each participant is their own Mumble user, Opus passed through untouched. Off by default. Image + Helm chart. |
+| [`gawk-whip-gateway/`](gawk-whip-gateway/) | Optional OBS ingest — OBS and other WHIP senders stream to it over WebRTC, and it republishes each stream to the relay ([setup](docs/obs-setup.md)). Off by default. Image + Helm chart. |
 | [`gawk-ios/`](gawk-ios/) | The iOS app (iOS 27+) — broadcaster and native viewer in one, SwiftUI over the desktop broadcasters' Rust crates. |
 | [`common-ts/`](common-ts/) | Shared TypeScript for the operator SPAs (the OIDC session flow). |
 | [`site/`](site/) | The project landing page and docs map, published to GitHub Pages. |
@@ -317,7 +319,10 @@ actually linked into that artifact:
 [telemetry UI](gawk-telemetry/ui/THIRD-PARTY-NOTICES.md) ·
 [admin](gawk-admin/THIRD-PARTY-NOTICES.md) ·
 [admin UI](gawk-admin/ui/THIRD-PARTY-NOTICES.md) ·
-[sampler](gawk-sampler/THIRD-PARTY-NOTICES.md).
+[sampler](gawk-sampler/THIRD-PARTY-NOTICES.md) ·
+[Mumble bridge](gawk-mumble-bridge/THIRD-PARTY-NOTICES.md) ·
+[WHIP gateway](gawk-whip-gateway/THIRD-PARTY-NOTICES.md) ·
+[iOS](gawk-ios/THIRD-PARTY-NOTICES.md).
 Regenerate with `python3 tools/licenses/gen-notices.py`; CI gates every
 dependency against a permissive allowlist. The one non-standard entry: the
 desktop broadcasters' GUI (Windows, macOS and Linux, one shared Slint UI) uses

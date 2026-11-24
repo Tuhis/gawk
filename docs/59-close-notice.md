@@ -243,7 +243,10 @@ terminal close (4000/4004/4006)
   non-terminal code in it: it changes what the viewer shows and how often
   it retries (every 20 s). The capacity refusals `4018` `BroadcastFull`
   and `4019` `RelayFull` (2026-11-06, the subscribe-capacity part of R43
-  landed early) follow it.
+  landed early) follow it. `4020` `StripeLegDrained` (R87,
+  [docs/91](91-striped-dvr.md) §12) gets **no** notice, deliberately: it
+  closes only a deep-buffer stripe leg, which reads no notices, at the end
+  of a drain the viewer asked for.
 
 ---
 

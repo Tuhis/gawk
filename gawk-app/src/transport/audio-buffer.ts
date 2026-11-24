@@ -28,28 +28,37 @@ export interface AudioBufferProfile {
 export const DEFAULT_AUDIO_PROFILE: AudioBufferProfile = { minMs: 40, maxMs: 150, seedMs: 60 };
 export const RESILIENT_AUDIO_PROFILE: AudioBufferProfile = { minMs: 150, maxMs: 2000, seedMs: 500 };
 
-// Deep buffer. The audio analogue of playout.ts's DVR_PLAYOUT_PROFILE, and for
-// the same reason: in deep mode the video playhead sits DVR_BUFFER_MS (`B`)
+// Deep buffer. The audio analogue of playout.ts's getDvrPlayoutProfile(), and for
+// the same reason: in deep mode the video playhead sits getDvrBufferMs() (`B`)
 // behind live while audio still arrives ~live (it is not in the relay ring),
 // so the audio buffer must hold that full depth or it plays ~B ahead of its
 // video. Alignment is a start-time decision, so a shallow floor here is a
 // permanent desync, not a transient the rate trim can walk out. Pinning
 // seed = min = B (max ≥ B) mirrors the video profile exactly;
 // RESILIENT_AUDIO_PROFILE's 2000 ms ceiling cannot express B.
-const DVR_BUFFER_MS = getDvrBufferMs();
-export const DVR_AUDIO_PROFILE: AudioBufferProfile = {
-  minMs: DVR_BUFFER_MS,
-  maxMs: Math.max(RESILIENT_AUDIO_PROFILE.maxMs, DVR_BUFFER_MS),
-  seedMs: DVR_BUFFER_MS,
-};
+//
+// Built on use and cached per buffer value, like getDvrPlayoutProfile: the
+// floor must follow the same runtime config the video side reads.
+let dvrAudioProfile: AudioBufferProfile | null = null;
+export function getDvrAudioProfile(): AudioBufferProfile {
+  const bufferMs = getDvrBufferMs();
+  if (dvrAudioProfile?.minMs !== bufferMs) {
+    dvrAudioProfile = {
+      minMs: bufferMs,
+      maxMs: Math.max(RESILIENT_AUDIO_PROFILE.maxMs, bufferMs),
+      seedMs: bufferMs,
+    };
+  }
+  return dvrAudioProfile;
+}
 
 // The audio profile matching a viewer delivery mode, three-valued to mirror
-// playout.ts's getPlayoutProfile. Deep buffer gets DVR_AUDIO_PROFILE so the
+// playout.ts's getPlayoutProfile. Deep buffer gets getDvrAudioProfile() so the
 // audio depth floor equals the video offset.
 export function audioProfileForDeliveryMode(mode: ViewerDeliveryMode): AudioBufferProfile {
   switch (mode) {
     case 'deep':
-      return DVR_AUDIO_PROFILE;
+      return getDvrAudioProfile();
     case 'resilient':
       return RESILIENT_AUDIO_PROFILE;
     default:

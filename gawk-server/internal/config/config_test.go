@@ -53,6 +53,8 @@ func TestDefaults(t *testing.T) {
 		// R30 (docs/35 §6): on by default — zero relay cost until a viewer
 		// engages, and off is the byte-identical escape hatch.
 		StripedDelivery: true,
+		// R87 (docs/91 D8): on by default beside it, for the same reason.
+		StripedDVR: true,
 		// R73 (docs/75 D2, D10): carriers accepted by default; windows sized
 		// for a 50 Mbps broadcaster.
 		UplinkCarriers:        true,
@@ -821,6 +823,24 @@ func TestUplinkKnobs(t *testing.T) {
 
 	if _, err := ParseFlags([]string{"-uplink-max-bitrate", "fast"}, noEnv); err == nil {
 		t.Error("-uplink-max-bitrate=fast accepted, want an error")
+	}
+}
+
+// R87 (docs/91 D8): -striped-dvr parses from the env and the flag wins.
+func TestStripedDVRKnob(t *testing.T) {
+	cfg, err := ParseFlags(nil, envMap(map[string]string{"GAWK_STRIPED_DVR": "false"}))
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if cfg.StripedDVR {
+		t.Error("env GAWK_STRIPED_DVR=false: StripedDVR = true")
+	}
+	cfg, err = ParseFlags([]string{"-striped-dvr=true"}, envMap(map[string]string{"GAWK_STRIPED_DVR": "false"}))
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if !cfg.StripedDVR {
+		t.Error("flag -striped-dvr=true over env false: StripedDVR = false")
 	}
 }
 

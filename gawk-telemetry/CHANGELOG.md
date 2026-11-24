@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.20.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.19.1...gawk-telemetry/v1.20.0) (2026-11-20)
+
+
+### Features
+
+* **relay:** striped deep-buffer delivery (R87) ([#814](https://github.com/Tuhis/gawk/issues/814)) ([caf1213](https://github.com/Tuhis/gawk/commit/caf1213fd1d8776f5250cb1e0499a070b47537d6))
+
 ## [1.19.1](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.19.0...gawk-telemetry/v1.19.1) (2026-11-15)
 
 

@@ -271,10 +271,15 @@ export interface CarrierCounters {
   recordsReceived: number;
   streamsAborted: number;
   malformed: number;
+  // Keyframe-stream bytes as they are read, whether or not the keyframe ever
+  // completes: on a starved deep-buffer link a keyframe can take seconds, and
+  // these bytes are what tell it from a broadcaster pause (docs/91 D10).
+  // Optional so counters built before it keep their shape.
+  keyframeBytesReceived?: number;
 }
 
 export function newCarrierCounters(): CarrierCounters {
-  return { streamsOpened: 0, recordsReceived: 0, streamsAborted: 0, malformed: 0 };
+  return { streamsOpened: 0, recordsReceived: 0, streamsAborted: 0, malformed: 0, keyframeBytesReceived: 0 };
 }
 
 export interface ServerStreamCallbacks {
@@ -369,12 +374,14 @@ async function readOneServerStream(
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
+  let keyframeStream = false;
   const readMore = async (): Promise<boolean> => {
     const { value, done } = await reader.read();
     if (done) return false;
     if (value && value.length > 0) {
       chunks.push(value);
       total += value.length;
+      if (keyframeStream) carrier.keyframeBytesReceived = (carrier.keyframeBytesReceived ?? 0) + value.length;
     }
     return true;
   };
@@ -496,6 +503,8 @@ async function readOneServerStream(
 
     if (head1 === TYPE_STREAM_FRAME) {
       // Keyframe: read to EOF, bounded, then parse the whole message.
+      keyframeStream = true;
+      carrier.keyframeBytesReceived = (carrier.keyframeBytesReceived ?? 0) + total;
       for (;;) {
         if (total > MAX_KEYFRAME_BYTES) {
           void reader.cancel().catch(() => {});

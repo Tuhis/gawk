@@ -260,7 +260,7 @@ func TestUndeliverableNoticeReachesDVRViewer(t *testing.T) {
 	// A failing write, not a parked one: drainDVR writes keyframes inline,
 	// and the fake ignores write deadlines.
 	f := &fakeSender{kfWriteErr: errors.New("write deadline exceeded")}
-	if _, err := r.SubscribeDVR(id, f, 30000, 0); err != nil {
+	if _, err := r.SubscribeDVR(id, f, 30000, 0, ""); err != nil {
 		t.Fatalf("SubscribeDVR: %v", err)
 	}
 	feedKeyframes(t, p, 1, 30*time.Millisecond, 3*undeliverableAfterForTest)

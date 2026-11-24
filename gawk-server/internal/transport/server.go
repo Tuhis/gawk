@@ -1183,6 +1183,10 @@ func (s *Server) sendRelayCapabilities(sess *webtransport.Session, log *slog.Log
 	}
 	if s.cfg.StripedDelivery {
 		caps.Flags |= wire.CapStripedDelivery
+		// A viewer's business only, like the bit above (docs/91 D8).
+		if s.cfg.StripedDVR && !publish {
+			caps.Flags |= wire.CapStripedDVR
+		}
 	}
 	if publish && s.cfg.UplinkCarriers {
 		caps.Flags |= wire.CapUplinkCarriers | wire.CapKeyframeCarriers
@@ -1343,17 +1347,28 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ?delivery=reliable opts into carrier delivery (a query param: the
+	// WebTransport JS API can't set headers); ?buffer=<ms> additionally opts
+	// into DVR delivery (docs/26) from the ring at this subscriber's own
+	// cursor — the viewer's guaranteed minimum playout offset. A mode change
+	// is a reconnect, and no value rejects: unusable ones degrade to a
+	// working mode (except on a leg, below).
+	reliable := r.URL.Query().Get("delivery") == "reliable"
+	mode, bufferMs := hub.NegotiateDelivery(reliable, r.URL.Query().Get("buffer"), s.cfg.DVRWindow)
+
 	// ?stripe=N&leg=j (docs/35 §5.3) marks a stripe leg. Validated strictly
 	// pre-upgrade, unlike every other parameter: a mis-striped leg can't
 	// degrade to anything useful (a wrong share manufactures holes), so
-	// rejection is graceful — the viewer stays unstriped. Reliable/DVR legs
-	// are rejected too (striping is live-edge only). ?owner= ties a viewer's
-	// sessions together: required on legs (an unowned leg is an unreapable
-	// orphan); invalid elsewhere it just means an unowned session.
+	// rejection is graceful — the viewer stays unstriped. Plain reliable
+	// legs are rejected too, and DVR legs unless this relay stripes DVR
+	// (docs/91 D8). ?owner= ties a viewer's sessions together: required on
+	// legs (an unowned leg is an unreapable orphan); invalid elsewhere it
+	// just means an unowned session.
 	ownerParam := r.URL.Query().Get("owner")
 	stripeLeg, isStripeLeg, stripeErr := hub.NegotiateStripe(
 		r.URL.Query().Get("stripe"), r.URL.Query().Get("leg"), ownerParam,
-		s.cfg.StripedDelivery, r.URL.Query().Get("delivery") == "reliable" || r.URL.Query().Get("buffer") != "")
+		s.cfg.StripedDelivery, reliable || r.URL.Query().Get("buffer") != "",
+		hub.StripeDVRDial{Enabled: s.cfg.StripedDVR, Mode: mode, BufferMs: bufferMs})
 	if stripeErr != nil {
 		s.log.Warn("stripe leg rejected pre-upgrade",
 			"id", id, "remote", r.RemoteAddr, "err", stripeErr)
@@ -1422,14 +1437,6 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		(*hook)(id)
 	}
 
-	// ?delivery=reliable opts into carrier delivery (a query param: the
-	// WebTransport JS API can't set headers); ?buffer=<ms> additionally opts
-	// into DVR delivery (docs/26) from the ring at this subscriber's own
-	// cursor — the viewer's guaranteed minimum playout offset. A mode change
-	// is a reconnect, and no value rejects: unusable ones degrade to a
-	// working mode.
-	reliable := r.URL.Query().Get("delivery") == "reliable"
-	mode, bufferMs := hub.NegotiateDelivery(reliable, r.URL.Query().Get("buffer"), s.cfg.DVRWindow)
 	// ?parity=0|1|2 opts a viewer down from the fleet default, in every
 	// delivery mode: carrier retransmission repairs this leg, but a chunk the
 	// broadcaster's uplink lost reaches no viewer except through parity
@@ -1438,23 +1445,26 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	// A stripe leg gets no close notice: the viewer reads no streams on a
 	// leg (the relay sends legs none), and a leg's death is handled by the
 	// primary's fallback whatever its code.
-	adapter := &webtransportSessionAdapter{Session: sess, closeNotice: !isStripeLeg}
+	adapter := &webtransportSessionAdapter{Session: sess, closeNotice: !isStripeLeg, stats: pathStatsFrom(r.Context())}
+	owner := ""
+	if hub.ValidOwnerToken(ownerParam) {
+		owner = ownerParam
+	}
 	var sub *hub.Subscriber
 	switch {
 	case isStripeLeg:
-		// A leg is a plain datagram subscriber with a per-leg share filter;
-		// its parity prefix matches the primary's negotiation so the parity
-		// share composes unchanged.
+		// A datagram leg is a plain datagram subscriber with a per-leg share
+		// filter, a DVR leg a DVR subscriber over its GOP residue (docs/91
+		// D3); either way its parity prefix matches the primary's
+		// negotiation so the parity share composes unchanged.
 		sub, err = s.registry.SubscribeStripeLeg(id, adapter, stripeLeg, parityServed)
 	case mode == wire.DeliveryDVR:
-		sub, err = s.registry.SubscribeDVR(id, adapter, bufferMs, parityServed)
+		// The owner lets a DVR primary stripe and reaps its legs with it
+		// (docs/91 D7).
+		sub, err = s.registry.SubscribeDVR(id, adapter, bufferMs, parityServed, owner)
 	case mode == wire.DeliveryReliable:
 		sub, err = s.registry.SubscribeReliable(id, adapter, parityServed)
 	default:
-		owner := ""
-		if hub.ValidOwnerToken(ownerParam) {
-			owner = ownerParam
-		}
 		sub, err = s.registry.SubscribeParity(id, adapter, parityServed, owner)
 	}
 	if err != nil {
@@ -1508,8 +1518,15 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			// Any inbound datagram renews the leg's liveness lease (the viewer's
-			// 1 Hz StripeState refresh); only TimeSync is answered.
+			// 1 Hz StripeState refresh). An unstriped StripeState drains a DVR
+			// leg (docs/91 D11) and is inert on any other; TimeSync is answered.
 			sub.NoteLegAlive()
+			if len(dgram) == wire.StripeStateSize && dgram[1] == wire.TypeStripeState {
+				if st, err := wire.ParseStripeState(dgram); err == nil {
+					sub.ApplyStripeState(st)
+				}
+				continue
+			}
 			maybeAnswerTimeSync(sess, dgram, legLimiter)
 		}
 	}
@@ -1570,8 +1587,9 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		// is discarded.
 		if s.cfg.StripedDelivery && len(dgram) == wire.StripeStateSize && dgram[1] == wire.TypeStripeState {
 			if st, err := wire.ParseStripeState(dgram); err == nil {
-				// ApplyStripeState is inert on reliable/DVR/leg sessions; on
-				// this route sub is always external. Level state: the 1 Hz
+				// ApplyStripeState is inert on reliable and leg sessions, and
+				// on DVR ones unless -striped-dvr is on (docs/91 D7); on this
+				// route sub is always external. Level state: the 1 Hz
 				// refresh re-arms the TTL, a flip is counted once.
 				sub.ApplyStripeState(st)
 			}
@@ -1818,6 +1836,24 @@ type webtransportSessionAdapter struct {
 	// first (closenotice.go). False on /internal/subscribe, whose edge
 	// client reads every uni stream as a keyframe.
 	closeNotice bool
+	// stats reads the QUIC connection's counters (R87 SG0); nil when the
+	// request context carried none.
+	stats connStatsFunc
+}
+
+// PathStats implements hub.PathStatser.
+func (w *webtransportSessionAdapter) PathStats() (hub.PathStats, bool) {
+	if w.stats == nil {
+		return hub.PathStats{}, false
+	}
+	cs := w.stats()
+	return hub.PathStats{
+		SmoothedRTT: cs.SmoothedRTT,
+		MinRTT:      cs.MinRTT,
+		BytesSent:   cs.BytesSent,
+		PacketsSent: cs.PacketsSent,
+		PacketsLost: cs.PacketsLost,
+	}, true
 }
 
 func (w *webtransportSessionAdapter) CloseWithError(code uint32, reason string) error {

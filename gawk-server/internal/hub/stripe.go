@@ -89,21 +89,37 @@ var ErrStripeRejected = errors.New("hub: invalid stripe leg parameters")
 // StripeLeg is a validated ?stripe=N&leg=j&owner=<token> dial.
 type StripeLeg struct {
 	N      int // stripe width, [1, wire.MaxStripeLegs]
-	Member int // this leg's index, [0, N)
+	Member int // this leg's index, [0, N); [1, N) for a DVR leg
 	// Owner is the viewer-minted token shared with the primary dial: the
 	// registry's only handle tying one viewer's sessions together. Required
 	// on every leg, because an unowned leg is unreapable.
 	Owner string
+	// BufferMs is a DVR leg's negotiated buffer (docs/91 D8); 0 on a
+	// datagram leg. It selects the leg's kind.
+	BufferMs int
+}
+
+// StripeDVRDial is the DVR half of a leg dial's validation (docs/91 D8):
+// whether this relay stripes DVR delivery, and what the dial's delivery
+// parameters negotiated to (NegotiateDelivery).
+type StripeDVRDial struct {
+	Enabled  bool
+	Mode     wire.DeliveryMode
+	BufferMs int
 }
 
 // NegotiateStripe validates the stripe query parameters of a subscribe dial.
 // isLeg is false with a nil error when neither stripe parameter is present —
-// the ordinary-viewer path. Reliable/DVR delivery cannot be striped (those
-// modes ride retransmitting carrier streams; there is nothing to win), and a
+// the ordinary-viewer path. reliable reports that the dial asked for carrier
+// delivery at all (delivery=reliable or a buffer). Plain reliable delivery
+// cannot be striped (no ring, so a leg has no cursor; docs/91 OD4). DVR
+// delivery can when dvr.Enabled, and only when the dial really negotiated
+// DVR: a buffer that degrades would serve the leg a wrong mode. A DVR leg is
+// one of j = 1…N−1, because the primary serves residue 0 (docs/91 D6). A
 // disabled fleet rejects legs outright (the capability bit is never
 // advertised, so a well-behaved viewer never dials one). A leg also REQUIRES
 // a valid ?owner= token (see StripeLeg.Owner).
-func NegotiateStripe(stripeParam, legParam, ownerParam string, enabled, reliable bool) (StripeLeg, bool, error) {
+func NegotiateStripe(stripeParam, legParam, ownerParam string, enabled, reliable bool, dvr StripeDVRDial) (StripeLeg, bool, error) {
 	if stripeParam == "" && legParam == "" {
 		return StripeLeg{}, false, nil
 	}
@@ -113,8 +129,12 @@ func NegotiateStripe(stripeParam, legParam, ownerParam string, enabled, reliable
 	if !enabled {
 		return StripeLeg{}, false, fmt.Errorf("%w: striped delivery is disabled on this relay", ErrStripeRejected)
 	}
+	dvrLeg := false
 	if reliable {
-		return StripeLeg{}, false, fmt.Errorf("%w: striping applies to datagram delivery only", ErrStripeRejected)
+		if !dvr.Enabled || dvr.Mode != wire.DeliveryDVR {
+			return StripeLeg{}, false, fmt.Errorf("%w: striping applies to datagram and DVR delivery only", ErrStripeRejected)
+		}
+		dvrLeg = true
 	}
 	if !ValidOwnerToken(ownerParam) {
 		return StripeLeg{}, false, fmt.Errorf("%w: a leg requires a valid owner token", ErrStripeRejected)
@@ -127,7 +147,14 @@ func NegotiateStripe(stripeParam, legParam, ownerParam string, enabled, reliable
 	if err != nil || member < 0 || member >= n {
 		return StripeLeg{}, false, fmt.Errorf("%w: leg %q, want [0, %d)", ErrStripeRejected, legParam, n)
 	}
-	return StripeLeg{N: n, Member: member, Owner: ownerParam}, true, nil
+	leg := StripeLeg{N: n, Member: member, Owner: ownerParam}
+	if dvrLeg {
+		if member < 1 {
+			return StripeLeg{}, false, fmt.Errorf("%w: leg %q, want [1, %d) in DVR mode: the primary serves residue 0", ErrStripeRejected, legParam, n)
+		}
+		leg.BufferMs = dvr.BufferMs
+	}
+	return leg, true, nil
 }
 
 // SubscribeStripeLeg subscribes one stripe leg (docs/35 §5.1): a plain
@@ -139,6 +166,10 @@ func NegotiateStripe(stripeParam, legParam, ownerParam string, enabled, reliable
 // A leg counts against MaxSubscribers/MaxTotalSubscribers like any external
 // session (the caps are what bound a counterfeit leg flood) but never in the
 // viewer count — one watching human is one count.
+//
+// A leg with BufferMs > 0 is a DVR leg (docs/91 D3): a full DVR subscriber
+// with its own cursor, served only the ring's GOPs of its residue, and still
+// without audio, control datagrams or join primes.
 func (r *Registry) SubscribeStripeLeg(id string, conn Conn, leg StripeLeg, parityK int) (*Subscriber, error) {
 	if leg.N < 1 || leg.N > wire.MaxStripeLegs || leg.Member < 0 || leg.Member >= leg.N {
 		return nil, ErrStripeRejected
@@ -148,33 +179,63 @@ func (r *Registry) SubscribeStripeLeg(id string, conn Conn, leg StripeLeg, parit
 	if !ValidOwnerToken(leg.Owner) {
 		return nil, ErrStripeRejected
 	}
-	return r.subscribeOpts(id, conn, subscribeOpts{
+	so := subscribeOpts{
 		stripeLeg:       true,
 		stripeN:         uint8(leg.N),
 		stripeMember:    uint8(leg.Member),
 		owner:           leg.Owner,
 		parityK:         parityK,
 		parityRequested: parityK,
-	})
+	}
+	if leg.BufferMs > 0 {
+		// The same rules NegotiateStripe applies, for the same reason.
+		if !r.opts.StripedDVR || leg.Member < 1 {
+			return nil, ErrStripeRejected
+		}
+		so.reliable, so.dvr, so.bufferMs = true, true, leg.BufferMs
+	}
+	return r.subscribeOpts(id, conn, so)
 }
 
 // ApplyStripeState applies a viewer's StripeState (0x10) to its primary
-// session. Only an external, datagram-delivery, non-leg, OWNED subscriber
-// may be suppressed; anywhere else the message is inert, exactly like any
-// other unrecognized datagram. An unowned primary can never suppress its
-// deltas, so a client dialing tagless legs and primary degrades to
-// duplicates, never to a topology the registry cannot reap.
+// session. Only an external, non-leg, OWNED subscriber may stripe: a
+// datagram-delivery one, or since R87 a DVR one on a relay with StripedDVR
+// on (docs/91 D7), where Striped means "serve only residue 0 of StripeN"
+// and StripeN is therefore authoritative. Anywhere else the message is
+// inert, exactly like any other unrecognized datagram. An unowned primary
+// can never stripe, so a client dialing tagless legs and primary degrades
+// to duplicates, never to a topology the registry cannot reap.
 //
 // A striped state arms (or re-arms) a StripeStateTTL deadline; an unstriped
 // state clears it immediately. Transitions count only when the level flips,
 // so the 1 Hz refresh does not inflate the counter.
 func (s *Subscriber) ApplyStripeState(st wire.StripeState) {
-	if s.internal || s.reliable || s.dvr != nil || s.stripeLeg || s.owner == "" {
+	if s.stripeLeg {
+		// On a DVR leg an unstriped state means drain (review R87 round 2);
+		// on any other leg the message stays inert.
+		if !st.Striped {
+			s.drainDVRLeg()
+		}
+		return
+	}
+	if s.internal || s.owner == "" {
+		return
+	}
+	if s.dvr != nil {
+		if opts := &s.hub.registry.opts; !opts.StripedDelivery || !opts.StripedDVR {
+			return
+		}
+	} else if s.reliable {
 		return
 	}
 	if st.Striped {
-		prev := s.stripeUntil.Swap(time.Now().Add(StripeStateTTL).UnixNano())
+		now := time.Now()
+		until := now.Add(StripeStateTTL).UnixNano()
+		prev := s.stripeUntil.Swap(until)
 		s.stripeNInfo.Store(uint32(st.StripeN))
+		if s.dvr != nil {
+			s.publishDVRStripe(int(st.StripeN), now.UnixNano(), until)
+		}
 		if prev == 0 {
 			s.stripeTransitions.Add(1)
 		}
@@ -184,6 +245,9 @@ func (s *Subscriber) ApplyStripeState(st wire.StripeState) {
 		s.stripeTransitions.Add(1)
 	}
 	s.stripeNInfo.Store(0)
+	if s.dvr != nil {
+		s.dvrStripe.Store(nil)
+	}
 }
 
 // stripeSuppressed reports whether delta datagrams are currently suppressed

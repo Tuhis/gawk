@@ -89,6 +89,16 @@ const (
 	// keyframe carrier — a relay without it rejects the 0x1F stream as bad
 	// input — so a new broadcaster against an older relay is unchanged.
 	CapKeyframeCarriers uint16 = 1 << 3
+
+	// CapStripedDVR means the relay also stripes DVR delivery (R87, docs/91
+	// D8): it accepts a leg dial that carries delivery=reliable&buffer=… and
+	// serves each connection of the stripe only the ring's GOPs of its
+	// residue (StripeGOPResidue), and on a DVR primary it reads StripeState's
+	// StripeN as "serve residue 0 of N". Advertised only beside
+	// CapStripedDelivery, and only on subscribe sessions. A viewer that does
+	// not see this bit never dials a DVR leg; a relay without it answers
+	// such a dial 400, as before R87.
+	CapStripedDVR uint16 = 1 << 4
 )
 
 var (

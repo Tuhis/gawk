@@ -172,6 +172,23 @@ type Conn interface {
 	CloseWithError(code uint32, reason string) error
 }
 
+// PathStats is one subscriber connection's transport counters as the QUIC
+// stack reports them (R87 SG0, docs/91 §4). Connection-wide: a stripe leg or
+// a DVR primary each have their own.
+type PathStats struct {
+	SmoothedRTT time.Duration
+	MinRTT      time.Duration
+	BytesSent   uint64 // including retransmissions
+	PacketsSent uint64
+	PacketsLost uint64
+}
+
+// PathStatser is implemented by a Conn whose transport can report PathStats.
+// Optional, so fakes and edge plumbing need nothing.
+type PathStatser interface {
+	PathStats() (PathStats, bool)
+}
+
 // SessionCloser is the slice of a publisher's session the hub needs to depose
 // it when a newer publisher session takes over the broadcast (docs/06),
 // bound after the session upgrade via Publisher.BindConn.
@@ -225,6 +242,11 @@ type Options struct {
 	// dial gate and capability bit; the hub reads it only to publish
 	// stripeOwner on /statusz (R36), which it omits with striping off.
 	StripedDelivery bool
+	// StripedDVR extends striping to DVR delivery (R87, docs/91). Effective
+	// only beside StripedDelivery. The transport owns the dial gate and the
+	// capability bit; the hub reads it so a DVR primary honours StripeState
+	// and a DVR leg is admitted only on a relay that advertised the bit.
+	StripedDVR bool
 
 	// UplinkCarriers accepts reliable carrier streams from publishers (R73,
 	// docs/75 D2). The transport owns the capability bit and the stream
@@ -240,6 +262,10 @@ type Options struct {
 	// datagram before it is reaped as orphaned. Defaults to
 	// DefaultStripeLegLease; for tests only, deliberately no flag.
 	StripeLegLease time.Duration
+	// StripeDrainLinger overrides how long a drained DVR leg lingers before
+	// the relay closes it (stripeDrainLinger). For tests only, deliberately
+	// no flag (the StripeLegLease precedent).
+	StripeDrainLinger time.Duration
 
 	// UndeliverableAfter overrides UndeliverableVideoAfter. For tests only,
 	// deliberately no flag (the StripeLegLease precedent).
@@ -398,11 +424,14 @@ type SubscriberStats struct {
 	// on every pod of the fleet. A keyed MAC of the token
 	// (Registry.stripeOwnerKey), never the token; omitted on unowned sessions
 	// and on a relay with striping off.
-	StripeLeg             bool   `json:"stripeLeg,omitempty"`
-	StripeN               int    `json:"stripeN,omitempty"`
-	StripeMember          int    `json:"stripeMember,omitempty"`
-	Striped               bool   `json:"striped,omitempty"`
-	StripeOwner           string `json:"stripeOwner,omitempty"`
+	StripeLeg    bool   `json:"stripeLeg,omitempty"`
+	StripeN      int    `json:"stripeN,omitempty"`
+	StripeMember int    `json:"stripeMember,omitempty"`
+	Striped      bool   `json:"striped,omitempty"`
+	StripeOwner  string `json:"stripeOwner,omitempty"`
+	// StripeDraining marks a superseded DVR leg delivering what it still
+	// owes before the relay closes it (docs/91 D11).
+	StripeDraining        bool   `json:"stripeDraining,omitempty"`
 	CarrierStreams        uint64 `json:"carrierStreams,omitempty"`
 	CarrierRecords        uint64 `json:"carrierRecords,omitempty"`
 	CarrierRecordsDropped uint64 `json:"carrierRecordsDropped,omitempty"`
@@ -422,6 +451,16 @@ type SubscriberStats struct {
 	// keyframe hand-offs move no bytes for UndeliverableVideoAfter and said
 	// so. The live half of the BUGS.md Safari wedge confirmation procedure.
 	UndeliverableNotices uint64 `json:"undeliverableNotices,omitempty"`
+
+	// The connection's own transport counters (R87 SG0, docs/91 §4): the
+	// relay's congestion controller is the sender on every viewer leg, so
+	// its RTT and loss are what bound one connection's throughput. Omitted
+	// when the transport can't report them.
+	PathSRTTMs      float64 `json:"pathSrttMs,omitempty"`
+	PathMinRTTMs    float64 `json:"pathMinRttMs,omitempty"`
+	PathBytesSent   uint64  `json:"pathBytesSent,omitempty"`
+	PathPacketsSent uint64  `json:"pathPacketsSent,omitempty"`
+	PathPacketsLost uint64  `json:"pathPacketsLost,omitempty"`
 }
 
 // Stats is a point-in-time snapshot of hub state, for logging and the
@@ -1667,10 +1706,12 @@ func (r *Registry) SubscribeInternal(id string, conn Conn) (*Subscriber, error) 
 // bufferMs is the viewer's *guaranteed minimum* playout offset (its profile
 // floor) and bounds how far behind the cursor may fall. parityK is the
 // already-negotiated SERVED parity level: the ring holds every symbol the
-// producer emitted, and this cursor replays its prefix (docs/75 D11).
-func (r *Registry) SubscribeDVR(id string, conn Conn, bufferMs, parityK int) (*Subscriber, error) {
+// producer emitted, and this cursor replays its prefix (docs/75 D11). owner
+// is the viewer's validated ?owner= token, or empty: a DVR primary needs one
+// to stripe (docs/91 D7), and it reaps the primary's DVR legs with it.
+func (r *Registry) SubscribeDVR(id string, conn Conn, bufferMs, parityK int, owner string) (*Subscriber, error) {
 	return r.subscribeOpts(id, conn, subscribeOpts{
-		reliable: true, dvr: true, bufferMs: bufferMs, parityK: parityK, parityRequested: parityK,
+		reliable: true, dvr: true, bufferMs: bufferMs, parityK: parityK, parityRequested: parityK, owner: owner,
 	})
 }
 
@@ -1768,7 +1809,8 @@ func (r *Registry) subscribeOpts(id string, conn Conn, so subscribeOpts) (*Subsc
 	// only when opted in. Never for an edge session (the second hop makes its
 	// own delivery choice), a stripe leg (audio rides the primary) or a PoP
 	// leg, whose audio stays a datagram (docs/76 item 18).
-	if (reliable && !so.legCarrier) || (r.opts.LiveEdgeAudioOnReliableStream && !internal && !so.stripeLeg) {
+	// A DVR stripe leg is reliable, and still gets none (docs/91 D5).
+	if (reliable && !so.legCarrier && !so.stripeLeg) || (r.opts.LiveEdgeAudioOnReliableStream && !internal && !so.stripeLeg) {
 		s.audioQueue = make(chan []byte, AudioSidebandQueueDepth)
 		s.audioDone = make(chan struct{})
 	}
@@ -1790,8 +1832,9 @@ func (r *Registry) subscribeOpts(id string, conn Conn, so subscribeOpts) (*Subsc
 		s.dvrBufferMs = so.bufferMs
 		s.dvrCursor = b.dvr.NewCursor()
 		s.dvrStop = make(chan struct{})
+		s.dvrDrainSig = make(chan struct{})
 		s.dvrPace = newDVRPacer(r.opts.DVRMaxCatchup, time.Now)
-		if b.dvrAudio != nil {
+		if b.dvrAudio != nil && !so.stripeLeg {
 			s.dvrAudio = b.dvrAudio
 			s.dvrAudioCur = b.dvrAudio.Newest()
 		}
@@ -1923,11 +1966,16 @@ func (r *Registry) statsWith(key func(id string) string, ownerKeys bool) Registr
 			if s.internal {
 				edgeSessions++
 			}
-			if s.reliable && !s.internal {
+			// These count viewers: a DVR stripe leg is not one, as it is not
+			// in the viewer count (docs/91). Its resyncs still count, since
+			// each is a GOP its viewer lost.
+			if s.reliable && !s.internal && !s.stripeLeg {
 				reliableSubs++
 			}
 			if s.dvr != nil {
-				dvrSubs++
+				if !s.stripeLeg {
+					dvrSubs++
+				}
 				dvrResyncs += s.dvrResyncs.Load()
 			}
 			striped := s.stripeSuppressed(statsNow)
@@ -1954,7 +2002,16 @@ func (r *Registry) statsWith(key func(id string) string, ownerKeys bool) Registr
 			carDropped += s.carrierRecordsDropped.Load()
 			carOverflow += s.carrierQueueOverflow.Load()
 			egressCar += s.egressCarrierBytes.Load()
+			var ps PathStats
+			if pst, ok := s.sender.(PathStatser); ok {
+				ps, _ = pst.PathStats()
+			}
 			details = append(details, SubscriberStats{
+				PathSRTTMs:            float64(ps.SmoothedRTT.Microseconds()) / 1000,
+				PathMinRTTMs:          float64(ps.MinRTT.Microseconds()) / 1000,
+				PathBytesSent:         ps.BytesSent,
+				PathPacketsSent:       ps.PacketsSent,
+				PathPacketsLost:       ps.PacketsLost,
 				Key:                   s.statsKey,
 				SessionID:             s.sessionID,
 				QueueDepth:            len(s.queue),
@@ -1981,6 +2038,7 @@ func (r *Registry) statsWith(key func(id string) string, ownerKeys bool) Registr
 				StripeMember:          int(s.stripeMember),
 				Striped:               striped,
 				StripeOwner:           stripeOwner,
+				StripeDraining:        s.StripeDraining(),
 			})
 		}
 		totals.DatagramsDropped += dropped
@@ -2924,6 +2982,9 @@ func (b *broadcastHub) fanOutLocked(dgram []byte) {
 	// the relay computes nothing, one comparison per subscriber (docs/34).
 	if idx := parityIndexIfParity(dgram); idx >= 0 {
 		for s := range b.subs {
+			if s.dvrStripeLeg() {
+				continue
+			}
 			// An EDGE session is exempt: the prefix belongs at the pod that
 			// SERVES the viewer. The origin cannot know an edge's subscribers'
 			// k, and clamping here would silently strip parity from every
@@ -2932,7 +2993,7 @@ func (b *broadcastHub) fanOutLocked(dgram []byte) {
 				// A leg forwards only its share of the prefix, a striped
 				// primary none; only the primary's withheld symbols count
 				// as suppressed (a leg's are routing).
-				if s.stripeLeg || s.stripeUntil.Load() != 0 {
+				if s.dvr == nil && (s.stripeLeg || s.stripeUntil.Load() != 0) {
 					classify()
 					if stripeIsDelta && !s.wantsDeltaLocked(stripeOrd, stripeNow) {
 						if !s.stripeLeg {
@@ -2950,9 +3011,14 @@ func (b *broadcastHub) fanOutLocked(dgram []byte) {
 		return
 	}
 	for s := range b.subs {
+		if s.dvrStripeLeg() {
+			continue
+		}
 		// A leg receives only its share of delta datagrams and nothing else;
-		// a striped primary skips deltas but keeps everything else.
-		if s.stripeLeg || s.stripeUntil.Load() != 0 {
+		// a striped primary skips deltas but keeps everything else. A striped
+		// DVR primary takes the plain path: its media comes from the ring, and
+		// enqueueLocked already keeps it out of the queue.
+		if s.dvr == nil && (s.stripeLeg || s.stripeUntil.Load() != 0) {
 			classify()
 			if s.stripeLeg && !stripeIsDelta {
 				continue
@@ -3029,6 +3095,12 @@ type Subscriber struct {
 	stripeUntil       atomic.Int64
 	stripeNInfo       atomic.Uint32
 	stripeTransitions atomic.Uint64
+	// dvrStripe is a DVR primary's striped state (docs/91 D7), nil when
+	// unstriped. One immutable value behind one pointer, because the drain
+	// must never pair a width with another period's start or deadline
+	// (dvrServesGop); stripeUntil and stripeNInfo above stay the live path's
+	// and /statusz's.
+	dvrStripe atomic.Pointer[dvrStripeState]
 	// owner is the viewer-minted session-group token, empty on unowned
 	// sessions. Read-only after subscribe — no lock.
 	owner string
@@ -3141,6 +3213,15 @@ type Subscriber struct {
 	dvrAudioCur   DVRAudioCursor
 	dvrAudioCar   KeyframeStream
 	dvrGopSeq     atomic.Int64
+	// dvrFailing is set by a failed stream open or write and cleared by the
+	// next progress. Owned by the video drain. While set, skipping another
+	// connection's GOP is not counted as idleness (dvrSkipGop).
+	dvrFailing bool
+	// dvrDrain is a draining DVR leg's drain point, nil while not draining.
+	// Set once by drainDVRLeg, whose winning CompareAndSwap alone closes
+	// dvrDrainSig to wake a parked drain loop.
+	dvrDrain    atomic.Pointer[dvrDrainPoint]
+	dvrDrainSig chan struct{}
 
 	carrierStreams        atomic.Uint64
 	carrierRecords        atomic.Uint64
@@ -3262,8 +3343,11 @@ func (s *Subscriber) drain() {
 	defer close(s.done)
 	if s.dvr != nil {
 		// The queue still carries this subscriber's control traffic; a
-		// separate goroutine drains it so neither can stall the other.
-		go s.drainControlSideband()
+		// separate goroutine drains it so neither can stall the other. A DVR
+		// leg's queue stays empty: control rides the primary (docs/91 D5).
+		if !s.stripeLeg {
+			go s.drainControlSideband()
+		}
 		if s.dvrAudio != nil {
 			go s.drainDVRAudio()
 		}
