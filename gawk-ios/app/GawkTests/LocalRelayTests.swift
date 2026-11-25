@@ -99,13 +99,61 @@ final class LocalRelayTests: XCTestCase {
         o.probe = { _ in answer }
         o.consider(offer, live: false, home: home)
         try await settle { o.chip(home: home) != nil }
-        o.optOut()
+        o.optOut(stream: LocalRelaySwitcher.broadcastStream)
         XCTAssertNil(o.chip(home: home))
-        XCTAssertEqual(o.optOuts, [offer.handle])
+        XCTAssertEqual(o.optedOutHandle, offer.handle)
         XCTAssertFalse(o.target(home: home, homeCertHashes: []).followOffers, "opted out: no lr=1")
         o.consider(offer, live: false, home: home)
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertNil(o.chip(home: home), "opted out")
+    }
+
+    /// OD18 (item 43.6): "Use … instead" holds for the stream it was picked
+    /// on, never longer, and is never stored. The next stream, or the next
+    /// broadcast, follows the PoP's offer again; a build that stored it
+    /// per handle left a key that is cleared and never read.
+    func testAnOptOutLastsTheStreamItWasPickedOnAndIsNeverStored() async throws {
+        let suite = "fi.ioio.gawk.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set([offer.handle], forKey: "localRelayOptOuts")
+        let s = LocalRelaySwitcher(defaults: defaults)
+        XCTAssertNil(defaults.object(forKey: "localRelayOptOuts"), "the stored key is cleared")
+        XCTAssertNil(s.optedOutHandle, "and never read")
+
+        let calls = Calls()
+        let answer = found
+        s.probe = { _ in
+            await calls.bump()
+            return answer
+        }
+        let room = LocalRelaySwitcher.roomStream("lan-party")
+        s.enterStream(room)
+        s.consider(offer, live: false, home: home)
+        try await settle { s.chip(home: home) != nil }
+        s.optOut(stream: room)
+        XCTAssertNil(defaults.object(forKey: "localRelayOptOuts"), "nothing is stored")
+        // The same stream's redials stay on home, without lr=1.
+        s.enterStream(room)
+        XCTAssertFalse(s.followsOffers(home: home))
+        s.consider(offer, live: false, home: home)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(calls.n, 1)
+        // Another stream follows the offer again.
+        s.enterStream(LocalRelaySwitcher.viewerStream("K7XQ2M"))
+        XCTAssertNil(s.optedOutHandle)
+        XCTAssertTrue(s.followsOffers(home: home))
+        s.consider(offer, live: false, home: home)
+        try await settle { s.chip(home: home) != nil }
+        XCTAssertEqual(calls.n, 2)
+
+        // The broadcast's opt-out ends with the broadcast.
+        s.optOut(stream: LocalRelaySwitcher.broadcastStream)
+        s.broadcastStarted()
+        XCTAssertEqual(s.optedOutHandle, offer.handle, "the broadcast it was picked for")
+        s.broadcastEnded()
+        XCTAssertNil(s.optedOutHandle, "the next broadcast follows the offer")
+        XCTAssertNil(LocalRelaySwitcher(defaults: defaults).optedOutHandle, "a new app session starts with none")
+        UserDefaults.standard.removePersistentDomain(forName: suite)
     }
 
     /// TN3179 (item 44): while the app is not active nothing dials; coming

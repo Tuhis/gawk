@@ -2,9 +2,9 @@ import Foundation
 import Observation
 
 /// R74 PP14 (docs/76 §6.12): a party's local relay that home offered, and
-/// whether the next broadcast and the players use it. The decisions are
-/// the Rust core's (`probeLocalRelay`, `LocalRelayPrompt`); this holds the
-/// app's state around them.
+/// whether the next broadcast, the players and the rooms use it. The
+/// decisions are the Rust core's (`probeLocalRelay`, `LocalRelayPrompt`);
+/// this holds the app's state around them.
 ///
 /// - Only a **fresh** offer starts a switch (item 43.1): a held PoP lasts
 ///   the offer's validity and nothing remembered dials on its own.
@@ -12,8 +12,11 @@ import Observation
 /// - The first dial may be refused before the local-network prompt is
 ///   answered, so it is retried once after it, and never while the app is
 ///   not active (TN3179, item 44).
-/// - A PoP that never answers is left for this app session (item 43.5);
-///   "Use gawk.ioio.fi instead" is remembered per PoP handle (item 43.6).
+/// - A PoP that never answers is left for this app session (item 43.5).
+/// - "Use gawk.ioio.fi instead" holds for the stream it was picked on
+///   (item 43.6, OD18): that stream's redials stay on home without `lr=1`,
+///   and the next stream (`enterStream`) or the next broadcast follows the
+///   PoP's offer again. It lives in memory only; nothing is stored.
 /// - A live broadcast is never moved (item 43.3): an offer that comes
 ///   while live is for the next one.
 @MainActor
@@ -60,19 +63,45 @@ final class LocalRelaySwitcher {
     @ObservationIgnored var probe: @Sendable (LocalRelayOffer) async -> LocalRelaySwitch? = { offer in
         await Task.detached { probeLocalRelay(offer: offer) }.value
     }
-    /// A player's hook: a PoP answered, so it reconnects there with the
-    /// same code (item 43.3: one freeze, once).
+    /// A player's or room's hook: a PoP answered, so it reconnects there
+    /// with the same code (item 43.3: one freeze, once).
     @ObservationIgnored var onSwitch: (@MainActor (Held) -> Void)?
+    /// The stream the app's sessions are for (OD18), and the PoP the user
+    /// chose "Use … instead" on while there: one, in memory.
+    @ObservationIgnored private var currentStream: String?
+    @ObservationIgnored private var optedOut: (handle: String, stream: String)?
 
-    private static let optOutKey = "localRelayOptOuts"
+    /// Where builds before OD18 stored the opt-outs per PoP handle.
+    /// Cleared at launch and never read.
+    static let legacyOptOutKey = "localRelayOptOuts"
     private static let wallHiddenKey = "localRelayWallHidden"
+
+    /// The streams `enterStream` names: a broadcast, a player's code, a
+    /// room's code (the web's `enterStream` keys).
+    static let broadcastStream = "broadcast"
+    static func viewerStream(_ code: String) -> String { "viewer:\(code)" }
+    static func roomStream(_ code: String) -> String { "room:\(code)" }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        defaults.removeObject(forKey: Self.legacyOptOutKey)
     }
 
-    var optOuts: Set<String> { Set(defaults.stringArray(forKey: Self.optOutKey) ?? []) }
     var wallHidden: Set<String> { Set(defaults.stringArray(forKey: Self.wallHiddenKey) ?? []) }
+
+    /// The PoP opted out of on the current stream, if any.
+    var optedOutHandle: String? { optedOut?.handle }
+
+    private func isOptedOut(_ handle: String) -> Bool { optedOut?.handle == handle }
+
+    /// A screen names the stream it dials before its first session: the
+    /// redials of one stream name the same one; any other ends the
+    /// opt-out, so its offer is followed again (OD18).
+    func enterStream(_ key: String) {
+        guard key != currentStream else { return }
+        currentStream = key
+        if let o = optedOut, o.stream != key { optedOut = nil }
+    }
 
     /// The held PoP, while its offer is valid.
     func current(now: Date = .now) -> Held? {
@@ -89,7 +118,7 @@ final class LocalRelaySwitcher {
     /// A fresh offer from `home`, from a probe or a live session.
     func consider(_ offer: LocalRelayOffer, live: Bool, home: String) {
         lastOffered[home] = offer.handle
-        guard !optOuts.contains(offer.handle), !unreachable.contains(offer.handle) else { return }
+        guard !isOptedOut(offer.handle), !unreachable.contains(offer.handle) else { return }
         if var h = held, h.handle == offer.handle, h.home == home, h.until > .now {
             h.until = .now.addingTimeInterval(TimeInterval(offer.validitySecs))
             held = h
@@ -111,12 +140,13 @@ final class LocalRelaySwitcher {
         if let p = prompt { step(p.setActive(active: active)) }
     }
 
-    /// The chip's "Use gawk.ioio.fi instead": remembered for this PoP.
-    func optOut() {
+    /// The chip's "Use gawk.ioio.fi instead", picked on `stream`: held for
+    /// that stream only, in memory (OD18).
+    func optOut(stream: String) {
         guard let h = held else { return }
-        var s = optOuts
-        s.insert(h.handle)
-        defaults.set(Array(s).sorted(), forKey: Self.optOutKey)
+        enterStream(stream)
+        optedOut = (h.handle, stream)
+        lastOffered[h.home] = h.handle
         held = nil
         nextBroadcast = false
     }
@@ -156,12 +186,22 @@ final class LocalRelaySwitcher {
     /// Whether a session toward `home` would follow an offer (`lr=1`).
     func followsOffers(home: String) -> Bool {
         guard let last = lastOffered[home] else { return true }
-        return !unreachable.contains(last) && !optOuts.contains(last)
+        return !unreachable.contains(last) && !isOptedOut(last)
     }
 
-    /// A broadcast started: what was said about the next one is spent.
+    /// A broadcast started: what was said about the next one is spent. An
+    /// opt-out picked on the Broadcast tab holds for this broadcast.
     func broadcastStarted() {
         nextBroadcast = false
+        enterStream(Self.broadcastStream)
+    }
+
+    /// The broadcast ended: an opt-out picked for it is spent, and the next
+    /// broadcast follows the PoP's offer again (OD18).
+    func broadcastEnded() {
+        if let o = optedOut, o.stream == Self.broadcastStream, currentStream == Self.broadcastStream {
+            optedOut = nil
+        }
     }
 
     private func step(_ s: LocalRelayDialStep) {
@@ -191,7 +231,7 @@ final class LocalRelaySwitcher {
         Task { [weak self] in
             let found = await probe(offer)
             guard let self, self.prompt === p else { return }
-            guard let found, found.handle == offer.handle, !self.optOuts.contains(offer.handle) else {
+            guard let found, found.handle == offer.handle, !self.isOptedOut(offer.handle) else {
                 self.step(p.failed())
                 return
             }
