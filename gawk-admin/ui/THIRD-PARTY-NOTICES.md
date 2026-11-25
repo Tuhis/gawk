@@ -54,7 +54,7 @@ script for what counts as a dependency here and why.
 | `react-router` | 8.5.3 | `MIT` | Copyright (c) React Training LLC 2015-2019<br>Copyright (c) Remix Software Inc. 2020-2021<br>Copyright (c) Shopify Inc. 2022-2023 |
 | `redoc` | 3.2.0 | `MIT` | Copyright (c) 2015-present, Rebilly, Inc<br>Copyright (c) 2021-present, Redocly Inc |
 | `scheduler` | 0.28.0 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
-| `styled-components` | 6.6.0 | `MIT` | Copyright (c) 2016-present Glen Maddern and Maximilian Stoiber |
+| `styled-components` | 6.7.0 | `MIT` | Copyright (c) 2016-present Glen Maddern and Maximilian Stoiber |
 | `stylis` | 4.3.6 | `MIT` | Copyright (c) 2016-present Sultan Tarimo |
 | `ulid` | 3.0.2 | `MIT` | Copyright (c) 2017 Alizain Feerasta |
 
