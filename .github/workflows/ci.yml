@@ -1841,7 +1841,7 @@ jobs:
       - uses: ./.github/actions/go-shared-cache
       - name: go mod tidy leaves every module unchanged
         run: |
-          for mod in gawk-server gawk-telemetry gawk-admin gawk-sampler gawk-mumble-bridge gawk-whip-gateway gawk-mmproxy tools/icon tools/commonlock; do
+          for mod in gawk-server gawk-telemetry gawk-admin gawk-sampler gawk-mumble-bridge gawk-whip-gateway gawk-mmproxy tools/icon tools/commonlock tools/popprobe; do
             (cd "$mod" && go mod tidy)
           done
           if ! git diff --exit-code; then
