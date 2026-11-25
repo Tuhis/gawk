@@ -2743,8 +2743,13 @@ entries still describe code `gawk-pubsim` runs (now
   and counts towards autoban for its address. Listings are per-namespace,
   so a sidecar sees murmur's LISTEN socket. Use inet_diag, not
   `/proc/net/tcp6`: only inet_diag says whether a `::` socket is v6only,
-  and murmur's `host=::` is. ([docs/92](92-mumble-real-client-addresses.md)
-  §3 F13, D7)
+  and murmur's `host=::` may be (to be confirmed by docs/92 PX1).
+  ([docs/92](92-mumble-real-client-addresses.md) §3 F13, D7)
+- **`close(2)` on a TCP socket with unread data sends a reset, not a
+  FIN.** Go's `TCPConn.Close` is a plain close, so a refusal that must
+  read as a clean EOF (a proxy refusing before the client's TLS hello is
+  read) needs `CloseWrite()`, a drain until EOF or a short deadline, then
+  close. ([docs/92](92-mumble-real-client-addresses.md) D6)
 
 **RNNoise in the browser (R80)**
 
