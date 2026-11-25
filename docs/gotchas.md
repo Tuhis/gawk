@@ -2724,6 +2724,26 @@ entries still describe code `gawk-pubsim` runs (now
   blackholed address. The tests' murmur with Ice runs on the host network
   instead. ([docs/89](89-mumble-ice-roster.md) MI1)
 
+**Real client addresses in Mumble (R88)**
+
+- **Murmur rejects a banned address with a TCP reset**, during the TLS
+  handshake. Through a proxy that closes with a FIN when it can't reach
+  murmur, "murmur is down" looked exactly like "you are banned" until the
+  proxy passed murmur's reset on as a reset. ([docs/92](92-mumble-real-client-addresses.md)
+  §3 F8, F9)
+- **`IP_TRANSPARENT` needs only `CAP_NET_RAW`.** Only installing the
+  loopback policy routes needs `CAP_NET_ADMIN`, so the routes go in an init
+  container and the proxy runs with one capability. ([docs/92](92-mumble-real-client-addresses.md)
+  §3 F11)
+- **`ip rule add` is not idempotent**: running it twice leaves two
+  identical rules. Check before adding. ([docs/92](92-mumble-real-client-addresses.md)
+  §3 F12)
+- **Check whether murmur is listening through `/proc/net/tcp{,6}`, not by
+  connecting.** Each connection is a `New connection` line in murmur's log
+  and counts towards autoban for its address; `/proc/net` is
+  per-namespace, so a sidecar sees murmur's LISTEN socket there.
+  ([docs/92](92-mumble-real-client-addresses.md) §3 F13)
+
 **RNNoise in the browser (R80)**
 
 - **The RNNoise 0.2 release tarball does not compile its scalar or NEON
