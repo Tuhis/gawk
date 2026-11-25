@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.2](https://github.com/Tuhis/gawk/compare/gawk-sampler/v1.1.1...gawk-sampler/v1.1.2) (2026-11-25)
+
+
+### Bug Fixes
+
+* **sampler:** keep the ffmpeg-exec helper from mmapping under its RLIMIT_AS ([#827](https://github.com/Tuhis/gawk/issues/827)) ([9cf8603](https://github.com/Tuhis/gawk/commit/9cf86032a5dbbd3361e02841e2b47fe70ba21546))
+
 ## [1.1.1](https://github.com/Tuhis/gawk/compare/gawk-sampler/v1.1.0...gawk-sampler/v1.1.1) (2026-11-20)
 
 
