@@ -283,11 +283,32 @@ describe('room voice UI', () => {
     // speaking indicators.
     openVolume(panel, 'bob');
     expect(within(panel).getByLabelText('Volume of bob')).toBeTruthy();
+    const textBefore = within(panel).getAllByTestId('voice-row')[0].textContent;
     act(() => vs.cb.onFrame({ end: false, target: 0, speaker: 3, seq: 1 }, new Uint8Array([1])));
     await waitFor(() => expect(within(panel).getAllByTestId('voice-row')[0].querySelector('[data-on="true"]')).toBeTruthy());
+    // Speaking colours the row; it never adds a word that shifts the row's
+    // icons about.
+    const row = within(panel).getAllByTestId('voice-row')[0];
+    expect(row.getAttribute('data-speaking')).toBe('true');
+    expect(row.textContent).toBe(textBefore);
     fireEvent.click(within(panel).getByRole('button', { name: 'Leave voice' }));
     expect(vs.closed).toBe(1);
     expect(screen.queryByTestId('voice-dock')).toBeNull();
+  });
+
+  // The dock's summary kept the speaker's name beside the avatars and moved
+  // the speaker to the front, so the whole dock jumped with every word.
+  it('the dock summary keeps its text and avatar order while someone speaks', async () => {
+    const { vs } = await inVoice(true);
+    const summary = () => within(screen.getByTestId('voice-dock')).getByRole('button', { name: /^Open voice/ });
+    const avatars = () => Array.from(summary().querySelectorAll('[data-hue]')).map((a) => a.textContent);
+    const textBefore = summary().textContent;
+    const orderBefore = avatars();
+    act(() => vs.cb.onFrame({ end: false, target: 0, speaker: 3, seq: 1 }, new Uint8Array([1])));
+    await waitFor(() => expect(summary().querySelector('[data-on="true"]')).toBeTruthy());
+    expect(summary().getAttribute('data-speaking')).toBe('true');
+    expect(summary().textContent).toBe(textBefore);
+    expect(avatars()).toEqual(orderBefore);
   });
 
   it('per-person volume persists by Mumble name', async () => {

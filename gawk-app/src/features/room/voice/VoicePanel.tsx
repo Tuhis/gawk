@@ -89,13 +89,15 @@ function Avatar({ row, speaking = false }: { row: VoiceRosterRow; speaking?: boo
   );
 }
 
-// Up to three overlapping avatars, the speaker first.
+// Up to three overlapping avatars in roster order, so the stack never
+// reshuffles as people talk; a speaker beyond the third takes the last slot.
 function AvatarStack({ rows, isSpeaking }: { rows: VoiceRosterRow[]; isSpeaking?: (r: VoiceRosterRow) => boolean }) {
-  const first = isSpeaking ? rows.findIndex(isSpeaking) : -1;
-  const ordered = first > 0 ? [rows[first], ...rows.slice(0, first), ...rows.slice(first + 1)] : rows;
+  const shown = rows.slice(0, 3);
+  const hidden = isSpeaking && !shown.some(isSpeaking) ? rows.slice(3).find(isSpeaking) : undefined;
+  if (hidden) shown[shown.length - 1] = hidden;
   return (
     <span className={styles.stack}>
-      {ordered.slice(0, 3).map((r) => (
+      {shown.map((r) => (
         <Avatar key={r.session} row={r} speaking={isSpeaking?.(r) ?? false} />
       ))}
     </span>
@@ -274,7 +276,7 @@ function RosterRow({
     <>
       {/* OD14: speaking only for people in voice, worked out locally. */}
       <Avatar row={row} speaking={speaking} />
-      <span className={roomStyles.rowLabel}>
+      <span className={`${roomStyles.rowLabel} ${styles.rosterName}`}>
         {row.label}
         {row.you ? ' (you)' : ''}
       </span>
@@ -289,13 +291,17 @@ function RosterRow({
             <MicOffIcon aria-hidden="false" aria-label={row.serverMuted ? 'Muted by the server' : 'Muted'} />
           </span>
         ) : null}
-        {speaking && <span className={styles.speakingText}>speaking</span>}
         {adjustable && !open && pct !== 100 && <span className={styles.boostMark} data-boost={pct > 100 ? 'true' : 'false'}>{pct}%</span>}
       </span>
     </>
   );
   return (
-    <li className={styles.rosterItem} data-open={open ? 'true' : 'false'} data-testid="voice-row">
+    <li
+      className={styles.rosterItem}
+      data-open={open ? 'true' : 'false'}
+      data-speaking={speaking ? 'true' : 'false'}
+      data-testid="voice-row"
+    >
       {adjustable ? (
         // A click, not a hover, opens the person's volume: it works on touch
         // and stays open while it is being dragged.
@@ -688,7 +694,8 @@ function MicPopover({ actions, onOpenPanel }: { actions: VoiceActions; onOpenPan
   );
 }
 
-// Who is speaking, at a glance; the click opens the voice panel.
+// Who is speaking, at a glance; the click opens the voice panel. Fixed width:
+// speaking only lights the avatar rings and the count, never adds a name.
 function SpeakerSummary({ snapshot, onOpenPanel }: { snapshot: RoomState; onOpenPanel: () => void }) {
   const rows = useVoiceRows(snapshot);
   const isSpeaking = useSpeakingCheck();
@@ -698,11 +705,11 @@ function SpeakerSummary({ snapshot, onOpenPanel }: { snapshot: RoomState; onOpen
     <button
       type="button"
       className={styles.summary}
+      data-speaking={speaker ? 'true' : 'false'}
       aria-label={name ? `Open voice: ${name} speaking, ${inVoiceText(rows.length)}` : `Open voice: ${inVoiceText(rows.length)}`}
       onClick={onOpenPanel}
     >
       <AvatarStack rows={rows} isSpeaking={isSpeaking} />
-      {name && <span className={styles.summaryName}>{name}</span>}
       <span className={styles.summaryCount}>· {rows.length}</span>
     </button>
   );
