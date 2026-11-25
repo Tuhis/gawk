@@ -21,7 +21,7 @@
 //! without a relay; the integration suite runs the same code against the
 //! real one.
 
-use crate::relay::{BoxFuture, SessionClose, StartError};
+use crate::relay::{BoxFuture, ServerStream, SessionClose, StartError};
 use crate::resume::{RESUME_WINDOW, ResumeBackoff};
 use crate::session::EngineEvent;
 use gawk_wire as wire;
@@ -53,6 +53,13 @@ pub struct RoomConfig {
     /// feeds both, as on the web broadcaster page. Truncated separately to
     /// each wire bound.
     pub nickname: String,
+    /// R74 (docs/76 item 43): this participant follows a home relay's
+    /// local-relay offer, so every join CONNECT (the first and each redial)
+    /// carries `lr=1`, and the session's server-opened uni streams are read
+    /// for the offer (`0x19`) and a PoP's info (`0x18`), reported as
+    /// [`EngineEvent::LocalRelayOffer`] and [`EngineEvent::LocalRelay`].
+    /// Off (the broadcaster's room session), neither happens.
+    pub follow_offers: bool,
 }
 
 /// The publish identity the attach proof is built from. `generation`
@@ -195,6 +202,11 @@ pub trait RoomConn: Send + Sync + 'static {
     fn write(&self, record: &[u8]) -> BoxFuture<'_, Result<(), String>>;
     fn read(&self, n: usize) -> BoxFuture<'_, Result<Vec<u8>, String>>;
     fn closed(&self) -> BoxFuture<'_, SessionClose>;
+    /// The session's next server-opened uni stream (R74: `0x18`, `0x19`).
+    /// A connection that offers none never yields one.
+    fn accept_uni(&self) -> BoxFuture<'_, Result<Box<dyn ServerStream>, String>> {
+        Box::pin(std::future::pending())
+    }
 }
 
 /// Dials one room control session. The engine's transport implements it
@@ -249,6 +261,60 @@ pub fn room_url(
         url.set_query(None);
     }
     Ok(url.into())
+}
+
+/// The join URL a session dials, first and on every redial: [`room_url`],
+/// with `lr=1` when the participant follows offers (docs/76 item 43.7).
+fn join_url(cfg: &RoomConfig) -> Result<String, String> {
+    let url = room_url(
+        &cfg.relay_url,
+        &cfg.code,
+        &cfg.attach_secret,
+        &cfg.creator_token_hex,
+    )?;
+    Ok(if cfg.follow_offers {
+        crate::localrelay::with_follow_offers(&url)
+    } else {
+        url
+    })
+}
+
+/// Reads the session's server-opened uni streams for a room participant
+/// that follows offers (docs/76 items 42, 45): a `0x19` is reported as
+/// [`EngineEvent::LocalRelayOffer`], a `0x18` as [`EngineEvent::LocalRelay`],
+/// and any other type is skipped. Each stream is read detached, bounded and
+/// deadlined, as on a publish session; the reads end with the task.
+async fn read_local_relay_streams(
+    conn: Arc<dyn RoomConn>,
+    events: mpsc::UnboundedSender<EngineEvent>,
+) {
+    use crate::dispatch::{
+        SERVER_STREAM_READ_LIMIT, SERVER_STREAM_READ_TIMEOUT_MS, ServerMessage,
+        dispatch_server_message,
+    };
+    let mut reads = tokio::task::JoinSet::new();
+    while let Ok(mut stream) = conn.accept_uni().await {
+        let events = events.clone();
+        reads.spawn(async move {
+            let read = tokio::time::timeout(
+                Duration::from_millis(SERVER_STREAM_READ_TIMEOUT_MS),
+                stream.read_to_end(SERVER_STREAM_READ_LIMIT),
+            )
+            .await;
+            let Ok(Ok(msg)) = read else { return };
+            match dispatch_server_message(&msg) {
+                Ok(ServerMessage::LocalRelayOffer(o)) => {
+                    let _ = events.send(EngineEvent::LocalRelayOffer(o));
+                }
+                Ok(ServerMessage::LocalRelayInfo(i)) => {
+                    let _ = events.send(EngineEvent::LocalRelay(i));
+                }
+                _ => {}
+            }
+        });
+        // Reap the finished reads so a long session does not pile them up.
+        while reads.try_join_next().is_some() {}
+    }
 }
 
 /// Builds the mint URL: `/room/new?broadcast=…&resume=…[&label=…][&create=…]`
@@ -454,12 +520,7 @@ pub(crate) async fn run_room(mut ctx: RoomCtx) {
             &ctx.cfg.create_secret,
         )
     } else {
-        room_url(
-            &ctx.cfg.relay_url,
-            &ctx.cfg.code,
-            &ctx.cfg.attach_secret,
-            &ctx.cfg.creator_token_hex,
-        )
+        join_url(&ctx.cfg)
     };
     let url = match url {
         Ok(u) => u,
@@ -600,6 +661,11 @@ async fn serve_room(ctx: &mut RoomCtx, conn: Arc<dyn RoomConn>) -> Serve {
             }
         })
     };
+    // R74: only a participant that follows offers reads them.
+    let local_relay = ctx
+        .cfg
+        .follow_offers
+        .then(|| tokio::spawn(read_local_relay_streams(conn.clone(), ctx.events.clone())));
 
     let mut local = Local {
         summary: RoomSummary::default(),
@@ -722,6 +788,9 @@ async fn serve_room(ctx: &mut RoomCtx, conn: Arc<dyn RoomConn>) -> Serve {
         }
     };
     reader.abort();
+    if let Some(t) = local_relay {
+        t.abort();
+    }
 
     match end {
         Serve::Lost => match conn.closed().await {
@@ -958,13 +1027,7 @@ fn handle_event(
 /// Redials the room with the resume backoff until it works, the relay says
 /// it never will, or the window closes. `Err(None)` = stopped.
 async fn reconnect(ctx: &mut RoomCtx) -> Result<Arc<dyn RoomConn>, Option<String>> {
-    let url = room_url(
-        &ctx.cfg.relay_url,
-        &ctx.cfg.code,
-        &ctx.cfg.attach_secret,
-        &ctx.cfg.creator_token_hex,
-    )
-    .map_err(Some)?;
+    let url = join_url(&ctx.cfg).map_err(Some)?;
     let mut backoff = ResumeBackoff::new();
     let deadline = tokio::time::Instant::now() + RESUME_WINDOW;
     let mut attempt: u32 = 0;
@@ -1080,6 +1143,22 @@ mod tests {
         inbox: tokio::sync::Mutex<(UnboundedReceiver<Vec<u8>>, Vec<u8>)>,
         outbox: UnboundedSender<Vec<u8>>,
         close: watch::Receiver<Option<SessionClose>>,
+        /// Server-opened uni streams, one whole payload each.
+        uni: tokio::sync::Mutex<UnboundedReceiver<Vec<u8>>>,
+    }
+
+    /// One scripted server uni stream.
+    struct FakeStream(Vec<u8>);
+
+    impl ServerStream for FakeStream {
+        fn read_to_end(&mut self, limit: usize) -> BoxFuture<'_, Result<Vec<u8>, String>> {
+            let r = if self.0.len() > limit {
+                Err("too long".into())
+            } else {
+                Ok(std::mem::take(&mut self.0))
+            };
+            Box::pin(async move { r })
+        }
     }
 
     impl RoomConn for FakeConn {
@@ -1115,6 +1194,14 @@ mod tests {
                 }
             })
         }
+        fn accept_uni(&self) -> BoxFuture<'_, Result<Box<dyn ServerStream>, String>> {
+            Box::pin(async move {
+                match self.uni.lock().await.recv().await {
+                    Some(msg) => Ok(Box::new(FakeStream(msg)) as Box<dyn ServerStream>),
+                    None => Err("closed".into()),
+                }
+            })
+        }
     }
 
     /// The relay's end of one scripted session.
@@ -1122,9 +1209,14 @@ mod tests {
         to_client: Option<UnboundedSender<Vec<u8>>>,
         from_client: UnboundedReceiver<Vec<u8>>,
         close: watch::Sender<Option<SessionClose>>,
+        uni: UnboundedSender<Vec<u8>>,
     }
 
     impl RelayEnd {
+        /// Opens a server uni stream carrying `msg`.
+        fn send_uni(&self, msg: &[u8]) {
+            self.uni.send(msg.to_vec()).unwrap();
+        }
         fn send_msg(&self, msg: &[u8]) {
             let mut rec = Vec::new();
             wire::append_room_record(&mut rec, msg).unwrap();
@@ -1176,10 +1268,12 @@ mod tests {
         let (to_client, inbox) = mpsc::unbounded_channel();
         let (outbox, from_client) = mpsc::unbounded_channel();
         let (close_tx, close_rx) = watch::channel(None);
+        let (uni_tx, uni_rx) = mpsc::unbounded_channel();
         let conn = Arc::new(FakeConn {
             inbox: tokio::sync::Mutex::new((inbox, Vec::new())),
             outbox,
             close: close_rx,
+            uni: tokio::sync::Mutex::new(uni_rx),
         });
         (
             conn,
@@ -1187,6 +1281,7 @@ mod tests {
                 to_client: Some(to_client),
                 from_client,
                 close: close_tx,
+                uni: uni_tx,
             },
         )
     }
@@ -1352,6 +1447,158 @@ mod tests {
                 .is_err(),
             "a viewer's room session wrote a command"
         );
+        stop.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("stops")
+            .unwrap();
+    }
+
+    fn offer_msg() -> Vec<u8> {
+        let h = [7u8; 32];
+        let mut msg = Vec::new();
+        wire::append_local_relay_offer(
+            &mut msg,
+            &wire::LocalRelayOffer {
+                handle: "6f1c2d3e-4a5b-4c6d-8e7f-0123456789ab",
+                name: "Assembly 2026",
+                validity: 3600,
+                candidates: vec![wire::LocalRelayCandidate {
+                    url: "https://192.168.1.20:4433",
+                    hashes: vec![&h],
+                }],
+            },
+        )
+        .unwrap();
+        msg
+    }
+
+    fn info_msg() -> Vec<u8> {
+        let mut msg = Vec::new();
+        wire::append_local_relay_info(
+            &mut msg,
+            &wire::LocalRelayInfo {
+                linked: true,
+                on_wall: false,
+                name: "Assembly 2026",
+                home_origin: "https://gawk.ioio.fi",
+                wall_code: "",
+            },
+        )
+        .unwrap();
+        msg
+    }
+
+    fn watch_cfg(follow_offers: bool) -> RoomConfig {
+        RoomConfig {
+            relay_url: "https://relay.example:4433".into(),
+            code: "lan-party".into(),
+            follow_offers,
+            ..RoomConfig::default()
+        }
+    }
+
+    /// The next event that is not the roster or a reconnect notice.
+    async fn local_event(events: &mut UnboundedReceiver<EngineEvent>) -> EngineEvent {
+        loop {
+            match tokio::time::timeout(Duration::from_secs(5), events.recv()).await {
+                Ok(Some(EngineEvent::RoomState(_) | EngineEvent::RoomReconnecting { .. })) => {}
+                Ok(Some(e)) => return e,
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    /// R74 PP14 (docs/76 items 43, 45): a room participant that follows
+    /// offers says `lr=1` on every `/room` CONNECT to home, the first and
+    /// each redial, and hands the session's `0x19` and `0x18` on. Before
+    /// this, the iOS room client sent no `lr=1` and never read them.
+    #[tokio::test]
+    async fn a_watcher_that_follows_offers_says_lr_and_hands_the_offer_on() {
+        let (conn, mut relay) = scripted();
+        let (conn2, mut relay2) = scripted();
+        let dialer = Arc::new(FakeDialer {
+            conns: Mutex::new(VecDeque::from([Ok(conn), Ok(conn2)])),
+            urls: Mutex::new(Vec::new()),
+        });
+        let (events_tx, mut events) = mpsc::unbounded_channel();
+        let (stop, stop_rx) = watch::channel(false);
+        let task = tokio::spawn(watch_room(
+            watch_cfg(true),
+            dialer.clone(),
+            events_tx,
+            stop_rx,
+        ));
+        relay.next().await;
+        assert_eq!(
+            dialer.urls.lock().unwrap()[0],
+            "https://relay.example:4433/room/lan-party?lr=1"
+        );
+        relay.send_state(&snapshot(1, vec![]));
+        relay.send_uni(&offer_msg());
+        match local_event(&mut events).await {
+            EngineEvent::LocalRelayOffer(o) => {
+                assert_eq!(o.handle, "6f1c2d3e-4a5b-4c6d-8e7f-0123456789ab");
+                assert_eq!(o.candidates[0].url, "https://192.168.1.20:4433");
+                assert_eq!(o.candidates[0].hashes, vec![[7u8; 32]]);
+            }
+            other => panic!("{other:?}"),
+        }
+        relay.send_uni(&info_msg());
+        match local_event(&mut events).await {
+            EngineEvent::LocalRelay(i) => assert!(i.linked),
+            other => panic!("{other:?}"),
+        }
+        // A uni stream of a type the room client does not know is skipped.
+        relay.send_uni(&[0x01, 0x7f, 0x00]);
+        relay.close(SessionClose::Abrupt("idle".into()));
+        relay2.next().await;
+        assert_eq!(
+            dialer.urls.lock().unwrap()[1],
+            "https://relay.example:4433/room/lan-party?lr=1",
+            "the redial says it too"
+        );
+        relay2.send_state(&snapshot(1, vec![]));
+        relay2.send_uni(&offer_msg());
+        assert!(matches!(
+            local_event(&mut events).await,
+            EngineEvent::LocalRelayOffer(_)
+        ));
+        stop.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("stops")
+            .unwrap();
+    }
+
+    /// The broadcaster's room session (and a watcher on the PoP itself)
+    /// follows no offer: no `lr=1`, and its uni streams are left unread.
+    #[tokio::test]
+    async fn a_room_session_that_follows_no_offer_neither_says_lr_nor_reads_it() {
+        let (conn, mut relay) = scripted();
+        let dialer = Arc::new(FakeDialer {
+            conns: Mutex::new(VecDeque::from([Ok(conn)])),
+            urls: Mutex::new(Vec::new()),
+        });
+        let (events_tx, mut events) = mpsc::unbounded_channel();
+        let (stop, stop_rx) = watch::channel(false);
+        let task = tokio::spawn(watch_room(
+            watch_cfg(false),
+            dialer.clone(),
+            events_tx,
+            stop_rx,
+        ));
+        relay.next().await;
+        assert_eq!(
+            dialer.urls.lock().unwrap()[0],
+            "https://relay.example:4433/room/lan-party"
+        );
+        relay.send_state(&snapshot(1, vec![]));
+        relay.send_uni(&offer_msg());
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(300);
+        while let Ok(Some(e)) = tokio::time::timeout_at(deadline, events.recv()).await {
+            assert!(matches!(e, EngineEvent::RoomState(_)), "{e:?}");
+        }
         stop.send(true).unwrap();
         tokio::time::timeout(Duration::from_secs(5), task)
             .await

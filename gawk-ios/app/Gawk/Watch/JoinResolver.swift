@@ -105,4 +105,7 @@ private final class ProbeListener: RoomListener, @unchecked Sendable {
     func onEnded(reason: String) {
         Task { @MainActor [answer] in answer(false) }
     }
+
+    /// The probe follows no offer (it is started without `followOffers`).
+    func onLocalRelayOffer(offer: LocalRelayOffer) {}
 }

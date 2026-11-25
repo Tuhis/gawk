@@ -216,6 +216,88 @@ final class LocalRelayTests: XCTestCase {
         XCTAssertNil(s.chip(home: home), "unreachable for this app session")
     }
 
+    /// item 43.3 for a room participant, as the player: on home the room
+    /// says lr=1 and hands its offers to the switch; a PoP that answered
+    /// takes the room and its streams with the same code, once, pinned and
+    /// without lr=1; a PoP that ends the room before it let it in sends it
+    /// home once (item 43.5); and "Use … instead" brings it home without
+    /// lr=1 (item 43.6). Closed local ports stand in for both relays, and
+    /// the test never yields, so no dial's answer reaches the model.
+    func testARoomFollowsAFreshOfferOnceAndFallsBackHome() {
+        initializeCore()
+        let homeURL = "https://127.0.0.1:9"
+        let pins = [String(repeating: "07", count: 32)]
+        let pop = LocalRelaySwitcher.Held(
+            handle: offer.handle, name: offer.name, url: "https://127.0.0.1:10", certHashes: pins,
+            until: .now.addingTimeInterval(3600), home: homeURL)
+        let room = RoomView(
+            code: "ROOM22", displayName: "", participants: 1,
+            tiles: [RoomTile(broadcastId: "AAAAA2", label: "a", live: true, viewerCount: 0)],
+            people: [], yourId: 0, creator: false, dynamic: true, attachOk: true)
+        func make() -> RoomPlayerModel {
+            RoomPlayerModel(
+                code: "ROOM22", relayUrl: homeURL, insecure: true, nickname: "t", followOffers: true,
+                home: WatchModel.Endpoint(url: homeURL, insecure: true, certHashes: []))
+        }
+
+        let m = make()
+        let offered = Calls()
+        let failed = Calls()
+        m.onOffer = { _ in offered.bump() }
+        m.onLocalRelayFailed = { failed.bump() }
+        m.start()
+        defer { m.stop() }
+        m.offered(offer)
+        XCTAssertEqual(offered.n, 1, "home's offer reaches the switch")
+        m.apply(room)
+        XCTAssertTrue(m.isPlaying("AAAAA2"))
+
+        m.switchTo(pop)
+        XCTAssertEqual(m.relayUrl, pop.url)
+        XCTAssertEqual(m.certHashes, pins)
+        XCTAssertFalse(m.insecure)
+        XCTAssertFalse(m.followOffers, "no lr=1 to the PoP")
+        XCTAssertEqual(m.localRelay, pop)
+        XCTAssertTrue(m.isPlaying("AAAAA2"), "the stream plays on, from the PoP")
+        m.switchTo(pop)
+        XCTAssertEqual(m.relayUrl, pop.url, "once")
+        m.offered(offer)
+        XCTAssertEqual(offered.n, 1, "an offer on the PoP is not followed")
+
+        // The PoP ended the room before letting it in: home, once.
+        m.ended("the relay knows no such room")
+        XCTAssertNil(m.endedReason)
+        XCTAssertEqual(m.relayUrl, homeURL)
+        XCTAssertTrue(m.insecure)
+        XCTAssertNil(m.localRelay)
+        XCTAssertFalse(m.followOffers, "item 43.7: no lr=1 for a PoP the room gave up on")
+        XCTAssertEqual(failed.n, 1)
+        m.ended("lost the room")
+        XCTAssertEqual(m.endedReason, "lost the room", "home's own end")
+
+        // Let in, then ended: the room's own end, not a fallback.
+        let joined = make()
+        joined.onLocalRelayFailed = { failed.bump() }
+        joined.start()
+        defer { joined.stop() }
+        joined.switchTo(pop)
+        joined.apply(room)
+        joined.ended("the room ended")
+        XCTAssertEqual(joined.endedReason, "the room ended")
+        XCTAssertEqual(failed.n, 1)
+
+        // "Use … instead": home for this room, without lr=1.
+        let back = make()
+        back.start()
+        defer { back.stop() }
+        back.switchTo(pop)
+        back.useHome()
+        XCTAssertEqual(back.relayUrl, homeURL)
+        XCTAssertNil(back.localRelay)
+        XCTAssertFalse(back.followOffers)
+        XCTAssertEqual(failed.n, 1, "an opt-out is not a failure")
+    }
+
     /// The 4012 copy is the shared engine's (docs/76 item 28).
     func testThePartyFullCopy() {
         XCTAssertEqual(
