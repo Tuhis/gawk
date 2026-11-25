@@ -20,6 +20,25 @@
 //	{"type":"voiceRoster","seq":3,"available":true,"users":[{"session":7,"kind":0,"participant":0,"flags":0,"name":"..."}]}
 //	{"type":"voiceTicket","seq":3,"url":"https://...","ticket":"<hex>"}
 //
+// R74 PP11 (docs/76 §6.10): -publish makes the sim a party BROADCASTER as
+// well. It first dials CONNECT /publish (name=<nick>, plus wall=hidden with
+// -wall-hidden) and sends no media; once the relay has announced the ID and
+// the resume token it prints
+//
+//	{"type":"publish","broadcastID":"AB2CD3"}
+//
+// and every LocalRelayInfo (0x18) the publish session receives, the first
+// and each one after a change of state, as
+//
+//	{"type":"localRelay","linked":true,"onWall":true,"name":"...","homeOrigin":"...","wallCode":"..."}
+//
+// With -code as well it then joins that room proving its own broadcast
+// (?broadcast=&resume=, what a broadcaster's room session sends), and reads
+// stdin one line at a time: "hide" sends a Detach of its own broadcast,
+// "show" an Attach with its resume token — the wall's Hide and Show. When
+// the publish session is closed the sim prints
+// {"type":"publishClose","code":N} and exits.
+//
 // A pre-upgrade refusal (404 unknown room, 403 wrong token or a rejected
 // Origin, 429 full, 451 banned, 503 no home reachable) is reported on stderr as
 //
@@ -76,6 +95,10 @@ type options struct {
 	// VoiceJoin after the first RoomState (R79).
 	voice     bool
 	voiceJoin bool
+	// publish dials /publish first (publishPath) and, with a room path,
+	// joins proving that broadcast (-publish, -wall-hidden).
+	publish     bool
+	publishPath string
 }
 
 func parseArgs(args []string) (options, error) {
@@ -98,8 +121,28 @@ func parseArgs(args []string) (options, error) {
 	fs.StringVar(&o.nick, "nick", "roomsim", "nickname in the roster")
 	fs.StringVar(&o.origin, "origin", "", "Origin header to send; required if the relay's -allowed-origins is non-empty (unset skips it)")
 	fs.DurationVar(&o.duration, "duration", 10*time.Second, "how long to hold the control session; 0 = until the relay closes it or SIGTERM")
+	fs.BoolVar(&o.publish, "publish", false, "publish a (media-less) broadcast first and print its ID and every 0x18; with -code, join proving it and read hide/show from stdin")
+	wallHidden := fs.Bool("wall-hidden", false, "send wall=hidden on the -publish dial (a remembered Hide)")
 	if err := fs.Parse(args); err != nil {
 		return o, err
+	}
+	if *wallHidden && !o.publish {
+		return o, errors.New("-wall-hidden requires -publish")
+	}
+	if o.publish {
+		if *mint {
+			return o, errors.New("-publish and -mint are mutually exclusive")
+		}
+		q := url.Values{}
+		q.Set("name", o.nick)
+		if *wallHidden {
+			q.Set("wall", "hidden")
+		}
+		o.publishPath = "/publish?" + q.Encode()
+		o.url = strings.TrimRight(o.url, "/")
+		if *code == "" {
+			return o, nil
+		}
 	}
 	if o.voiceJoin {
 		o.voice = true
@@ -130,7 +173,7 @@ func parseArgs(args []string) (options, error) {
 		}
 		o.path = "/room/new?" + q.Encode()
 	case *code == "":
-		return o, errors.New("one of -code or -mint is required")
+		return o, errors.New("one of -code, -mint or -publish is required")
 	default:
 		if *creator != "" {
 			if raw, err := hex.DecodeString(*creator); err != nil || len(raw) != wire.RoomCreatorTokenSize {
@@ -304,6 +347,24 @@ func run(o options) int {
 	if o.origin != "" {
 		hdr = http.Header{"Origin": {o.origin}}
 	}
+	enc := json.NewEncoder(&syncWriter{w: os.Stdout})
+	var pub *publication
+	if o.publish {
+		var code int
+		if pub, code = startPublish(ctx, d, o, hdr, enc); pub == nil {
+			return code
+		}
+		defer pub.sess.CloseWithError(0, "roomsim done")
+		if o.path == "" {
+			select {
+			case <-ctx.Done():
+				return 0
+			case code := <-pub.closed:
+				return code
+			}
+		}
+		o.path += "&" + url.Values{"broadcast": {pub.id}, "resume": {pub.token}}.Encode()
+	}
 	dialCtx, dialCancel := context.WithTimeout(ctx, 15*time.Second)
 	rsp, sess, err := d.Dial(dialCtx, o.url+o.path, hdr)
 	dialCancel()
@@ -336,11 +397,15 @@ func run(o options) int {
 		return 1
 	}
 
-	enc := json.NewEncoder(os.Stdout)
 	readErr := make(chan error, 1)
 	var onFirstState func() error
 	if o.voiceJoin {
 		onFirstState = func() error { return sendCommand(stream, wire.RoomCommand{Kind: wire.RoomCommandVoiceJoin}) }
+	}
+	var pubClosed <-chan int
+	if pub != nil {
+		pubClosed = pub.closed
+		go wallCommands(os.Stdin, stream, pub, os.Stderr)
 	}
 	go func() { readErr <- pumpWith(stream, enc, os.Stderr, onFirstState) }()
 
@@ -349,6 +414,8 @@ func run(o options) int {
 		// Duration elapsed or SIGTERM with the session still up: a clean
 		// client-side leave.
 		return 0
+	case code := <-pubClosed:
+		return code
 	case err := <-readErr:
 		return report(sess, err, enc)
 	}

@@ -28,7 +28,9 @@ func TestParseArgsBuildsTheJoinAndMintPaths(t *testing.T) {
 		{name: "mint with voice", args: []string{"-mint", "-mint-voice", "-broadcast", "AB2CD3", "-resume", hex32},
 			wantPath: "/room/new?broadcast=AB2CD3&label=roomsim&name=roomsim&resume=" + hex32 + "&voice=1"},
 		{name: "mint-voice without mint", args: []string{"-code", "x", "-mint-voice"}, wantErr: "-mint-voice requires -mint"},
-		{name: "neither", args: nil, wantErr: "one of -code or -mint"},
+		{name: "neither", args: nil, wantErr: "one of -code, -mint or -publish"},
+		{name: "wall-hidden without publish", args: []string{"-code", "x", "-wall-hidden"}, wantErr: "-wall-hidden requires -publish"},
+		{name: "publish and mint", args: []string{"-publish", "-mint", "-broadcast", "AB2CD3", "-resume", hex32}, wantErr: "-publish and -mint"},
 		{name: "both", args: []string{"-mint", "-code", "x"}, wantErr: "mutually exclusive"},
 		{name: "mint without proof", args: []string{"-mint", "-broadcast", "AB2CD3"}, wantErr: "-broadcast and -resume"},
 		{name: "mint with a short token", args: []string{"-mint", "-broadcast", "AB2CD3", "-resume", "abcd"}, wantErr: "-resume must be"},
@@ -93,5 +95,33 @@ func TestParseArgsVoiceFlags(t *testing.T) {
 	}
 	if o, _ = parseArgs([]string{"-code", "x", "-voice-join"}); !o.voice || !o.voiceJoin {
 		t.Fatalf("-voice-join = %+v", o)
+	}
+}
+
+// -publish (R74 PP11): the publish dial names the broadcaster and carries
+// wall=hidden only with -wall-hidden; with -code the room join is the
+// ordinary one (the broadcast's proof is appended once it is announced),
+// and without one there is no room path at all.
+func TestParseArgsPublish(t *testing.T) {
+	o, err := parseArgs([]string{"-publish", "-nick", "tuhis", "-url", "https://pop:4434/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.publishPath != "/publish?name=tuhis" || o.path != "" || o.url != "https://pop:4434" {
+		t.Fatalf("publish alone = %+v", o)
+	}
+	o, err = parseArgs([]string{"-publish", "-wall-hidden", "-code", "E2EWall", "-nick", "shy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.publishPath != "/publish?name=shy&wall=hidden" || o.path != "/room/E2EWall?name=shy" {
+		t.Fatalf("publish with a room = %+v", o)
+	}
+}
+
+func TestLocalRelayLine(t *testing.T) {
+	got := localRelayLine(wire.LocalRelayInfo{Linked: true, Name: "Party", WallCode: "E2EWall"})
+	if got.Type != "localRelay" || !got.Linked || got.OnWall || got.WallCode != "E2EWall" || got.Name != "Party" {
+		t.Fatalf("line = %+v", got)
 	}
 }
