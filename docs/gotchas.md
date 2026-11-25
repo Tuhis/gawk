@@ -2738,11 +2738,13 @@ entries still describe code `gawk-pubsim` runs (now
 - **`ip rule add` is not idempotent**: running it twice leaves two
   identical rules. Check before adding. ([docs/92](92-mumble-real-client-addresses.md)
   §3 F12)
-- **Check whether murmur is listening through `/proc/net/tcp{,6}`, not by
+- **Check whether murmur is listening by listing sockets, not by
   connecting.** Each connection is a `New connection` line in murmur's log
-  and counts towards autoban for its address; `/proc/net` is
-  per-namespace, so a sidecar sees murmur's LISTEN socket there.
-  ([docs/92](92-mumble-real-client-addresses.md) §3 F13)
+  and counts towards autoban for its address. Listings are per-namespace,
+  so a sidecar sees murmur's LISTEN socket. Use inet_diag, not
+  `/proc/net/tcp6`: only inet_diag says whether a `::` socket is v6only,
+  and murmur's `host=::` is. ([docs/92](92-mumble-real-client-addresses.md)
+  §3 F13, D7)
 
 **RNNoise in the browser (R80)**
 
