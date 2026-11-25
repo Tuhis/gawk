@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.64.2](https://github.com/Tuhis/gawk/compare/gawk-app/v0.64.1...gawk-app/v0.64.2) (2026-11-25)
+
+
+### Bug Fixes
+
+* **app:** close WebTransport sessions on pagehide ([#848](https://github.com/Tuhis/gawk/issues/848)) ([9eeb189](https://github.com/Tuhis/gawk/commit/9eeb189fb2c1bf88f9abf6fc579717b2fa861f6a))
+
 ## [0.64.1](https://github.com/Tuhis/gawk/compare/gawk-app/v0.64.0...gawk-app/v0.64.1) (2026-11-25)
 
 
