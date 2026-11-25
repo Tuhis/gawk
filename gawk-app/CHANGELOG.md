@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.64.1](https://github.com/Tuhis/gawk/compare/gawk-app/v0.64.0...gawk-app/v0.64.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **app:** keep voice speaking indicators fixed width ([#846](https://github.com/Tuhis/gawk/issues/846)) ([c00105f](https://github.com/Tuhis/gawk/commit/c00105fb3dad081bdf1d14bbdd386d4435aeed6d))
+
 ## [0.64.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.63.0...gawk-app/v0.64.0) (2026-11-20)
 
 
