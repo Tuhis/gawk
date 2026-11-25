@@ -28,6 +28,7 @@ import {
   type DecoderConfigMessage,
   type TelemetryHelloMessage,
 } from './wire';
+import { closeOnPageExit } from './page-exit';
 import {
   LOCAL_RELAY_STREAM_MAX_BYTES,
   isLocalRelayType,
@@ -179,7 +180,10 @@ export async function dialWebTransport(
         },
       );
     });
-    if (outcome === 'ready') return wt;
+    if (outcome === 'ready') {
+      closeOnPageExit(wt);
+      return wt;
+    }
     abandon(wt);
     if (outcome === 'aborted') throw abortError(signal!);
     left -= slice;
