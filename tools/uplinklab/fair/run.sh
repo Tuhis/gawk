@@ -13,6 +13,11 @@
 # from 20 s to the end when <tcp> is 1; ping the whole time.
 # LAB (default /lab) holds bin/; SENDER overrides the sender command (the
 # browser sender, fair/chrome.sh); IPERF3 the iperf3 binary.
+# R74 PP9 (docs/76 §11.3, fair/downlink.sh): TCP_FLOWS runs that many
+# parallel TCP flows (iperf3 -P, default 1); TCP_REVERSE=1 makes them a
+# download (iperf3 -R: the server sends, so the shaped TCP is the one from
+# port 5201, and its acknowledgements go back unshaped); RECV_ARGS adds
+# receiver flags (the PoP dialer's receive windows).
 set -u
 out=$1 rate=$2 mode=$3 cc=$4 trace=$5 tcp=$6 secs=${7:-80}
 LAB=${LAB:-/lab} IPERF3=${IPERF3:-iperf3}
@@ -24,7 +29,9 @@ tc qdisc add dev lo parent 1:1 handle 2: prio bands 2 priomap 0 0 0 0 0 0 0 0 0 
 tc qdisc add dev lo parent 2:1 handle 21: pfifo limit 100000
 tc qdisc add dev lo parent 2:2 handle 22: tbf rate "$rate" burst 32kb latency 50ms
 tc filter add dev lo parent 2: protocol ip prio 1 u32 match ip protocol 17 0xff match ip dport 4500 0xffff flowid 2:2
-tc filter add dev lo parent 2: protocol ip prio 1 u32 match ip protocol 6 0xff match ip dport 5201 0xffff flowid 2:2
+tport=dport iflags=
+if [ "${TCP_REVERSE:-0}" = 1 ]; then tport=sport iflags=-R; fi
+tc filter add dev lo parent 2: protocol ip prio 1 u32 match ip protocol 6 0xff match ip "$tport" 5201 0xffff flowid 2:2
 tc filter add dev lo parent 2: protocol ip prio 1 u32 match ip protocol 1 0xff match u8 8 0xff at 20 flowid 2:2
 ping -i 0.2 -w $((secs + 2)) 127.0.0.1 > "$out/ping.txt" 2>&1 &
 "$IPERF3" -s -1 -D
@@ -38,8 +45,9 @@ case $cc in
   pop) SENDER=${SENDER:-$LAB/bin/gawk-uplinklab legsend}; cc=cubic ;;
 esac
 if [ "$mode" != none ]; then
+  # shellcheck disable=SC2086
   "$LAB/bin/gawk-uplinklab-bigq" recv -addr 127.0.0.1:4500 -out "$out/recv.csv" -cert-hash-file "$out/cert.hash" \
-    2> "$out/recv.log" &
+    ${RECV_ARGS:-} 2> "$out/recv.log" &
   rp=$!
   sleep 0.3
   ${SENDER:-$LAB/bin/sender} --url https://127.0.0.1:4500/lab --trace "$trace" --seconds "$secs" --mode "$mode" --cc "$cc" \
@@ -47,7 +55,9 @@ if [ "$mode" != none ]; then
   sp=$!
 fi
 sleep 20
-if [ "$tcp" = 1 ]; then "$IPERF3" -c 127.0.0.1 -t $((secs - 20)) -i 1 -J > "$out/iperf.json"; else sleep $((secs - 20)); fi
+# shellcheck disable=SC2086
+if [ "$tcp" = 1 ]; then "$IPERF3" -c 127.0.0.1 -t $((secs - 20)) -i 1 -J -P "${TCP_FLOWS:-1}" $iflags > "$out/iperf.json"
+else sleep $((secs - 20)); fi
 if [ -n "$sp" ]; then wait $sp; sleep 0.5; kill -INT $rp; wait $rp; fi
 wait
 tc -s qdisc show dev lo > "$out/qdisc.txt"

@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Builds the uplink lab (docs/75 §4) into $UPLINK_OUT/bin: the Go receiver and
-# proxy, the real relay and gawk-loadgen (for F7's runs) and the Rust sender;
+# proxy, the real relay and gawk-loadgen (for F7's runs), gawk-relay and
+# gawk-pubsim (docs/76 PP8's time to first frame, pop-ttff.sh) and the Rust sender;
 # and the browser sender's page into $UPLINK_OUT/chrome-sender (docs/88's
 # lab-only variant into $UPLINK_OUT/chrome-sender-inline).
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 OUT=${UPLINK_OUT:-$ROOT/tools/uplinklab/out}
 mkdir -p "$OUT/bin"
-(cd "$ROOT/gawk-server" && for c in gawk-uplinklab gawk-server gawk-loadgen gawk-devcert; do
+(cd "$ROOT/gawk-server" && for c in gawk-uplinklab gawk-server gawk-loadgen gawk-devcert gawk-relay gawk-pubsim; do
   go build -o "$OUT/bin/$c" "./cmd/$c"
 done)
 # D7: the receiver and the relay by the depth of quic-go's per-session datagram
