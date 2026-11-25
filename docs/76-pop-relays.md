@@ -118,7 +118,9 @@ Sourced, not measured here (primary sources gathered 2026-10-21):
 - **Firefox** ships LNA by default from 153, with WebSockets covered from 154.
   **WebTransport is not enforced in release yet** (bug 2042527; the tests
   were enabled on autoland on 2026-10-21), so expect the same prompt there
-  within a few releases.
+  within a few releases. *Superseded by measurement (PP0, 2026-11-25):*
+  Firefox 161.0 refuses a public page's WebTransport to a private address,
+  with no prompt, even after the page is granted (P5–P7 below).
 - **Safari** shipped WebTransport in **26.4** (2026-03-24, macOS and iOS), and
   WebKit implements `serverCertificateHashes`. Hash pinning against a
   webtransport-go relay is **unproven**: one upstream report (hyperium/h3#347)
@@ -160,7 +162,56 @@ on a shared uplink is PP8's to measure, and the downlink's PP9's.
 
 | # | Claim | How | Result |
 |---|---|---|---|
-| PP0 | Safari 26.x pinned dial by IP literal; headful Chrome prompt copy and grant persistence; Firefox 153+; Windows Firewall vs an unsigned `gawk-relay.exe`; the macOS desktop app's prompt | — | **Not yet measured (needs owner hardware).** The decisions that depend on them stand as designed: Safari is pinned-unproven, so §6.12 keeps the named-tier caveat |
+| PP0 | Safari 26.x pinned dial by IP literal; headful Chrome prompt copy and grant persistence; Firefox 153+; Windows Firewall vs an unsigned `gawk-relay.exe`; the macOS desktop app's prompt | `tools/popprobe` (its README has one recipe per row) | **Partly measured (2026-11-25, P1–P10 below):** Firefox, and headful Chrome on Linux. **Still open (needs owner hardware):** Safari 26.x on macOS and iOS; branded Chrome's prompt on Windows, macOS and Android, from a real public origin; Windows Firewall; the macOS desktop app's prompt. The decisions that depend on them stand as designed: Safari is still unproven for pinning, so §6.12 keeps the named-tier caveat. **Firefox is now a "no"** (P5–P7) |
+
+**PP0 on the agent host (2026-11-25).** The harness is `tools/popprobe`:
+a static page that dials `/echo` with `serverCertificateHashes` and
+round-trips a datagram, with two controls (a dial with a wrong pin, and a
+`fetch` to a LAN HTTP listener that logs every request it gets). It ran
+against `gawk-relay` built from `main` (`2857037f`) at the host's LAN address
+`10.0.2.2:14433`, serving its rolling pinned certificate (both pins from its
+console's join link). The browsers were **Firefox 161.0** (Mozilla's
+linux-x86_64 release tarball) and **Chrome for Testing 158.0.8127.88**
+(current stable). Headless runs used `headless.sh`; headful runs used Xvfb
+with clicks sent through xdotool. "Public" means the page at
+`http://127.0.0.1:<port>` was marked public: Chrome with
+`--ip-address-space-overrides`, Firefox with
+`network.lna.address_space.public.override`. A real public origin was not
+used.
+
+| # | Claim | How | Result |
+|---|---|---|---|
+| P1 | M4 still holds: a loopback page reaches the LAN relay with no grant | headless, page on loopback (default address space) | **Both connect.** Chrome 158: 28 ms. Firefox 161: 449 ms. The datagram echoes, the wrong pin fails, and the `fetch` control arrives |
+| P2 | M1 still holds on Chrome 158 | headless, public page | **Blocked**, as on 151 (`Opening handshake failed`). Headless answers the prompt with a denial, so `local-network` and `local-network-access` read `denied` afterwards. The `fetch` control is blocked too |
+| P3 | M5 still holds, in both browsers | `gawk-server -dev-cert`, SANs `localhost,127.0.0.1`, dialed as `https://10.0.2.2:14434` with its hash from a loopback page | **Both connect** (Chrome 17 ms, Firefox 98 ms), and both refuse a wrong pin. Firefox, like Chrome, does not check the name under a pin |
+| P4 | The headful Chrome prompt, and its grant and denial | Chrome 158 headful (Linux, Xvfb), public page, fresh profile each time | The prompt reads **"http://127.0.0.1:18090 wants to / Access other devices on your local network"**, with **Block** and **Allow** buttons. The dial waits on it. **Allow** → connects, and the state reads `granted`. After a **reload** the dial connects in 6 ms, and after a **browser restart** in 13 ms, with no prompt either time (the grant is a site setting, `local_network` in Preferences). **Block** → fails at once. After a reload it fails in 2 ms, and after a restart in 3 ms, and the prompt does not return. `loopback-network` stays `prompt` throughout |
+| P5 | Firefox 161 lets a public page dial a LAN relay | headless and headful, public page | **No.** WebTransport fails in 70–275 ms with `WebTransportError: WebTransport connection rejected` and **no prompt**. The `fetch` control on the same page shows Firefox's prompt (**"127.0.0.1:18090 wants to access apps and services on devices connected to your local network."**, with Learn more, "Remember my choice for this site", Block and Allow). Firefox's HTTP log shows the QUIC handshake completing and the pin accepted (`servCertHashesSucceeded=1`). The connection is then closed (`0x804B005D`) before the CONNECT, so the relay never sees a session |
+| P6 | The refusal is Local Network Access | P5's page with `network.lna.enabled=false`, then with `network.lna.blocking=false` | **Connects** both ways (102 ms and 81 ms), and the `fetch` control arrives without a prompt |
+| P7 | A grant unblocks it | headful: **Allow** on the `fetch` prompt (with and without "Remember"), then dial | **No.** `local-network` reads `granted` and the `fetch` arrives, but WebTransport still fails, in 13–256 ms. After a restart, `local-network` was back to `prompt` (the browser was killed, not quit, so whether "Remember" persists is not established) |
+| P8 | Firefox, private page → LAN relay (the named tier's shape: a page on the PoP's own private address) | headless, the page marked private with `network.lna.address_space.private.override` | **Connects** (52 ms) |
+| P9 | Firefox, public page → a loopback relay | headless and headful, `gawk-server -dev-cert` on `127.0.0.1:14435` | A different prompt appears, **"127.0.0.1:18090 wants to access other apps and services on this device."**, and the dial waits on it (headless: no answer within 15 s). Whether Allow then lets the dial through was not established: the click under Xvfb dismissed the prompt without settling the dial. Chrome 158 refuses the same dial in 32 ms (headless) |
+| P10 | The harness tells a pin failure from success | the wrong-pin control on every run above | Always **FAILED**: Chrome in 9–64 ms (`Opening handshake failed`), Firefox in 21–339 ms (`WebTransport connection rejected`). A wrong pin and an LNA refusal produce the same error text in both browsers. Only the controls tell them apart |
+
+**What P5–P7 change.** PP0's acceptance names the Safari rule, and
+Firefox now fails the same way. Item 37 says the pinned tier "serves
+Chrome, Firefox". On Firefox 161 that holds only for a **loopback or LAN
+page**: the host's own `/app/` (P1) or the named tier's page (P8). From a
+public origin, which is home's `gawk.ioio.fi` page and the console's
+standalone join link (§6.1 item 5, the QR's `gawk.ioio.fi/#/?relay=…`),
+Firefox refuses the dial and shows no prompt, and **granting the
+permission doesn't help**. So:
+
+- a Firefox guest scanning a standalone PoP's QR code cannot join it;
+- a Firefox viewer on home is offered the PoP (§6.12), probes it and falls
+  back to home (item 43.5). Item 43.4's `granted` branch does not hold for
+  Firefox: the state can read `granted` while WebTransport is still
+  refused.
+
+The Safari rule applies to Firefox too: **Firefox guests use the named
+tier** until Firefox lets a granted page dial WebTransport. §6.11, §6.12
+and §7.3 are not edited here. Re-run P5–P7 on each Firefox release (bug
+2042527), with `tools/popprobe/headless.sh` and the README's headful
+recipe.
 
 PP8 measured the PoP's own carrier sender in R73's lab on 2026-10-22
 (§11.2). PP9's downlink run is still pending.

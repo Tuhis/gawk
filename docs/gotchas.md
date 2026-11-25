@@ -420,6 +420,18 @@ Add to it when a new gotcha lands in `docs/`.
   the origin public with `--ip-address-space-overrides=<host:port>=public`
   (headless Chromium 151.0.7922.34, 2026-10-22; `e2e/pop-pinned.mjs`).
   ([docs/76](76-pop-relays.md) §11.1 PP5)
+- **Firefox (161) refuses a public page's WebTransport to a LAN address
+  outright, and granting the permission does not help.** There is no
+  prompt. Script sees `WebTransportError: WebTransport connection rejected`,
+  the same text a wrong pin gives, while a `fetch` from the same page
+  prompts and, once allowed, goes through. `permissions.query({name:
+  'local-network'})` then reads `granted`, but WebTransport is still
+  refused. The pinned QUIC handshake completes before Firefox closes the
+  connection, so the relay logs no session. A loopback or LAN page is not
+  affected. To make a local test page public, set
+  `network.lna.address_space.public.override` to `<ip>:<port>`; set
+  `network.lna.enabled=false` for the control (Firefox 161.0, 2026-11-25,
+  `tools/popprobe`). ([docs/76](76-pop-relays.md) §3 P5–P7)
 
 **webtransport-go (v0.11.x) — all fail at runtime, not compile time**
 
