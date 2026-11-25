@@ -119,7 +119,9 @@
   font-size: 0.9rem;
 }
 
-.speakingText {
+/* Speaking colours the name (with the avatar ring) instead of adding a
+   word, so the row's state icons never shift. */
+.rosterItem[data-speaking='true'] .rosterName {
   color: var(--ok);
 }
 
@@ -747,16 +749,13 @@ button.rosterRow:hover {
   background: rgba(255, 255, 255, 0.06);
 }
 
-.summaryName {
-  color: var(--ok);
-  max-width: 8rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .summaryCount {
   color: var(--muted);
+  transition: color 120ms;
+}
+
+.summary[data-speaking='true'] .summaryCount {
+  color: var(--ok);
 }
 
 .dockDivider {
