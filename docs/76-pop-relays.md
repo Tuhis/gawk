@@ -84,7 +84,7 @@ rather than pulling them itself.
 | OD15 | How the uplink leg carries a party stream (asked once R73 had landed) | **R73's carrier whenever home offers it.** Keyframes keep their own streams; deltas and parity ride one carrier per GOP. The leg is leg A for every outside viewer, on a venue uplink shared with the guests' own traffic: docs/75 table O's case (§3). Datagrams stay one flag away (`-pop-leg-delivery`), and PP8 measures the PoP's own sender before the default ships (item 18). *Measured 2026-10-22: the carrier stays (§11.2).* |
 | OD16 | How the downlink leg carries a home stream | **The carrier too, in v1.** Home writes the leg the way the PoP writes its uplink, and the PoP reads it with R73's carrier reader (item 23). |
 | OD17 | Whether a party broadcast that joins a room leaves the wall (asked after the first party, 2026-10-24) | **No: the wall is not a room for R42 D1.** A party broadcast stays on its wall and may also be in one ordinary room; only Hide takes it off. The first party joined its own static room and the wall emptied (item 34). |
-| OD18 | How long "Use gawk.ioio.fi instead" lasts (asked 2026-11-11) | **The current stream only, never stored.** Joining another stream, or starting the next broadcast, follows the PoP's offer again. Supersedes item 43.6's per-handle memory. The web app does this; the native apps still remember it (item 43). |
+| OD18 | How long "Use gawk.ioio.fi instead" lasts (asked 2026-11-11) | **The current stream only, never stored.** Joining another stream, or starting the next broadcast, follows the PoP's offer again. Supersedes item 43.6's per-handle memory. The web app does this, and since 2026-11-25 the desktop and iOS apps do too (item 43). |
 
 ## 3. Measured and verified before writing
 
@@ -1213,17 +1213,35 @@ PP8 measured the PoP's own carrier sender in R73's lab on 2026-10-22
     home's `0x19` can arrive after the `0x10` identity, so the probe keeps
     reading after the identity.
 
-    *Built, native:* the desktop Ready page and the iOS start screen and
-    player probe home with `lr=1`, switch to a fresh offer's first pinned
-    candidate before going live, remember "Use … instead" per PoP handle,
-    and leave a PoP that fails or refuses for the app session. **Not yet
-    changed for OD18:** both still persist the opt-out per PoP handle
-    (`local_relay_opt_outs` in the desktop config). On iOS a
-    held PoP applies only to the home relay that offered it, so picking
-    another server dials that server; the desktop keeps its own policy.
-    **Not built:** the iOS room participant switch (the room client sends
-    no `lr=1` on `/room` and ignores `0x18`/`0x19`, assumed rather than
-    tested).
+    *Built, native (2026-11-25):* the desktop Ready page and the iOS start
+    screen, player and room probe home with `lr=1`, switch to a fresh
+    offer's first pinned candidate (a broadcaster before going live), and
+    leave a PoP that fails or refuses for the app session. "Use … instead"
+    follows OD18 on both and is held in memory only. On the desktop it
+    holds for the next broadcast: that broadcast goes home without `lr=1`,
+    and once a broadcast that went live has ended, the next one follows
+    the offer again (a start that never went live keeps it). Builds before
+    OD18 stored it as `localRelayOptOuts` in the desktop config; the key
+    still loads whatever it holds, is never read, and the load-time
+    migration clears it and saves, in every shell (Windows, macOS and
+    Linux share that load). On iOS it is held against the stream it was
+    picked on, keyed as the web's are (`viewer:<code>`, `room:<code>`,
+    `broadcast`, which ends when the broadcast does), and the
+    `localRelayOptOuts` user default is removed at launch and never read.
+    The iOS room participant now switches too, as the player does. The
+    engine's room session (shared with the desktop, off there) says `lr=1`
+    on every `/room` join and redial when `follow_offers` is set and reads
+    the session's uni streams for `0x19` and `0x18`, skipping other types;
+    `RoomWatcher` hands the offer to Swift. A fresh offer moves the roster
+    session and every playing tile to the PoP with the same code, which is
+    one reconnect, once. A PoP that ends the room before it sent the room
+    sends it home once, for the app session. The room's chip names the
+    PoP and offers "Use <home> instead" for that room. The room view does
+    not act on a PoP's `0x18`. On iOS a held PoP applies only to the home
+    relay that offered it, so picking another server dials that server;
+    the desktop keeps its own policy. Neither native app offers the PoP
+    back ("Use it") after an opt-out; the next stream, or the next fresh
+    offer after the broadcast, does.
 
 44. **Apple platforms.** The iOS app gains `NSLocalNetworkUsageDescription`,
     which it lacks today. Per TN3179, the first dial after an offer may be
