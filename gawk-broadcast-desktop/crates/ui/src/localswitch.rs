@@ -10,7 +10,10 @@
 //!   publishes there. Nothing remembered starts a switch (item 43.1).
 //! - **A live broadcast is never moved**: an offer that arrives while live
 //!   is probed for the next one, and the window says so.
-//! - The chip's "Use … instead" is remembered per PoP handle (item 43.6).
+//! - The chip's "Use … instead" holds for the broadcast it was picked for
+//!   (item 43.6, OD18): that broadcast goes home without `lr=1`, and once
+//!   it has ended the next one follows the PoP's offer again. It lives in
+//!   memory only; nothing is stored.
 //! - Every candidate failing marks the PoP unreachable for this app session
 //!   (item 43.5); on macOS the first failure is retried once, after the
 //!   local-network prompt (item 44).
@@ -80,9 +83,9 @@ pub struct LocalSwitch {
 }
 
 impl LocalSwitch {
-    pub fn new<I: IntoIterator<Item = String>>(opt_outs: I, apple: bool) -> Self {
+    pub fn new(apple: bool) -> Self {
         Self {
-            policy: SwitchPolicy::with_opt_outs(opt_outs),
+            policy: SwitchPolicy::default(),
             held: None,
             probing: None,
             next_broadcast: false,
@@ -180,10 +183,12 @@ impl LocalSwitch {
                 wall_hidden: wall_hidden.contains(&s.handle),
                 pop: Some(s.clone()),
             },
+            // No `lr=1` while opted out: home would hold the session's
+            // demand for an offer this broadcast will not follow (item 21).
             None => Target {
                 relay_url: home_url.to_owned(),
                 pins: home_pins,
-                follow_offers: true,
+                follow_offers: self.policy.opted_out.is_empty(),
                 wall_hidden: false,
                 pop: None,
             },
@@ -205,6 +210,14 @@ impl LocalSwitch {
         self.wall_busy = false;
     }
 
+    /// A broadcast that went live has ended: an opt-out picked for it is
+    /// spent, and the next broadcast follows the PoP's offer again (OD18).
+    /// A start that never went live is the same broadcast tried again, so
+    /// it keeps the opt-out.
+    pub fn end_stream(&mut self) {
+        self.policy.end_stream();
+    }
+
     /// The PoP's session would not take the broadcast: back to home for
     /// the rest of the app session.
     pub fn on_pop_refused(&mut self) {
@@ -214,8 +227,9 @@ impl LocalSwitch {
         self.live_on = None;
     }
 
-    /// The chip's "Use … instead": the handle to remember. The held PoP is
-    /// dropped; a broadcast already on it carries on.
+    /// The chip's "Use … instead", for the next broadcast only (OD18): the
+    /// PoP's handle, held in memory. The held PoP is dropped; a broadcast
+    /// already on it carries on.
     pub fn opt_out(&mut self, now: Instant) -> Option<String> {
         let handle = self.held_at(now)?.handle.clone();
         self.policy.opt_out(&handle);
@@ -314,7 +328,7 @@ mod tests {
     #[test]
     fn a_fresh_offer_switches_the_next_broadcast() {
         let now = Instant::now();
-        let mut s = LocalSwitch::new([], false);
+        let mut s = LocalSwitch::new(false);
         assert_eq!(s.target(HOME, vec![], &[], now).relay_url, HOME);
         assert!(
             s.target(HOME, vec![], &[], now).follow_offers,
@@ -352,7 +366,7 @@ mod tests {
     #[test]
     fn a_held_switch_expires_unless_renewed() {
         let now = Instant::now();
-        let mut s = LocalSwitch::new([], false);
+        let mut s = LocalSwitch::new(false);
         s.on_offer(offer("h"), false, now);
         s.on_probed(Some(switch("h")), false, now);
         let later = now + Duration::from_secs(3000);
@@ -369,7 +383,7 @@ mod tests {
     #[test]
     fn an_offer_while_live_is_for_the_next_broadcast() {
         let now = Instant::now();
-        let mut s = LocalSwitch::new([], false);
+        let mut s = LocalSwitch::new(false);
         s.on_start(&s.target(HOME, vec![], &[], now));
         assert!(matches!(
             s.on_offer(offer("h"), true, now),
@@ -395,23 +409,51 @@ mod tests {
     #[test]
     fn failure_and_opt_out_stay_home() {
         let now = Instant::now();
-        let mut s = LocalSwitch::new([], false);
+        let mut s = LocalSwitch::new(false);
         s.on_offer(offer("h"), false, now);
         assert_eq!(s.on_probed(None, false, now), ProbedStep::StayHome);
         assert_eq!(s.on_offer(offer("h"), false, now), OfferStep::Ignore);
 
-        let mut s = LocalSwitch::new([], false);
+        let mut s = LocalSwitch::new(false);
         s.on_offer(offer("h"), false, now);
         s.on_probed(Some(switch("h")), false, now);
         assert_eq!(s.opt_out(now), Some("h".into()));
         assert_eq!(s.target(HOME, vec![], &[], now).relay_url, HOME);
         assert_eq!(s.on_offer(offer("h"), false, now), OfferStep::Ignore);
-        let seeded = &mut LocalSwitch::new(["h".to_owned()], false);
-        assert_eq!(seeded.on_offer(offer("h"), false, now), OfferStep::Ignore);
-        assert!(matches!(
-            seeded.on_offer(offer("other"), false, now),
-            OfferStep::Probe(_)
-        ));
+        assert!(
+            matches!(s.on_offer(offer("other"), false, now), OfferStep::Probe(_)),
+            "another PoP is offered as usual"
+        );
+    }
+
+    // OD18 (item 43.6): "Use … instead" holds for the broadcast it was
+    // picked for, never longer: while it holds, offers of that PoP are
+    // ignored and home is dialed without `lr=1`; once that broadcast ends,
+    // the next one follows the PoP's offer again. Nothing is stored, so a
+    // new app session starts with no opt-out.
+    #[test]
+    fn an_opt_out_lasts_the_broadcast_it_was_picked_for() {
+        let now = Instant::now();
+        let mut s = LocalSwitch::new(false);
+        s.on_offer(offer("h"), false, now);
+        s.on_probed(Some(switch("h")), false, now);
+        assert_eq!(s.opt_out(now), Some("h".into()));
+        let home = s.target(HOME, vec![], &[], now);
+        assert_eq!(home.relay_url, HOME);
+        assert!(!home.follow_offers, "no lr=1 for a PoP opted out of");
+        assert_eq!(s.on_offer(offer("h"), false, now), OfferStep::Ignore);
+
+        // The broadcast it was picked for goes live on home and ends.
+        s.on_start(&home);
+        assert_eq!(s.on_offer(offer("h"), true, now), OfferStep::Ignore);
+        s.on_end();
+        s.end_stream();
+        assert!(s.target(HOME, vec![], &[], now).follow_offers);
+        assert_eq!(
+            s.on_offer(offer("h"), false, now),
+            OfferStep::Probe(offer("h")),
+            "the next broadcast follows the offer again"
+        );
     }
 
     // item 44: on macOS the first failure is retried once (the prompt), the
@@ -419,7 +461,7 @@ mod tests {
     #[test]
     fn an_apple_desktop_retries_once() {
         let now = Instant::now();
-        let mut s = LocalSwitch::new([], true);
+        let mut s = LocalSwitch::new(true);
         s.on_offer(offer("h"), false, now);
         let ProbedStep::RetryAfter(_) = s.on_probed(None, false, now) else {
             panic!("a retry");
@@ -433,7 +475,7 @@ mod tests {
     #[test]
     fn a_refused_pop_session_goes_home() {
         let now = Instant::now();
-        let mut s = LocalSwitch::new([], false);
+        let mut s = LocalSwitch::new(false);
         s.on_offer(offer("h"), false, now);
         s.on_probed(Some(switch("h")), false, now);
         s.on_pop_refused();
@@ -446,7 +488,7 @@ mod tests {
     #[test]
     fn the_wall_line_follows_the_pops_info() {
         let now = Instant::now();
-        let mut s = LocalSwitch::new([], false);
+        let mut s = LocalSwitch::new(false);
         assert_eq!(s.wall_state(), 0);
         s.on_offer(offer("h"), false, now);
         s.on_probed(Some(switch("h")), false, now);
