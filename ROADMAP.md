@@ -105,6 +105,7 @@ feature set exists).
 | R85 | [A Mumble roster without a visible bot](#r85--a-mumble-roster-without-a-visible-bot) | 🔶 **MI1–MI4 implemented 2026-11-15**, MI5 (the owner pass on the reference deployment) open; **designed 2026-11-15** from the MI0 spike on real murmur 1.5.939 and 1.6.870, **redesigned around Ice callbacks the same day** after the reference murmur moved to 1.6.1001 (MI0b), **owner decisions OD1–OD7 taken 2026-11-15** (Ice, the first voice user creates the temporary channel, read-write allowed, the visible observer as the fallback without Ice, both modes tested, no bot on an Ice outage, callbacks rather than polling), R79's `gawkBridgeBot` observer leaves Mumble: each bridge pod registers an Ice `ServerCallback` with murmur through a minimal first-party Ice client and endpoint, keeps a mirror of the server's users and channels from the events, and re-registers and re-reads it every 30 s; a dynamic room's temporary channel is created by its first gawk voice user; without Ice the visible observer stays; no relay, wire or app change. Measured: callbacks arrive in 0.22 ms, faster than a Mumble client sees the same change; **murmur 1.6.870 segfaults when the newest callback is dead** (fixed upstream in 1.6.1001, so the bridge never registers on 1.6.870); murmur drops a registration after one refused delivery without telling the client; **an endpoint that blackholes freezes murmur's whole event loop** for about twice its timeout, 4.5 min with no timeout, so the bridge registers a 100 ms timeout (0.22 s freeze) and removes its registration on every clean exit; 1.6 numbers its default server 0, 1.5 numbers it 1; two first joins racing for one temporary channel end up in one channel; found while implementing, murmur's login channel tree leaves `temporary` out, so the temporary-channel cap counts in the Ice mirror ([docs/89](docs/89-mumble-ice-roster.md)) |
 | R86 | [Choose which streams to watch in a room](#r86--choose-which-streams-to-watch-in-a-room) | 🔧 **implemented 2026-11-19** (VS1–VS3; owner decision OD1 the same day: of five designs mocked on a design canvas, visibility as its own control), open: VS4, the owner pass — the room footer's segment keeps the layouts (Grid · Fit · Focus) and a new pill beside it says what is shown: **All streams**, **Choose** (a checkbox per stream) or **None**, the old Hide videos (a broadcaster's Preview only). An unticked stream has no tile and no media session, new streams arrive shown, numbers keep the room's order, `Shift`+`1`–`4` hide or show a stream, and the choice is remembered per room on the device; a stored `hidden` mode loads as None. Verified on a real relay by the e2e rooms pass: one stream hidden reads 0 subscribers on `/statusz` while the other keeps its own. Web app only: no relay, wire or iOS change ([docs/90](docs/90-room-stream-visibility.md)) |
 | R87 | [Striped deep-buffer delivery](#r87--striped-deep-buffer-delivery) | 🔧 **implemented 2026-11-20** (SG1–SG4; owner decision OD1 the same day: build ahead of SG0's field half), open: SG0's field run and SG5, the owner pass on the owner's mobile path — a *Most stable* viewer whose one connection can't carry the stream now spreads whole GOPs over the primary and up to three R30 legs: GOP *k* goes to connection `fmix32(keyframe frameID) mod N`, each connection runs its own ring cursor, the client reorders GOPs against the playout deadline, and Auto engages only on measured undersupply and keeps a wider step only if it raised goodput 20 %. Measured first (SG0, lab): at 40 ms one deep-buffer connection gets 8.4 Mbit/s at 0.5 % random loss and 6.0 at 1 % against a 10.7 Mbit/s 1080p60 stream, every added connection adds its own share, Firefox matches quic-go's client, and a full link instead stays flat while its RTT climbs 4–5×; the field case's two concurrent connections each held 5.05 Mbit/s through the owner's VPN. Also: per-connection RTT and loss on `/statusz`, a latent DVR pacer wedge on keyframes larger than its burst, and `resilient-undersupply`, which fired on every deep-buffer viewer, fixed beside a new `per-connection-ceiling` rule ([docs/91](docs/91-striped-dvr.md)) |
+| R88 | [Real client addresses for bridged Mumble users](#r88--real-client-addresses-for-bridged-mumble-users) | 🔧 **designed 2026-11-26** from the PX0 spike on real murmur 1.6.1001 (owner decisions OD1–OD9 2026-11-25/26), not started (PX1–PX5) — murmur sees every bridged web user at its bridge pod's address, so a Mumble ban of one web user bans everyone on that pod and autoban counts a pod as one client. A new default-off `gawk-mmproxy` (eighth Go module, image only, no chart) runs in murmur's pod: the bridge sends it a standard PROXY v2 header with the browser's address, and it dials murmur over loopback from that address (`IP_TRANSPARENT` with only `CAP_NET_RAW`; the loopback policy routes from an init container with `CAP_NET_ADMIN`). Trust is a NetworkPolicy, and the bridge fails closed with 4016. Measured: murmur logs, bans and autobans the spoofed address; a native client on the same address works beside it, UDP included; IPv6 and a murmur restart work; about 0.06 ms added; murmur rejects a banned address with a TCP reset, so the proxy passes resets on and closes with a FIN when murmur is down, or the two would look alike ([docs/92](docs/92-mumble-real-client-addresses.md)) |
 
 ---
 
@@ -5893,6 +5894,39 @@ in docs/91 §9.
 instruments 2026-11-19, docs/91 §11.1; where the code differs from the plan,
 docs/91 §12). Open: SG0's field run and SG5, the owner pass on the owner's
 mobile path.
+
+---
+
+## R88 — Real client addresses for bridged Mumble users
+
+**Goal**: murmur sees each bridged web user (R79) at the browser's own
+address, so Mumble bans, autoban and an admin's connection info work for
+web users the way they do for native clients.
+
+**Why**: every bridged user of a pod reaches murmur from that pod's
+address (docs/80 §11.5). A Mumble ban of one web user bans everyone on
+that pod, and murmur's per-address autoban has to sit far above a pod's
+join rate (the reference deployment runs `autobanAttempts=200`). The
+bridge already knows the real address and gives it to the relay for
+gawk's own IP bans; only murmur can't see it. Murmur has no PROXY
+protocol support (mumble-voip/mumble#4769, open since 2021).
+
+**Design**: [docs/92](docs/92-mumble-real-client-addresses.md). A new
+default-off module, `gawk-mmproxy`, runs in murmur's pod (image only, no
+chart). The bridge's `-mumble-proxy-addr` sends it a standard PROXY v2
+header with the browser's address before TLS. It dials murmur over
+loopback from that address with `IP_TRANSPARENT`, and a loopback policy
+route returns murmur's replies to it. An init container installs the
+routes with `CAP_NET_ADMIN`, and the proxy itself holds only
+`CAP_NET_RAW`. A NetworkPolicy is the trust boundary, and the bridge
+fails closed with 4016.
+
+**Acceptance**: docs/92 §7.
+
+**Status**: 🔧 designed 2026-11-26 from the PX0 spike against real murmur
+1.6.1001 (docs/92 §3); owner decisions OD1–OD9 taken 2026-11-25 and
+2026-11-26. Not started (PX1–PX5). The reference deployment's rollout is
+a separate task (OD7).
 
 ---
 
