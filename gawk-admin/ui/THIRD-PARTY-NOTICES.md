@@ -40,7 +40,7 @@ script for what counts as a dependency here and why.
 | `@redocly/config` | 0.70.0 | `MIT` | Copyright 2024 Redocly Inc |
 | `@redocly/redoc-opentelemetry` | 0.6.2 | `MIT` | — |
 | `@remix-run/route-pattern` | 0.22.1 | `MIT` | Copyright (c) 2025 Shopify Inc |
-| `@types/react` | 19.3.0 | `MIT` | Copyright (c) Microsoft Corporation |
+| `@types/react` | 19.3.1 | `MIT` | Copyright (c) Microsoft Corporation |
 | `@types/react-dom` | 19.3.0 | `MIT` | Copyright (c) Microsoft Corporation |
 | `@types/stylis` | 4.2.7 | `MIT` | Copyright (c) Microsoft Corporation |
 | `camelize` | 1.0.1 | `MIT` | — |

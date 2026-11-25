@@ -26,7 +26,7 @@ script for what counts as a dependency here and why.
 |---|---|---|---|
 | `@tanstack/react-virtual` | 3.14.28 | `MIT` | Copyright (c) 2021-present Tanner Linsley |
 | `@tanstack/virtual-core` | 3.19.13 | `MIT` | Copyright (c) 2021-present Tanner Linsley |
-| `@types/react` | 19.3.0 | `MIT` | Copyright (c) Microsoft Corporation |
+| `@types/react` | 19.3.1 | `MIT` | Copyright (c) Microsoft Corporation |
 | `csstype` | 3.2.3 | `MIT` | Copyright (c) 2017-2018 Fredrik Nicol |
 | `echarts` | 6.1.0 | `Apache-2.0` | Copyright 2017-2026 The Apache Software Foundation |
 | `IBM Plex Mono (latin subset: Regular, Medium)` | 2.5.0 | `OFL-1.1` | Copyright © 2017 IBM Corp. with Reserved Font Name "Plex" |
