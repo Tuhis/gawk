@@ -52,7 +52,7 @@ fi
 shift
 out=$1 poprtt=$2 viewrtt=$3 delivery=$4 joins=${5:-12}
 mkdir -p "$out"
-rm -f "$out/ttff.jsonl" "$out/ttff.err"
+rm -rf "$out/ttff.jsonl" "$out/ttff.err" "$out/pop-state"  # a stale credential would be refused
 ip link set lo up
 tc qdisc add dev lo root handle 1: prio bands 5 priomap 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
 tc qdisc add dev lo parent 1:1 handle 10: pfifo limit 100000
@@ -92,7 +92,7 @@ sleep 2
 handed() { grep -c 'reservation handed back' "$out/home.log"; }
 for i in $(seq "$joins"); do
   if [ "$i" -gt 1 ]; then
-    for _ in $(seq 300); do [ "$(handed)" -ge $((i - 1)) ] && break; sleep 0.1; done
+    for _ in $(seq 900); do [ "$(handed)" -ge $((i - 1)) ] && break; sleep 0.1; done
     [ "$(handed)" -ge $((i - 1)) ] || { echo "pop-ttff: join $i: the leg never lingered out" >&2; exit 1; }
     sleep 1
   fi

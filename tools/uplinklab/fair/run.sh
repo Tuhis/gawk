@@ -34,7 +34,9 @@ if [ "${TCP_REVERSE:-0}" = 1 ]; then tport=sport iflags=-R; fi
 tc filter add dev lo parent 2: protocol ip prio 1 u32 match ip protocol 6 0xff match ip "$tport" 5201 0xffff flowid 2:2
 tc filter add dev lo parent 2: protocol ip prio 1 u32 match ip protocol 1 0xff match u8 8 0xff at 20 flowid 2:2
 ping -i 0.2 -w $((secs + 2)) 127.0.0.1 > "$out/ping.txt" 2>&1 &
-"$IPERF3" -s -1 -D
+# -1 serves one test; a run with no TCP never connects, so the daemon is
+# killed at the end (its pid file), or it outlives the run and the namespace.
+"$IPERF3" -s -1 -D -I "$out/iperf3.pid"
 sp= rp=
 # RU6: <cc> engine-cubic / engine-bbr runs the shipped engine's sender
 # (bin/sender-engine) with that controller.
@@ -60,6 +62,8 @@ if [ "$tcp" = 1 ]; then "$IPERF3" -c 127.0.0.1 -t $((secs - 20)) -i 1 -J -P "${T
 else sleep $((secs - 20)); fi
 if [ -n "$sp" ]; then wait $sp; sleep 0.5; kill -INT $rp; wait $rp; fi
 wait
+[ -s "$out/iperf3.pid" ] && kill "$(cat "$out/iperf3.pid")" 2>/dev/null
+rm -f "$out/iperf3.pid"
 tc -s qdisc show dev lo > "$out/qdisc.txt"
 tc -s class show dev lo >> "$out/qdisc.txt"
 chown -R "${OWNER:-0:0}" "$out"

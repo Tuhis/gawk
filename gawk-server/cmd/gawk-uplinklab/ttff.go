@@ -183,6 +183,10 @@ func runTTFF(args []string) error {
 		time.Sleep(*hold)
 	}
 	_ = sess.CloseWithError(0, "done")
+	// Let the close reach the relay before the process (and its socket)
+	// goes: without it home sometimes holds the session to its idle timeout,
+	// which holds the leg's linger, and the next cold join waits for it.
+	time.Sleep(300 * time.Millisecond)
 	if !ok {
 		return errors.New("ttff: no decodable frame before the timeout")
 	}
