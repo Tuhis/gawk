@@ -97,6 +97,7 @@ Secret refs) for the secrets.
 | `-mumble-temp-parent` | root | channel path temporary channels go under |
 | `-mumble-temp-channel-template` | `gawk {key}` | a dynamic room's channel; `{key}` keyed hash, `{code}` the code |
 | `-mumble-client-version` | `1.4.0` | reported Mumble version; must be ≥ 1.2.4 and < 1.5.0 |
+| `-mumble-proxy-addr` | — | [gawk-mmproxy](../gawk-mmproxy/)'s `host:port` in murmur's pod; set, voice users reach murmur through it at the browser's own address (R88) |
 | `-max-voice-sessions` | `200` | voice sessions per pod; more get 4016 |
 | `-mumble-ice-addr` | — | murmur's Ice `host:port` (TCP); set, Ice mode |
 | `-mumble-ice-secret` | — | murmur's `icesecretwrite` (callbacks need the write secret) |
@@ -126,7 +127,9 @@ and reports a violation (`gawk_bridge_mumble_failures_total{reason}`,
   Every bridged user is a connection from the bridge's few addresses, and
   murmur's default bans an address after 10 connections in 2 minutes. A
   banned bridge is reported as reason `autoban`: murmur drops the
-  connection before TLS without saying why.
+  connection before TLS without saying why. With
+  [gawk-mmproxy](#real-client-addresses-r88) autoban counts each browser's
+  own address instead, so size it for one person's reconnects.
 - **`users`** sized for native plus bridged users plus one observer per
   voice room (reason `server_full`).
 - **`messagelimit` / `messageburst`** bind per connection, so per bridged
@@ -157,7 +160,32 @@ Two murmur behaviours the bridge works around, measured on 1.5.939 and
 - Murmur creates a temporary channel only for a user with a client
   certificate, so every bridged connection presents a fresh self-signed one
   (never stored, unregistered). A Mumble ban of a bridged user bans its
-  certificate and **its address — the bridge pod's** — so prefer a kick.
+  certificate and **its address — the bridge pod's** — so prefer a kick,
+  unless the bridge runs with gawk-mmproxy (below).
+
+## Real client addresses (R88)
+
+With `-mumble-proxy-addr` (chart `mumble.proxy.addr`) pointing at
+[gawk-mmproxy](../gawk-mmproxy/) in murmur's pod, each voice user's Mumble
+connection goes through it, preceded by a PROXY protocol v2 header carrying
+the browser's address, the one the bridge already sends the relay for gawk's
+own IP bans. Murmur then sees, bans and autobans each web user at their own
+address, as a native user ([docs/92](../docs/92-mumble-real-client-addresses.md)).
+
+- **Fail closed.** With the knob set, the bridge never dials murmur directly
+  for a voice user. If the proxy is unreachable, or murmur is unreachable
+  through it, joins fail with 4016 `murmur_unreachable`; murmur refusing the
+  address is 4016 `autoban`. An address the header can't carry fails with
+  `proxy_source`.
+- TLS still verifies **murmur**: the name stays `-mumble-addr`'s host, and
+  `-mumble-cert-sha256` / `-mumble-ca-file` apply as before.
+- The observer (observer mode) and Ice keep dialling murmur directly.
+- In Ice mode the name registry also consults the Ice mirror, because two
+  pods can now ghost one person with one nickname in voice twice (D12).
+- **Privacy:** murmur's admins see web users' real addresses, as they see
+  native users'. The bridge itself still never logs one.
+- The chart's NetworkPolicy, when enabled, adds egress to
+  `networkPolicy.murmur.proxyPort` (64739).
 
 ## Running it locally
 

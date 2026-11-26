@@ -51,11 +51,17 @@ base="${GAWK_MURMUR_BASE_PORT:-64740}"
 supw="${GAWK_MURMUR_SUPERUSER_PASSWORD:-gawk-test-superuser}"
 icew="${GAWK_MURMUR_ICE_SECRET:-gawk-test-ice-write}"
 icer="${GAWK_MURMUR_ICE_READ_SECRET:-gawk-test-ice-read}"
+# R88 (docs/92 PX2): a fourth server, `proxied`, is murmur with gawk-mmproxy
+# beside it in one pod-shaped namespace (gawk-mmproxy/testdata/topology.sh,
+# which builds the gawk-mmproxy image). Not on 1.6.870, and skipped with
+# GAWK_MURMUR_NO_PROXIED=1.
+mmproxy_topology="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/gawk-mmproxy/testdata/topology.sh"
 
 down() {
   for n in main strict autoban; do
     docker rm -f "$prefix-$n" >/dev/null 2>&1 || true
   done
+  GAWK_MMPROXY_PREFIX="$prefix-proxied" "$mmproxy_topology" down >/dev/null 2>&1 || true
 }
 
 start() { # name port extra-env...
@@ -145,6 +151,16 @@ case "$cmd" in
     echo "export GAWK_TEST_MURMUR_ICE_READ_SECRET=$icer"
     echo "export GAWK_TEST_MURMUR_CALLBACK_HOST=127.0.0.1"
     echo "export GAWK_TEST_MURMUR_CONTAINER=$prefix-main"
+    if [[ "$version" != 1.6.870 && -z "${GAWK_MURMUR_NO_PROXIED:-}" ]]; then
+      proxied=$(GAWK_MMPROXY_PREFIX="$prefix-proxied" GAWK_MMPROXY_SUPERUSER_PASSWORD="$supw" \
+        GAWK_MMPROXY_AUTOBAN_ATTEMPTS=30 \
+        GAWK_MMPROXY_MURMUR_ENV="-e MUMBLE_CONFIG_MESSAGELIMIT=100 -e MUMBLE_CONFIG_MESSAGEBURST=200" \
+        "$mmproxy_topology" up "$version")
+      eval "$proxied"
+      echo "export GAWK_TEST_MURMUR_PROXY=$GAWK_TEST_MMPROXY_PROXY"
+      echo "export GAWK_TEST_MURMUR_PROXY_MURMUR=$GAWK_TEST_MMPROXY_MURMUR"
+      echo "export GAWK_TEST_MURMUR_PROXY_CONTAINER=$prefix-proxied-murmur"
+    fi
     ;;
   down) down ;;
   *) echo "usage: $0 up [1.5|1.6] | down" >&2; exit 2 ;;

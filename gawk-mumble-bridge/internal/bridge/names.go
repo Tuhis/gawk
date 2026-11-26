@@ -17,10 +17,19 @@ import (
 // pod's address, so two gawk users called Alice on one pod would kick each
 // other. The registry prevents that: a name this pod holds, or that any live
 // connection of this pod sees on the server, is skipped before dialling.
+//
+// R88 (docs/92 D12): with gawk-mmproxy, murmur sees each user at the
+// browser's address, so the ghost rule keys on the person, across pods. A
+// pod with no live connection would dial blind, so in proxy mode with Ice
+// the registry also consults the Ice mirror, the one fleet-wide user list a
+// pod keeps. It is set only then: without the proxy, name selection is
+// exactly R79's (G7).
 type nameRegistry struct {
 	mu      sync.Mutex
 	held    map[string]int
 	clients map[*mumble.Client]struct{}
+	// onServer, when set, reports a name (lowercased) the Ice mirror lists.
+	onServer func(key string) bool
 }
 
 func newNameRegistry() *nameRegistry {
@@ -42,6 +51,9 @@ func (r *nameRegistry) claim(name string) (func(), bool) {
 				return nil, false
 			}
 		}
+	}
+	if r.onServer != nil && r.onServer(key) {
+		return nil, false
 	}
 	r.held[key]++
 	var once sync.Once

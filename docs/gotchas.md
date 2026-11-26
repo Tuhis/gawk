@@ -15,6 +15,11 @@ Add to it when a new gotcha lands in `docs/`.
 
 **Environment**
 
+- **`kind load docker-image` fails for a pulled multi-platform image** under
+  Docker's containerd image store ("ctr: content digest … not found"), and
+  `docker save --platform` can refuse the same image. Let the kind node pull
+  it from its registry instead, and load only images you built. ([docs/92](92-mumble-real-client-addresses.md)
+  §3.1 F21)
 - **In a linked worktree, Go's embedded `vcs.revision` can name an unrelated
   commit.** Every build in the R74 lab worktree stamped `d0da1e64`. Check a
   lab binary's provenance by rebuilding it and comparing with `cmp`, not
@@ -2736,20 +2741,54 @@ entries still describe code `gawk-pubsim` runs (now
   container and the proxy runs with one capability. ([docs/92](92-mumble-real-client-addresses.md)
   §3 F11)
 - **`ip rule add` is not idempotent**: running it twice leaves two
-  identical rules. Check before adding. ([docs/92](92-mumble-real-client-addresses.md)
-  §3 F12)
+  identical rules. Neither is netlink's `NLM_F_EXCL` for a rule without
+  `FRA_PRIORITY`: the kernel gives each one a new priority, so they never
+  count as the same rule. Check before adding. ([docs/92](92-mumble-real-client-addresses.md)
+  §3 F12, F15)
 - **Check whether murmur is listening by listing sockets, not by
   connecting.** Each connection is a `New connection` line in murmur's log
   and counts towards autoban for its address. Listings are per-namespace,
   so a sidecar sees murmur's LISTEN socket. Use inet_diag, not
   `/proc/net/tcp6`: only inet_diag says whether a `::` socket is v6only,
-  and murmur's `host=::` may be (to be confirmed by docs/92 PX1).
-  ([docs/92](92-mumble-real-client-addresses.md) §3 F13, D7)
+  and murmur's `host=::` is (measured on 1.5.939 and 1.6.1001; a blank
+  `host=` binds a dual-stack `::`). ([docs/92](92-mumble-real-client-addresses.md)
+  §3 F13, §3.1 F18, D7)
 - **`close(2)` on a TCP socket with unread data sends a reset, not a
   FIN.** Go's `TCPConn.Close` is a plain close, so a refusal that must
   read as a clean EOF (a proxy refusing before the client's TLS hello is
   read) needs `CloseWrite()`, a drain until EOF or a short deadline, then
   close. ([docs/92](92-mumble-real-client-addresses.md) D6)
+- **A file capability makes `exec` fail where the capability isn't in the
+  bounding set**, even for root: with `cap_net_raw+ep` on gawk-mmproxy's
+  binary, a container without `NET_RAW` gets "exec /gawk-mmproxy: operation
+  not permitted". Every container running the image needs `NET_RAW`, the
+  `routes` init container included. ([docs/92](92-mumble-real-client-addresses.md)
+  §3.1 F14)
+- **A TCP reset is reported once, to whichever call meets it first.** In a
+  two-goroutine proxy, the write towards the peer that reset can consume
+  it, and the other direction's read then sees a plain EOF, a FIN to its
+  caller. Tell them apart from the socket's TCP state: `TCP_CLOSE` after a
+  reset, `TCP_CLOSE_WAIT` after a FIN. `TCP_CLOSE` also follows a clean
+  close once both FINs are exchanged, so it means a reset only if you
+  hadn't sent your own FIN. ([docs/92](92-mumble-real-client-addresses.md)
+  §3.1 F16)
+- **A server that closes the moment it accepts sends a FIN or a reset by
+  race**: a reset only if the client's first bytes had already arrived
+  unread. Murmur rejects a banned address that way, so "murmur reset me" and
+  "murmur closed before answering" are the same signal. A proxy in front of
+  it must treat either as murmur refusing. ([docs/92](92-mumble-real-client-addresses.md)
+  §3.1 F22)
+- **Docker's userland proxy turns a reset into a FIN.** A port published on
+  127.0.0.1 goes through `docker-proxy`, which ends the host side with a FIN
+  whatever the container side did. A test of reset-versus-FIN signalling
+  must dial the container's own address. ([docs/92](92-mumble-real-client-addresses.md)
+  §3.1 F17)
+- **Docker and kind's containerd give a non-root process the capabilities
+  its container adds**, even with `no_new_privs` (`allowPrivilegeEscalation:
+  false`), measured 2026-11-26. Don't rely on it everywhere: where a runtime
+  doesn't, a file capability is the only path, and `no_new_privs` blocks
+  file capabilities. ([docs/92](92-mumble-real-client-addresses.md) §3.1
+  F19)
 
 **RNNoise in the browser (R80)**
 

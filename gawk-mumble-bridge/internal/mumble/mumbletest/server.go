@@ -69,6 +69,12 @@ type Server struct {
 	TempToken string
 	// DenyEnter refuses every channel move into these channel IDs.
 	DenyEnter map[uint32]bool
+	// GhostSameName makes a login with a name already in use ghost the
+	// first user instead of refusing it: murmur's rule for a second login
+	// from the SAME address, which through gawk-mmproxy is the same person
+	// on two bridge pods (docs/92 D12). Every fake connection comes from
+	// 127.0.0.1, so this models "same address" for all of them.
+	GhostSameName atomic.Bool
 
 	mu       sync.Mutex
 	nextSess uint32
@@ -385,6 +391,14 @@ func (s *Server) serve(conn net.Conn) {
 	s.mu.Lock()
 	for _, u := range s.users {
 		if strings.EqualFold(u.name, name) {
+			if s.GhostSameName.Load() {
+				sess := u.session
+				s.mu.Unlock()
+				s.Ghost(sess)
+				time.Sleep(50 * time.Millisecond)
+				s.mu.Lock()
+				continue
+			}
 			s.mu.Unlock()
 			reject(conn, mumble.RejectUsernameInUse, "Username already in use")
 			return

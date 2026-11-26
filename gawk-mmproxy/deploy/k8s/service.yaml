@@ -1,0 +1,17 @@
+# The proxy's port, for gawk-mumble-bridge's `mumble.proxy.addr`
+# (mumble-mmproxy.<namespace>:64739). ClusterIP only: NEVER a LoadBalancer
+# or NodePort, and never the Service that carries murmur's public port
+# (docs/92 D9).
+apiVersion: v1
+kind: Service
+metadata:
+  name: mumble-mmproxy
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: murmur # CHANGEME: your murmur pod's labels
+  ports:
+    - name: mmproxy
+      port: 64739
+      targetPort: mmproxy
+      protocol: TCP

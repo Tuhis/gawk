@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -144,11 +146,29 @@ func nameCandidate(base, sep string, i int) string {
 
 // mumbleConfig is the connection config every bridged connection shares
 // (D10: server password plus the access token; unregistered).
-func (s *Server) mumbleConfig(name string) mumble.Config {
+//
+// src is the browser's address for a voice user's connection, or the zero
+// value for the observer. In proxy mode (docs/92 D8) a voice user's
+// connection dials gawk-mmproxy with src in a PROXY v2 header; TLS keeps
+// verifying murmur under -mumble-addr's host.
+func (s *Server) mumbleConfig(name string, src netip.AddrPort) mumble.Config {
 	var tokens []string
 	if s.opts.Mumble.AccessToken != "" {
 		tokens = []string{s.opts.Mumble.AccessToken}
 	}
+	cfg := s.directConfig(name, tokens)
+	if s.opts.Mumble.ProxyAddr != "" && src.IsValid() {
+		if cfg.TLS.ServerName == "" {
+			cfg.TLS.ServerName, _, _ = net.SplitHostPort(s.opts.Mumble.Addr)
+		}
+		cfg.Addr = s.opts.Mumble.ProxyAddr
+		cfg.DialContext = proxyDialer(src)
+		cfg.Proxied = true
+	}
+	return cfg
+}
+
+func (s *Server) directConfig(name string, tokens []string) mumble.Config {
 	return mumble.Config{
 		Addr:         s.opts.Mumble.Addr,
 		Username:     name,
@@ -168,7 +188,7 @@ func (s *Server) mumbleConfig(name string) mumble.Config {
 // any connection of this pod sees on the server, are skipped without a dial:
 // murmur does not refuse a second login with the same name from the same
 // address, it disconnects the first one as a ghost.
-func (s *Server) connectMumble(ctx context.Context, base string, attempts int, mute, deaf bool, audioQueue int) (*mumble.Client, string, func(), error) {
+func (s *Server) connectMumble(ctx context.Context, base string, attempts int, mute, deaf bool, audioQueue int, src netip.AddrPort) (*mumble.Client, string, func(), error) {
 	families := []struct{ base, sep string }{{base, " "}, {SanitizeUsername(base), "_"}}
 	var lastErr error
 	for fi, fam := range families {
@@ -182,7 +202,7 @@ func (s *Server) connectMumble(ctx context.Context, base string, attempts int, m
 			if !ok {
 				continue
 			}
-			cfg := s.mumbleConfig(name)
+			cfg := s.mumbleConfig(name, src)
 			cfg.SelfMute, cfg.SelfDeaf, cfg.AudioQueue = mute, deaf, audioQueue
 			c, err := mumble.Dial(ctx, cfg)
 			if err == nil {

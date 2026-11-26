@@ -143,6 +143,11 @@ spec:
               value: {{ $m.tempChannelTemplate | quote }}
             - name: GAWK_BRIDGE_MUMBLE_CLIENT_VERSION
               value: {{ $m.clientVersion | quote }}
+            {{- if $m.proxy.addr }}
+            # R88 (docs/92 D8): voice users through gawk-mmproxy.
+            - name: GAWK_BRIDGE_MUMBLE_PROXY_ADDR
+              value: {{ $m.proxy.addr | quote }}
+            {{- end }}
             {{- if $m.ice.addr }}
             # Ice mode (R85, docs/89 D1). Murmur dials each pod's IP (D14).
             - name: GAWK_BRIDGE_MUMBLE_ICE_ADDR

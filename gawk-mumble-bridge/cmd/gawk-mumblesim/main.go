@@ -55,7 +55,7 @@ type Report struct {
 
 type options struct {
 	addr, name, password, token, channel, tempUnder, tempName string
-	insecure, echo, loop                                      bool
+	insecure, echo, loop, ban                                 bool
 	play, kick, mute, unmute, grantTemp                       string
 	duration                                                  time.Duration
 }
@@ -90,6 +90,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	fs.StringVar(&o.play, "play", "", "play a fixture of length-prefixed 10 ms Opus packets")
 	fs.BoolVar(&o.loop, "loop", false, "with -play: repeat")
 	fs.StringVar(&o.kick, "kick", "", "kick the user with this name (needs SuperUser)")
+	fs.BoolVar(&o.ban, "ban", false, "with -kick: ban too, by address and certificate (R88's e2e)")
 	fs.StringVar(&o.mute, "mute", "", "server-mute the user with this name (needs SuperUser)")
 	fs.StringVar(&o.unmute, "unmute", "", "server-unmute the user with this name")
 	fs.StringVar(&o.grantTemp, "grant-temp", "", "with -token: grant #token MakeTempChannel and Enter on -channel (needs SuperUser)")
@@ -171,7 +172,7 @@ func sim(ctx context.Context, o options, stdout io.Writer) error {
 		name string
 		do   func(uint32) error
 	}{
-		{o.kick, func(s uint32) error { return c.Kick(s, "gawk-mumblesim", false) }},
+		{o.kick, func(s uint32) error { return c.Kick(s, "gawk-mumblesim", o.ban) }},
 		{o.mute, func(s uint32) error { return c.SetServerMute(s, true) }},
 		{o.unmute, func(s uint32) error { return c.SetServerMute(s, false) }},
 	} {

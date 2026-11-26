@@ -221,6 +221,9 @@ cd gawk-sampler           && go vet ./... && CGO_ENABLED=1 go test ./...   # ffm
                                                              # unless pointed at the binaries
 cd gawk-mumble-bridge     && go vet ./... && CGO_ENABLED=1 go test -race ./...  # murmur tests SKIP
                                                              # until testdata/murmur.sh up
+cd gawk-mmproxy           && go vet ./... && CGO_ENABLED=1 go test -race ./...  # namespaced tests SKIP
+                                                             # without user namespaces; real-murmur
+                                                             # tests until testdata/topology.sh up
 cd gawk-broadcast-desktop && cargo test --workspace && \
                              cargo xwin clippy --all-targets --target x86_64-pc-windows-msvc -- -D warnings
 cd gawk-ios/rust          && cargo test --workspace && cargo clippy --all-targets -- -D warnings

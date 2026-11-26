@@ -1,0 +1,16 @@
+# A worked example and the CI kind job's fixture (docs/92 PX3): a stock
+# murmur (example/murmur.yaml) with gawk-mmproxy patched into its pod, the
+# ClusterIP Service and the NetworkPolicy.
+#
+#   kubectl apply -k gawk-mmproxy/deploy/k8s
+#
+# For your own murmur, take mmproxy-patch.yaml, service.yaml and
+# networkpolicy.yaml, and point their names and labels at it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - example/murmur.yaml
+  - service.yaml
+  - networkpolicy.yaml
+patches:
+  - path: mmproxy-patch.yaml

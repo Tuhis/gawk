@@ -38,6 +38,7 @@ your laptop in about five minutes with a self-signed certificate.
 | `gawk-telemetry` *(optional)* | Per-session diagnostics. **Off by default; skip it on a first install.** | Internal only, plus one same-origin ingest path |
 | `gawk-admin` *(optional)* | The moderation portal: fleet-wide kill, durable ID/IP bans, signed webhooks. **Off by default; skip it on a first install.** | ClusterIP by default; an OIDC-gated Ingress is a deliberate opt-in ([§9](#9-gawk-admin--the-moderation-portal-r39)) |
 | `gawk-mumble-bridge` *(optional)* | Room voice: lets room participants talk in a Mumble channel from the browser, one Mumble user each. **Off by default; needs your own Mumble server.** | Its own **UDP LoadBalancer** for browsers; the relay's links and its ops port are internal only ([§15](#15-room-voice-through-mumble-r79)) |
+| `gawk-mmproxy` *(optional)* | Real web-user addresses for Mumble: a sidecar in **your murmur's pod** that lets murmur see, ban and autoban each browser instead of the bridge pod. **Off by default; image only, no chart.** | Nothing public: a ClusterIP Service only the bridge's pods may reach ([§15.6](#156-real-addresses-in-mumble-r88)) |
 | `gawk-whip-gateway` *(optional)* | OBS ingest: OBS Studio and other WHIP senders stream to it over WebRTC, and it republishes each stream to the relay. **Off by default.** | Its WHIP endpoint behind an HTTPS Ingress, plus one **UDP+TCP LoadBalancer** per pod on a shared address for media; its peer and ops ports are internal only ([§16](#16-obs-and-other-whip-senders-r33)) |
 | `gawk-sampler` *(optional)* | Automatic content screening: scores each live broadcast's keyframe for explicit content and raises content flags in `gawk-admin`. **Off by default; ships observing, not paging.** | Internal only; reads the relay's screening route and posts flags to `gawk-admin` ([§13](#13-automatic-content-screening-r40)) |
 
@@ -1955,7 +1956,8 @@ the channel. It is three things working together: your own Mumble server
     rate (the reference deployment runs 200, the bridge's default
     `maxVoiceSessions`, which keeps a per-address throttle on password
     guessing). Murmur bans an address after 10 connections in 2 minutes,
-    and every bridged user connects from a bridge pod's address.
+    and every bridged user connects from a bridge pod's address, unless you
+    run gawk-mmproxy ([§15.6](#156-real-addresses-in-mumble-r88)).
   - `users` sized for native **plus** bridged users (plus one observer per
     voice room in observer mode, below). At the cap the bridge closes the
     newcomer with "the Mumble server is full" and counts it.
@@ -2142,6 +2144,83 @@ unset, nothing changes: no voice capability, no voice UI, no new route.
 - **Privacy**: gawk never records voice, but murmur or any Mumble client in
   the channel can, and native users' names and mute state are visible to
   everyone in the room. The voice panel says so.
+
+### 15.6 Real addresses in Mumble (R88)
+
+Without it, murmur sees every web user at their bridge pod's address. A
+Mumble ban of one web user then bans everyone on that pod, and autoban
+counts a pod as one client. `gawk-mmproxy` runs in your murmur's pod and
+gives murmur each browser's own address instead: bans, autoban and an
+admin's connection info then work for web users as they do for native ones.
+Design: [docs/92](92-mumble-real-client-addresses.md); the module's
+[README](../gawk-mmproxy/README.md) has the detail.
+
+**What it needs:**
+
+- **murmur in a Kubernetes pod you can edit, or a Docker Compose service.**
+  The proxy must share murmur's network namespace. A murmur you only have a
+  login to can't use it.
+- **murmur listening on loopback**: `host=` blank, the default. `host=::`
+  binds an IPv6-only socket the proxy's IPv4 dial can't reach.
+- **A CNI that enforces NetworkPolicy** (Calico, Cilium, kindnet; not plain
+  flannel). The proxy believes any header that reaches its port, and the
+  header decides the address murmur sees, so the NetworkPolicy is the trust
+  boundary. Without one, anything in the cluster could make murmur see any
+  address: dodge a Mumble ban, or get someone else's address banned.
+- **IPv6 browsers** need `::1` on the pod's loopback (Kubernetes' default).
+- **The `privileged` Pod Security level on murmur's namespace**
+  (`pod-security.kubernetes.io/enforce: privileged`): the init container
+  adds `NET_ADMIN`. Under `baseline` or `restricted` the patched pod is
+  rejected, and a murmur Deployment on `strategy: Recreate` is left with no
+  pod at all. Run `kubectl apply --dry-run=server` before rolling it out.
+
+**Install:**
+
+1. Add the init container and the sidecar from
+   `gawk-mmproxy/deploy/k8s/mmproxy-patch.yaml` to murmur's Deployment (a
+   kustomize patch, or by hand). Give the sidecar no readiness or liveness
+   probe: it shares murmur's pod, and a probe on it could take murmur itself
+   out of its Service and cut native users.
+2. Add `deploy/k8s/service.yaml` (ClusterIP, port 64739) and
+   `deploy/k8s/networkpolicy.yaml`, with your murmur pod's labels and the
+   bridge's namespace (a pod can carry any label it likes, so the policy
+   admits the bridge's label only from the bridge's namespace). The policy
+   selects murmur's pod, so add every other port that reaches it, Ice in
+   particular, or it is cut. **Never** expose 64739 on a LoadBalancer or
+   NodePort.
+3. Set the bridge's `mumble.proxy.addr` to the Service, e.g.
+   `mumble-mmproxy.mumble:64739`, and roll the bridge.
+
+`gawk-mmproxy/deploy/k8s/kustomization.yaml` shows all three around a stock
+murmur.
+
+**Docker Compose** (`gawk-mmproxy/deploy/compose/murmur.yml`): the proxy's
+port must be reachable only from the bridge, on an internal network the two
+share, and never published. The proxy shares murmur's namespace, so bind
+`-listen` (`GAWK_MMPROXY_LISTEN`) to murmur's address on that internal
+network, as the example does: the default listens on murmur's public
+network too. **On a bare host** bind `-listen` to an address
+only the bridge reaches or firewall it. The loopback routes there apply to
+the whole host's loopback, so don't let another local proxy reach murmur
+over loopback.
+
+**Is it working?** Murmur's log shows each web user's `New connection` at
+their own address, not a bridge pod's. The sidecar's `/readyz` on port 2114
+answers `ready`, or names what's wrong: the routes missing (the init
+container lacked `NET_ADMIN`), or murmur not listening where the loopback
+dial reaches. `gawk_mmproxy_connections_total{result}` counts every outcome.
+
+**What changes:**
+
+- If the proxy is down, web voice joins fail with 4016 `murmur_unreachable`
+  and web users in voice see *Voice unavailable* with Try again. Native
+  users carry on. The bridge never falls back to its own address.
+- **Autoban now counts each person's address.** Lower `autobanAttempts` from
+  the "well above a pod's join rate" value of §15.1 to what one person's
+  reconnects need. gawk doesn't measure that number for you.
+- **Privacy:** murmur's admins see web users' real addresses, in its log,
+  user info, bans and Ice, as they do for native users. gawk itself still
+  never logs them.
 
 ## 16. OBS and other WHIP senders (R33)
 

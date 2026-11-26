@@ -1,7 +1,7 @@
 # Release automation: release-please maintains ONE combined release PR
 # covering every component (gawk-server, gawk-app, gawk-broadcast-desktop,
 # gawk-telemetry, gawk-admin, gawk-ios, gawk-sampler, gawk-mumble-bridge,
-# gawk-whip-gateway), computing each one's
+# gawk-whip-gateway, gawk-mmproxy), computing each one's
 # next SemVer from conventional commits; merging it tags per component (e.g.
 # gawk-server/v0.5.0 — tag-separator "/") and the publish jobs below push the
 # docker image and OCI Helm chart to GHCR with matching versions.
@@ -60,6 +60,8 @@ jobs:
       bridge_version: ${{ steps.rp.outputs['gawk-mumble-bridge--version'] }}
       whip_release: ${{ steps.rp.outputs['gawk-whip-gateway--release_created'] }}
       whip_version: ${{ steps.rp.outputs['gawk-whip-gateway--version'] }}
+      mmproxy_release: ${{ steps.rp.outputs['gawk-mmproxy--release_created'] }}
+      mmproxy_version: ${{ steps.rp.outputs['gawk-mmproxy--version'] }}
     steps:
       # The release PR is opened and updated as the release GitHub App, not
       # GITHUB_TOKEN: GitHub parks the pull_request runs of a GITHUB_TOKEN-
@@ -410,3 +412,38 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
           helm package gawk-whip-gateway/deploy/charts/gawk-whip-gateway --version "$VERSION" --app-version "$VERSION"
           helm push "gawk-whip-gateway-$VERSION.tgz" oci://ghcr.io/tuhis/charts
+
+  # R88 (docs/92 D1, OD8): gawk-mmproxy, the eighth deployable, the
+  # real-address sidecar in murmur's pod. An image only: it has no chart,
+  # because it only ever runs inside the operator's murmur pod. Its deploy
+  # files (deploy/k8s, deploy/compose) carry the image tag, which
+  # release-please bumps as extra files. Built from the REPO ROOT for
+  # LICENSE; it compiles nothing of gawk-server.
+  publish-mmproxy:
+    needs: release-please
+    if: needs.release-please.outputs.mmproxy_release == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.release-please.outputs.mmproxy_version }}
+    steps:
+      - uses: actions/checkout@v7
+      # Host networking and the in-cluster registry mirror — see the action.
+      - uses: ./.github/actions/setup-buildx
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: gawk-mmproxy/deploy/Dockerfile
+          push: true
+          build-args: |
+            VERSION=${{ env.VERSION }}
+          tags: |
+            ghcr.io/tuhis/gawk-mmproxy:${{ env.VERSION }}
+            ghcr.io/tuhis/gawk-mmproxy:latest

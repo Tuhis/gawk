@@ -316,10 +316,32 @@ type browser struct {
 }
 
 func dialBrowser(t testing.TB, addr, origin string) (*browser, error) {
+	return dialBrowserFrom(t, addr, origin, "")
+}
+
+// dialBrowserFrom dials from a chosen local address, e.g. 127.0.0.7, so the
+// bridge sees each test browser at its own address (R88: murmur then sees
+// it too, through gawk-mmproxy). Empty is the kernel's choice.
+func dialBrowserFrom(t testing.TB, addr, origin, local string) (*browser, error) {
 	_, pool := harnessCert(t)
 	tr := &webtransport.Transport{
 		TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "127.0.0.1"},
 		QUICConfig:      &quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true},
+	}
+	if local != "" {
+		tr.DialAddr = func(ctx context.Context, raddr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
+			pc, err := net.ListenPacket("udp", net.JoinHostPort(local, "0"))
+			if err != nil {
+				return nil, err
+			}
+			ua, err := net.ResolveUDPAddr("udp", raddr)
+			if err != nil {
+				pc.Close()
+				return nil, err
+			}
+			t.Cleanup(func() { pc.Close() })
+			return quic.DialEarly(ctx, pc, ua, tlsCfg, cfg)
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
