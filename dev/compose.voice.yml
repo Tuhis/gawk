@@ -124,6 +124,9 @@ services:
 
   mmproxy:
     build: *mmproxy-build
+    # Dev only: the default -listen :64739 answers on every network murmur
+    # is on. A real deployment binds murmur's internal address only
+    # (gawk-mmproxy/deploy/compose/murmur.yml, docs/92 D16).
     command: [serve]
     network_mode: service:murmur
     cap_drop: [ALL]

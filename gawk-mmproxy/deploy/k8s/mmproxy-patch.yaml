@@ -10,6 +10,13 @@
 #           because of the binary's file capability (docs/92 F14).
 #   mmproxy the sidecar: NET_RAW only, uid 65532 (docs/92 D5).
 #
+# POD SECURITY: the init container's NET_ADMIN needs the `privileged` Pod
+# Security level on murmur's namespace
+# (pod-security.kubernetes.io/enforce: privileged). Under `baseline` or
+# `restricted` the patched pod is rejected, and a murmur Deployment on
+# `strategy: Recreate` is then left with no pod at all. Check first:
+#   kubectl apply --dry-run=server -k <your kustomization>
+#
 # NO readiness or liveness probe on the sidecar (docs/92 D15): a pod is
 # Ready only while every container is, so a probe on the proxy would drop
 # murmur itself from its Service and cut native users. /readyz on port 2114

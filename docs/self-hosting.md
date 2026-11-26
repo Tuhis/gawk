@@ -2168,6 +2168,11 @@ Design: [docs/92](92-mumble-real-client-addresses.md); the module's
   boundary. Without one, anything in the cluster could make murmur see any
   address: dodge a Mumble ban, or get someone else's address banned.
 - **IPv6 browsers** need `::1` on the pod's loopback (Kubernetes' default).
+- **The `privileged` Pod Security level on murmur's namespace**
+  (`pod-security.kubernetes.io/enforce: privileged`): the init container
+  adds `NET_ADMIN`. Under `baseline` or `restricted` the patched pod is
+  rejected, and a murmur Deployment on `strategy: Recreate` is left with no
+  pod at all. Run `kubectl apply --dry-run=server` before rolling it out.
 
 **Install:**
 
@@ -2177,7 +2182,9 @@ Design: [docs/92](92-mumble-real-client-addresses.md); the module's
    probe: it shares murmur's pod, and a probe on it could take murmur itself
    out of its Service and cut native users.
 2. Add `deploy/k8s/service.yaml` (ClusterIP, port 64739) and
-   `deploy/k8s/networkpolicy.yaml`, with your murmur pod's labels. The policy
+   `deploy/k8s/networkpolicy.yaml`, with your murmur pod's labels and the
+   bridge's namespace (a pod can carry any label it likes, so the policy
+   admits the bridge's label only from the bridge's namespace). The policy
    selects murmur's pod, so add every other port that reaches it, Ice in
    particular, or it is cut. **Never** expose 64739 on a LoadBalancer or
    NodePort.

@@ -73,13 +73,19 @@ Kubernetes, with your existing murmur Deployment:
 
 1. Add the init container and the sidecar from
    [`deploy/k8s/mmproxy-patch.yaml`](deploy/k8s/mmproxy-patch.yaml), as a
-   kustomize patch or by hand.
+   kustomize patch or by hand. The init container's `NET_ADMIN` needs the
+   **`privileged` Pod Security level** on murmur's namespace
+   (`pod-security.kubernetes.io/enforce: privileged`). Under `baseline` or
+   `restricted` the pod is rejected, and a murmur on `strategy: Recreate`
+   would be left with none, so run `kubectl apply --dry-run=server` first.
 2. Add the ClusterIP Service in [`deploy/k8s/service.yaml`](deploy/k8s/service.yaml).
    **Never** put port 64739 on a LoadBalancer, a NodePort, or the Service that
    carries murmur's public port.
 3. Add the NetworkPolicy in [`deploy/k8s/networkpolicy.yaml`](deploy/k8s/networkpolicy.yaml).
    It is the trust boundary: gawk-mmproxy believes any header that reaches
-   it, and a header decides the address murmur sees. You need a CNI that
+   it, and a header decides the address murmur sees. Set its namespace
+   selector to the bridge's namespace: pods choose their own labels, so the
+   bridge's label alone would admit any pod in any namespace. You need a CNI that
    enforces NetworkPolicy. The policy selects murmur's pod, so list every other
    port that reaches it (Ice, scrapes), or they are cut.
 4. On the bridge, set `mumble.proxy.addr` to the Service,

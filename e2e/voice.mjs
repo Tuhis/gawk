@@ -210,15 +210,25 @@ function mumblesim(name, args) {
 // connection (R88). Murmur logs a connection as session 0,
 // "<0:(-1)> New connection: 127.0.0.3:41234", and assigns the session only
 // at "<7:alice [web](-1)> Authenticated", so a login is paired with the
-// latest connection line not yet paired. The latest login of a name wins.
+// latest connection line not yet paired. Two queues keep an overlapping
+// SuperUser or native connection (always from 127.0.0.1, dialling murmur
+// directly) from being paired with a web user, whose connection comes
+// through the proxy from its own 127.0.x.y. The latest login wins.
 function murmurAddresses() {
-  const pending = [];
+  const web = [];
+  const direct = [];
   const out = new Map();
   for (const line of murmurLog().split('\n')) {
     let m = line.match(/New connection: (\[[^\]]+\]|[0-9.]+):\d+/);
-    if (m) pending.push(m[1].replace(/^\[|\]$/g, ''));
+    if (m) {
+      const a = m[1].replace(/^\[|\]$/g, '');
+      (a === '127.0.0.1' ? direct : web).push(a);
+    }
     m = line.match(/<\d+:(.+)\(-?\d+\)> Authenticated/);
-    if (m && pending.length) out.set(m[1], pending.pop());
+    if (m) {
+      const q = m[1].endsWith(' [web]') ? web : direct;
+      if (q.length) out.set(m[1], q.pop());
+    }
   }
   return out;
 }

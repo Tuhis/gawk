@@ -1,7 +1,9 @@
 package routes
 
 import (
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -78,6 +80,11 @@ func TestInstallWithoutCapability(t *testing.T) {
 		t.Fatalf("Check needs no capability: %v", err)
 	}
 	_ = st
+	// Never install into the caller's own namespace when it could succeed:
+	// under sudo that would leave routes on the developer's machine.
+	if os.Geteuid() == 0 || hasNetAdmin(t) {
+		t.Skip("this process can change this namespace's routes; not testing the refusal here")
+	}
 	failed := false
 	for _, r := range Install(4243) {
 		if r.Err != nil {
@@ -85,6 +92,21 @@ func TestInstallWithoutCapability(t *testing.T) {
 		}
 	}
 	if !failed {
-		t.Skip("this process can change the host's routes (running as root?); not testing the refusal")
+		t.Fatal("Install succeeded without CAP_NET_ADMIN")
 	}
+}
+
+// hasNetAdmin reads CAP_NET_ADMIN (bit 12) from this process's effective set.
+func hasNetAdmin(t *testing.T) bool {
+	b, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return true // can't tell: be safe
+	}
+	for _, l := range strings.Split(string(b), "\n") {
+		if v, ok := strings.CutPrefix(l, "CapEff:"); ok {
+			n, err := strconv.ParseUint(strings.TrimSpace(v), 16, 64)
+			return err != nil || n&(1<<12) != 0
+		}
+	}
+	return true
 }

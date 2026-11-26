@@ -10,11 +10,14 @@
 #   2. a pod without the label can't reach the proxy's port at all (D9);
 #   3. with the routes init container denied NET_ADMIN, murmur's pod still
 #      starts and is Ready, and the proxy refuses with a FIN (D4, D5, D15);
+#   2b. nor can a pod with the bridge's label in another namespace (pods
+#      choose their own labels; the policy names the bridge's namespace);
 #   4. with the proxy failing closed while murmur stays up (murmur's port
 #      pointed elsewhere), murmur's pod stays Ready and in its endpoints
 #      (D15);
-#   5. killing `serve` makes the pod briefly NotReady, then Ready again
-#      after the container restarts (D15, §8).
+#   5. killing `serve` restarts the container, and murmur's pod is Ready
+#      again and proxying afterwards (D15, §8). The brief NotReady between
+#      is not asserted: it can be shorter than any poll.
 #
 #   gawk-mmproxy/deploy/k8s/kind-test.sh            # builds, creates, tests, deletes
 #   KEEP_CLUSTER=1 gawk-mmproxy/deploy/k8s/kind-test.sh
@@ -68,17 +71,20 @@ load() {
 for i in "$image" gawk-mmproxy-probe:kind; do load "$i"; done
 kubectl --context "$ctx" create namespace "$ns" --dry-run=client -o yaml | kubectl --context "$ctx" apply -f - >/dev/null
 
-render() { # the shipped files, with the image under test
-  kubectl kustomize "$here" | sed "s#ghcr.io/tuhis/gawk-mmproxy:[0-9][^ ]*#$image#"
+render() { # the shipped files, with the image under test and the policy's
+  # bridge namespace (CHANGEME: gawk) pointed at this test's namespace
+  kubectl kustomize "$here" | sed -e "s#ghcr.io/tuhis/gawk-mmproxy:[0-9][^ ]*#$image#" \
+    -e "s#kubernetes.io/metadata.name: gawk\$#kubernetes.io/metadata.name: $ns#"
 }
 
-probe() { # label src -> one word
-  local label="$1" src="$2" name="probe-$RANDOM"
-  k run "$name" --image=gawk-mmproxy-probe:kind --image-pull-policy=Never --restart=Never \
-    --labels="app.kubernetes.io/name=$label" -- -addr mumble-mmproxy:64739 -src "$src" >/dev/null
-  k wait --for=jsonpath='{.status.phase}'=Succeeded "pod/$name" --timeout=60s >/dev/null 2>&1 || true
-  k logs "$name" 2>/dev/null | head -1
-  k delete pod "$name" --wait=false >/dev/null 2>&1 || true
+probe() { # label src [namespace] -> one word
+  local label="$1" src="$2" pns="${3:-$ns}" name="probe-$RANDOM"
+  local kp=(kubectl --context "$ctx" -n "$pns")
+  "${kp[@]}" run "$name" --image=gawk-mmproxy-probe:kind --image-pull-policy=Never --restart=Never \
+    --labels="app.kubernetes.io/name=$label" -- -addr "mumble-mmproxy.$ns:64739" -src "$src" >/dev/null
+  "${kp[@]}" wait --for=jsonpath='{.status.phase}'=Succeeded "pod/$name" --timeout=60s >/dev/null 2>&1 || true
+  "${kp[@]}" logs "$name" 2>/dev/null | head -1
+  "${kp[@]}" delete pod "$name" --wait=false >/dev/null 2>&1 || true
 }
 
 murmur_log() { k logs deploy/murmur -c murmur 2>/dev/null; }
@@ -112,6 +118,13 @@ got=$(probe something-else 203.0.113.8:40001)
 murmur_log | grep -q "New connection: 203.0.113.8:" && fail "murmur saw the unlabelled probe"
 echo "   ok ($got)"
 
+echo "2b. a bridge-labelled pod in another namespace can't reach it either"
+kubectl --context "$ctx" create namespace "$ns-other" --dry-run=client -o yaml | kubectl --context "$ctx" apply -f - >/dev/null
+got=$(probe gawk-mumble-bridge 203.0.113.12:40001 "$ns-other")
+[[ "$got" == timeout || "$got" == refused ]] || fail "bridge-labelled probe from another namespace: $got (want timeout)"
+murmur_log | grep -q "New connection: 203.0.113.12:" && fail "murmur saw the other namespace's probe"
+echo "   ok ($got)"
+
 echo "3. routes init denied NET_ADMIN: murmur's pod still Ready, the proxy refuses with a FIN"
 deploy "[{\"op\":\"replace\",\"path\":\"/spec/template/spec/initContainers/$(cindex initContainers mmproxy-routes)/securityContext/capabilities/add\",\"value\":[\"NET_RAW\"]}]"
 [[ "$(ready_pod)" == True ]] || fail "murmur's pod not Ready without the routes"
@@ -128,7 +141,7 @@ got=$(probe gawk-mumble-bridge 203.0.113.10:40001)
 in_endpoints || fail "murmur's pod left its endpoints while the proxy fails closed"
 echo "   ok"
 
-echo "5. killing serve: briefly NotReady, then Ready after the restart"
+echo "5. killing serve: it restarts, and the pod is Ready and proxying again"
 deploy
 node=$(kubectl --context "$ctx" get nodes -o jsonpath='{.items[0].metadata.name}')
 cid=$(docker exec "$node" crictl ps --name '^mmproxy$' -q | head -1)
