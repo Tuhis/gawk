@@ -214,7 +214,10 @@ and §7.3 are not edited here. Re-run P5–P7 on each Firefox release (bug
 recipe.
 
 PP8 measured the PoP's own carrier sender in R73's lab on 2026-10-22
-(§11.2). PP9's downlink run is still pending.
+(§11.2). PP8's time to first frame and PP9's downlink beside a parallel
+TCP download were measured on 2026-11-25 (§11.3): a cold outside join
+took 254 / 259 ms (p50 / p95) at 40 ms netem RTT, and the carrier did as
+well as or better than datagrams on the downlink in every cell.
 
 ## 4. Vocabulary
 
@@ -801,8 +804,9 @@ PP8 measured the PoP's own carrier sender in R73's lab on 2026-10-22
     broadcast. Pooling the legs on the link's QUIC connection would save the
     handshake. It is deferred until PP8's numbers say it matters (§13),
     because it trades per-leg congestion control for one shared controller
-    on a constrained uplink, and that also needs measuring. *Not measured
-    yet*: no lab cell for it has been written or run (§11.1).
+    on a constrained uplink, and that also needs measuring. *Measured
+    2026-11-25* against a single-pod home (§11.3): cold p95 259 ms at
+    40 ms RTT on the PoP's path (466 ms with 40 ms on the viewer's too).
 
 ### 6.6 Downlink on demand
 
@@ -1902,6 +1906,142 @@ every table O cell; by PP8's rule the carrier stays the default. Beside
 the upload on 15 Mbps, the PoP's carrier showed the Balanced viewer
 65.3 % of frames, where docs/75 recorded 82.5 % for quinn's carrier
 sender, also on Cubic (§3). The cause of that gap was not investigated.
+
+### 11.3 PP8 time to first frame and PP9 downlink lab (2026-11-25)
+
+Measured on the agent host (8 cores, shared with other agents' builds and
+a kind cluster) in rootless network namespaces (`unshare -rn`). Harness:
+`tools/uplinklab/pop-ttff.sh` + `pop-ttff.py` (PP8) and
+`tools/uplinklab/fair/downlink.sh` + `fair/analyze.py` with `FAIR_SET=down`
+(PP9), committed in `cdb33850` and `5a74e48b`. The product binaries
+(`gawk-server`, `gawk-relay`, `gawk-pubsim`, `gawk-uplinklab legsend`) were
+built from `cdb33850`, whose product code is `main` at `2857037f`; the TTFF
+viewer (`gawk-uplinklab ttff`) carries `5a74e48b`'s close fix. Go's VCS
+stamp reads `f6fea2e1` for these worktree builds, which is wrong
+(`docs/gotchas.md`). Each run waited for the host's 1-minute load average
+to fall under 4 (up to 5 minutes) and recorded it, with the CPU steal over
+the run. Two PP9 runs over 5 % steal (6.1 and 13.9 %) were re-run.
+
+**PP8: time to first frame.** One single-pod home `gawk-server` (`-pops`,
+a `-pops-file` naming the PoP by a static credential,
+`-pop-uplink-linger 2s`), a `gawk-relay` linked to it with that credential
+(`-pair gawk-cred:…`, as `e2e/pop-*.mjs`), and `gawk-pubsim` publishing on
+the PoP at 30 fps, keyframes padded to 230 000 bytes (docs/75's 1080p60
+trace's mean keyframe) and deltas to 15 000, keyframe every 500 ms. Home
+listens on every address; the PoP dials it as `127.0.0.2` and the viewer
+as `127.0.0.3`, and a prio qdisc on `lo` puts netem on each path by those
+addresses, half the RTT each way (tc's per-class counters show both
+directions of both paths went through their netem). The viewer is
+`gawk-uplinklab ttff`: ms from just before its dial to the first complete
+keyframe with its decoder config (inline in the stream here), which is the
+first decodable frame. Every **cold** join waited until home logged the
+linger's hand-back ("no demand; reservation handed back"), so it started
+with no demand, no leg and no hub at home, and the PoP dialed a fresh leg
+(a new QUIC connection). One second after each cold viewer's first frame
+a **warm** viewer joined the live leg. 20 cold and 20 warm joins per row;
+p95 is nearest-rank.
+
+| PoP ↔ home RTT | Viewer ↔ home RTT | Leg (`-pop-leg-delivery`) | Cold TTFF p50 / p95 / max ms | Cold: viewer's session up, p50 ms | Cold: subscribe → leg up at home, p50 / max ms | Warm TTFF p50 / p95 / max ms | Load before · steal |
+|---|---|---|---|---|---|---|---|
+| 40 ms | 0 | carrier | **254 / 259 / 271** | 5 | 85 / 87 | **8 / 9 / 17** | 3.79 · 0.2 % |
+| 40 ms | 0 | datagram | 263 / 285 / 328 | 8 | 86 / 98 | 11 / 26 / 32 | 3.20 · 5.6 % |
+| 40 ms | 40 ms | carrier | **417 / 466 / 476** | 88 | 87 / 95 | **210 / 227 / 236** | 3.85 · 5.7 % |
+| 40 ms | 40 ms | datagram | 414 / 451 / 454 | 86 | 85 / 86 | 206 / 217 / 236 | 3.71 · 0.2 % |
+
+Two rows ran at 5.6–5.7 % steal (averaged over the row's ≈ 3.5 minutes)
+and were not re-run; their cold p50 is within 9 ms of the low-steal row beside them.
+
+Of a cold join's ≈ 255 ms with an undelayed viewer, ≈ 85 ms is the
+subscribe to the leg's upgrade at home: the want down the link (½ RTT)
+and the leg's QUIC and CONNECT handshakes (2 RTTs), as item 22 predicts.
+The other ≈ 170 ms is the 230 kB prime crossing a fresh connection in
+Cubic's slow start. With 40 ms on the viewer's own path too, both the
+cold and the warm viewer add their own handshake (≈ 2 RTTs, the session-up
+column) and their own slow start for the same keyframe. Not covered: this
+home is a single pod, so the cluster's in-cluster hops, Lease write and
+informer event of item 22 are not in these numbers; there was no loss and
+no bandwidth limit on either path. **The missing keyframe priority was
+not separated.** Datagram legs are no faster to first frame than carrier
+legs (within the spread above), but a datagram leg is not a priority
+build either: there the deltas still share the connection with the
+keyframe stream, so the comparison bounds nothing. Separating it needs a
+leg that can put the keyframe stream first, which webtransport-go does not
+expose (§13).
+
+**PP9: the downlink beside a game update.** `fair/run.sh` with the shaped
+direction the venue's downlink: the leg's media and an `iperf3 -R -P 4`
+download (kernel Cubic; `-P 8` in one cell) from 20 s through one tbf with
+a 50 ms drop-tail queue, 5 ms netem each way (10 ms RTT, as table O),
+acknowledgements back unshaped; the leg for 80 s. The sender is
+`gawk-uplinklab legsend`, `hub.SubscribeLeg`, the writer `/pop/subscribe`
+runs at home (`transport/pop_subscribe.go`), with `LegOptions.Carrier`
+from `?delivery=carrier`; the lab's adapter differs from home's
+`webtransportSessionAdapter` only in having no `PathStats`, which the leg
+writer does not read (`/statusz` and the stripe drain do). Two differences
+remain: in the lab the sender dials the
+receiver, where home is the server for the PoP's dial, and the receiver is
+the lab's (on quic-go's 4096-deep datagram queue, `gawk-uplinklab-bigq`)
+rather than the PoP's edge pump, with the PoP dialer's receive windows at
+`gawk-relay`'s default `-uplink-max-bitrate` 50 mbps (2 000 000 /
+3 000 000 bytes). Three runs a cell, each mode beside the download and
+alone, and the download alone; the 8-flow cell reuses the 4-flow cell's
+alone runs. Columns as table O (§11.2): mean, range in brackets.
+
+What the download gets (*of its fair share* is max-min, as table O):
+
+| Downlink | Leg | TCP Mbps | Of its fair share | TCP retransmits | Ping p50 / p95 ms |
+|---|---|---|---|---|---|
+| 250 Mbps, 1080p (9.5 Mbps mean, 12 ceiling), 4 flows | none | 238.5 (237.9–238.8) | – | 549 (521–582) | 57 (56–57) / 60 |
+| | datagram | 228.2 | 100 % | 382 (360–410) | 54 (54–55) / 60 (59–60) |
+| | carrier | 228.1 (228.0–228.2) | 100 % | 454 (442–474) | 55 (54–55) / 59 (59–60) |
+| 100 Mbps, 1080p, 4 flows | none | 95.6 | – | 278 (227–339) | 59 (58–59) / 62 |
+| | datagram | 84.8 | 100 % | 357 (321–423) | 54 (54–55) / 61 |
+| | carrier | 84.8 | 100 % | 419 (341–459) | 54 (54–55) / 61 |
+| 100 Mbps, 1080p, 8 flows | none | 95.6 | – | 708 (671–744) | 60 (59–60) / 62 |
+| | datagram | 84.9 (84.9–85.0) | 100 % | 991 (943–1024) | 58 / 62 |
+| | carrier | 85.0 (84.9–85.1) | 100 % (100–101) | 1009 (971–1041) | 58 / 62 |
+| 100 Mbps, 1440p (38.9 Mbps mean, 50 ceiling), 4 flows | none | 95.5 (95.3–95.6) | – | 299 (275–347) | 58 (58–59) / 62 |
+| | datagram | 63.9 (60.2–68.3) | 122 % (115–130) | 266 (233–302) | 58 / 61 (61–62) |
+| | carrier | 66.6 (64.5–69.8) | 127 % (123–133) | 282 (257–297) | 58 / 62 |
+
+What the leg gets, alone on the downlink → beside the download.
+Undecodable and decode-ready cover the download (25–80 s), the viewer
+columns its last 40 s:
+
+| Downlink | Leg | Undecodable | Decode-ready p99 ms | Balanced: shown · stalled | Balanced: on-screen latency p50 ms | Lowest latency: stalled |
+|---|---|---|---|---|---|---|
+| 250 Mbps, 1080p, 4 flows | datagram | 0.0 % → 1.4 % (0.8–1.8) | 16 → 240 (194–294) | 100.0 · 0.0 → 84.5 (80.1–90.6) · 17.5 (10.3–22.7) % | 33 → 133 (117–167) | 0.1 % → 29.5 % (26.0–32.3) |
+| | carrier | 0.0 % → 0.0 % | 15 → 207 (188–230) | 100.0 · 0.0 → 90.4 (87.7–93.6) · 10.4 (5.0–14.0) % | 33 → 128 (117–150) | 0.0 % → 23.9 % (21.6–25.1) |
+| 100 Mbps, 1080p, 4 flows | datagram | 0.0 % → 2.1 % (0.9–3.5) | 29 → 321 (275–365) | 100.0 · 0.0 → 91.3 (89.3–93.6) · 9.3 (7.0–12.0) % | 33 → 294 (233–400) | 2.2 % → 37.5 % (32.1–44.2) |
+| | carrier | 0.0 % → 0.1 % (0.0–0.2) | 29 → 275 (262–300) | 100.0 · 0.0 → 91.7 (86.5–96.7) · 9.2 (3.4–15.1) % | 33 → 189 (133–267) | 2.2 % → 30.5 % (29.4–32.5) |
+| 100 Mbps, 1080p, 8 flows | datagram | 0.0 % → 11.8 % (9.0–13.2) | 29 → 454 (430–492) | 100.0 · 0.0 → 85.3 (82.0–87.5) · 14.7 (11.8–18.0) % | 33 → 383 | 2.2 % → 53.0 % (50.1–57.2) |
+| | carrier | 0.0 % → 2.6 % (1.9–3.7) | 29 → 423 (408–439) | 100.0 · 0.0 → 85.8 (78.9–90.9) · 11.3 (9.9–13.2) % | 33 → 372 (367–383) | 2.2 % → 47.9 % (45.2–52.1) |
+| 100 Mbps, 1440p, 4 flows | datagram | 0.0 % → 82.2 % (72.6–93.1) | 73 (71–76) → 510 (487–549) | 96.8 (94.7–98.6) · 3.2 (1.5–5.0) → 18.2 (7.8–29.6) · 83.5 (72.8–94.0) % | 45 (33–50) → 406 (383–450) | 9.6 % (8.3–12.1) → 88.3 % (82.1–94.5) |
+| | carrier | 0.0 % → 36.7 % (29.6–48.8) | 70 (69–74) → 466 (421–508) | 98.8 (98.5–98.9) · 1.2 (1.1–1.5) → 53.1 (39.2–61.0) · 49.2 (41.7–63.0) % | 61 (50–83) → 322 (300–350) | 8.4 % (7.9–9.0) → 53.4 % (48.2–60.7) |
+
+Host, per cell: the load before a run was 0.12–3.96 and the steal over a
+run at most 2.1 % (the download alone at 1440p; every other cell ≤ 2.0 %).
+
+**Verdict.** PP8's time to first frame **meets its target** in this lab:
+the cold join's p95 is 259 ms with the viewer's own path undelayed and
+466 ms with 40 ms on it too, against ≤ 1.5 s at 40 ms RTT; a viewer
+joining a live leg pays only its own path. On this evidence pooling the
+legs on the link's connection (§13) is not needed for the target. The
+single-pod home leaves the cluster's hops out, so the reference
+deployment's figure is still PP15's. PP9: the carrier does as well as or
+better than datagrams in every cell, so the downlink stays on
+`?delivery=carrier` (OD16). The result that fails is the tight cell: a
+1440p home stream on a 100 Mbps venue downlink beside a four-flow
+download is **not watchable in either mode** (carrier 36.7 % undecodable,
+Balanced 53 % shown; datagrams 82 % and 18 %). Four Cubic flows take more
+than their max-min share there (122–127 %) and the single Cubic leg is
+held under the stream's rate, which no delivery mode recovers. Beside the
+download, even on 250 Mbps, where the stream is 4 % of the link, the
+Balanced viewer stalls 10 % (carrier) to 17 % (datagrams) of the time: the
+download keeps the 50 ms queue full, and decode-ready p99 rises to about
+200 ms. Neither is a defect in the leg writer; the remedies are the
+venue's (a smaller stream or a queue discipline) or a different controller
+(§13).
 
 ## 12. Verification (PP15)
 
