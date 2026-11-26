@@ -27,11 +27,25 @@ const childEnv = "GAWK_MMPROXY_NETNS_CHILD"
 // InChild reports whether this process is the namespaced re-execution.
 func InChild() bool { return os.Getenv(childEnv) != "" }
 
+// InPlace reports GAWK_MMPROXY_NETNS_INPLACE: the whole process already
+// runs in a disposable network namespace with CAP_NET_ADMIN (CI's coverage
+// container), so fn runs in this process, where its coverage is measured.
+// Packages then share that namespace: run them with -p 1, and never set it
+// on a machine whose namespace you care about.
+func InPlace() bool { return os.Getenv("GAWK_MMPROXY_NETNS_INPLACE") != "" }
+
 // Run runs fn in a fresh network namespace with loopback up. In the parent
 // it re-executes the test binary for t's test alone and fails t if the
-// child does; fn runs only in the child.
+// child does; fn runs only in the child. With InPlace, fn runs here.
 func Run(t *testing.T, fn func(t *testing.T)) {
 	t.Helper()
+	if InPlace() {
+		if err := LoopbackUp(); err != nil {
+			t.Fatalf("loopback up: %v", err)
+		}
+		fn(t)
+		return
+	}
 	if os.Getenv(childEnv) == t.Name() {
 		if err := LoopbackUp(); err != nil {
 			t.Fatalf("loopback up: %v", err)

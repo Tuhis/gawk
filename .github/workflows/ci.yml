@@ -1719,8 +1719,12 @@ jobs:
           docker run -d --name ci-mmproxy-cov --privileged -w /src/gawk-mmproxy golang:1.27-trixie sleep 900 >/dev/null
           docker cp gawk-mmproxy ci-mmproxy-cov:/src/
           docker exec ci-mmproxy-cov sh -c 'apt-get update -qq && apt-get install -y -qq iproute2 >/dev/null'
-          docker exec -e GAWK_MMPROXY_REQUIRE_NETNS=1 -e GAWK_MMPROXY_ISOLATED=1 ci-mmproxy-cov sh -c \
-            'go test -count=1 -covermode=set -coverprofile=coverage.out $(go list ./... | grep -v -e /internal/netnstest -e /internal/itest)'
+          # GAWK_MMPROXY_NETNS_INPLACE: this container is the disposable
+          # namespace, so the namespaced tests run in the test process,
+          # where their coverage counts (a re-executed child's doesn't).
+          # -p 1: the packages share that namespace.
+          docker exec -e GAWK_MMPROXY_NETNS_INPLACE=1 -e GAWK_MMPROXY_ISOLATED=1 ci-mmproxy-cov sh -c \
+            'go test -p 1 -count=1 -covermode=set -coverprofile=coverage.out $(go list ./... | grep -v -e /internal/netnstest -e /internal/itest)'
           docker cp ci-mmproxy-cov:/src/gawk-mmproxy/coverage.out gawk-mmproxy/coverage.out
       - if: always()
         run: docker rm -f ci-mmproxy-cov >/dev/null 2>&1 || true

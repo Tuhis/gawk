@@ -16,7 +16,7 @@ func TestInstallIsIdempotentAndCheckSeesIt(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if st.V4 || st.V6 {
+		if (st.V4 || st.V6) && !netnstest.InPlace() { // in place, another package may have installed them
 			t.Fatalf("a fresh namespace already has the routes: %+v", st)
 		}
 		for i := 0; i < 2; i++ {
