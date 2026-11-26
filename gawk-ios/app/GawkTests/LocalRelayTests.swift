@@ -158,9 +158,10 @@ final class LocalRelayTests: XCTestCase {
         UserDefaults.standard.removePersistentDomain(forName: suite)
     }
 
-    /// OD18: a room watching the PoP says no lr=1 to home, so the held offer can expire under it. Its "Use … instead"
-    /// still holds for that room, names the PoP the room is on, and leaves
-    /// the next broadcast on the PoP; a refusal there marks that PoP.
+    /// OD18: a room watching the PoP says no lr=1 to home, so the held
+    /// offer can expire under it. Its "Use … instead" still holds for that
+    /// room, names the PoP the room is on, and leaves the next broadcast on
+    /// the PoP; a refusal there marks that PoP.
     func testARoomOptOutOutlivesTheHeldOfferAndStaysOnItsStream() async throws {
         let s = make()
         let calls = Calls()
@@ -212,7 +213,7 @@ final class LocalRelayTests: XCTestCase {
 
     /// OD18: "Use … instead" tapped while a probe for that PoP runs ends the
     /// attempt without failing it: no retry, nothing unreachable, and the
-    /// next stream probes the PoP again at once.
+    /// next stream uses the PoP that answered.
     func testAnOptOutDuringAProbeIsNotAFailure() async throws {
         let s = make()
         let calls = Calls()
