@@ -458,6 +458,13 @@ impl RoomConn for WtRoomConn {
     fn closed(&self) -> BoxFuture<'_, SessionClose> {
         Box::pin(async { close_cause(&self.conn).await })
     }
+
+    fn accept_uni(&self) -> BoxFuture<'_, Result<Box<dyn ServerStream>, String>> {
+        Box::pin(async {
+            let stream = self.conn.accept_uni().await.map_err(|e| e.to_string())?;
+            Ok(Box::new(WtServerStream { stream }) as Box<dyn ServerStream>)
+        })
+    }
 }
 
 /// The transport-backed [`RoomDialer`]: the seam's production side.

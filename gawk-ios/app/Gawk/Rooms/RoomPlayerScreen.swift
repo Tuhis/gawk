@@ -10,6 +10,7 @@ struct RoomPlayerScreen: View {
     let linkNick: String?
     @Environment(AppSettings.self) private var settings
     @Environment(AppRouter.self) private var router
+    @Environment(LocalRelaySwitcher.self) private var switcher
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var model: RoomPlayerModel?
     @State private var controls = ControlsVisibility()
@@ -40,7 +41,10 @@ struct RoomPlayerScreen: View {
         .statusBarHidden(!controls.visible)
         .persistentSystemOverlays(controls.visible ? .automatic : .hidden)
         .onAppear(perform: start)
-        .onDisappear { model?.stop() }
+        .onDisappear {
+            model?.stop()
+            switcher.onSwitch = nil
+        }
         .onChange(of: model?.room == nil || model?.endedReason != nil) { _, waiting in
             controls.pinned = waiting || showPeople
         }
@@ -55,10 +59,34 @@ struct RoomPlayerScreen: View {
     private func start() {
         guard model == nil else { return }
         let relay = linkRelay ?? settings.relayURL
-        let m = RoomPlayerModel(
-            code: code, relayUrl: relay, insecure: settings.insecure,
-            nickname: linkNick ?? settings.nickname,
-            certHashes: settings.certHashes(for: relay))
+        let nickname = linkNick ?? settings.nickname
+        let m: RoomPlayerModel
+        if relay == settings.relayURL {
+            // R74 (docs/76 §6.12): on home, a held party relay takes the
+            // room at once; otherwise it is watched on home with lr=1, and
+            // a fresh offer on its room session switches it, once, as the
+            // player does. Another stream ends an opt-out picked elsewhere
+            // (OD18).
+            switcher.enterStream(LocalRelaySwitcher.roomStream(code))
+            let t = switcher.target(home: settings.relayURL, homeCertHashes: settings.relayCertHashes)
+            m = RoomPlayerModel(
+                code: code, relayUrl: t.url, insecure: t.pop == nil ? settings.insecure : false,
+                nickname: nickname, certHashes: t.certHashes, followOffers: t.followOffers,
+                localRelay: t.pop,
+                home: WatchModel.Endpoint(
+                    url: settings.relayURL, insecure: settings.insecure, certHashes: settings.relayCertHashes))
+            m.onOffer = { [switcher, home = settings.relayURL] offer in
+                switcher.consider(offer, live: false, home: home)
+            }
+            m.onLocalRelayFailed = { [switcher, weak m] in switcher.refused(pop: m?.localRelay) }
+            switcher.onSwitch = { [weak m, home = settings.relayURL] pop in
+                if pop.home == home { m?.switchTo(pop) }
+            }
+        } else {
+            m = RoomPlayerModel(
+                code: code, relayUrl: relay, insecure: settings.insecure,
+                nickname: nickname, certHashes: settings.certHashes(for: relay))
+        }
         // Your rooms (K12): the room moves to the front once, then keeps
         // the name the relay gives it.
         m.onRoom = { [settings] room, first in
@@ -219,6 +247,24 @@ struct RoomPlayerScreen: View {
             }
         } below: {
             if let chip = AppRouter.chip(for: linkRelay) { ServerChip(url: chip) }
+            // R74 (docs/76 §7.3, item 43.6): the party's local relay this
+            // room is watched on, and the way back to home for this room.
+            if let pop = model.localRelay {
+                Menu {
+                    Button("Use \(LocalRelayCopy.homeHost(settings)) instead") {
+                        switcher.optOut(stream: LocalRelaySwitcher.roomStream(code), pop: pop)
+                        model.useHome()
+                        controls.touch()
+                    }
+                    .accessibilityIdentifier("room.localRelay.optOut")
+                } label: {
+                    Chip {
+                        Image(systemName: "wifi")
+                        Text("\(pop.name) · local relay").lineLimit(1)
+                    }
+                }
+                .accessibilityIdentifier("room.localRelay")
+            }
         } bottomLeading: {
             if model.room != nil {
                 LayoutToggle(layout: Binding(get: { model.layout }, set: { model.layout = $0; controls.touch() }))

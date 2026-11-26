@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """docs/75 §11 table O from matrix.sh's runs in $UPLINK_OUT/fair: what a
 household's TCP upload and the broadcast each get from one shared uplink, per
-delivery mode and controller. Prints markdown to stdout."""
+delivery mode and controller. Prints markdown to stdout. FAIR_SET=down reads
+fair/downlink.sh's runs in $UPLINK_OUT/down instead (docs/76 §11.3, R74 PP9:
+a PoP's downlink leg beside a parallel TCP download)."""
 import json
 import os
 import re
@@ -13,7 +15,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 LAB = os.path.dirname(HERE)
 REPO = os.path.dirname(os.path.dirname(LAB))
 OUT = os.environ.get("UPLINK_OUT", os.path.join(LAB, "out"))
-RES = os.path.join(OUT, "fair")
+SET = os.environ.get("FAIR_SET", "fair")
+RES = os.path.join(OUT, SET)
+DOWN = SET.startswith("down")
 TCP_FROM_S = 25   # TCP runs from 20 s; skip its slow start
 VIEW_FROM_MS = 40000
 
@@ -139,6 +143,15 @@ def mean(rs, *path):
 
 RATES = [("30", "30 Mbps, 1080p (9.5 Mbps mean, 12 ceiling)"), ("15", "15 Mbps, 1080p"),
          ("80", "80 Mbps, 1440p (38.9 Mbps mean, 50 ceiling)")]
+if DOWN:
+    RATES = [("250", "250 Mbps, 1080p (9.5 Mbps mean, 12 ceiling), 4 flows"), ("100", "100 Mbps, 1080p, 4 flows"),
+             ("100p8", "100 Mbps, 1080p, 8 flows"),
+             ("100x1440", "100 Mbps, 1440p (38.9 Mbps mean, 50 ceiling), 4 flows")]
+    # The 8-flow cell has no alone runs of its own: the stream alone on the
+    # same link is the 4-flow cell's.
+    for k in list(cells):
+        if k.startswith("r100-") and k.endswith("-alone"):
+            cells.setdefault("r100p8-" + k[len("r100-"):], cells[k])
 MODES = [("datagram", "cubic", "datagram · Cubic (today)"), ("datagram", "bbr", "datagram · BBR"),
          ("carrier", "cubic", "carrier · Cubic"), ("carrier", "bbr", "carrier · BBR"),
          # OD5: the browser sender (fair/chrome.sh); Chrome's QUIC runs Cubic.
@@ -149,16 +162,22 @@ MODES = [("datagram", "cubic", "datagram · Cubic (today)"), ("datagram", "bbr",
          # R74 PP8: the PoP's leg writer (FAIR_CCS=pop); its quic-go runs Cubic.
          ("datagram", "pop", "PoP leg: datagram · Cubic"), ("carrier", "pop", "PoP leg: carrier · Cubic")]
 
-print("#### Table O — a shared uplink: the broadcast beside a household's TCP upload (F17, D5)\n")
-print("`tools/uplinklab/fair` (§4): one uplink at 30, 15 or 80 Mbps with a 50 ms\n"
-      "drop-tail queue, the downlink unshaped; the broadcast for 80 s, a bulk TCP\n"
-      "upload (kernel Cubic) from 20 s. Three runs a cell at 1080p, two at 1440p\n"
-      "(alone on the host); the Chrome rows (`fair/chrome.sh`) two beside the\n"
-      "upload and one alone at every rate. Mean, range in brackets.\n")
-print("**O1 — what the household's upload gets.** *Of its fair share* is against its\n"
-      "max-min fair share: what it gets alone, less the broadcast's own rate when\n"
-      "that is under half the link, else half the link. Ping is the household's,\n"
-      "while the upload runs.\n")
+if DOWN:
+    print("#### PP9 — the PoP's downlink leg beside a parallel TCP download (docs/76 §11.3)\n")
+    print("`tools/uplinklab/fair/downlink.sh`: one downlink with a 50 ms drop-tail queue; the leg for\n"
+          "80 s, an `iperf3 -R -P` download (kernel Cubic) from 20 s. Mean, range in brackets.\n")
+    print("**What the download gets.**\n")
+else:
+    print("#### Table O — a shared uplink: the broadcast beside a household's TCP upload (F17, D5)\n")
+    print("`tools/uplinklab/fair` (§4): one uplink at 30, 15 or 80 Mbps with a 50 ms\n"
+          "drop-tail queue, the downlink unshaped; the broadcast for 80 s, a bulk TCP\n"
+          "upload (kernel Cubic) from 20 s. Three runs a cell at 1080p, two at 1440p\n"
+          "(alone on the host); the Chrome rows (`fair/chrome.sh`) two beside the\n"
+          "upload and one alone at every rate. Mean, range in brackets.\n")
+    print("**O1 — what the household's upload gets.** *Of its fair share* is against its\n"
+          "max-min fair share: what it gets alone, less the broadcast's own rate when\n"
+          "that is under half the link, else half the link. Ping is the household's,\n"
+          "while the upload runs.\n")
 print("| Uplink | Broadcast | TCP Mbps | Of its fair share | TCP retransmits | Ping p50 / p95 ms |")
 print("|---|---|---|---|---|---|")
 for rate, label in RATES:
@@ -288,3 +307,16 @@ if any(cells.get(f"r{rate}-{m}-{c}-tcp") for rate, _ in RATES for m, c, _ in ENG
                   f"{agg(t, 'adaptive', 'shown', d=1, unit=' %')} | {warned(a)} | {warned(t)} | {verdict} | "
                   f"{(f'{max(st):.1f} %') if st else '–'} |")
             first = False
+
+if DOWN:
+    # fair/downlink.sh's host record: the 1-minute load average before each
+    # run and the CPU steal over it.
+    print("\n| Cell | Runs | Load before a run (1 min), min–max | Steal over a run, max |")
+    print("|---|---|---|---|")
+    for name in sorted({re.sub(r"-s\d+$", "", n) for n in runs}):
+        ds = [n for n in runs if re.sub(r"-s\d+$", "", n) == name]
+        ld = [float(open(os.path.join(RES, n, "load.txt")).read().split()[0]) for n in ds
+              if os.path.exists(os.path.join(RES, n, "load.txt"))]
+        st = [runs[n]["steal"] for n in ds if "steal" in runs[n]]
+        print(f"| {name} | {len(ds)} | {(f'{min(ld):.2f}–{max(ld):.2f}') if ld else '–'} | "
+              f"{(f'{max(st):.1f} %') if st else '–'} |")

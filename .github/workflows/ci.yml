@@ -1841,7 +1841,7 @@ jobs:
       - uses: ./.github/actions/go-shared-cache
       - name: go mod tidy leaves every module unchanged
         run: |
-          for mod in gawk-server gawk-telemetry gawk-admin gawk-sampler gawk-mumble-bridge gawk-whip-gateway gawk-mmproxy tools/icon tools/commonlock; do
+          for mod in gawk-server gawk-telemetry gawk-admin gawk-sampler gawk-mumble-bridge gawk-whip-gateway gawk-mmproxy tools/icon tools/commonlock tools/popprobe; do
             (cd "$mod" && go mod tidy)
           done
           if ! git diff --exit-code; then
@@ -3609,8 +3609,15 @@ jobs:
           # from the frames at 1 s.
           grep -q 'whipGatewayUrl: "http://localhost:8180"' dev/generated/config.js
           curl -fsS http://127.0.0.1:8080/config.js | grep -q whipGatewayUrl
-          st=$(curl -fsS -D "$RUNNER_TEMP/whip-headers" -H "Authorization: Bearer $key" \
-                 -H 'Origin: http://localhost:8080' http://127.0.0.1:8180/whip/status)
+          # The gateway refreshes its snapshot once a second (session.sample),
+          # so a read right after the round trip can predate the first GOP
+          # median: gopMs is omitempty and absent until then. Poll for it.
+          for i in $(seq 10); do
+            st=$(curl -fsS -D "$RUNNER_TEMP/whip-headers" -H "Authorization: Bearer $key" \
+                   -H 'Origin: http://localhost:8080' http://127.0.0.1:8180/whip/status)
+            jq -e 'has("gopMs")' <<<"$st" >/dev/null && break
+            sleep 1
+          done
           echo "$st"
           jq -e '.state == "live" and .codec == "H.264" and .gopMs >= 900 and .gopMs <= 1100 and (.warnings | length) == 0' <<<"$st" >/dev/null
           grep -qi '^access-control-allow-origin: http://localhost:8080' "$RUNNER_TEMP/whip-headers"
@@ -4141,10 +4148,15 @@ jobs:
           if [ "$(sysctl -n net.core.rmem_max)" -lt "$need" ] || [ "$(sysctl -n net.core.wmem_max)" -lt "$need" ]; then
             sudo sysctl -w net.core.rmem_max="$need" net.core.wmem_max="$need"
           fi
-      - name: Build the E2E toolchain (devcert, loadgen, roomsim, pubsim)
+      # gawk-relay is the R74 PoP that pop-wall-assert.sh links to the fleet.
+      # It runs as a plain binary on the runner, not as the Dockerfile.relay
+      # image: that image's npm build of the embedded app is minutes this
+      # tier would spend on a page it never loads, and the PoP has to sit
+      # where its clients and the kind NodePort both are (loopback) anyway.
+      - name: Build the E2E toolchain (devcert, loadgen, roomsim, pubsim, gawk-relay)
         run: |
           mkdir -p e2e/bin e2e/out
-          (cd gawk-server && go build -o ../e2e/bin/ ./cmd/gawk-devcert ./cmd/gawk-loadgen ./cmd/gawk-roomsim)
+          (cd gawk-server && go build -o ../e2e/bin/ ./cmd/gawk-devcert ./cmd/gawk-loadgen ./cmd/gawk-roomsim ./cmd/gawk-relay)
           (cd gawk-server && CGO_ENABLED=0 go build -o ../e2e/bin/gawk-pubsim ./cmd/gawk-pubsim)
       # Host networking and the in-cluster registry mirror — see the action.
       - uses: ./.github/actions/setup-buildx
@@ -4249,6 +4261,11 @@ jobs:
           echo "ADMIN_API_TOKEN=$ADMIN_API_TOKEN" >> "$GITHUB_ENV"
           kubectl -n gawk-e2e create secret tls gawk-server-tls \
             --cert=e2e/out/certs/cert.pem --key=e2e/out/certs/key.pem
+          # R74 (docs/76 §9): pops.enabled installs the Pop CRD, the relay's
+          # pops RBAC and the /pop/ routes, for the PoP pop-wall-assert.sh
+          # pairs. uplinkLinger is cut from 30s to 2s only so that script's
+          # freed budget slot frees within a step; nothing else here links a
+          # PoP.
           # Throwaway fleet secrets (exercises the chart's replicas>1-requires-
           # clusterMode guard and the R17 shared-key plumbing). SSL_CERT_FILE
           # points Go's system root pool at the mounted self-signed cert so
@@ -4276,6 +4293,8 @@ jobs:
             --set moderation.enabled=true \
             --set moderation.adminApi.token="$ADMIN_API_TOKEN" \
             --set rooms.enabled=true \
+            --set pops.enabled=true \
+            --set pops.uplinkLinger=2s \
             --set-json 'extraEnv=[{"name":"SSL_CERT_FILE","value":"/tls/tls.crt"}]' \
             --wait --timeout 180s
       - name: Publish the fixture and spread synthetic viewers
@@ -4374,6 +4393,23 @@ jobs:
       # starts from the state it expects.
       - name: Assert rooms across the fleet — static CR, lease, adoption after a pod kill (R42)
         run: ./e2e/rooms-assert.sh gawk-e2e 120
+      # R74 PP11 (docs/76 §6.10, §11): the party wall's PoP-side rows, which
+      # need a REAL PoP and which rooms-assert's step 3b (the home half: a
+      # spec.pop room refuses an ordinary attach) cannot reach. A gawk-relay
+      # on the runner pairs through a Pop CR (the chart's CRD and pops/status
+      # RBAC write the credential and the link) beside a wall Room CR homed
+      # on its own lease: six party broadcasts appear at home, the fifth and
+      # sixth past the fleet's 4-broadcast room cap included; Hide removes
+      # one and Show restores it; a wall=hidden broadcaster never appears;
+      # each broadcaster's 0x18 carries the wall code and an on-wall bit that
+      # follows all three; an outside tile past the PoP's one-stream budget
+      # is closed with 4012 (the app's "Party-only right now") and joins once
+      # the slot frees; and with the Pop revoked a party guest at the PoP
+      # gets the local read-only wall. AFTER rooms-assert, which ends with two
+      # Ready pods again; it deletes its Pop and Room before returning, so
+      # the portal tier below never sees them. ~25s (22s locally).
+      - name: Assert the party wall with a linked PoP (R74 PP11)
+        run: ./e2e/pop-wall-assert.sh gawk-e2e 90
       # R39 (docs/42 §11.1's kind-tier row): the PORTAL half of the tier —
       # gawk-admin installed for real (waited install, so the migrate hook and
       # /readyz gate genuinely converge), a throwaway Postgres, a TEST-ONLY

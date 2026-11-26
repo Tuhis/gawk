@@ -617,10 +617,7 @@ fn build_shell(
     let (msg_tx, msg_rx) = mpsc::channel();
     let fit = fit::FitState::new((cfg.window_width, cfg.window_height));
     let position = fit::PositionMemory::new(cfg.window_position);
-    let local = crate::localswitch::LocalSwitch::new(
-        cfg.local_relay_opt_outs.clone(),
-        cfg!(target_os = "macos"),
-    );
+    let local = crate::localswitch::LocalSwitch::new(cfg!(target_os = "macos"));
     Shell {
         platform,
         cfg,
@@ -738,7 +735,7 @@ pub fn run(
     // legacy fields; failure is only a warning — the in-memory shape is
     // already migrated and the write retries on the next settings save.
     if config::migrate(&mut cfg) {
-        log::info!("migrated legacy relay settings to server profiles");
+        log::info!("migrated legacy settings (server profiles, a stored local-relay opt-out)");
         if let Some(p) = &cfg_path
             && let Err(e) = config::save(p, &cfg, &*creds())
         {
@@ -4379,13 +4376,13 @@ fn render_local(ui: &MainWindow, sh: &Shell) {
     ui.set_wall_busy(sh.local.wall_busy);
 }
 
-/// The chip's "Use … instead": remembered against the PoP's handle.
+/// The chip's "Use … instead": the next broadcast goes home, and once it
+/// has ended the PoP's offer is followed again (docs/76 OD18). Never
+/// stored.
 fn local_relay_opt_out(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
     let mut sh = shell.borrow_mut();
-    if let Some(handle) = sh.local.opt_out(std::time::Instant::now())
-        && crate::localswitch::remember(&mut sh.cfg.local_relay_opt_outs, &handle, true)
-    {
-        save_config(&mut sh);
+    if sh.local.opt_out(std::time::Instant::now()).is_some() {
+        log::info!("the next broadcast uses home instead of the local relay");
     }
     render_local(ui, &sh);
 }
@@ -4658,6 +4655,11 @@ fn end_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, error: Option<Stri
     let mut sh = shell.borrow_mut();
     let was_live = matches!(sh.state, UiState::Live | UiState::Paused);
     sh.local.on_end();
+    if was_live {
+        // docs/76 OD18: a "Use … instead" picked for this broadcast ends
+        // with it.
+        sh.local.end_stream();
+    }
     // A resume from pause the relay refused: the paused code is gone
     // (docs/64 D9). Said as that, with a new code one click away.
     let pending = sh.pending_error.take();
@@ -7479,10 +7481,11 @@ mod tests {
         target
     }
 
-    // docs/76 item 43.6: "Use gawk.ioio.fi instead" is remembered against
-    // the PoP's handle and the next broadcast goes home.
+    // docs/76 item 43.6, OD18: "Use gawk.ioio.fi instead" sends the next
+    // broadcast home and holds for that broadcast only. Nothing is stored,
+    // and once it has ended the PoP's next offer is followed again.
     #[test]
-    fn the_chips_opt_out_is_remembered_and_goes_home() {
+    fn the_chips_opt_out_is_never_stored_and_lasts_one_broadcast() {
         let ui = window();
         let (shell, _) = test_shell();
         wire_callbacks(&ui, &shell);
@@ -7497,17 +7500,30 @@ mod tests {
         );
         ui.invoke_local_relay_opt_out();
         assert_eq!(ui.get_local_relay_chip(), "");
-        let sh = shell.borrow();
+        {
+            let sh = shell.borrow();
+            let stored = serde_json::to_string(&sh.cfg).unwrap();
+            assert!(!stored.contains("localRelayOptOuts"), "{stored}");
+            assert!(!stored.contains(&pop_switch().handle), "{stored}");
+            assert_eq!(
+                sh.local
+                    .target(&sh.cfg.resolve_relay_url(), vec![], &[], now)
+                    .pop,
+                None
+            );
+        }
+        // The broadcast goes live on home, where the offer is ignored, and
+        // ends.
+        shell.borrow_mut().state = UiState::Live;
         assert_eq!(
-            sh.cfg.local_relay_opt_outs,
-            vec!["6f1c2d3e-4a5b-4c6d-8e7f-0123456789ab".to_owned()]
+            shell.borrow_mut().local.on_offer(pop_offer(), true, now),
+            crate::localswitch::OfferStep::Ignore
         );
-        assert_eq!(
-            sh.local
-                .target(&sh.cfg.resolve_relay_url(), vec![], &[], now)
-                .pop,
-            None
-        );
+        end_broadcast(&ui, &shell, None);
+        assert!(matches!(
+            shell.borrow_mut().local.on_offer(pop_offer(), false, now),
+            crate::localswitch::OfferStep::Probe(_)
+        ));
     }
 
     // docs/76 item 34: on a PoP with a wall, the live line offers Hide,

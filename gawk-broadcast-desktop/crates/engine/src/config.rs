@@ -199,15 +199,29 @@ pub struct Config {
     /// = never saved, or a platform that can't say: the system places it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window_position: Option<(i32, i32)>,
-    /// R74 (docs/76 item 43.6): the party local relays whose offers this
-    /// app ignores, by the offer's opaque PoP handle — the chip's "Use …
-    /// instead". Consent only: nothing here ever starts a switch.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub local_relay_opt_outs: Vec<String>,
+    /// Where builds before docs/76 OD18 stored the chip's "Use … instead"
+    /// per PoP handle. It now lasts the broadcast it was picked for and is
+    /// never stored, so this key is only recognised to be dropped: whatever
+    /// it holds is never read, [`migrate`] clears it, and it is never
+    /// written.
+    #[serde(
+        rename = "localRelayOptOuts",
+        skip_serializing,
+        deserialize_with = "present"
+    )]
+    pub legacy_local_relay_opt_outs: Option<serde::de::IgnoredAny>,
     /// R74 (docs/76 item 34): the PoPs whose party wall the broadcaster hid
     /// from, by handle: the next publish there carries `wall=hidden`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub local_relay_wall_hidden: Vec<String>,
+}
+
+/// A key that is present, whatever its value (`null` included), skipped
+/// unread.
+fn present<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<serde::de::IgnoredAny>, D::Error> {
+    serde::de::IgnoredAny::deserialize(d).map(Some)
 }
 
 impl Config {
@@ -833,7 +847,10 @@ pub fn load(path: &Path, creds: &dyn Credentials) -> (Config, Option<String>) {
 /// secret to the new host.
 pub fn migrate(cfg: &mut Config) -> bool {
     let profiles = migrate_profiles(cfg);
-    stamp_room_servers(cfg) || profiles
+    // docs/76 OD18: a stored per-PoP opt-out is dropped unread; the save
+    // that follows removes the key from the file.
+    let opt_outs = cfg.legacy_local_relay_opt_outs.take().is_some();
+    stamp_room_servers(cfg) || profiles || opt_outs
 }
 
 /// R66 (docs/68 D5a): room credentials stored before they were bound to a
@@ -1218,24 +1235,41 @@ mod tests {
         // R74: a file from before the local-relay memory loads with none,
         // and an empty memory is not written.
         let cfg: Config = serde_json::from_str("{\"relayUrl\":\"\"}").unwrap();
-        assert!(cfg.local_relay_opt_outs.is_empty() && cfg.local_relay_wall_hidden.is_empty());
+        assert!(cfg.local_relay_wall_hidden.is_empty());
         let json = serde_json::to_string(&cfg).unwrap();
         assert!(!json.contains("localRelay"), "{json}");
-        let cfg = Config {
-            local_relay_opt_outs: vec!["h".into()],
-            ..Config::default()
-        };
-        assert!(
-            serde_json::to_string(&cfg)
-                .unwrap()
-                .contains("\"localRelayOptOuts\":[\"h\"]")
-        );
         assert_eq!(p.name, "Friend");
         assert!(p.cert_hashes.is_empty());
         // A profile with no pins saves exactly as it did: no new key.
         let saved = serde_json::to_string(&p).unwrap();
         assert!(!saved.contains("certHashes"), "{saved}");
         assert_eq!(saved, old);
+    }
+
+    // docs/76 OD18: "Use … instead" lasts the stream it was picked on and
+    // is never stored. A file from a build that stored it per PoP handle
+    // still loads, whatever the key holds, keeps every other setting, is
+    // never read, and the migration's save drops the key.
+    #[test]
+    fn a_stored_local_relay_opt_out_is_cleared_and_never_read() {
+        for legacy in [r#"["6f1c2d3e"]"#, "[]", r#""junk""#, "null"] {
+            let old = format!(
+                r#"{{"selectedServer":"default","lastBroadcastServer":"x","localRelayOptOuts":{legacy},"localRelayWallHidden":["w"]}}"#
+            );
+            let mut cfg: Config = serde_json::from_str(&old).unwrap();
+            assert_eq!(cfg.local_relay_wall_hidden, vec!["w".to_owned()]);
+            assert_eq!(cfg.selected_server, "default");
+            assert!(
+                migrate(&mut cfg),
+                "{legacy}: clearing it is a change to save"
+            );
+            let saved = serde_json::to_string(&cfg).unwrap();
+            assert!(!saved.contains("localRelayOptOuts"), "{saved}");
+            assert!(saved.contains("localRelayWallHidden"), "{saved}");
+            assert!(!migrate(&mut cfg), "idempotent");
+            let reread: Config = serde_json::from_str(&saved).unwrap();
+            assert_eq!(reread, cfg);
+        }
     }
 
     #[test]

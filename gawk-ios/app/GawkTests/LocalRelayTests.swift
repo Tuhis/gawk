@@ -99,13 +99,150 @@ final class LocalRelayTests: XCTestCase {
         o.probe = { _ in answer }
         o.consider(offer, live: false, home: home)
         try await settle { o.chip(home: home) != nil }
-        o.optOut()
+        o.optOut(stream: LocalRelaySwitcher.broadcastStream)
         XCTAssertNil(o.chip(home: home))
-        XCTAssertEqual(o.optOuts, [offer.handle])
+        XCTAssertEqual(o.optedOutHandle, offer.handle)
         XCTAssertFalse(o.target(home: home, homeCertHashes: []).followOffers, "opted out: no lr=1")
         o.consider(offer, live: false, home: home)
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertNil(o.chip(home: home), "opted out")
+    }
+
+    /// OD18 (item 43.6): "Use … instead" holds for the stream it was picked
+    /// on, never longer, and is never stored. The next stream, or the next
+    /// broadcast, follows the PoP's offer again; a build that stored it
+    /// per handle left a key that is cleared and never read.
+    func testAnOptOutLastsTheStreamItWasPickedOnAndIsNeverStored() async throws {
+        let suite = "fi.ioio.gawk.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set([offer.handle], forKey: "localRelayOptOuts")
+        let s = LocalRelaySwitcher(defaults: defaults)
+        XCTAssertNil(defaults.object(forKey: "localRelayOptOuts"), "the stored key is cleared")
+        XCTAssertNil(s.optedOutHandle, "and never read")
+
+        let calls = Calls()
+        let answer = found
+        s.probe = { _ in
+            await calls.bump()
+            return answer
+        }
+        let room = LocalRelaySwitcher.roomStream("lan-party")
+        s.enterStream(room)
+        s.consider(offer, live: false, home: home)
+        try await settle { s.chip(home: home) != nil }
+        s.optOut(stream: room)
+        XCTAssertNil(defaults.object(forKey: "localRelayOptOuts"), "nothing is stored")
+        // The same stream's redials stay on home, without lr=1.
+        s.enterStream(room)
+        XCTAssertFalse(s.followsOffers(home: home))
+        s.consider(offer, live: false, home: home)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(calls.n, 1)
+        // Another stream follows the offer again, on the PoP still held:
+        // the room's opt-out never let it go, so there is nothing to probe.
+        s.enterStream(LocalRelaySwitcher.viewerStream("K7XQ2M"))
+        XCTAssertNil(s.optedOutHandle)
+        XCTAssertTrue(s.followsOffers(home: home))
+        XCTAssertNotNil(s.target(home: home, homeCertHashes: []).pop)
+        s.consider(offer, live: false, home: home)
+        XCTAssertNotNil(s.chip(home: home))
+        XCTAssertEqual(calls.n, 1)
+
+        // The broadcast's opt-out ends with the broadcast.
+        s.optOut(stream: LocalRelaySwitcher.broadcastStream)
+        s.broadcastStarted()
+        XCTAssertEqual(s.optedOutHandle, offer.handle, "the broadcast it was picked for")
+        s.broadcastEnded()
+        XCTAssertNil(s.optedOutHandle, "the next broadcast follows the offer")
+        XCTAssertNil(LocalRelaySwitcher(defaults: defaults).optedOutHandle, "a new app session starts with none")
+        UserDefaults.standard.removePersistentDomain(forName: suite)
+    }
+
+    /// OD18: a room watching the PoP says no lr=1 to home, so the held
+    /// offer can expire under it. Its "Use … instead" still holds for that
+    /// room, names the PoP the room is on, and leaves the next broadcast on
+    /// the PoP; a refusal there marks that PoP.
+    func testARoomOptOutOutlivesTheHeldOfferAndStaysOnItsStream() async throws {
+        let s = make()
+        let calls = Calls()
+        let answer = found
+        s.probe = { _ in
+            await calls.bump()
+            return answer
+        }
+        let room = LocalRelaySwitcher.roomStream("lan-party")
+        let expired = LocalRelaySwitcher.Held(
+            handle: offer.handle, name: offer.name, url: answer.url, certHashes: answer.certHashes,
+            until: .now.addingTimeInterval(-1), home: home)
+        s.enterStream(room)
+        XCTAssertNil(s.current(), "nothing held")
+        s.optOut(stream: room, pop: expired)
+        XCTAssertEqual(s.optedOutHandle, offer.handle, "recorded without a held offer")
+        XCTAssertFalse(s.followsOffers(home: home))
+        // Rejoining the same room: home's fresh offer is not followed.
+        s.enterStream(room)
+        s.consider(offer, live: false, home: home)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(calls.n, 0)
+
+        // With the PoP held, a room's opt-out leaves the broadcast on it.
+        let b = make()
+        b.probe = { _ in answer }
+        b.consider(offer, live: false, home: home)
+        try await settle { b.chip(home: home) != nil }
+        b.enterStream(room)
+        b.optOut(stream: room, pop: b.current())
+        XCTAssertNil(b.target(home: home, homeCertHashes: []).pop, "this room stays home")
+        XCTAssertNotNil(b.chip(home: home), "the Broadcast tab still offers the PoP")
+        XCTAssertEqual(
+            b.target(home: home, homeCertHashes: [], stream: LocalRelaySwitcher.broadcastStream).url,
+            answer.url, "the next broadcast publishes there")
+        // Home's fresh offers still renew it for those streams.
+        let until = try XCTUnwrap(b.current()?.until)
+        try await Task.sleep(for: .milliseconds(20))
+        b.consider(offer, live: false, home: home)
+        XCTAssertGreaterThan(try XCTUnwrap(b.current()?.until), until, "renewed after the opt-out")
+        XCTAssertNil(b.target(home: home, homeCertHashes: []).pop, "and the room still stays home")
+
+        // A refusal on a PoP whose offer expired still marks it.
+        let r = make()
+        r.refused(pop: expired)
+        XCTAssertFalse(r.target(home: home, homeCertHashes: []).followOffers,
+                       "unreachable: no lr=1 for it")
+    }
+
+    /// OD18: "Use … instead" tapped while a probe for that PoP runs ends the
+    /// attempt without failing it: no retry, nothing unreachable, and the
+    /// next stream uses the PoP that answered.
+    func testAnOptOutDuringAProbeIsNotAFailure() async throws {
+        let s = make()
+        let calls = Calls()
+        let answer = found
+        s.probe = { _ in
+            await calls.bump()
+            try? await Task.sleep(for: .milliseconds(200))
+            return answer
+        }
+        let room = LocalRelaySwitcher.roomStream("lan-party")
+        let pop = LocalRelaySwitcher.Held(
+            handle: offer.handle, name: offer.name, url: answer.url, certHashes: answer.certHashes,
+            until: .now.addingTimeInterval(-1), home: home)
+        let switched = Calls()
+        s.onSwitch = { _ in switched.bump() }
+        s.enterStream(room)
+        s.consider(offer, live: false, home: home)
+        try await settle { calls.n == 1 }
+        s.optOut(stream: room, pop: pop)
+        try await settle { s.current() != nil }
+        XCTAssertNotNil(s.current(), "the PoP answered: held for the other streams")
+        XCTAssertEqual(switched.n, 0, "the opted-out room is not moved")
+        XCTAssertNil(s.target(home: home, homeCertHashes: []).pop)
+        // Another stream: the PoP is followed, not left unreachable.
+        s.enterStream(LocalRelaySwitcher.viewerStream("K7XQ2M"))
+        XCTAssertTrue(s.followsOffers(home: home))
+        XCTAssertNotNil(s.target(home: home, homeCertHashes: []).pop)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(calls.n, 1, "no retry of a probe that answered")
     }
 
     /// TN3179 (item 44): while the app is not active nothing dials; coming
@@ -166,6 +303,88 @@ final class LocalRelayTests: XCTestCase {
         s.consider(offer, live: false, home: home)
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertNil(s.chip(home: home), "unreachable for this app session")
+    }
+
+    /// item 43.3 for a room participant, as the player: on home the room
+    /// says lr=1 and hands its offers to the switch; a PoP that answered
+    /// takes the room and its streams with the same code, once, pinned and
+    /// without lr=1; a PoP that ends the room before it let it in sends it
+    /// home once (item 43.5); and "Use … instead" brings it home without
+    /// lr=1 (item 43.6). Closed local ports stand in for both relays, and
+    /// the test never yields, so no dial's answer reaches the model.
+    func testARoomFollowsAFreshOfferOnceAndFallsBackHome() {
+        initializeCore()
+        let homeURL = "https://127.0.0.1:9"
+        let pins = [String(repeating: "07", count: 32)]
+        let pop = LocalRelaySwitcher.Held(
+            handle: offer.handle, name: offer.name, url: "https://127.0.0.1:10", certHashes: pins,
+            until: .now.addingTimeInterval(3600), home: homeURL)
+        let room = RoomView(
+            code: "ROOM22", displayName: "", participants: 1,
+            tiles: [RoomTile(broadcastId: "AAAAA2", label: "a", live: true, viewerCount: 0)],
+            people: [], yourId: 0, creator: false, dynamic: true, attachOk: true)
+        func make() -> RoomPlayerModel {
+            RoomPlayerModel(
+                code: "ROOM22", relayUrl: homeURL, insecure: true, nickname: "t", followOffers: true,
+                home: WatchModel.Endpoint(url: homeURL, insecure: true, certHashes: []))
+        }
+
+        let m = make()
+        let offered = Calls()
+        let failed = Calls()
+        m.onOffer = { _ in offered.bump() }
+        m.onLocalRelayFailed = { failed.bump() }
+        m.start()
+        defer { m.stop() }
+        m.offered(offer)
+        XCTAssertEqual(offered.n, 1, "home's offer reaches the switch")
+        m.apply(room)
+        XCTAssertTrue(m.isPlaying("AAAAA2"))
+
+        m.switchTo(pop)
+        XCTAssertEqual(m.relayUrl, pop.url)
+        XCTAssertEqual(m.certHashes, pins)
+        XCTAssertFalse(m.insecure)
+        XCTAssertFalse(m.followOffers, "no lr=1 to the PoP")
+        XCTAssertEqual(m.localRelay, pop)
+        XCTAssertTrue(m.isPlaying("AAAAA2"), "the stream plays on, from the PoP")
+        m.switchTo(pop)
+        XCTAssertEqual(m.relayUrl, pop.url, "once")
+        m.offered(offer)
+        XCTAssertEqual(offered.n, 1, "an offer on the PoP is not followed")
+
+        // The PoP ended the room before letting it in: home, once.
+        m.ended("the relay knows no such room")
+        XCTAssertNil(m.endedReason)
+        XCTAssertEqual(m.relayUrl, homeURL)
+        XCTAssertTrue(m.insecure)
+        XCTAssertNil(m.localRelay)
+        XCTAssertFalse(m.followOffers, "item 43.7: no lr=1 for a PoP the room gave up on")
+        XCTAssertEqual(failed.n, 1)
+        m.ended("lost the room")
+        XCTAssertEqual(m.endedReason, "lost the room", "home's own end")
+
+        // Let in, then ended: the room's own end, not a fallback.
+        let joined = make()
+        joined.onLocalRelayFailed = { failed.bump() }
+        joined.start()
+        defer { joined.stop() }
+        joined.switchTo(pop)
+        joined.apply(room)
+        joined.ended("the room ended")
+        XCTAssertEqual(joined.endedReason, "the room ended")
+        XCTAssertEqual(failed.n, 1)
+
+        // "Use … instead": home for this room, without lr=1.
+        let back = make()
+        back.start()
+        defer { back.stop() }
+        back.switchTo(pop)
+        back.useHome()
+        XCTAssertEqual(back.relayUrl, homeURL)
+        XCTAssertNil(back.localRelay)
+        XCTAssertFalse(back.followOffers)
+        XCTAssertEqual(failed.n, 1, "an opt-out is not a failure")
     }
 
     /// The 4012 copy is the shared engine's (docs/76 item 28).

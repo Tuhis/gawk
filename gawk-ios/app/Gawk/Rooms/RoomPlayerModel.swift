@@ -21,12 +21,31 @@ final class RoomPlayerModel {
     static let maxPlaying = 4
 
     let code: String
-    let relayUrl: String
-    let insecure: Bool
+    /// The relay dialed: the server picked in Settings, or a link's, or
+    /// the party's local relay the room switched to (R74).
+    private(set) var relayUrl: String
+    private(set) var insecure: Bool
     /// The relay's pins (R74; empty: the system store), for the roster
     /// session and every tile.
-    let certHashes: [String]
+    private(set) var certHashes: [String]
     private(set) var nickname: String
+    /// R74 (docs/76 item 43.7): on home, following offers, so the roster
+    /// session and every tile say `lr=1`.
+    private(set) var followOffers: Bool
+    /// The party's local relay this room is watched on, when it switched.
+    private(set) var localRelay: LocalRelaySwitcher.Held?
+    /// R74: a fresh offer home sent on the room session.
+    @ObservationIgnored var onOffer: (@MainActor (LocalRelayOffer) -> Void)?
+    /// R74 (docs/76 item 43.5): the PoP never let the room in, so it went
+    /// back to home; the switch leaves that PoP for the app session.
+    @ObservationIgnored var onLocalRelayFailed: (@MainActor () -> Void)?
+    /// Home, kept while the room is watched on a PoP, for the way back.
+    @ObservationIgnored private var home: WatchModel.Endpoint?
+    /// The PoP's room session sent the room: it let the room in.
+    @ObservationIgnored private var joinedOnLocalRelay = false
+    /// Which roster session the callbacks are for: one stopped for a
+    /// switch may still have a callback on its way.
+    @ObservationIgnored private var watcherGeneration = 0
 
     private(set) var room: RoomView?
     private(set) var reconnectAttempt: UInt32?
@@ -68,12 +87,18 @@ final class RoomPlayerModel {
     /// Called with each new room picture, and whether it's the first.
     @ObservationIgnored var onRoom: ((_ room: RoomView, _ first: Bool) -> Void)?
 
-    init(code: String, relayUrl: String, insecure: Bool, nickname: String, certHashes: [String] = []) {
+    init(
+        code: String, relayUrl: String, insecure: Bool, nickname: String, certHashes: [String] = [],
+        followOffers: Bool = false, localRelay: LocalRelaySwitcher.Held? = nil, home: WatchModel.Endpoint? = nil
+    ) {
         self.code = code
         self.relayUrl = relayUrl
         self.insecure = insecure
         self.certHashes = certHashes
         self.nickname = nickname
+        self.followOffers = followOffers
+        self.localRelay = localRelay
+        self.home = home
     }
 
     var tiles: [RoomTile] { room?.tiles ?? [] }
@@ -90,10 +115,38 @@ final class RoomPlayerModel {
     func start() {
         guard watcher == nil else { return }
         endedReason = nil
-        let listener = Listener(model: self)
+        watcherGeneration += 1
+        let listener = Listener(model: self, generation: watcherGeneration)
         watcher = RoomWatcher.start(
             relayUrl: relayUrl, code: code, nickname: nickname, insecure: insecure, listener: listener,
-            certHashes: certHashes)
+            certHashes: certHashes, followOffers: followOffers)
+    }
+
+    /// R74 (docs/76 item 43.3): a party's local relay answered, so the
+    /// room and its streams are watched with the same code there: one
+    /// reconnect, once.
+    func switchTo(_ pop: LocalRelaySwitcher.Held) {
+        guard localRelay == nil, watcher != nil else { return }
+        home = WatchModel.Endpoint(url: relayUrl, insecure: insecure, certHashes: certHashes)
+        joinedOnLocalRelay = false
+        relayUrl = pop.url
+        certHashes = pop.certHashes
+        insecure = false
+        followOffers = false
+        localRelay = pop
+        restart()
+    }
+
+    /// The chip's "Use … instead" (docs/76 item 43.6): back to home for
+    /// this room, without `lr=1`; the switch holds the opt-out for it.
+    func useHome() {
+        guard localRelay != nil, let home else { return }
+        goHome(home)
+    }
+
+    /// Fresh offers count only on home, while following them.
+    func offered(_ offer: LocalRelayOffer) {
+        if followOffers { onOffer?(offer) }
     }
 
     /// Leaves the room: the roster session and every player stop.
@@ -141,6 +194,7 @@ final class RoomPlayerModel {
         let first = self.room == nil
         self.room = room
         reconnectAttempt = nil
+        if localRelay != nil { joinedOnLocalRelay = true }
         onRoom?(room, first)
         reconcile()
     }
@@ -150,8 +204,41 @@ final class RoomPlayerModel {
     }
 
     func ended(_ reason: String) {
+        // R74 (docs/76 item 43.5): a PoP that never let the room in (it
+        // refused the join, or never answered) sends the room back to
+        // home, once. An end after it joined is the room's own.
+        if localRelay != nil, !joinedOnLocalRelay, let home {
+            onLocalRelayFailed?()
+            goHome(home)
+            return
+        }
         endedReason = reason
         stop()
+    }
+
+    private func goHome(_ home: WatchModel.Endpoint) {
+        localRelay = nil
+        self.home = nil
+        relayUrl = home.url
+        insecure = home.insecure
+        certHashes = home.certHashes
+        // No lr=1 back home: the room just gave up on the PoP home offered
+        // (or opted out of it), and home would hold its demand for an offer
+        // it will not follow (item 43.7).
+        followOffers = false
+        restart()
+    }
+
+    /// The roster session and every playing stream again, on the current
+    /// relay: one reconnect. The roster on screen stays until the new one.
+    private func restart() {
+        watcher?.stop()
+        watcher = nil
+        engines.values.forEach { $0.stop() }
+        engines = [:]
+        let was = playing
+        start()
+        for id in was { play(id) }
     }
 
     /// Which streams play: in Grid and Fit the ones already playing that are still
@@ -200,25 +287,53 @@ final class RoomPlayerModel {
     }
 
     private func options(_ id: String) -> ViewerOptions {
-        ViewerOptions(relayUrl: relayUrl, broadcastId: id, preset: preset, insecure: insecure, certHashes: certHashes)
+        ViewerOptions(
+            relayUrl: relayUrl, broadcastId: id, preset: preset, insecure: insecure, certHashes: certHashes,
+            followOffers: followOffers)
     }
 
-    /// The core's roster callbacks, hopping to the main actor.
+    /// The core's roster callbacks, hopping to the main actor. A roster
+    /// session stopped for a switch is not the model's any more: its late
+    /// callbacks are dropped.
     private final class Listener: RoomListener, @unchecked Sendable {
         private weak var model: RoomPlayerModel?
+        private let generation: Int
 
-        @MainActor init(model: RoomPlayerModel) { self.model = model }
+        @MainActor init(model: RoomPlayerModel, generation: Int) {
+            self.model = model
+            self.generation = generation
+        }
 
         func onRoom(room: RoomView) {
-            Task { @MainActor [weak model] in model?.apply(room) }
+            let gen = generation
+            Task { @MainActor [weak model] in
+                guard let model, model.watcherGeneration == gen else { return }
+                model.apply(room)
+            }
         }
 
         func onReconnecting(attempt: UInt32) {
-            Task { @MainActor [weak model] in model?.reconnecting(attempt) }
+            let gen = generation
+            Task { @MainActor [weak model] in
+                guard let model, model.watcherGeneration == gen else { return }
+                model.reconnecting(attempt)
+            }
         }
 
         func onEnded(reason: String) {
-            Task { @MainActor [weak model] in model?.ended(reason) }
+            let gen = generation
+            Task { @MainActor [weak model] in
+                guard let model, model.watcherGeneration == gen else { return }
+                model.ended(reason)
+            }
+        }
+
+        func onLocalRelayOffer(offer: LocalRelayOffer) {
+            let gen = generation
+            Task { @MainActor [weak model] in
+                guard let model, model.watcherGeneration == gen else { return }
+                model.offered(offer)
+            }
         }
     }
 }

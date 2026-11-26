@@ -71,7 +71,9 @@ struct PlayerScreen: View {
         if linkRelay == nil || linkRelay == settings.relayURL {
             // R74 (docs/76 §6.12): on home, a held party relay takes the
             // player at once; otherwise it watches home with lr=1, and a
-            // fresh offer on its session switches it, once.
+            // fresh offer on its session switches it, once. Another stream
+            // ends an opt-out picked elsewhere (OD18).
+            switcher.enterStream(LocalRelaySwitcher.viewerStream(code))
             let t = switcher.target(home: settings.relayURL, homeCertHashes: settings.relayCertHashes)
             m = WatchModel(
                 code: code, relayUrl: t.url, insecure: t.pop == nil ? settings.insecure : false,
