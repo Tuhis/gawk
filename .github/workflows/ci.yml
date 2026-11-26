@@ -1678,7 +1678,8 @@ jobs:
             CGO_ENABLED=0 go test -c -o "$out/$p.test" "./internal/$p"
           done
           docker rm -f ci-mmproxy-netns >/dev/null 2>&1 || true
-          docker run -d --name ci-mmproxy-netns --privileged alpine:3.24 sleep 600 >/dev/null
+          docker run -d --name ci-mmproxy-netns --privileged \
+            --sysctl net.ipv6.conf.all.disable_ipv6=0 alpine:3.24 sleep 600 >/dev/null
           docker cp "$out/." ci-mmproxy-netns:/t/
           docker exec ci-mmproxy-netns apk add -q --no-cache iproute2 >/dev/null
           for p in routes proxy; do
@@ -1716,7 +1717,12 @@ jobs:
         run: |
           set -euo pipefail
           docker rm -f ci-mmproxy-cov >/dev/null 2>&1 || true
-          docker run -d --name ci-mmproxy-cov --privileged -w /src/gawk-mmproxy golang:1.27-trixie sleep 900 >/dev/null
+          # IPv6 on explicitly (lo gets ::1), as topology.sh does: whether a
+          # container gets it by default depends on the runner's daemon, and
+          # in place the namespaced tests need both families.
+          docker run -d --name ci-mmproxy-cov --privileged \
+            --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv6.conf.lo.disable_ipv6=0 \
+            -w /src/gawk-mmproxy golang:1.27-trixie sleep 900 >/dev/null
           docker cp gawk-mmproxy ci-mmproxy-cov:/src/
           docker exec ci-mmproxy-cov sh -c 'apt-get update -qq && apt-get install -y -qq iproute2 >/dev/null'
           # GAWK_MMPROXY_NETNS_INPLACE: this container is the disposable
