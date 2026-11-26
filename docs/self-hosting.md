@@ -2189,7 +2189,10 @@ murmur.
 
 **Docker Compose** (`gawk-mmproxy/deploy/compose/murmur.yml`): the proxy's
 port must be reachable only from the bridge, on an internal network the two
-share, and never published. **On a bare host** bind `-listen` to an address
+share, and never published. The proxy shares murmur's namespace, so bind
+`-listen` (`GAWK_MMPROXY_LISTEN`) to murmur's address on that internal
+network, as the example does: the default listens on murmur's public
+network too. **On a bare host** bind `-listen` to an address
 only the bridge reaches or firewall it. The loopback routes there apply to
 the whole host's loopback, so don't let another local proxy reach murmur
 over loopback.

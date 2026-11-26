@@ -5362,7 +5362,7 @@ jobs:
   # download tolerates finding nothing, and the writer treats an empty record
   # set as "nothing moved".
   coverage-badges:
-    needs: [server-coverage, app, telemetry, telemetry-ui, admin-coverage, admin-ui, bridge-coverage, whip-gateway-coverage]
+    needs: [server-coverage, app, telemetry, telemetry-ui, admin-coverage, admin-ui, bridge-coverage, whip-gateway-coverage, mmproxy-coverage]
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     permissions:

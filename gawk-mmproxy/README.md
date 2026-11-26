@@ -93,7 +93,9 @@ those files in kind.
 Docker Compose: [`deploy/compose/murmur.yml`](deploy/compose/murmur.yml). There is
 no NetworkPolicy outside Kubernetes, so the proxy's port must be reachable
 only from the bridge: an internal network that only murmur and the bridge
-share, and no published port. On a bare host, bind `-listen` to an address
+share, no published port, and `-listen` bound to murmur's address on that
+network (the default listens on every interface murmur has, its public
+network included). On a bare host, bind `-listen` to an address
 only the bridge reaches, or firewall it. The loopback routes apply to the
 whole namespace: on a bare host that is every loopback service on the host,
 so don't run another proxy that reaches murmur over loopback there.

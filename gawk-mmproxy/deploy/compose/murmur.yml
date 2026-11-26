@@ -10,11 +10,14 @@
 # recreate them too (Kubernetes' pod sandbox doesn't have this problem).
 #
 # THE TRUST BOUNDARY (D16). Outside Kubernetes there is no NetworkPolicy:
-# whoever can reach port 64739 can make murmur see any address. Here the
-# port is reachable only on `murmur-internal`, an internal network shared
-# by murmur and gawk-mumble-bridge, and is NEVER published (no `ports:`
-# entry for 64739). Put the bridge on that network and set
-# GAWK_BRIDGE_MUMBLE_PROXY_ADDR=murmur:64739.
+# whoever can reach port 64739 can make murmur see any address. The proxy
+# shares murmur's namespace, and murmur is on `default` too (its public
+# port), so the proxy must NOT listen on every interface: it binds only
+# murmur's pinned address on `murmur-internal`, an internal network shared
+# by murmur and gawk-mumble-bridge alone, and 64739 is never published. Put
+# the bridge on that network and set
+# GAWK_BRIDGE_MUMBLE_PROXY_ADDR=172.31.247.10:64739 (change the subnet if
+# it clashes with yours, in all three places).
 
 services:
   murmur:
@@ -24,7 +27,10 @@ services:
     ports:
       - "64738:64738/tcp" # native clients, as before
       - "64738:64738/udp"
-    networks: [default, murmur-internal]
+    networks:
+      default: {}
+      murmur-internal:
+        ipv4_address: 172.31.247.10
     restart: unless-stopped
 
   # One-shot: the loopback policy routes (docs/92 D4). Root, NET_ADMIN, and
@@ -46,6 +52,9 @@ services:
   mmproxy:
     image: ghcr.io/tuhis/gawk-mmproxy:1.0.0 # x-release-please-version
     command: [serve]
+    environment:
+      # murmur-internal only, never murmur's address on `default`.
+      GAWK_MMPROXY_LISTEN: 172.31.247.10:64739
     network_mode: service:murmur
     cap_drop: [ALL]
     cap_add: [NET_RAW]
@@ -58,3 +67,6 @@ services:
 networks:
   murmur-internal:
     internal: true
+    ipam:
+      config:
+        - subnet: 172.31.247.0/24
