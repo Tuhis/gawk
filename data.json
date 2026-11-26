@@ -2,7 +2,7 @@
   "components": {
     "gawk-admin": {
       "component": "gawk-admin",
-      "covered": 4929,
+      "covered": 4928,
       "label": "admin",
       "pct": 80.7,
       "total": 6106,
@@ -50,7 +50,7 @@
     },
     "gawk-telemetry": {
       "component": "gawk-telemetry",
-      "covered": 5589,
+      "covered": 5590,
       "label": "telemetry",
       "pct": 80.2,
       "total": 6971,
