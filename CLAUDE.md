@@ -226,6 +226,24 @@ Module roles and the facts `ls` can't tell you. Layout itself: read the tree.
   is **never routed publicly**. OBS ignores PLI, so the GOP is set in OBS and
   bounded by the gateway; the gateway sends PLI on session start and resume
   only, never on loss or periodically (`docs/15` D6).
+- `gawk-mmproxy` — real web-user addresses for murmur (R88, `docs/92`); the
+  **eighth** top-level Go module and deployable, **default off
+  everywhere**, standard library and `golang.org/x/sys` only. It runs only
+  inside the operator's murmur pod (an init container, `routes`, and a
+  sidecar, `serve`), so it ships an **image and tested deploy snippets but
+  no Helm chart**, a deliberate exception to "one chart per component"
+  (`docs/92` OD8); release-please bumps the image tag in the snippets. The
+  bridge (`-mumble-proxy-addr`) sends it a standard PROXY v2 header and it
+  dials murmur over loopback from the browser's address; the header bytes
+  are pinned by vectors in both modules, and a test fails if the two copies
+  differ. Prohibitions: its port is **never** routed publicly or reachable
+  from anything but bridge pods (a NetworkPolicy is the whole trust
+  boundary, `docs/92` D9/D16), it **never logs a client address or uses one
+  as a metric label** (D10, a source-walk test), and the sidecar gets **no
+  readiness or liveness probe**: it shares murmur's pod, so a probe could
+  drop murmur from its Service (D15). The binary's `cap_net_raw+ep` file
+  capability means every container running the image needs `NET_RAW`
+  (`docs/gotchas.md`).
 - `common-ts/` — shared **TypeScript only** (R53): repo-internal npm packages
   with no build step, consumed by the operator SPAs via `file:` (today
   `oidc-session`, the hand-rolled OIDC flow of `gawk-admin` and
@@ -234,7 +252,8 @@ Module roles and the facts `ls` can't tell you. Layout itself: read the tree.
   makes a shared change release every consumer (`docs/55` D10,
   `CONTRIBUTING.md`). `gawk-app` must never consume it.
 - `docs/` — per-milestone design notes. Each component has `deploy/`
-  (Dockerfile + Helm chart); `.github/workflows/` holds CI + release automation.
+  (Dockerfile + Helm chart; `gawk-mmproxy` alone has no chart, see above);
+  `.github/workflows/` holds CI + release automation.
 
 ## Key constraints / principles to respect
 - ~1200-byte safe datagram payload limit drives the chunking design — don't
