@@ -262,8 +262,12 @@ echo "PASS: the broadcaster's wall session at the PoP is proxied home (it sees t
 # ---------------------------------------------------------- 3. Hide, Show
 echo hide >&3
 wait_for "Hide did not take $B1 off the wall" lacks_tile "$B1"
-jq -e --arg b "$B1" 'select(.type == "event" and .kind == 17 and .attachment.broadcastID == $b)' "$OUTSIDER" >/dev/null \
-  || fail "the outside participant saw no AttachmentRemoved for $B1 after Hide"
+# The outsider's event comes over its own session, maybe from another
+# pod, so it can land after a fresh joiner's RoomState already lacks B1.
+saw_removed() {
+  jq -e --arg b "$B1" 'select(.type == "event" and .kind == 17 and .attachment.broadcastID == $b)' "$OUTSIDER" >/dev/null
+}
+wait_for "the outside participant saw no AttachmentRemoved for $B1 after Hide" saw_removed
 wait_for "the broadcaster's 0x18 never cleared on-wall after Hide ($(last_info "$OUT/pub-tuhis.out"))" \
   info_is "$OUT/pub-tuhis.out" ".linked and (.onWall | not) and .wallCode == \"$WALL\""
 echo "PASS: Hide took $B1 off the wall (AttachmentRemoved at home) and its 0x18 cleared on-wall, wall code kept"
@@ -278,11 +282,11 @@ roomsim_pub shy -wall-hidden
 B7=$ID
 wait_for "the hidden broadcaster's 0x18 never arrived linked with the wall code" \
   info_is "$OUT/pub-shy.out" ".linked and .wallCode == \"$WALL\""
+# Long enough for a vouched attach to have crossed (step 2's took well
+# under a second), then the whole history on both sides is the evidence.
+sleep 3
 grep '"type":"localRelay"' "$OUT/pub-shy.out" | jq -e 'select(.onWall)' >/dev/null \
   && fail "a wall=hidden broadcaster's 0x18 said on the wall"
-# Long enough for a vouched attach to have crossed (step 2's took well
-# under a second), then the outsider's whole history is the evidence.
-sleep 3
 jq -e --arg b "$B7" 'select(.type == "event" and .kind == 16 and .attachment.broadcastID == $b)' "$OUTSIDER" >/dev/null \
   && fail "the outside participant saw the wall=hidden broadcaster $B7 added"
 lacks_tile "$B7" || fail "the wall=hidden broadcaster $B7 is on the wall"
@@ -313,10 +317,19 @@ echo "PASS: once the first viewer left and its leg lingered out, retry $attempt 
 # ------------------------------------------------- 6. unlinked: the local wall
 # Revoked is the operator's way to cut a link for good; the PoP keeps
 # serving the LAN as a standalone relay (docs/76 §6.9). A raw PUT of the
-# read object, for rooms-assert.sh's discovery reason.
-kubectl get --raw "$GROUP_API/pops/$POP" | jq '.spec.revoked = true' \
-  | kubectl replace --raw "$GROUP_API/pops/$POP" -f - >/dev/null \
-  || fail "could not revoke the Pop"
+# read object, for rooms-assert.sh's discovery reason. The link-home pod
+# writes status.lease every 5 s (poplink.LeaseRenew), which bumps the
+# resourceVersion the PUT carries, so a 409 here is a lost race: re-read.
+revoke() {
+  kubectl get --raw "$GROUP_API/pops/$POP" | jq '.spec.revoked = true' \
+    | kubectl replace --raw "$GROUP_API/pops/$POP" -f - >/dev/null
+}
+revoked=0
+for _ in 1 2 3 4 5; do
+  if revoke 2> "$OUT/revoke.err"; then revoked=1; break; fi
+  sleep 0.5
+done
+[ "$revoked" = 1 ] || fail "could not revoke the Pop: $(cat "$OUT/revoke.err")"
 wait_for "the revoked PoP's broadcaster 0x18 never said unlinked ($(last_info "$OUT/pub-p4.out"))" \
   info_is "$OUT/pub-p4.out" "(.linked | not) and .wallCode == \"$WALL\""
 GUEST="$OUT/guest.out"
