@@ -529,7 +529,9 @@ func TestMurmurResetAfterTheBridgesFINIsNotCounted(t *testing.T) {
 	c.Write(append(header(netip.MustParseAddrPort("198.51.100.32:1")), clientHello...))
 	waitFor(t, "the dial", func() bool { return r.m.Snapshot().Conns["proxied"] == 1 })
 	c.CloseWrite()
-	readEnd(t, c, true)
+	if err := readEnd(t, c, true); err != syscall.ECONNRESET {
+		t.Errorf("the bridge read %v, want murmur's reset passed on", err)
+	}
 	waitFor(t, "the slot back", func() bool { return r.m.Snapshot().Active == 0 })
 	if n := r.m.Snapshot().Resets; n != 0 {
 		t.Errorf("resets_total %d for a reset after the bridge's FIN, want 0", n)
