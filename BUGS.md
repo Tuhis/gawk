@@ -472,6 +472,26 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   not possible either, because `stopped()` is quinn's only ack signal
   (`docs/gotchas.md`, "quinn cannot tell you which bytes …").
 
+## Firefox guests can't reach a pinned PoP from a public page
+
+- **Found**: 2026-11-25, R74 PP0 (`docs/76` §3, P5–P7), with
+  `tools/popprobe` on Linux: Firefox 161.0 headless and headful against a
+  `gawk-relay` on a LAN address. Not yet seen at a party.
+- **Impact**: a Firefox guest who scans a standalone PoP's QR code (the
+  `#/?relay=…&certHash=…` link on the public app) can't join. Home's
+  `0x19` offer to a Firefox viewer probes the PoP, fails and stays on
+  home (item 43.5), so Firefox viewers never switch.
+- **Cause**: Firefox's Local Network Access refuses WebTransport from a
+  public page to a private address. Unlike Chrome it shows no prompt for the
+  dial, and granting the permission through a `fetch` prompt doesn't help:
+  `local-network` reads `granted` and WebTransport is still refused. The
+  pinned handshake completes, then the connection is closed before the
+  CONNECT. A page on a private address (the named tier's shape) connects.
+- **Where a fix starts**: a design decision for the owner. Send Firefox
+  guests to the named tier as §6.12 does for Safari, and drop item 43.4's
+  "`granted` → switch silently" for Firefox. Re-check on each Firefox
+  release: `tools/popprobe/headless.sh`.
+
 (The "Viewer latency metrics emit session-age values" entry was resolved
 2026-09-25 by #376: a frame whose parity arrived before its data kept
 timestamp 0, so the metrics measured from the broadcaster tab's time origin.
