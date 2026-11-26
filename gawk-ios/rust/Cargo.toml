@@ -31,7 +31,7 @@ gawk-engine = { path = "../../gawk-broadcast-desktop/crates/engine", default-fea
 gawk-capture = { path = "../../gawk-broadcast-desktop/crates/capture" }
 gawk-encode = { path = "../../gawk-broadcast-desktop/crates/encode" }
 gawk-audio = { path = "../../gawk-broadcast-desktop/crates/audio" }
-uniffi = "0.32"
+uniffi = "0.33"
 
 [profile.release]
 lto = "thin"
