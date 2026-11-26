@@ -1283,6 +1283,10 @@ well as or better than datagrams on the downlink in every cell.
     picked on, keyed as the web's are (`viewer:<code>`, `room:<code>`,
     `broadcast`, which ends when the broadcast does), and the
     `localRelayOptOuts` user default is removed at launch and never read.
+    An iOS opt-out names the PoP the session is on, so it holds even after
+    the held offer expired under a room watching the PoP (no `lr=1` to
+    home renews it there), and it steers only its own stream: a room's
+    opt-out leaves the held PoP for the next broadcast and other streams.
     The iOS room participant now switches too, as the player does. The
     engine's room session (shared with the desktop, off there) says `lr=1`
     on every `/room` join and redial when `follow_offers` is set and reads
@@ -1913,10 +1917,11 @@ Measured on the agent host (8 cores, shared with other agents' builds and
 a kind cluster) in rootless network namespaces (`unshare -rn`). Harness:
 `tools/uplinklab/pop-ttff.sh` + `pop-ttff.py` (PP8) and
 `tools/uplinklab/fair/downlink.sh` + `fair/analyze.py` with `FAIR_SET=down`
-(PP9), committed in `cdb33850` and `5a74e48b`. The product binaries
-(`gawk-server`, `gawk-relay`, `gawk-pubsim`, `gawk-uplinklab legsend`) were
-built from `cdb33850`, whose product code is `main` at `2857037f`; the TTFF
-viewer (`gawk-uplinklab ttff`) carries `5a74e48b`'s close fix. Go's VCS
+(PP9), landed in #850. The product binaries (`gawk-server`, `gawk-relay`,
+`gawk-pubsim`, `gawk-uplinklab legsend`) were built from that PR's harness
+commit, whose product code is `main` at `2857037f`; the TTFF viewer
+(`gawk-uplinklab ttff`) includes the PR's fix that pauses after closing, so
+home ends the session at once. Go's VCS
 stamp reads `f6fea2e1` for these worktree builds, which is wrong
 (`docs/gotchas.md`). Each run waited for the host's 1-minute load average
 to fall under 4 (up to 5 minutes) and recorded it, with the CPU steal over
@@ -1952,8 +1957,11 @@ Two rows ran at 5.6–5.7 % steal (averaged over the row's ≈ 3.5 minutes)
 and were not re-run; their cold p50 is within 9 ms of the low-steal row beside them.
 
 Of a cold join's ≈ 255 ms with an undelayed viewer, ≈ 85 ms is the
-subscribe to the leg's upgrade at home: the want down the link (½ RTT)
-and the leg's QUIC and CONNECT handshakes (2 RTTs), as item 22 predicts.
+subscribe to the leg's upgrade at home: ½ RTT for the want down the link,
+then 1½ RTTs until the leg's CONNECT reaches home (the PoP's Initial
+arrives, home answers, the Finished and the CONNECT arrive), about 80 ms
+at 40 ms RTT: seen from home, a little under item 22's estimate of
+about 2 WAN RTTs for the handshake.
 The other ≈ 170 ms is the 230 kB prime crossing a fresh connection in
 Cubic's slow start. With 40 ms on the viewer's own path too, both the
 cold and the warm viewer add their own handshake (≈ 2 RTTs, the session-up
