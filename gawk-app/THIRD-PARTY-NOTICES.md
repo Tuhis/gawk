@@ -23,7 +23,7 @@ script for what counts as a dependency here and why.
 
 | Package | Version | License | Copyright |
 |---|---|---|---|
-| `@types/react` | 19.3.1 | `MIT` | Copyright (c) Microsoft Corporation |
+| `@types/react` | 19.3.3 | `MIT` | Copyright (c) Microsoft Corporation |
 | `csstype` | 3.2.3 | `MIT` | Copyright (c) 2017-2018 Fredrik Nicol |
 | `react` | 19.3.1 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
 | `react-dom` | 19.3.1 | `MIT` | Copyright (c) Meta Platforms, Inc. and affiliates |
