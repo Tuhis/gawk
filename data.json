@@ -34,23 +34,23 @@
     },
     "gawk-mumble-bridge": {
       "component": "gawk-mumble-bridge",
-      "covered": 2827,
+      "covered": 2824,
       "label": "voice bridge",
-      "pct": 86.0,
+      "pct": 85.9,
       "total": 3287,
       "unit": "statements"
     },
     "gawk-server": {
       "component": "gawk-server",
-      "covered": 17920,
+      "covered": 17908,
       "label": "relay",
-      "pct": 85.7,
+      "pct": 85.6,
       "total": 20919,
       "unit": "statements"
     },
     "gawk-telemetry": {
       "component": "gawk-telemetry",
-      "covered": 5590,
+      "covered": 5589,
       "label": "telemetry",
       "pct": 80.2,
       "total": 6971,
