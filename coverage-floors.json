@@ -10,13 +10,15 @@
     "component whose baseline has not been established.",
     "Every floor below was set from the baselines measured in runs 33665181002 and",
     "33665181055 on 2026-09-02, in the race-free coverage configuration docs/43 D9",
-    "describes: 81.9 / 79.7 / 64.4 / 80.3 / 67.3 / 18.7 / 78.9 / 91.5."
+    "describes: 81.9 / 79.7 / 64.4 / 80.3 / 67.3 / 18.7 / 78.9 / 91.5.",
+    "gawk-mmproxy's floor (R88, 2026-11-26): 78.8% measured locally in the race-free configuration with the namespaced tests running, as mmproxy-coverage runs them, rounded down and dropped by one."
   ],
   "floors": {
     "gawk-admin": 78,
     "gawk-admin-ui": 90,
     "gawk-app": 78,
     "gawk-broadcast-desktop": 79,
+    "gawk-mmproxy": 77,
     "gawk-mumble-bridge": 85,
     "gawk-server": 81,
     "gawk-telemetry": 66,

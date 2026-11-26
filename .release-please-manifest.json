@@ -7,5 +7,6 @@
   "gawk-ios": "1.9.1",
   "gawk-sampler": "1.1.2",
   "gawk-mumble-bridge": "1.2.0",
-  "gawk-whip-gateway": "1.2.0"
+  "gawk-whip-gateway": "1.2.0",
+  "gawk-mmproxy": "0.0.0"
 }
