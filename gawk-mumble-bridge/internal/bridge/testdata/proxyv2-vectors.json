@@ -1,0 +1,20 @@
+{
+ "_comment": "PROXY protocol v2 bytes gawk-mumble-bridge sends (docs/92 D2): a copy of the `encode` block of gawk-mmproxy/internal/proxyproto/testdata/vectors.json, which checks the two stay identical.",
+ "encode": [
+  {
+   "name": "tcp4",
+   "source": "203.0.113.7:40001",
+   "hex": "0d0a0d0a000d0a515549540a2111000ccb007107000000009c410000"
+  },
+  {
+   "name": "tcp6",
+   "source": "[2001:db8::7]:40020",
+   "hex": "0d0a0d0a000d0a515549540a2121002420010db8000000000000000000000007000000000000000000000000000000009c540000"
+  },
+  {
+   "name": "tcp4 loopback (the e2e)",
+   "source": "127.0.0.5:51000",
+   "hex": "0d0a0d0a000d0a515549540a2111000c7f00000500000000c7380000"
+  }
+ ]
+}

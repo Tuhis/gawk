@@ -24,6 +24,8 @@ const (
 	ReasonConnectionLost   = "connection_lost"
 	ReasonReplaced         = "replaced"
 	ReasonTimeout          = "timeout"
+	// R88 (docs/92 D8): the session's address can't be sent to gawk-mmproxy.
+	ReasonProxySource = "proxy_source"
 	// Ice mode (docs/89 D11).
 	ReasonIceUnavailable     = "ice_unavailable"
 	ReasonIceSecret          = "ice_secret"
@@ -48,6 +50,7 @@ var failureText = map[string]string{
 	ReasonConnectionLost:     "the Mumble connection was lost",
 	ReasonReplaced:           "a newer Mumble login took this name",
 	ReasonTimeout:            "the Mumble server did not answer in time",
+	ReasonProxySource:        "the bridge can't pass this connection's address to the Mumble server",
 	ReasonIceUnavailable:     "the Mumble server's Ice interface is unreachable",
 	ReasonIceSecret:          "the Mumble server refused the bridge's Ice secret",
 	ReasonIceProtocol:        "the Mumble server's Ice answer was not understood",

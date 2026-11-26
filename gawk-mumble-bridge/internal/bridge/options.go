@@ -64,6 +64,12 @@ type MumbleOptions struct {
 	ObserverName        string
 	TempParent          string
 	TempChannelTemplate string
+	// ProxyAddr, when set, is gawk-mmproxy's host:port in murmur's pod
+	// (R88, docs/92 D8): every voice user's Mumble connection dials it and
+	// writes a PROXY v2 header with the browser's address before TLS, so
+	// murmur sees the browser, not this pod. TLS still verifies murmur: the
+	// name stays Addr's host. The observer and Ice keep dialling directly.
+	ProxyAddr string
 	// Ice, when Ice.Addr is set, is Ice mode (docs/89 D1): the roster comes
 	// from murmur's Ice and no observer user exists. Unset is observer
 	// mode, R79's behaviour.

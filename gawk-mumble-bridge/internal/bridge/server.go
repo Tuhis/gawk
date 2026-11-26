@@ -126,6 +126,9 @@ func New(opts Options) (*Server, error) {
 	}
 	if opts.Mumble.Ice.Addr != "" {
 		s.ice = newIceMirror(s)
+		if opts.Mumble.ProxyAddr != "" {
+			s.names.onServer = s.ice.hasName // docs/92 D12
+		}
 	}
 	s.linkTr = &webtransport.Transport{
 		TLSClientConfig: &tls.Config{ServerName: opts.Relay.ServerName, RootCAs: s.relayRoot},

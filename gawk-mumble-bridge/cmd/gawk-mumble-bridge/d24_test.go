@@ -37,10 +37,13 @@ var voiceNames = map[string]bool{
 	"opus": true, "payload": true, "pkt": true, "packet": true, "p": true, "dg": true, "d": true,
 	"buf": true, "frame": true, "body": true, "data": true, "rec": true, "msg": true,
 	"hello": true, "ticket": true, "raw": true, "forged": true, "audio": true, "q": true,
+	// R88 (docs/92 D10): the browser's address, which reaches murmur
+	// through gawk-mmproxy and nowhere else.
+	"remote": true, "src": true,
 }
 
 // voiceFields are struct fields that hold audio or a ticket.
-var voiceFields = map[string]bool{"Opus": true, "Ticket": true, "Payload": true}
+var voiceFields = map[string]bool{"Opus": true, "Ticket": true, "Payload": true, "Remote": true}
 
 func isSink(call *ast.CallExpr) (string, bool) {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
@@ -125,7 +128,7 @@ func TestNoVoiceBytesWrittenOrLogged(t *testing.T) {
 			if sink, ok := isSink(call); ok {
 				for _, arg := range call.Args {
 					if name, ok := voiceValued(arg); ok {
-						t.Errorf("%s: %s is passed to %s — voice bytes and tickets never reach a log or an error (D24)", fset.Position(arg.Pos()), name, sink)
+						t.Errorf("%s: %s is passed to %s — voice bytes, tickets and browser addresses never reach a log or an error (docs/80 D24, docs/92 D10)", fset.Position(arg.Pos()), name, sink)
 					}
 				}
 			}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"sync"
 	"time"
@@ -317,7 +318,16 @@ func relayCode(code uint32) uint32 {
 // connect opens the user's Mumble connection and enters the room's channel.
 func (vs *voiceSession) connect(nick string, mute, deaf bool, code string, acc voice.Message) (*mumble.Client, string, uint32, error) {
 	s := vs.s
-	c, name, release, err := s.connectMumble(vs.ctx, MumbleName(s.opts.Mumble.NameTemplate, nick), maxNameAttempts, mute, deaf, audioQueueLen)
+	var src netip.AddrPort
+	if s.opts.Mumble.ProxyAddr != "" {
+		// Fail closed (docs/92 OD4): never fall back to dialling murmur
+		// from this pod's address.
+		var err error
+		if src, err = proxySource(vs.remote); err != nil {
+			return nil, "", 0, fail(ReasonProxySource, err)
+		}
+	}
+	c, name, release, err := s.connectMumble(vs.ctx, MumbleName(s.opts.Mumble.NameTemplate, nick), maxNameAttempts, mute, deaf, audioQueueLen, src)
 	if err != nil {
 		return nil, "", 0, err
 	}
