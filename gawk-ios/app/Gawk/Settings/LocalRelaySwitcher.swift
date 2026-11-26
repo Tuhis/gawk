@@ -127,14 +127,17 @@ final class LocalRelaySwitcher {
     /// A fresh offer from `home`, from a probe or a live session.
     func consider(_ offer: LocalRelayOffer, live: Bool, home: String) {
         lastOffered[home] = offer.handle
-        guard !isOptedOut(offer.handle), !unreachable.contains(offer.handle) else { return }
+        guard !unreachable.contains(offer.handle) else { return }
+        // Renewing the held PoP comes before the opt-out: an opt-out keeps
+        // it for the other streams (`target` and `chip` skip it on the
+        // opted-out one), and a renewal never switches anything.
         if var h = held, h.handle == offer.handle, h.home == home, h.until > .now {
             h.until = .now.addingTimeInterval(TimeInterval(offer.validitySecs))
             held = h
             if live { nextBroadcast = true }
             return
         }
-        guard probing == nil else { return }
+        guard !isOptedOut(offer.handle), probing == nil else { return }
         self.live = live
         probing = (offer, home)
         let p = LocalRelayPrompt(active: active)
@@ -244,7 +247,7 @@ final class LocalRelaySwitcher {
         Task { [weak self] in
             let found = await probe(offer)
             guard let self, self.prompt === p else { return }
-            guard let found, found.handle == offer.handle, !self.isOptedOut(offer.handle) else {
+            guard let found, found.handle == offer.handle else {
                 self.step(p.failed())
                 return
             }
@@ -257,6 +260,11 @@ final class LocalRelaySwitcher {
             self.probing = nil
             self.prompt = nil
             _ = p.succeeded()
+            // Opted out on this stream while the probe ran: the PoP answered,
+            // so it is held for the other streams, but this one stays home.
+            // Not a failure: that would count toward the one retry and could
+            // leave the PoP unreachable on every stream (OD18 is per stream).
+            if self.isOptedOut(offer.handle) { return }
             self.onSwitch?(h)
         }
     }
