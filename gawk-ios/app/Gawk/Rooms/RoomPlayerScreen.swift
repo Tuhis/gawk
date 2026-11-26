@@ -78,7 +78,7 @@ struct RoomPlayerScreen: View {
             m.onOffer = { [switcher, home = settings.relayURL] offer in
                 switcher.consider(offer, live: false, home: home)
             }
-            m.onLocalRelayFailed = { [switcher] in switcher.refused() }
+            m.onLocalRelayFailed = { [switcher, weak m] in switcher.refused(pop: m?.localRelay) }
             switcher.onSwitch = { [weak m, home = settings.relayURL] pop in
                 if pop.home == home { m?.switchTo(pop) }
             }
@@ -252,7 +252,7 @@ struct RoomPlayerScreen: View {
             if let pop = model.localRelay {
                 Menu {
                     Button("Use \(LocalRelayCopy.homeHost(settings)) instead") {
-                        switcher.optOut(stream: LocalRelaySwitcher.roomStream(code))
+                        switcher.optOut(stream: LocalRelaySwitcher.roomStream(code), pop: pop)
                         model.useHome()
                         controls.touch()
                     }

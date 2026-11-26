@@ -92,7 +92,13 @@ final class LocalRelaySwitcher {
     /// The PoP opted out of on the current stream, if any.
     var optedOutHandle: String? { optedOut?.handle }
 
-    private func isOptedOut(_ handle: String) -> Bool { optedOut?.handle == handle }
+    /// Whether `handle` was opted out of on `stream` (the current stream
+    /// when nil). An opt-out picked on one stream never steers another:
+    /// a room's "Use … instead" leaves the next broadcast on the PoP.
+    private func isOptedOut(_ handle: String, on stream: String? = nil) -> Bool {
+        guard let o = optedOut, o.handle == handle else { return false }
+        return o.stream == (stream ?? currentStream)
+    }
 
     /// A screen names the stream it dials before its first session: the
     /// redials of one stream name the same one; any other ends the
@@ -112,7 +118,10 @@ final class LocalRelaySwitcher {
     /// The chip: "Assembly 2026 · local relay" (§7.3) while `home` is the
     /// selected server, or nil.
     func chip(home: String) -> String? {
-        current().flatMap { $0.home == home ? "\($0.name) · local relay" : nil }
+        current().flatMap {
+            $0.home == home && !isOptedOut($0.handle, on: Self.broadcastStream)
+                ? "\($0.name) · local relay" : nil
+        }
     }
 
     /// A fresh offer from `home`, from a probe or a live session.
@@ -141,14 +150,16 @@ final class LocalRelaySwitcher {
     }
 
     /// The chip's "Use gawk.ioio.fi instead", picked on `stream`: held for
-    /// that stream only, in memory (OD18).
-    func optOut(stream: String) {
-        guard let h = held else { return }
+    /// that stream only, in memory (OD18). `pop` is the PoP the session is
+    /// on, when it has one: a room or player watching the PoP doesn't say
+    /// `lr=1` to home, so `held` can expire under it. The held PoP stays
+    /// for other streams; `target` and `chip` skip it on this one.
+    func optOut(stream: String, pop: Held? = nil) {
+        guard let h = pop ?? held else { return }
         enterStream(stream)
         optedOut = (h.handle, stream)
         lastOffered[h.home] = h.handle
-        held = nil
-        nextBroadcast = false
+        if stream == Self.broadcastStream { nextBroadcast = false }
     }
 
     /// Hide (`true`) or Show on `handle`'s party wall, remembered for the
@@ -160,33 +171,35 @@ final class LocalRelaySwitcher {
     }
 
     /// The PoP refused the session: home for the rest of the app session.
-    func refused() {
-        if let h = held {
-            unreachable.insert(h.handle)
-            lastOffered[h.home] = h.handle
-        }
-        held = nil
+    /// `pop` is the PoP the session was on, which `held` may have outlived.
+    func refused(pop: Held? = nil) {
+        guard let h = pop ?? held else { return }
+        unreachable.insert(h.handle)
+        lastOffered[h.home] = h.handle
+        if held?.handle == h.handle { held = nil }
     }
 
     /// Where the next broadcast (or a new player) dials: the held PoP, or
     /// home, with `lr=1` unless the app gave up on the PoP that home last
     /// offered (opted out, or unreachable): only clients that will follow
     /// an offer say it, since home holds their demand for one (item 43.7).
-    func target(home: String, homeCertHashes: [String]) -> Target {
-        if let pop = current(), pop.home == home {
+    /// `stream` is the stream it is for, when the caller hasn't entered it
+    /// yet (a broadcast enters it once started).
+    func target(home: String, homeCertHashes: [String], stream: String? = nil) -> Target {
+        if let pop = current(), pop.home == home, !isOptedOut(pop.handle, on: stream) {
             return Target(
                 url: pop.url, certHashes: pop.certHashes, followOffers: false,
                 wallHidden: wallHidden.contains(pop.handle), pop: pop)
         }
         return Target(
-            url: home, certHashes: homeCertHashes, followOffers: followsOffers(home: home),
+            url: home, certHashes: homeCertHashes, followOffers: followsOffers(home: home, stream: stream),
             wallHidden: false, pop: nil)
     }
 
     /// Whether a session toward `home` would follow an offer (`lr=1`).
-    func followsOffers(home: String) -> Bool {
+    func followsOffers(home: String, stream: String? = nil) -> Bool {
         guard let last = lastOffered[home] else { return true }
-        return !unreachable.contains(last) && !isOptedOut(last)
+        return !unreachable.contains(last) && !isOptedOut(last, on: stream)
     }
 
     /// A broadcast started: what was said about the next one is spent. An

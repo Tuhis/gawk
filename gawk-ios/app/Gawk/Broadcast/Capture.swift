@@ -82,7 +82,9 @@ final class Capture {
         // R74 (docs/76 item 43.3): a party's local relay that answered a
         // fresh offer takes the broadcast, decided now, before going live,
         // and never moved after. Home's publish secret never goes there.
-        let target = switcher?.target(home: settings.relayURL, homeCertHashes: settings.relayCertHashes)
+        let target = switcher?.target(
+            home: settings.relayURL, homeCertHashes: settings.relayCertHashes,
+            stream: LocalRelaySwitcher.broadcastStream)
             ?? LocalRelaySwitcher.Target(
                 url: settings.relayURL, certHashes: settings.relayCertHashes,
                 followOffers: true, wallHidden: false, pop: nil)

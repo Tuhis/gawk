@@ -138,13 +138,15 @@ final class LocalRelayTests: XCTestCase {
         s.consider(offer, live: false, home: home)
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(calls.n, 1)
-        // Another stream follows the offer again.
+        // Another stream follows the offer again, on the PoP still held:
+        // the room's opt-out never let it go, so there is nothing to probe.
         s.enterStream(LocalRelaySwitcher.viewerStream("K7XQ2M"))
         XCTAssertNil(s.optedOutHandle)
         XCTAssertTrue(s.followsOffers(home: home))
+        XCTAssertNotNil(s.target(home: home, homeCertHashes: []).pop)
         s.consider(offer, live: false, home: home)
-        try await settle { s.chip(home: home) != nil }
-        XCTAssertEqual(calls.n, 2)
+        XCTAssertNotNil(s.chip(home: home))
+        XCTAssertEqual(calls.n, 1)
 
         // The broadcast's opt-out ends with the broadcast.
         s.optOut(stream: LocalRelaySwitcher.broadcastStream)
@@ -157,6 +159,53 @@ final class LocalRelayTests: XCTestCase {
     }
 
     /// TN3179 (item 44): while the app is not active nothing dials; coming
+    /// OD18, PR #850 round 1: a room watching the PoP says no lr=1 to
+    /// home, so the held offer can expire under it. Its "Use … instead"
+    /// still holds for that room, names the PoP the room is on, and leaves
+    /// the next broadcast on the PoP; a refusal there marks that PoP.
+    func testARoomOptOutOutlivesTheHeldOfferAndStaysOnItsStream() async throws {
+        let s = make()
+        let calls = Calls()
+        let answer = found
+        s.probe = { _ in
+            await calls.bump()
+            return answer
+        }
+        let room = LocalRelaySwitcher.roomStream("lan-party")
+        let expired = LocalRelaySwitcher.Held(
+            handle: offer.handle, name: offer.name, url: answer.url, certHashes: answer.certHashes,
+            until: .now.addingTimeInterval(-1), home: home)
+        s.enterStream(room)
+        XCTAssertNil(s.current(), "nothing held")
+        s.optOut(stream: room, pop: expired)
+        XCTAssertEqual(s.optedOutHandle, offer.handle, "recorded without a held offer")
+        XCTAssertFalse(s.followsOffers(home: home))
+        // Rejoining the same room: home's fresh offer is not followed.
+        s.enterStream(room)
+        s.consider(offer, live: false, home: home)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(calls.n, 0)
+
+        // With the PoP held, a room's opt-out leaves the broadcast on it.
+        let b = make()
+        b.probe = { _ in answer }
+        b.consider(offer, live: false, home: home)
+        try await settle { b.chip(home: home) != nil }
+        b.enterStream(room)
+        b.optOut(stream: room, pop: b.current())
+        XCTAssertNil(b.target(home: home, homeCertHashes: []).pop, "this room stays home")
+        XCTAssertNotNil(b.chip(home: home), "the Broadcast tab still offers the PoP")
+        XCTAssertEqual(
+            b.target(home: home, homeCertHashes: [], stream: LocalRelaySwitcher.broadcastStream).url,
+            answer.url, "the next broadcast publishes there")
+
+        // A refusal on a PoP whose offer expired still marks it.
+        let r = make()
+        r.refused(pop: expired)
+        XCTAssertFalse(r.target(home: home, homeCertHashes: []).followOffers,
+                       "unreachable: no lr=1 for it")
+    }
+
     /// back does.
     func testABackgroundedAppNeverDials() async throws {
         let s = make()
