@@ -2,6 +2,10 @@
 // R79 MV7 (docs/80 §9): room voice end to end, with every real component.
 // R85 MI4 (docs/89): in both roster modes, VOICE_ROSTER=ice (the default)
 // or VOICE_ROSTER=observer.
+// R88 PX4 (docs/92): with gawk-mmproxy beside murmur by default
+// (VOICE_PROXY=off dials murmur directly). The UDP LoadBalancer stand-in
+// gives each flow its own loopback address, so the bridges, and through the
+// proxy murmur, see each browser at its own address.
 //
 //   murmur 1.6 (docker)  ←  two gawk-mumble-bridge pods  ←  the relay
 //          ↑                 behind a UDP "LoadBalancer"      ↑
@@ -32,8 +36,14 @@
 //                             channel under the parent; a native user joins
 //                             it by gawk's fleet-stable name and is in the
 //                             room's roster
-//   6. gawk ban             — an IP ban covering the browsers ends alice's
-//                             voice (4015) on the relay's own ban event
+//   9. a Mumble ban (R88)   — with the proxy on, murmur logs each browser
+//                             at its own address; a SuperUser kickban of
+//                             erin ends her voice (4015) while alice stays
+//                             in voice and the native user still hears her
+//   6. gawk ban             — an IP ban covering the browsers (127.0.0.0/8:
+//                             each flow has its own loopback address) ends
+//                             alice's voice (4015) on the relay's own ban
+//                             event
 //
 // Ice mode (docs/89): the roster comes from murmur's Ice, so pass 1 also
 // checks that no user named the observer name exists, pass 5 that the
@@ -103,6 +113,10 @@ const OBSERVER_NAME = 'gawkBridgeBot';
 const ROSTER = process.env.VOICE_ROSTER ?? 'ice';
 if (!['ice', 'observer'].includes(ROSTER)) throw new Error(`VOICE_ROSTER=${ROSTER}: want ice or observer`);
 const ICE = ROSTER === 'ice';
+const PROXY = (process.env.VOICE_PROXY ?? 'on') !== 'off';
+const MMPROXY_PORT = 4746;
+const MMPROXY_OPS = 4747;
+const MMPROXY_CONTAINER = 'gawk-e2e-mmproxy';
 // murmur.sh puts Ice at the base port + 3; the bridges reach it through a
 // proxy the outage pass can cut.
 const ICE_PROXY_PORT = 4745;
@@ -192,6 +206,23 @@ function mumblesim(name, args) {
 // and the script's re-set on the running server can lose its SQLite write
 // to the server (CI, PR #595), so a WrongUserPW here sets it again and
 // retries rather than failing the run on a harness race.
+// murmurAddresses maps each user name to the address murmur logged for its
+// connection (R88). Murmur logs a connection as session 0,
+// "<0:(-1)> New connection: 127.0.0.3:41234", and assigns the session only
+// at "<7:alice [web](-1)> Authenticated", so a login is paired with the
+// latest connection line not yet paired. The latest login of a name wins.
+function murmurAddresses() {
+  const pending = [];
+  const out = new Map();
+  for (const line of murmurLog().split('\n')) {
+    let m = line.match(/New connection: (\[[^\]]+\]|[0-9.]+):\d+/);
+    if (m) pending.push(m[1].replace(/^\[|\]$/g, ''));
+    m = line.match(/<\d+:(.+)\(-?\d+\)> Authenticated/);
+    if (m && pending.length) out.set(m[1], pending.pop());
+  }
+  return out;
+}
+
 async function admin(name, args) {
   for (let attempt = 1; ; attempt++) {
     const run = attempt === 1 ? name : `${name}-${attempt}`;
@@ -339,13 +370,31 @@ async function main() {
   // test script: autoban off, a username rule that takes "{nick} [web]").
   log('starting murmur 1.6');
   const murmurEnv = execFileSync(join(REPO, 'gawk-mumble-bridge/testdata/murmur.sh'), ['up', '1.6'], {
-    env: { ...process.env, GAWK_MURMUR_PREFIX: 'gawk-e2e-murmur', GAWK_MURMUR_BASE_PORT: String(MURMUR_BASE) },
+    // GAWK_MURMUR_NO_PROXIED: murmur.sh's `proxied` server is for the Go
+    // tests; this run puts its own gawk-mmproxy beside `main` (below).
+    env: { ...process.env, GAWK_MURMUR_PREFIX: 'gawk-e2e-murmur', GAWK_MURMUR_BASE_PORT: String(MURMUR_BASE), GAWK_MURMUR_NO_PROXIED: '1' },
   }).toString();
   appendFileSync(join(OUT, 'murmur.env'), murmurEnv);
   const menv = Object.fromEntries([...murmurEnv.matchAll(/^export (\w+)=(.*)$/gm)].map((m) => [m[1], m[2]]));
   log(`roster mode: ${ROSTER}`);
   const proxy = iceProxy(ICE_PROXY_PORT, Number(menv.GAWK_TEST_MURMUR_ICE.split(':')[1]));
   if (ICE) await proxy.start();
+
+  // R88: gawk-mmproxy beside murmur. `main` runs on the host's network, so
+  // the proxy does too, in a container for its NET_RAW (IP_TRANSPARENT).
+  // Every source here is a local 127.0.x.y, which needs no policy route:
+  // -require-routes=false, and none is installed in this namespace.
+  if (PROXY) {
+    log('starting gawk-mmproxy beside murmur');
+    spawnSync('docker', ['rm', '-f', MMPROXY_CONTAINER]);
+    execFileSync('docker', ['create', '--name', MMPROXY_CONTAINER, '--network', 'host', '--user', '0',
+      '--cap-drop', 'ALL', '--cap-add', 'NET_RAW', 'alpine:3.24', '/gawk-mmproxy', 'serve',
+      '-listen', `127.0.0.1:${MMPROXY_PORT}`, '-ops-listen', `127.0.0.1:${MMPROXY_OPS}`,
+      '-murmur-port', String(MURMUR_BASE), '-require-routes=false']);
+    execFileSync('docker', ['cp', bin('gawk-mmproxy'), `${MMPROXY_CONTAINER}:/gawk-mmproxy`]);
+    execFileSync('docker', ['start', MMPROXY_CONTAINER]);
+    await waitForHttp(`http://127.0.0.1:${MMPROXY_OPS}/healthz`, 15_000, 'gawk-mmproxy');
+  }
 
   // The static room's channel and the temporary-channel parent with its
   // MakeTempChannel grant for the bridge's access token (docs/80 §5, D10).
@@ -360,7 +409,9 @@ async function main() {
   const certHash = createHash('sha256').update(der).digest('hex');
 
   // The LoadBalancer in front of both bridge pods, public and internal.
-  const lbPublic = new UdpBalancer({ listen: LB_PUBLIC, backends: BRIDGES.map((b) => ({ name: b.name, port: b.pub })) });
+  // distinctSources: each browser flow reaches a bridge from its own
+  // 127.0.x.y, as a Local-policy LoadBalancer keeps each client's address.
+  const lbPublic = new UdpBalancer({ listen: LB_PUBLIC, distinctSources: true, backends: BRIDGES.map((b) => ({ name: b.name, port: b.pub })) });
   const lbInternal = new UdpBalancer({ listen: LB_INTERNAL, backends: BRIDGES.map((b) => ({ name: b.name, port: b.internal })) });
   await lbPublic.start();
   await lbInternal.start();
@@ -403,6 +454,7 @@ async function main() {
       '-mumble-access-token', TOKEN,
       '-mumble-temp-parent', TEMP_PARENT,
       '-drain-timeout', '5s',
+      ...(PROXY ? ['-mumble-proxy-addr', `127.0.0.1:${MMPROXY_PORT}`] : []),
       ...(ICE
         ? [
             '-mumble-ice-addr', `127.0.0.1:${ICE_PROXY_PORT}`,
@@ -491,6 +543,27 @@ async function main() {
     await pollFor(async () => /removed from voice/i.test(await sectionText(bob)), 10_000, 200, 'bob’s panel to say he was removed from voice');
     log('3b ok: a Mumble kick ends bob’s voice session, terminally (4015)');
     await shot(bob, 'bob-kicked');
+
+    // ---- 9. a Mumble ban covers one person (R88) -------------------------
+    if (PROXY) {
+      const erin = await newParticipant(browser, 'erin', certHash);
+      await openRoom(erin, ROOM);
+      await erin.page.getByTestId('voice-panel').getByRole('button', { name: /Listen only/ }).click();
+      await pollFor(async () => (await voiceRows(alice)).some((r) => r.text.includes('erin')), 20_000, 250, 'erin to join voice');
+      const addrs = murmurAddresses();
+      const a = addrs.get('alice [web]');
+      const e = addrs.get('erin [web]');
+      if (!a || !e) fail(`murmur's log has no address for alice (${a}) or erin (${e})`);
+      if (a === e || [a, e].includes('127.0.0.1')) fail(`murmur sees alice at ${a} and erin at ${e}: want two browser addresses, neither the bridge's`);
+      log(`9a ok: murmur sees alice at ${a} and erin at ${e}, the browsers' own addresses`);
+      const heard = native.latest()?.received?.['alice [web]'] ?? 0;
+      await admin('admin-ban', ['-kick', 'erin [web]', '-ban']);
+      await pollFor(async () => /removed from voice/i.test(await sectionText(erin)), 10_000, 200, 'erin’s panel to say she was removed from voice');
+      await pollFor(() => (native.latest()?.received?.['alice [web]'] ?? 0) > heard + 50, 15_000, 250, 'the native user to keep hearing alice after erin’s ban');
+      if (!/Leave voice/.test(await sectionText(alice))) fail('alice left voice when erin was banned');
+      log('9b ok: a Mumble kickban of erin ends her voice (4015); alice stays in voice and the native user still hears her');
+      await shot(erin, 'erin-banned');
+    }
 
     // ---- 4. a bridge pod drains under alice ------------------------------
     const counts = await Promise.all(BRIDGES.map(bridgeSessions));
@@ -639,7 +712,9 @@ async function main() {
     }
 
     // ---- 6. a gawk IP ban ends voice -------------------------------------
-    writeFileSync(bansFile, JSON.stringify([{ target: { type: 'ip', value: '127.0.0.1/32' }, reason: 'e2e' }]));
+    // 127.0.0.0/8: the LoadBalancer stand-in gives each flow its own
+    // loopback address (R88), so alice's isn't necessarily 127.0.0.1.
+    writeFileSync(bansFile, JSON.stringify([{ target: { type: 'ip', value: '127.0.0.0/8' }, reason: 'e2e' }]));
     await pollFor(async () => /removed from voice/i.test(await sectionText(alice)), 15_000, 250, 'alice’s voice to end on the gawk ban');
     log('6 ok: a gawk IP ban ends alice’s voice session (4015)');
     await shot(alice, 'alice-banned');
@@ -673,6 +748,7 @@ try {
   } catch {
     // best effort
   }
+  spawnSync('docker', ['rm', '-f', MMPROXY_CONTAINER]);
   try {
     execFileSync(join(REPO, 'gawk-mumble-bridge/testdata/murmur.sh'), ['down'], {
       env: { ...process.env, GAWK_MURMUR_PREFIX: 'gawk-e2e-murmur' },

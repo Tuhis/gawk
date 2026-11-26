@@ -11,6 +11,13 @@
 //    are still connected to it (the docs/22 lesson), while the rejoin that
 //    follows lands on another pod.
 //
+//  * With `distinctSources`, each new flow reaches its backend from its own
+//    loopback address (127.0.x.y), as a LoadBalancer with
+//    externalTrafficPolicy: Local delivers each client's own address. The
+//    bridges then see distinct browser addresses, which R88 (docs/92 PX4)
+//    passes on to murmur through gawk-mmproxy. Without it, every flow comes
+//    from `host`.
+//
 // It is not a general proxy: no health checks of its own (the harness says
 // which backend is terminating), one listening socket per frontend, and an
 // idle flow is forgotten after FLOW_IDLE_MS.
@@ -21,11 +28,13 @@ const FLOW_IDLE_MS = 60_000;
 
 export class UdpBalancer {
   /**
-   * @param {{listen: number, host?: string, backends: {name: string, port: number}[]}} opts
+   * @param {{listen: number, host?: string, backends: {name: string, port: number}[], distinctSources?: boolean}} opts
    */
-  constructor({ listen, host = '127.0.0.1', backends }) {
+  constructor({ listen, host = '127.0.0.1', backends, distinctSources = false }) {
     this.listenPort = listen;
     this.host = host;
+    this.distinctSources = distinctSources;
+    this.sources = 0;
     this.backends = backends.map((b) => ({ ...b, terminating: false, flows: 0 }));
     this.flows = new Map(); // "addr:port" -> {sock, backend, last}
     this.next = 0;
@@ -43,6 +52,12 @@ export class UdpBalancer {
         resolve();
       });
     });
+  }
+
+  /** The next flow's loopback source: 127.0.0.3, .4, …, never 127.0.0.1. */
+  nextSource() {
+    const n = ++this.sources;
+    return `127.0.${Math.floor(n / 253)}.${(n % 253) + 2}`;
   }
 
   /** New flows stop reaching `name`; its existing flows are kept. */
@@ -77,7 +92,7 @@ export class UdpBalancer {
       const sock = dgram.createSocket('udp4');
       sock.on('message', (reply) => this.front.send(reply, rinfo.port, rinfo.address));
       sock.on('error', () => {});
-      sock.bind(0, this.host);
+      sock.bind(0, this.distinctSources ? this.nextSource() : this.host);
       flow = { sock, backend, last: Date.now() };
       backend.flows++;
       this.flows.set(key, flow);
