@@ -213,7 +213,9 @@ function mumblesim(name, args) {
 // latest connection line not yet paired. Two queues keep an overlapping
 // SuperUser or native connection (always from 127.0.0.1, dialling murmur
 // directly) from being paired with a web user, whose connection comes
-// through the proxy from its own 127.0.x.y. The latest login wins.
+// through the proxy from its own 127.0.x.y. Two web users whose connections
+// overlap could still swap (the latest unpaired wins); pass 9 joins one at
+// a time, which is what keeps its pairing exact. The latest login wins.
 function murmurAddresses() {
   const web = [];
   const direct = [];

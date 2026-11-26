@@ -161,11 +161,16 @@ gawk-mmproxy never logs a client address.
 cd gawk-mmproxy && go test -race ./...
 ```
 
-The routes, the transparent dial and the socket listing are tested against
-the real kernel, in a throwaway user and network namespace the test binary
-creates for itself; where the kernel or a sandbox refuses unprivileged user
-namespaces those tests skip (`GAWK_MMPROXY_REQUIRE_NETNS=1` makes that a
-failure, as CI does).
+The routes and the transparent dial are tested against the real kernel, in
+a throwaway user and network namespace the test binary creates for itself;
+where the kernel or a sandbox refuses unprivileged user namespaces those
+tests skip (`GAWK_MMPROXY_REQUIRE_NETNS=1` makes that a failure, as CI
+does). The socket listing is tested against the kernel in the caller's own
+namespace, which needs no privilege. `GAWK_MMPROXY_NETNS_INPLACE=1` runs the
+namespaced tests in the test process itself, so their coverage counts: it is
+for CI's privileged coverage container only, refuses outside a Docker
+container, and must never be set on a host, where it would leave policy
+routes behind.
 
 Against real murmur, in a pod-shaped Docker topology:
 

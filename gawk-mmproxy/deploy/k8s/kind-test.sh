@@ -8,10 +8,10 @@
 #      proxy, and murmur logs the header's address (uid 65532 + the file
 #      capability under containerd: allowPrivilegeEscalation must be true);
 #   2. a pod without the label can't reach the proxy's port at all (D9);
-#   3. with the routes init container denied NET_ADMIN, murmur's pod still
-#      starts and is Ready, and the proxy refuses with a FIN (D4, D5, D15);
 #   2b. nor can a pod with the bridge's label in another namespace (pods
 #      choose their own labels; the policy names the bridge's namespace);
+#   3. with the routes init container denied NET_ADMIN, murmur's pod still
+#      starts and is Ready, and the proxy refuses with a FIN (D4, D5, D15);
 #   4. with the proxy failing closed while murmur stays up (murmur's port
 #      pointed elsewhere), murmur's pod stays Ready and in its endpoints
 #      (D15);
@@ -123,6 +123,7 @@ kubectl --context "$ctx" create namespace "$ns-other" --dry-run=client -o yaml |
 got=$(probe gawk-mumble-bridge 203.0.113.12:40001 "$ns-other")
 [[ "$got" == timeout || "$got" == refused ]] || fail "bridge-labelled probe from another namespace: $got (want timeout)"
 murmur_log | grep -q "New connection: 203.0.113.12:" && fail "murmur saw the other namespace's probe"
+kubectl --context "$ctx" delete namespace "$ns-other" --wait=false >/dev/null
 echo "   ok ($got)"
 
 echo "3. routes init denied NET_ADMIN: murmur's pod still Ready, the proxy refuses with a FIN"

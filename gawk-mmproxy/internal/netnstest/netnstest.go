@@ -40,6 +40,11 @@ func InPlace() bool { return os.Getenv("GAWK_MMPROXY_NETNS_INPLACE") != "" }
 func Run(t *testing.T, fn func(t *testing.T)) {
 	t.Helper()
 	if InPlace() {
+		// Refuse anywhere that doesn't look disposable: as root on a host
+		// this would leave policy routes behind.
+		if _, err := os.Stat("/.dockerenv"); err != nil {
+			t.Fatal("GAWK_MMPROXY_NETNS_INPLACE is set outside a Docker container; it is for CI's coverage container only")
+		}
 		if err := LoopbackUp(); err != nil {
 			t.Fatalf("loopback up: %v", err)
 		}

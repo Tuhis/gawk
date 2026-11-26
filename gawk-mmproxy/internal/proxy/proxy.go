@@ -337,7 +337,7 @@ func pipe(c, m *net.TCPConn, mt *metrics.Metrics) {
 				// when the read ended because we closed murmur's side
 				// ourselves: then nothing was refused.
 				refused := !sent && !bridgeEnded.Load() && !errors.Is(rerr, net.ErrClosed)
-				if refused || (!errors.Is(rerr, net.ErrClosed) && peerReset(m, rerr, halfClosed.Load())) {
+				if refused || (!bridgeEnded.Load() && !errors.Is(rerr, net.ErrClosed) && peerReset(m, rerr, halfClosed.Load())) {
 					mt.Reset()
 					_ = c.SetLinger(0)
 					_ = c.Close()
