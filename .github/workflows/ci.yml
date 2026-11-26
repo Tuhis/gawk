@@ -3609,8 +3609,15 @@ jobs:
           # from the frames at 1 s.
           grep -q 'whipGatewayUrl: "http://localhost:8180"' dev/generated/config.js
           curl -fsS http://127.0.0.1:8080/config.js | grep -q whipGatewayUrl
-          st=$(curl -fsS -D "$RUNNER_TEMP/whip-headers" -H "Authorization: Bearer $key" \
-                 -H 'Origin: http://localhost:8080' http://127.0.0.1:8180/whip/status)
+          # The gateway refreshes its snapshot once a second (session.sample),
+          # so a read right after the round trip can predate the first GOP
+          # median: gopMs is omitempty and absent until then. Poll for it.
+          for i in $(seq 10); do
+            st=$(curl -fsS -D "$RUNNER_TEMP/whip-headers" -H "Authorization: Bearer $key" \
+                   -H 'Origin: http://localhost:8080' http://127.0.0.1:8180/whip/status)
+            jq -e 'has("gopMs")' <<<"$st" >/dev/null && break
+            sleep 1
+          done
           echo "$st"
           jq -e '.state == "live" and .codec == "H.264" and .gopMs >= 900 and .gopMs <= 1100 and (.warnings | length) == 0' <<<"$st" >/dev/null
           grep -qi '^access-control-allow-origin: http://localhost:8080' "$RUNNER_TEMP/whip-headers"
