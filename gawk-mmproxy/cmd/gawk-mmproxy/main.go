@@ -64,7 +64,9 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 		if err != nil {
 			return flagErr(err, stderr)
 		}
-		return runServe(c, logger(stderr, c.LogLevel, c.LogFormat))
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+		defer stop()
+		return runServe(ctx, c, logger(stderr, c.LogLevel, c.LogFormat), nil)
 	case "version", "-version", "--version":
 		fmt.Fprintln(stderr, "gawk-mmproxy", version)
 		return 0
@@ -106,9 +108,9 @@ func runRoutes(c config.Routes, log *slog.Logger) int {
 	return 0
 }
 
-func runServe(c config.Serve, log *slog.Logger) int {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
+// runServe serves until ctx ends. ready, when set, receives the bound
+// proxy and ops addresses (tests).
+func runServe(ctx context.Context, c config.Serve, log *slog.Logger, ready func(proxyAddr, opsAddr string)) int {
 	m := metrics.New()
 	s := proxy.New(c.Options(), m)
 	if err := s.Listen(); err != nil {
@@ -128,6 +130,9 @@ func runServe(c config.Serve, log *slog.Logger) int {
 	}
 	if ok, why := ops.Ready(oo); !ok {
 		log.Warn("not ready yet", "why", why)
+	}
+	if ready != nil {
+		ready(s.Addr().String(), opsLn.Addr().String())
 	}
 	go func() {
 		if err := ops.Serve(ctx, opsLn, ops.Handler(oo, m)); err != nil {

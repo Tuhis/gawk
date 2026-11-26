@@ -1,0 +1,60 @@
+# gawk-mmproxy beside murmur under Docker Compose (R88, docs/92 D14, D16).
+# A worked example: merge the three services into your own compose file,
+# with your murmur's settings.
+#
+#   docker compose -f gawk-mmproxy/deploy/compose/murmur.yml up -d
+#
+# Both gawk-mmproxy containers join murmur's network namespace
+# (network_mode: service:murmur), which is what makes the loopback dial and
+# its routes work. Docker ties them to that container: recreate murmur, and
+# recreate them too (Kubernetes' pod sandbox doesn't have this problem).
+#
+# THE TRUST BOUNDARY (D16). Outside Kubernetes there is no NetworkPolicy:
+# whoever can reach port 64739 can make murmur see any address. Here the
+# port is reachable only on `murmur-internal`, an internal network shared
+# by murmur and gawk-mumble-bridge, and is NEVER published (no `ports:`
+# entry for 64739). Put the bridge on that network and set
+# GAWK_BRIDGE_MUMBLE_PROXY_ADDR=murmur:64739.
+
+services:
+  murmur:
+    image: mumblevoip/mumble-server:v1.6.1001
+    # host= stays blank (the default): murmur must listen on loopback for
+    # gawk-mmproxy's dial (docs/92 D3).
+    ports:
+      - "64738:64738/tcp" # native clients, as before
+      - "64738:64738/udp"
+    networks: [default, murmur-internal]
+    restart: unless-stopped
+
+  # One-shot: the loopback policy routes (docs/92 D4). Root, NET_ADMIN, and
+  # NET_RAW for the binary's file capability (F14). Always exits 0.
+  mmproxy-routes:
+    image: ghcr.io/tuhis/gawk-mmproxy:1.0.0 # x-release-please-version
+    command: [routes]
+    network_mode: service:murmur
+    user: "0"
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, NET_RAW]
+    read_only: true
+    depends_on: [murmur]
+    restart: "no"
+
+  # The proxy: NET_RAW only, nonroot (docs/92 D5). No healthcheck that
+  # restarts it, and nothing depends on it being healthy: murmur must keep
+  # serving native users whatever the proxy does (D15).
+  mmproxy:
+    image: ghcr.io/tuhis/gawk-mmproxy:1.0.0 # x-release-please-version
+    command: [serve]
+    network_mode: service:murmur
+    cap_drop: [ALL]
+    cap_add: [NET_RAW]
+    read_only: true
+    depends_on:
+      mmproxy-routes:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+networks:
+  murmur-internal:
+    internal: true

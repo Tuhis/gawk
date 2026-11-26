@@ -1,0 +1,68 @@
+# gawk-mmproxy in murmur's pod (R88, docs/92 D11): a strategic-merge patch
+# for the operator's murmur Deployment. Rename `metadata.name` to yours and
+# apply it with kustomize (`patches:`), or copy the two containers into the
+# pod spec by hand. example/ shows both halves together.
+#
+# Two containers, one image:
+#   routes  an init container: installs the loopback policy routes and
+#           exits, always 0 (docs/92 D4). Root, NET_ADMIN, and NET_RAW, which
+#           every container exec'ing this image needs in its bounding set
+#           because of the binary's file capability (docs/92 F14).
+#   mmproxy the sidecar: NET_RAW only, uid 65532 (docs/92 D5).
+#
+# NO readiness or liveness probe on the sidecar (docs/92 D15): a pod is
+# Ready only while every container is, so a probe on the proxy would drop
+# murmur itself from its Service and cut native users. /readyz on port 2114
+# is for operators and alerts.
+#
+# allowPrivilegeEscalation stays true on the sidecar. Whether a non-root
+# process gets the capabilities a container adds is up to the runtime:
+# kind's containerd and Docker hand NET_RAW over directly (measured
+# 2026-11-26, even with no_new_privs), but where a runtime doesn't, the
+# binary's file capability is the only path, and no_new_privs
+# (allowPrivilegeEscalation: false) blocks file capabilities. The only
+# binary in the image that could gain anything is gawk-mmproxy itself, and
+# only NET_RAW.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: murmur # CHANGEME: your murmur Deployment
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: mmproxy-routes
+          image: ghcr.io/tuhis/gawk-mmproxy:1.0.0 # x-release-please-version
+          args: [routes]
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+              add: [NET_ADMIN, NET_RAW]
+          resources:
+            requests: {cpu: 5m, memory: 8Mi}
+            limits: {memory: 32Mi}
+      containers:
+        - name: mmproxy
+          image: ghcr.io/tuhis/gawk-mmproxy:1.0.0 # x-release-please-version
+          args: [serve]
+          ports:
+            - name: mmproxy
+              containerPort: 64739
+              protocol: TCP
+            - name: mmproxy-ops
+              containerPort: 2114
+              protocol: TCP
+          securityContext:
+            runAsUser: 65532
+            runAsNonRoot: true
+            allowPrivilegeEscalation: true
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+              add: [NET_RAW]
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 128Mi}

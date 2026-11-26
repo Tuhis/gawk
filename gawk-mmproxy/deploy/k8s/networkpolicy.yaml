@@ -1,0 +1,43 @@
+# The trust boundary (docs/92 D9, OD3): gawk-mmproxy accepts a PROXY header
+# from anyone who reaches its port, and a header decides the address murmur
+# sees. Only the bridge's pods may reach 64739. Needs a CNI that enforces
+# NetworkPolicy (Calico, Cilium, kindnet; not plain flannel).
+#
+# This policy selects murmur's pod, so it governs ALL of the pod's ingress:
+# murmur's own port stays open to everyone, and any other port you use
+# (Ice for the bridge's roster or a bot, a metrics scrape) must be listed,
+# or it is cut.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: murmur-mmproxy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: murmur # CHANGEME: your murmur pod's labels
+  policyTypes: [Ingress]
+  ingress:
+    # Murmur itself, TCP and UDP, from anywhere: native clients.
+    - ports:
+        - {protocol: TCP, port: 64738}
+        - {protocol: UDP, port: 64738}
+    # gawk-mmproxy: the bridge's pods only, in any namespace.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gawk-mumble-bridge
+          namespaceSelector: {}
+      ports:
+        - {protocol: TCP, port: 64739}
+    # Uncomment what else reaches murmur's pod. Ice (6502) from the bridge
+    # in Ice mode (docs/89) and from any bot that uses it:
+    # - from:
+    #     - podSelector: {matchLabels: {app.kubernetes.io/name: gawk-mumble-bridge}}
+    #       namespaceSelector: {}
+    #   ports:
+    #     - {protocol: TCP, port: 6502}
+    # gawk-mmproxy's /metrics and /readyz (2114), from monitoring:
+    # - from:
+    #     - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}
+    #   ports:
+    #     - {protocol: TCP, port: 2114}
