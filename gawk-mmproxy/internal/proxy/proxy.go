@@ -291,8 +291,9 @@ const tcpClose = 7 // TCP_CLOSE
 // reset is passed to murmur as a reset. Anything else is a half-close.
 func pipe(c, m *net.TCPConn, mt *metrics.Metrics) {
 	done := make(chan struct{}, 2)
-	var halfClosed atomic.Bool // we sent murmur our FIN
-	go func() {                // bridge → murmur
+	var halfClosed atomic.Bool  // we sent murmur our FIN
+	var bridgeEnded atomic.Bool // the bridge closed or reset first
+	go func() {                 // bridge → murmur
 		buf := make([]byte, 32<<10)
 		for {
 			n, rerr := c.Read(buf)
@@ -302,6 +303,7 @@ func pipe(c, m *net.TCPConn, mt *metrics.Metrics) {
 				}
 			}
 			if rerr != nil {
+				bridgeEnded.Store(true) // before murmur's side can see it
 				if isReset(rerr) {
 					_ = m.SetLinger(0)
 					_ = m.Close()
@@ -331,8 +333,11 @@ func pipe(c, m *net.TCPConn, mt *metrics.Metrics) {
 				// the address, however it closed: a healthy murmur answers
 				// with its ServerHello first, and whether its refusal is a
 				// reset or a FIN depends only on whether the ClientHello
-				// had arrived (F22).
-				if !sent || peerReset(m, rerr, halfClosed.Load()) {
+				// had arrived (F22). Not when the bridge ended it first, or
+				// when the read ended because we closed murmur's side
+				// ourselves: then nothing was refused.
+				refused := !sent && !bridgeEnded.Load() && !errors.Is(rerr, net.ErrClosed)
+				if refused || (!errors.Is(rerr, net.ErrClosed) && peerReset(m, rerr, halfClosed.Load())) {
 					mt.Reset()
 					_ = c.SetLinger(0)
 					_ = c.Close()

@@ -449,3 +449,54 @@ func TestMurmurClosingBeforeAByteIsARefusalEvenAsAFIN(t *testing.T) {
 		}
 	}
 }
+
+// F22's "closed before a byte" rule is murmur's refusal only when murmur
+// ended it. When the bridge ends the connection first (a reset, or a FIN
+// from an expired dial or a pod going away), the proxy must not count a
+// murmur reset nor reset the bridge: gawk_mmproxy_resets_total is what an
+// operator reads as "murmur is refusing addresses" (round 1 review).
+func TestBridgeEndingFirstIsNotAMurmurRefusal(t *testing.T) {
+	// A murmur that reads until EOF, never writes, then closes.
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() { io.Copy(io.Discard, c); c.Close() }()
+		}
+	}()
+	port := uint16(ln.Addr().(*net.TCPAddr).Port)
+
+	t.Run("the bridge resets", func(t *testing.T) {
+		r := start(t, nil, func(o *Options, _ *rig) { o.MurmurPort = port })
+		c := r.dial(t)
+		c.Write(append(header(netip.MustParseAddrPort("198.51.100.30:1")), clientHello...))
+		waitFor(t, "the dial", func() bool { return r.m.Snapshot().Conns["proxied"] == 1 })
+		c.SetLinger(0)
+		c.Close()
+		waitFor(t, "the slot back", func() bool { return r.m.Snapshot().Active == 0 })
+		if n := r.m.Snapshot().Resets; n != 0 {
+			t.Errorf("resets_total %d after the bridge's own reset, want 0", n)
+		}
+	})
+	t.Run("the bridge half-closes", func(t *testing.T) {
+		r := start(t, nil, func(o *Options, _ *rig) { o.MurmurPort = port })
+		c := r.dial(t)
+		c.Write(append(header(netip.MustParseAddrPort("198.51.100.31:1")), clientHello...))
+		waitFor(t, "the dial", func() bool { return r.m.Snapshot().Conns["proxied"] == 1 })
+		c.CloseWrite()
+		if err := readEnd(t, c, true); err != io.EOF {
+			t.Errorf("end %v, want the half-close passed back as EOF", err)
+		}
+		waitFor(t, "the slot back", func() bool { return r.m.Snapshot().Active == 0 })
+		if n := r.m.Snapshot().Resets; n != 0 {
+			t.Errorf("resets_total %d after the bridge's own FIN, want 0", n)
+		}
+	})
+}
