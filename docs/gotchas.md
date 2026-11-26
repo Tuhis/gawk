@@ -2772,6 +2772,12 @@ entries still describe code `gawk-pubsim` runs (now
   close once both FINs are exchanged, so it means a reset only if you
   hadn't sent your own FIN. ([docs/92](92-mumble-real-client-addresses.md)
   §3.1 F16)
+- **A server that closes the moment it accepts sends a FIN or a reset by
+  race**: a reset only if the client's first bytes had already arrived
+  unread. Murmur rejects a banned address that way, so "murmur reset me" and
+  "murmur closed before answering" are the same signal. A proxy in front of
+  it must treat either as murmur refusing. ([docs/92](92-mumble-real-client-addresses.md)
+  §3.1 F22)
 - **Docker's userland proxy turns a reset into a FIN.** A port published on
   127.0.0.1 goes through `docker-proxy`, which ends the host side with a FIN
   whatever the container side did. A test of reset-versus-FIN signalling

@@ -3,7 +3,8 @@
 // header's source address as its own (IP_TRANSPARENT), and copies both ways.
 //
 // Error signalling (D6). A murmur reset is passed to the bridge as a reset,
-// whichever direction meets it first (pipe, peerReset).
+// whichever direction meets it first (pipe, peerReset), and so is murmur
+// closing a dialled connection before it sent a byte (a refusal, F22).
 // Every refusal (a bad or late header, a refused source, no routes, murmur
 // unreachable, over the cap) is a FIN before any byte is sent: SHUT_WR, then
 // a drain until EOF or DrainDeadline, then close. A plain close(2) would not
@@ -315,16 +316,23 @@ func pipe(c, m *net.TCPConn, mt *metrics.Metrics) {
 	}()
 	go func() { // murmur → bridge
 		buf := make([]byte, 32<<10)
+		sent := false
 		for {
 			n, rerr := m.Read(buf)
 			if n > 0 {
+				sent = true
 				if _, werr := c.Write(buf[:n]); werr != nil {
 					_ = m.Close() // the bridge is gone
 					break
 				}
 			}
 			if rerr != nil {
-				if peerReset(m, rerr, halfClosed.Load()) {
+				// Murmur closing before it sent a byte is murmur refusing
+				// the address, however it closed: a healthy murmur answers
+				// with its ServerHello first, and whether its refusal is a
+				// reset or a FIN depends only on whether the ClientHello
+				// had arrived (F22).
+				if !sent || peerReset(m, rerr, halfClosed.Load()) {
 					mt.Reset()
 					_ = c.SetLinger(0)
 					_ = c.Close()

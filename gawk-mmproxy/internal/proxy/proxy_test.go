@@ -415,3 +415,37 @@ func TestMurmurResetWhileTheBridgeWritesIsStillAReset(t *testing.T) {
 		}
 	}
 }
+
+// Murmur turns a banned address away at once. Whether that close is a reset
+// or a FIN depends on whether the ClientHello had arrived (unread data makes
+// it a reset): a race, lost on a CI runner where real murmur 1.5's ban came
+// back as a FIN and the bridge read murmur_unreachable. A murmur that
+// accepts and closes before sending a byte is murmur refusing, however it
+// closed; the bridge must see a reset (docs/92 §3.1 F22).
+func TestMurmurClosingBeforeAByteIsARefusalEvenAsAFIN(t *testing.T) {
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close() // nothing read yet: a FIN
+		}
+	}()
+	port := uint16(ln.Addr().(*net.TCPAddr).Port)
+	r := start(t, nil, func(o *Options, _ *rig) { o.MurmurPort = port })
+	for i := 0; i < 20; i++ {
+		c := r.dial(t)
+		c.Write(header(netip.MustParseAddrPort("198.51.100.20:1")))
+		time.Sleep(20 * time.Millisecond) // murmur closes before the ClientHello
+		c.Write(clientHello)
+		if err := readEnd(t, c); err != syscall.ECONNRESET {
+			t.Fatalf("run %d: end %v, want a reset", i, err)
+		}
+	}
+}
