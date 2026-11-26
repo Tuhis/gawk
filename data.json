@@ -2,9 +2,9 @@
   "components": {
     "gawk-admin": {
       "component": "gawk-admin",
-      "covered": 4929,
+      "covered": 4931,
       "label": "admin",
-      "pct": 80.7,
+      "pct": 80.8,
       "total": 6106,
       "unit": "statements"
     },
@@ -42,18 +42,18 @@
     },
     "gawk-mumble-bridge": {
       "component": "gawk-mumble-bridge",
-      "covered": 2888,
+      "covered": 2889,
       "label": "voice bridge",
-      "pct": 86.2,
+      "pct": 86.3,
       "total": 3349,
       "unit": "statements"
     },
     "gawk-server": {
       "component": "gawk-server",
-      "covered": 17907,
+      "covered": 17928,
       "label": "relay",
-      "pct": 85.6,
-      "total": 20919,
+      "pct": 84.9,
+      "total": 21129,
       "unit": "statements"
     },
     "gawk-telemetry": {
@@ -74,9 +74,9 @@
     },
     "gawk-whip-gateway": {
       "component": "gawk-whip-gateway",
-      "covered": 2072,
+      "covered": 2076,
       "label": "WHIP gateway",
-      "pct": 87.5,
+      "pct": 87.7,
       "total": 2367,
       "unit": "statements"
     }
