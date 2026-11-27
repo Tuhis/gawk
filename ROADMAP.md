@@ -106,6 +106,7 @@ feature set exists).
 | R86 | [Choose which streams to watch in a room](#r86--choose-which-streams-to-watch-in-a-room) | 🔧 **implemented 2026-11-19** (VS1–VS3; owner decision OD1 the same day: of five designs mocked on a design canvas, visibility as its own control), open: VS4, the owner pass — the room footer's segment keeps the layouts (Grid · Fit · Focus) and a new pill beside it says what is shown: **All streams**, **Choose** (a checkbox per stream) or **None**, the old Hide videos (a broadcaster's Preview only). An unticked stream has no tile and no media session, new streams arrive shown, numbers keep the room's order, `Shift`+`1`–`4` hide or show a stream, and the choice is remembered per room on the device; a stored `hidden` mode loads as None. Verified on a real relay by the e2e rooms pass: one stream hidden reads 0 subscribers on `/statusz` while the other keeps its own. Web app only: no relay, wire or iOS change ([docs/90](docs/90-room-stream-visibility.md)) |
 | R87 | [Striped deep-buffer delivery](#r87--striped-deep-buffer-delivery) | 🔧 **implemented 2026-11-20** (SG1–SG4; owner decision OD1 the same day: build ahead of SG0's field half), open: SG0's field run and SG5, the owner pass on the owner's mobile path — a *Most stable* viewer whose one connection can't carry the stream now spreads whole GOPs over the primary and up to three R30 legs: GOP *k* goes to connection `fmix32(keyframe frameID) mod N`, each connection runs its own ring cursor, the client reorders GOPs against the playout deadline, and Auto engages only on measured undersupply and keeps a wider step only if it raised goodput 20 %. Measured first (SG0, lab): at 40 ms one deep-buffer connection gets 8.4 Mbit/s at 0.5 % random loss and 6.0 at 1 % against a 10.7 Mbit/s 1080p60 stream, every added connection adds its own share, Firefox matches quic-go's client, and a full link instead stays flat while its RTT climbs 4–5×; the field case's two concurrent connections each held 5.05 Mbit/s through the owner's VPN. Also: per-connection RTT and loss on `/statusz`, a latent DVR pacer wedge on keyframes larger than its burst, and `resilient-undersupply`, which fired on every deep-buffer viewer, fixed beside a new `per-connection-ceiling` rule ([docs/91](docs/91-striped-dvr.md)) |
 | R88 | [Real client addresses for bridged Mumble users](#r88--real-client-addresses-for-bridged-mumble-users) | 🔧 **implemented 2026-11-26** (PX1–PX5; designed the same day from the PX0 spike on real murmur 1.6.1001, owner decisions OD1–OD9 2026-11-25/26), the reference deployment's rollout a separate task (OD7) — murmur sees every bridged web user at its bridge pod's address, so a Mumble ban of one web user bans everyone on that pod and autoban counts a pod as one client. A new default-off `gawk-mmproxy` (eighth Go module, image only, no chart) runs in murmur's pod: the bridge sends it a standard PROXY v2 header with the browser's address, and it dials murmur over loopback from that address (`IP_TRANSPARENT` with only `CAP_NET_RAW`; the loopback policy routes from an init container with `CAP_NET_ADMIN`). Trust is a NetworkPolicy, and the bridge fails closed with 4016. Measured: murmur logs, bans and autobans the spoofed address; a native client on the same address works beside it, UDP included; IPv6 and a murmur restart work; about 0.06 ms added; murmur rejects a banned address with a TCP reset, so the proxy passes resets on and closes with a FIN when murmur is down, or the two would look alike ([docs/92](docs/92-mumble-real-client-addresses.md)) |
+| R89 | [Cameras in a room](#r89--cameras-in-a-room) | 🔧 designed 2026-11-27 (owner decisions OD1–OD10, on a design canvas), not started (CM0–CM9); **CM0, a measurement spike, gates the rest** ([docs/93](docs/93-room-cameras.md)) |
 
 ---
 
@@ -5938,6 +5939,37 @@ proxy's own write consumed, a file capability that blocks `exec`, murmur's
 spike against real murmur 1.6.1001 (docs/92 §3); owner decisions OD1–OD9
 taken 2026-11-25 and 2026-11-26. The reference deployment's rollout is a
 separate task (OD7).
+
+---
+
+## R89 — Cameras in a room
+
+**Goal**: a participant in a room can turn a camera on, so a room with
+voice becomes a call with faces, with or without a game stream in it.
+
+**Why**: a room with voice (R42, R79) is most of a call already, but
+nobody can see anybody, and a room where nobody streams is an empty
+stage. The owner expects both camera-only calls and calls around one or
+several streams.
+
+**Design**: [docs/93](docs/93-room-cameras.md), with the design canvas
+linked from its header. A camera is an ordinary broadcast published from
+the browser at 720p30; the media wire and the hub do not change. The room protocol gains a camera capability and a camera
+roster beside the voice roster, so cameras are not attachments and
+clients that don't ask for the capability see today's room. One layout
+model: people are tiles when nothing is streamed and bubbles when
+something is, with a streamer's face on their own stream. Watching a
+camera needs a view ticket from its room, and cameras are screened by
+`gawk-sampler` from the first release. Default off (`-room-cameras`).
+Web app only, phones included; the iOS app and the desktop broadcasters
+are out of scope.
+
+**Acceptance**: docs/93 §1 (milestone) and §9 (per chunk).
+
+**Status**: 🔧 designed 2026-11-27, not started. CM0 measures lip sync
+against room voice, the receive cost of several cameras beside streams,
+and two encoders in one tab, with the shipping stacks, before the
+bitrate and the caps in the doc are final.
 
 ---
 
