@@ -52,8 +52,15 @@ exceptions = [
     { name = "uniffi_internal_macros", allow = ["MPL-2.0"] },
     { name = "uniffi_macros", allow = ["MPL-2.0"] },
     { name = "uniffi_meta", allow = ["MPL-2.0"] },
+    { name = "uniffi_parse_rs", allow = ["MPL-2.0"] },
     { name = "uniffi_pipeline", allow = ["MPL-2.0"] },
     { name = "uniffi_udl", allow = ["MPL-2.0"] },
+    # uniffi 0.33: uniffi_parse_rs (above) parses Rust sources for the
+    # bindgen and pulls in target-lexicon, the same crate and terms the
+    # desktop deny.toml already scopes for system-deps (docs/58 D12). Build
+    # time only, never linked into the app; the LLVM exception only widens
+    # Apache-2.0, and it is scoped here so the identifier is judged per crate.
+    { name = "target-lexicon", allow = ["Apache-2.0 WITH LLVM-exception"] },
 ]
 
 [bans]

@@ -176,9 +176,9 @@ script for what counts as a dependency here and why.
 | `tracing` | 0.1.44 | `MIT` | Copyright (c) 2019 Tokio Contributors |
 | `tracing-core` | 0.1.36 | `MIT` | Copyright (c) 2019 Tokio Contributors |
 | `typenum` | 1.20.1 | `MIT OR Apache-2.0` | Copyright 2014 Paho Lurie-Gregg<br>Copyright (c) 2014 Paho Lurie-Gregg |
-| `uniffi` | 0.32.2 | `MPL-2.0` | — |
-| `uniffi_core` | 0.32.2 | `MPL-2.0` | — |
-| `uniffi_pipeline` | 0.32.2 | `MPL-2.0` | — |
+| `uniffi` | 0.33.0 | `MPL-2.0` | — |
+| `uniffi_core` | 0.33.0 | `MPL-2.0` | — |
+| `uniffi_pipeline` | 0.33.0 | `MPL-2.0` | — |
 | `untrusted` | 0.9.0 | `ISC` | Copyright 2015-2021 Brian Smith |
 | `ureq` | 3.5.2 | `MIT OR Apache-2.0` | Copyright (c) 2019 Martin Algesten |
 | `ureq-proto` | 0.7.1 | `MIT OR Apache-2.0` | Copyright 2022 Martin Algesten |
@@ -206,9 +206,9 @@ Their source code is available at the addresses below, unmodified.
 
 | Package | Source |
 |---|---|
-| `uniffi` 0.32.2 | <https://crates.io/crates/uniffi/0.32.2> |
-| `uniffi_core` 0.32.2 | <https://crates.io/crates/uniffi_core/0.32.2> |
-| `uniffi_pipeline` 0.32.2 | <https://crates.io/crates/uniffi_pipeline/0.32.2> |
+| `uniffi` 0.33.0 | <https://crates.io/crates/uniffi/0.33.0> |
+| `uniffi_core` 0.33.0 | <https://crates.io/crates/uniffi_core/0.33.0> |
+| `uniffi_pipeline` 0.33.0 | <https://crates.io/crates/uniffi_pipeline/0.33.0> |
 
 ## License texts
 
