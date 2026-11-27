@@ -58,7 +58,7 @@ camera", the capture and encode profile, and the room view.
 | Nothing changes when cameras are off on the relay: no capability, no UI, no new relay behaviour, the room records byte-identical | CM2 off-path test (the docs/44 RM2 shape); CM5 component test |
 | A client that does not ask for the camera capability (desktop broadcaster, iOS app, an older web app) sees the room exactly as today | CM1 vectors; CM2 test with a capability-less session beside a camera |
 | A gawk ban or kill, a room removal, or the participant leaving ends their camera at once | CM2 tests; CM8 e2e |
-| Removing or banning a participant closes the camera sessions they are watching, on every pod, without relying on their client | CM2 unit test; CM8 `e2e-cluster` step with a viewer on an edge pod that ignores the removal |
+| Removing or banning a participant closes the camera sessions they are watching, on every pod, without relying on their client | CM2 unit test; CM8 `e2e-cluster` step with a viewer on an edge pod that ignores the removal and then dials again with its old ticket |
 | A camera can be watched only by someone in its room: a `/subscribe` to a camera without a valid view ticket for that room is refused on every pod, and `#/view/<id>` of a camera shows nothing | CM2 unit tests (no ticket, expired, another room's ticket); CM8 `e2e-cluster` step against an edge pod |
 | A phone browser can turn its camera on, pick front or back, and see the call in a layout made for its width | CM6 component tests at phone width; CM9 owner pass on a phone |
 | Cameras are screened by `gawk-sampler` from the first release, and a flag says it is a camera | CM7 tests in `gawk-sampler` and `gawk-admin` |
@@ -121,7 +121,7 @@ owner pass can revise them in place. What is still open is in §10.
 | D19 | **The first join card gains a camera preview** with microphone and camera toggles, above the existing talk-mode choice, and one new sentence: "Your camera is seen only by people in this gawk room." The camera toggle is off the first time and afterwards starts as it was at the last join on this device (OD15). | People check how they look before they are seen. The sentence is needed because the card already says the voice channel is shared with people outside gawk, and that is not true of the camera. |
 | D20 | **A camera is subscribed only while its face is on screen**, and every camera session closes under What to show → None and when the tab is hidden. | The R86 rule (docs/90 D3) applied to faces: hiding is unsubscribing. |
 | D21 | **Mumble sees nothing.** Cameras are a gawk room feature; the bridge and murmur are untouched. | docs/80 OD4: the integration is voice only. |
-| D22 | **Watching a camera requires a view ticket** (OD6). A camera-capable participant asks the room for one (`CameraWatch`) and gets a short-lived, HMAC-signed ticket naming the room, the participant and the home epoch (proposal: 60 s, reusable inside that time, renewed by the client as it runs out). The browser dials `/subscribe/<id>?camera=<ticket>`. A pod serving a camera broadcast refuses a viewer whose ticket is missing, expired or for another room. The ticket is checked when the session opens. **When a participant is removed or banned, the relay closes every camera session opened with their tickets, on every pod** (OD11): a camera viewer session records the participant from its ticket for this. | A face is more sensitive than a game, and a camera's ID reaches every participant. Without the ticket, anyone who was once in the room could keep opening `#/view/<id>`. A room-scoped ticket, not one per camera, keeps a face appearing on screen from costing a control round trip. |
+| D22 | **Watching a camera requires a view ticket** (OD6). A camera-capable participant asks the room for one (`CameraWatch`) and gets a short-lived, HMAC-signed ticket naming the room, the participant and the home epoch (proposal: 60 s, reusable inside that time, renewed by the client as it runs out). The browser dials `/subscribe/<id>?camera=<ticket>`. A pod serving a camera broadcast refuses a viewer whose ticket is missing, expired or for another room. The ticket is checked when the session opens. **When a participant is removed or banned, the relay closes every camera session opened with their tickets, on every pod** (OD11): a camera viewer session records the participant from its ticket for this. **The same instruction revokes their tickets**: every pod refuses a view ticket naming that participant until the longest-lived ticket they could hold has expired, so a session reopened after the close is refused too. A participant who rejoins gets a new participant ID, and so is not affected. | A face is more sensitive than a game, and a camera's ID reaches every participant. Without the ticket, anyone who was once in the room could keep opening `#/view/<id>`. A room-scoped ticket, not one per camera, keeps a face appearing on screen from costing a control round trip. |
 | D23 | **Cameras are screened from day one** (OD8). `gawk-sampler` samples a camera's cached keyframe as it does any broadcast's. Cameras run in the same mode and with the same thresholds as streams from the first day (OD18). The screening route tells the sampler the broadcast's kind, so a flag in `gawk-admin` says it is a camera and CM7 can report camera flags apart from stream flags. | One mode is one thing for an operator to reason about. The sampler's model was calibrated on game streams, so false flags on faces are expected at first; the kind on every flag is what lets CM7 measure that and decide whether cameras need thresholds of their own. The sampler's prohibitions hold unchanged: no frame bytes written, logged, posted or exposed. |
 
 ---
@@ -227,11 +227,16 @@ that changes it needs a commit touching `gawk-ios/` (`CONTRIBUTING.md`).
    broadcast it pulls is a camera, and of which room, before it lets a
    viewer in. How it learns that is not designed yet (§4); the rule is
    that it fails closed.
-6. When a participant is removed or banned, the home pod has every
-   pod close the camera viewer sessions that carry that participant
-   (D22). How the instruction reaches other pods is CM2's to design,
-   on the path an operator kill takes; the bus carries no room
-   control today, so this is checked first (§4).
+6. When a participant is removed or banned, or leaves, the home pod
+   has every pod close the camera viewer sessions that carry that
+   participant and add the participant to a deny-list kept for one
+   view-ticket lifetime (D22). Step 5 refuses a ticket naming a denied
+   participant, so the still-valid ticket opens nothing after the
+   close. A pod that starts or joins inside that window has no
+   deny-list; whether it must fetch one before serving camera viewers
+   is CM2's to settle. How the instruction reaches other pods is
+   CM2's to design, on the path an operator kill takes; the bus
+   carries no room control today, so this is checked first (§4).
 7. The home pod ends a camera broadcast (through the path an operator
    kill uses) when its owner leaves or is removed, the room ends, or
    the reconnect grace expires (D6). A camera whose publisher session
@@ -352,13 +357,13 @@ join card's camera sentence. Everything else on the canvas is an existing label.
 
 ## 6. Risks and prohibitions
 
-- **A view ticket is checked when a session opens**, so a removal has
-  to close the sessions already open (D22, OD11). Until CM2 has built
-  and tested that across pods, a removed person with a modified client
+- **A view ticket is checked when a session opens and stays valid
+  for its lifetime**, so a removal has to do two things on every pod:
+  close the sessions already open and refuse that participant's
+  tickets until they have expired (D22, OD11). Until CM2 has built and
+  tested both across pods, a removed person with a modified client
   could keep watching faces; the milestone does not ship without it.
-- **Someone who leaves on their own** keeps a valid ticket for up to
-  its lifetime (proposal: 60 s). Their open camera sessions are closed
-  the same way when their control session ends.
+  A leave is handled the same way.
 - **A camera's broadcast ID is still never displayed** and never in a
   share link. The view ticket is the gate; the ID staying out of sight
   is the second line.
@@ -430,7 +435,7 @@ join card's camera sentence. Everything else on the canvas is an existing label.
 |---|---|---|
 | **CM0** | Measurement spike, before any design is final (§9.1) | Every row of §9.1 has a number or a "could not measure, because"; D5, D8 and D10 are revised in place from them; a go/no-go for the milestone is written into §11 |
 | **CM1** | Wire: `RoomCapCamera`, the 0x60–0x63 commands, the 0x60–0x62 events, in Go, TS and Rust | Golden vectors byte-identical across the three copies; a parser without the kinds skips them; fuzz and round-trip tests as for the voice records; the `gawk-ios` commit; a test that the parsers shipped before this chunk reject 0x04 in `wantCaps` and in `caps` (pinning what D3's two rules exist for), and that the widened ones accept it |
-| **CM2** | Relay: publish and view tickets, `/publish?camera=`, `/subscribe/<id>?camera=`, the camera roster and stream owners, room-scoped lifecycle, `kind: camera` labelling, the three options through `registryOptions` + envs + Helm. Starts by reading `internal/transport` and the edge pull path (§4) | Unit tests per command and reject reason; a replayed or expired publish ticket is refused at `/publish` (the nonce is consumed on the home pod; a second publish with it on another pod is refused, and so is any publish while the home pod is unreachable); a camera publish never attached is ended at the ticket's expiry; an outstanding ticket counts toward `-max-room-cameras`; a participant that did not ask for the capability gets `caps` without 0x04 in a room where another participant has a camera; a camera `/subscribe` with no view ticket, an expired one or another room's is refused on the origin and on an edge, and a stream's `/subscribe` is unchanged; a removal, a ban and a leave each close that participant's open camera viewer sessions on the origin and on an edge; a camera dies with its owner's session, a removal, a ban and a room end; a non-home pod proxies; the off-path test (cameras off: byte-identical records, `Unsupported`); the carry-all options test; the no-recording source walk |
+| **CM2** | Relay: publish and view tickets, `/publish?camera=`, `/subscribe/<id>?camera=`, the camera roster and stream owners, room-scoped lifecycle, `kind: camera` labelling, the three options through `registryOptions` + envs + Helm. Starts by reading `internal/transport` and the edge pull path (§4) | Unit tests per command and reject reason; a replayed or expired publish ticket is refused at `/publish` (the nonce is consumed on the home pod; a second publish with it on another pod is refused, and so is any publish while the home pod is unreachable); a camera publish never attached is ended at the ticket's expiry; an outstanding ticket counts toward `-max-room-cameras`; a participant that did not ask for the capability gets `caps` without 0x04 in a room where another participant has a camera; a camera `/subscribe` with no view ticket, an expired one or another room's is refused on the origin and on an edge, and a stream's `/subscribe` is unchanged; a removal, a ban and a leave each close that participant's open camera viewer sessions on the origin and on an edge, and a session reopened afterwards with their still-unexpired ticket is refused on both; a camera dies with its owner's session, a removal, a ban and a room end; a non-home pod proxies; the off-path test (cameras off: byte-identical records, `Unsupported`); the carry-all options test; the no-recording source walk |
 | **CM3** | App publish: the hello with the camera bit and the one retry without it against a relay that refuses it (D3), camera capture, the camera profile, the second pipeline, toggle, reconnect, device choice | Unit tests for the profile and the encoder configured from the first frame; a hello refused as malformed is retried once without the camera bit, the room then has no camera UI, and a second refusal is not retried; toggle off sends 4014 and `CameraStop`; a dropped publish reconnects on its resume token inside the grace; permission denied and no device each render their line |
 | **CM4** | App watch: the face player, the view ticket and its renewal, subscribe-while-visible, live edge only | Component tests with the fake viewer sessions: a face that leaves the screen closes its session, None closes all, a camera change re-dials no stream, a face mounting after the ticket expired gets a fresh one first |
 | **CM5** | Room view: the layout model (§5.5), docking, the call bar, the join card preview, speaking rings, overflow, idle, dragging, the new copy | Component tests for each row of §5.5's table and each rule under it; the "appears once" test; every new string in a copy module with a test; no camera UI when the room lacks the capability |
