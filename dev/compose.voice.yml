@@ -24,6 +24,11 @@
 # Mumble, and a dynamic room's channel appears when its first gawk user
 # joins voice. VOICE_ROSTER=observer runs R79's visible observer instead
 # (dev/voice-observer.env, which sets no Ice knob).
+#
+# Real client addresses (R88, docs/92) are on by default: gawk-mmproxy runs
+# in murmur's network namespace, and the bridge sends every voice user's
+# Mumble connection through it, so murmur logs each browser at the address
+# the bridge saw. VOICE_PROXY=off dials murmur directly, as R79 did.
 
 services:
   relay:
@@ -73,6 +78,8 @@ services:
     # Ice mode (dev/voice-ice.env) or observer mode (dev/voice-observer.env).
     env_file:
       - dev/voice-${VOICE_ROSTER:-ice}.env
+      # Through gawk-mmproxy (dev/voice-proxy-on.env) or straight to murmur.
+      - dev/voice-proxy-${VOICE_PROXY:-on}.env
     environment:
       GAWK_BRIDGE_CERT_FILE: /certs/cert.pem
       GAWK_BRIDGE_KEY_FILE: /certs/key.pem
@@ -92,6 +99,41 @@ services:
       relay:
         condition: service_healthy
       murmur-init:
+        condition: service_completed_successfully
+      mmproxy:
+        condition: service_started
+    restart: unless-stopped
+
+  # gawk-mmproxy in murmur's network namespace (R88, docs/92 D14): the
+  # routes as a one-shot, then the proxy on murmur:64739, which is never
+  # published. Started either way; with VOICE_PROXY=off nothing dials it.
+  mmproxy-routes:
+    build: &mmproxy-build
+      context: .
+      dockerfile: gawk-mmproxy/deploy/Dockerfile
+    command: [routes]
+    network_mode: service:murmur
+    user: "0"
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, NET_RAW]
+    read_only: true
+    depends_on:
+      murmur:
+        condition: service_started
+    restart: "no"
+
+  mmproxy:
+    build: *mmproxy-build
+    # Dev only: the default -listen :64739 answers on every network murmur
+    # is on. A real deployment binds murmur's internal address only
+    # (gawk-mmproxy/deploy/compose/murmur.yml, docs/92 D16).
+    command: [serve]
+    network_mode: service:murmur
+    cap_drop: [ALL]
+    cap_add: [NET_RAW]
+    read_only: true
+    depends_on:
+      mmproxy-routes:
         condition: service_completed_successfully
     restart: unless-stopped
 

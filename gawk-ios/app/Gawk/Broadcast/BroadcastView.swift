@@ -80,9 +80,11 @@ struct BroadcastView: View {
                     // broadcast uses, and the way back to home.
                     if let chip = switcher.chip(home: settings.relayURL) {
                         Banner(kind: .info, systemImage: "wifi", title: chip) {
-                            Button("Use \(LocalRelayCopy.homeHost(settings)) instead") { switcher.optOut() }
-                                .buttonStyle(.gawkTintedCompact)
-                                .accessibilityIdentifier("localRelay.optOut")
+                            Button("Use \(LocalRelayCopy.homeHost(settings)) instead") {
+                                switcher.optOut(stream: LocalRelaySwitcher.broadcastStream)
+                            }
+                            .buttonStyle(.gawkTintedCompact)
+                            .accessibilityIdentifier("localRelay.optOut")
                         }
                         .accessibilityIdentifier("localRelay.chip")
                     }

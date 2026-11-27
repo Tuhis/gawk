@@ -163,6 +163,22 @@ pub trait RoomListener: Send + Sync {
     /// Over for good: the room ended, the join was refused, or a reconnect
     /// gave up. The tiles' own viewers are untouched.
     fn on_ended(&self, reason: String);
+    /// R74 (docs/76 item 43.3): a fresh local-relay offer home sent on the
+    /// room session of a watcher started with `follow_offers`. The app
+    /// probes it (`probe_local_relay`) and, when a candidate answers,
+    /// watches the same room code there: one reconnect, once.
+    fn on_local_relay_offer(&self, offer: crate::localrelay::LocalRelayOffer);
+}
+
+/// Hands one room session event to Swift's listener.
+fn deliver(listener: &dyn RoomListener, e: EngineEvent) {
+    match e {
+        EngineEvent::RoomState(s) => listener.on_room(room_view(s)),
+        EngineEvent::RoomReconnecting { attempt } => listener.on_reconnecting(attempt),
+        EngineEvent::RoomEnded { reason } => listener.on_ended(reason),
+        EngineEvent::LocalRelayOffer(o) => listener.on_local_relay_offer((&o).into()),
+        _ => {}
+    }
 }
 
 /// A room watched for its roster. Dropping it (or [`RoomWatcher::stop`])
@@ -177,8 +193,12 @@ pub struct RoomWatcher {
 #[uniffi::export]
 impl RoomWatcher {
     /// `cert_hashes`: the server's pins (R74; lowercase hex), empty — the
-    /// default — for the system store.
-    #[uniffi::constructor(default(cert_hashes = []))]
+    /// default — for the system store. `follow_offers` (R74, docs/76 item
+    /// 43): this participant is on home and would follow a local-relay
+    /// offer, so every `/room` CONNECT says `lr=1` and home's `0x19`
+    /// reaches [`RoomListener::on_local_relay_offer`]. Leave it off on the
+    /// PoP the room switched to, and for the join probe.
+    #[uniffi::constructor(default(cert_hashes = [], follow_offers = false))]
     pub fn start(
         relay_url: String,
         code: String,
@@ -186,6 +206,7 @@ impl RoomWatcher {
         insecure: bool,
         listener: Arc<dyn RoomListener>,
         cert_hashes: Vec<String>,
+        follow_offers: bool,
     ) -> Arc<Self> {
         let pins = gawk_engine::transport::cert_hashes_from_hex(&cert_hashes);
         let (stop_tx, stop_rx) = watch::channel(false);
@@ -206,6 +227,7 @@ impl RoomWatcher {
                         insecure,
                         code,
                         nickname,
+                        follow_offers,
                         ..RoomConfig::default()
                     };
                     let dialer = Arc::new(WtRoomDialer {
@@ -221,14 +243,7 @@ impl RoomWatcher {
                         requests_rx,
                     ));
                     while let Some(e) = rx.recv().await {
-                        match e {
-                            EngineEvent::RoomState(s) => listener.on_room(room_view(s)),
-                            EngineEvent::RoomReconnecting { attempt } => {
-                                listener.on_reconnecting(attempt)
-                            }
-                            EngineEvent::RoomEnded { reason } => listener.on_ended(reason),
-                            _ => {}
-                        }
+                        deliver(listener.as_ref(), e);
                     }
                     let _ = session.await;
                 });
@@ -446,6 +461,72 @@ mod tests {
         );
         assert_eq!(v.your_id, 8);
         assert!(v.creator && v.dynamic && v.attach_ok);
+    }
+
+    /// What a scripted listener heard.
+    #[derive(Default)]
+    struct Heard(Mutex<Vec<String>>);
+
+    impl RoomListener for Heard {
+        fn on_room(&self, room: RoomView) {
+            self.0.lock().unwrap().push(format!("room {}", room.code));
+        }
+        fn on_reconnecting(&self, attempt: u32) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("reconnecting {attempt}"));
+        }
+        fn on_ended(&self, reason: String) {
+            self.0.lock().unwrap().push(format!("ended {reason}"));
+        }
+        fn on_local_relay_offer(&self, offer: crate::localrelay::LocalRelayOffer) {
+            let c = &offer.candidates[0];
+            self.0.lock().unwrap().push(format!(
+                "offer {} {} {}",
+                offer.handle,
+                c.url,
+                c.cert_hashes.join(",")
+            ));
+        }
+    }
+
+    /// R74 PP14 (docs/76 item 43): home's offer on the room session
+    /// reaches Swift with its pins, so the room can switch like the player.
+    /// A PoP's 0x18 is not the room's to act on.
+    #[test]
+    fn the_room_session_hands_swift_the_offer() {
+        use gawk_engine::localrelay as lr;
+        let heard = Heard::default();
+        let offer = lr::Offer {
+            handle: "6f1c2d3e-4a5b-4c6d-8e7f-0123456789ab".into(),
+            name: "Assembly 2026".into(),
+            validity: std::time::Duration::from_secs(3600),
+            candidates: vec![lr::Candidate {
+                url: "https://192.168.1.20:4433".into(),
+                hashes: vec![[7u8; 32]],
+            }],
+        };
+        deliver(&heard, EngineEvent::RoomReconnecting { attempt: 2 });
+        deliver(&heard, EngineEvent::LocalRelayOffer(offer));
+        deliver(&heard, EngineEvent::LocalRelay(lr::LocalRelay::default()));
+        deliver(
+            &heard,
+            EngineEvent::RoomEnded {
+                reason: "gone".into(),
+            },
+        );
+        assert_eq!(
+            *heard.0.lock().unwrap(),
+            [
+                "reconnecting 2".to_owned(),
+                format!(
+                    "offer 6f1c2d3e-4a5b-4c6d-8e7f-0123456789ab https://192.168.1.20:4433 {}",
+                    "07".repeat(32)
+                ),
+                "ended gone".to_owned(),
+            ]
+        );
     }
 
     /// The room field, the room link and the watch link are the engine's

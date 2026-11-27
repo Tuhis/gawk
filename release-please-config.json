@@ -125,6 +125,21 @@
           "path": "deploy/charts/gawk-whip-gateway/Chart.yaml"
         }
       ]
+    },
+    "gawk-mmproxy": {
+      "release-type": "go",
+      "component": "gawk-mmproxy",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "deploy/k8s/mmproxy-patch.yaml"
+        },
+        {
+          "type": "generic",
+          "path": "deploy/compose/murmur.yml"
+        }
+      ]
     }
   }
 }

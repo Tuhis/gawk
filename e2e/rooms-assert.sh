@@ -40,9 +40,9 @@
 # gets it back in (that is RM4's E2E), and the janitor (its windows are
 # minutes long by design; the store's unit test drives its clock). The
 # party wall's PoP-side rows (vouched attaches of party broadcasts, a fifth
-# and later included; Hide/Show; wall=hidden; the local wall unlinked; the
-# 0x18 wall fields) need a linked gawk-relay, which this tier does not run
-# yet: internal/popsrv's wall_test.go runs them in-process.
+# and later included; Hide/Show; wall=hidden; the uplink budget's 4012; the
+# local wall unlinked; the 0x18 wall fields) need a linked gawk-relay: they
+# are pop-wall-assert.sh, the step after this one.
 #
 # Usage: rooms-assert.sh <namespace> [deadline-seconds]
 set -euo pipefail

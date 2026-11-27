@@ -84,7 +84,7 @@ rather than pulling them itself.
 | OD15 | How the uplink leg carries a party stream (asked once R73 had landed) | **R73's carrier whenever home offers it.** Keyframes keep their own streams; deltas and parity ride one carrier per GOP. The leg is leg A for every outside viewer, on a venue uplink shared with the guests' own traffic: docs/75 table O's case (§3). Datagrams stay one flag away (`-pop-leg-delivery`), and PP8 measures the PoP's own sender before the default ships (item 18). *Measured 2026-10-22: the carrier stays (§11.2).* |
 | OD16 | How the downlink leg carries a home stream | **The carrier too, in v1.** Home writes the leg the way the PoP writes its uplink, and the PoP reads it with R73's carrier reader (item 23). |
 | OD17 | Whether a party broadcast that joins a room leaves the wall (asked after the first party, 2026-10-24) | **No: the wall is not a room for R42 D1.** A party broadcast stays on its wall and may also be in one ordinary room; only Hide takes it off. The first party joined its own static room and the wall emptied (item 34). |
-| OD18 | How long "Use gawk.ioio.fi instead" lasts (asked 2026-11-11) | **The current stream only, never stored.** Joining another stream, or starting the next broadcast, follows the PoP's offer again. Supersedes item 43.6's per-handle memory. The web app does this; the native apps still remember it (item 43). |
+| OD18 | How long "Use gawk.ioio.fi instead" lasts (asked 2026-11-11) | **The current stream only, never stored.** Joining another stream, or starting the next broadcast, follows the PoP's offer again. Supersedes item 43.6's per-handle memory. The web app does this, and since 2026-11-25 the desktop and iOS apps do too (item 43). |
 
 ## 3. Measured and verified before writing
 
@@ -118,7 +118,9 @@ Sourced, not measured here (primary sources gathered 2026-10-21):
 - **Firefox** ships LNA by default from 153, with WebSockets covered from 154.
   **WebTransport is not enforced in release yet** (bug 2042527; the tests
   were enabled on autoland on 2026-10-21), so expect the same prompt there
-  within a few releases.
+  within a few releases. *Superseded by measurement (PP0, 2026-11-25):*
+  Firefox 161.0 refuses a public page's WebTransport to a private address,
+  with no prompt, even after the page is granted (P5–P7 below).
 - **Safari** shipped WebTransport in **26.4** (2026-03-24, macOS and iOS), and
   WebKit implements `serverCertificateHashes`. Hash pinning against a
   webtransport-go relay is **unproven**: one upstream report (hyperium/h3#347)
@@ -160,10 +162,62 @@ on a shared uplink is PP8's to measure, and the downlink's PP9's.
 
 | # | Claim | How | Result |
 |---|---|---|---|
-| PP0 | Safari 26.x pinned dial by IP literal; headful Chrome prompt copy and grant persistence; Firefox 153+; Windows Firewall vs an unsigned `gawk-relay.exe`; the macOS desktop app's prompt | — | **Not yet measured (needs owner hardware).** The decisions that depend on them stand as designed: Safari is pinned-unproven, so §6.12 keeps the named-tier caveat |
+| PP0 | Safari 26.x pinned dial by IP literal; headful Chrome prompt copy and grant persistence; Firefox 153+; Windows Firewall vs an unsigned `gawk-relay.exe`; the macOS desktop app's prompt | `tools/popprobe` (its README has one recipe per row) | **Partly measured (2026-11-25, P1–P10 below):** Firefox, and headful Chrome on Linux. **Still open (needs owner hardware):** Safari 26.x on macOS and iOS; branded Chrome's prompt on Windows, macOS and Android, from a real public origin; Windows Firewall; the macOS desktop app's prompt. The decisions that depend on them stand as designed: Safari is still unproven for pinning, so §6.12 keeps the named-tier caveat. **Firefox is now a "no"** (P5–P7) |
+
+**PP0 on the agent host (2026-11-25).** The harness is `tools/popprobe`:
+a static page that dials `/echo` with `serverCertificateHashes` and
+round-trips a datagram, with two controls (a dial with a wrong pin, and a
+`fetch` to a LAN HTTP listener that logs every request it gets). It ran
+against `gawk-relay` built from `main` (`2857037f`) at the host's LAN address
+`10.0.2.2:14433`, serving its rolling pinned certificate (both pins from its
+console's join link). The browsers were **Firefox 161.0** (Mozilla's
+linux-x86_64 release tarball) and **Chrome for Testing 158.0.8127.88**
+(current stable). Headless runs used `headless.sh`; headful runs used Xvfb
+with clicks sent through xdotool. "Public" means the page at
+`http://127.0.0.1:<port>` was marked public: Chrome with
+`--ip-address-space-overrides`, Firefox with
+`network.lna.address_space.public.override`. A real public origin was not
+used.
+
+| # | Claim | How | Result |
+|---|---|---|---|
+| P1 | M4 still holds: a loopback page reaches the LAN relay with no grant | headless, page on loopback (default address space) | **Both connect.** Chrome 158: 28 ms. Firefox 161: 449 ms. The datagram echoes, the wrong pin fails, and the `fetch` control arrives |
+| P2 | M1 still holds on Chrome 158 | headless, public page | **Blocked**, as on 151 (`Opening handshake failed`). Headless answers the prompt with a denial, so `local-network` and `local-network-access` read `denied` afterwards. The `fetch` control is blocked too |
+| P3 | M5 still holds, in both browsers | `gawk-server -dev-cert`, SANs `localhost,127.0.0.1`, dialed as `https://10.0.2.2:14434` with its hash from a loopback page | **Both connect** (Chrome 17 ms, Firefox 98 ms), and both refuse a wrong pin. Firefox, like Chrome, does not check the name under a pin |
+| P4 | The headful Chrome prompt, and its grant and denial | Chrome 158 headful (Linux, Xvfb), public page, fresh profile each time | The prompt reads **"http://127.0.0.1:18090 wants to / Access other devices on your local network"**, with **Block** and **Allow** buttons. The dial waits on it. **Allow** → connects, and the state reads `granted`. After a **reload** the dial connects in 6 ms, and after a **browser restart** in 13 ms, with no prompt either time (the grant is a site setting, `local_network` in Preferences). **Block** → fails at once. After a reload it fails in 2 ms, and after a restart in 3 ms, and the prompt does not return. `loopback-network` stays `prompt` throughout |
+| P5 | Firefox 161 lets a public page dial a LAN relay | headless and headful, public page | **No.** WebTransport fails in 70–275 ms with `WebTransportError: WebTransport connection rejected` and **no prompt**. The `fetch` control on the same page shows Firefox's prompt (**"127.0.0.1:18090 wants to access apps and services on devices connected to your local network."**, with Learn more, "Remember my choice for this site", Block and Allow). Firefox's HTTP log shows the QUIC handshake completing and the pin accepted (`servCertHashesSucceeded=1`). The connection is then closed (`0x804B005D`) before the CONNECT, so the relay never sees a session |
+| P6 | The refusal is Local Network Access | P5's page with `network.lna.enabled=false`, then with `network.lna.blocking=false` | **Connects** both ways (102 ms and 81 ms), and the `fetch` control arrives without a prompt |
+| P7 | A grant unblocks it | headful: **Allow** on the `fetch` prompt (with and without "Remember"), then dial | **No.** `local-network` reads `granted` and the `fetch` arrives, but WebTransport still fails, in 13–256 ms. After a restart, `local-network` was back to `prompt` (the browser was killed, not quit, so whether "Remember" persists is not established) |
+| P8 | Firefox, private page → LAN relay (the named tier's shape: a page on the PoP's own private address) | headless, the page marked private with `network.lna.address_space.private.override` | **Connects** (52 ms) |
+| P9 | Firefox, public page → a loopback relay | headless and headful, `gawk-server -dev-cert` on `127.0.0.1:14435` | A different prompt appears, **"127.0.0.1:18090 wants to access other apps and services on this device."**, and the dial waits on it (headless: no answer within 15 s). Whether Allow then lets the dial through was not established: the click under Xvfb dismissed the prompt without settling the dial. Chrome 158 refuses the same dial in 32 ms (headless) |
+| P10 | The harness tells a pin failure from success | the wrong-pin control on every run above | Always **FAILED**: Chrome in 9–64 ms (`Opening handshake failed`), Firefox in 21–339 ms (`WebTransport connection rejected`). A wrong pin and an LNA refusal produce the same error text in both browsers. Only the controls tell them apart |
+
+**What P5–P7 change.** PP0's acceptance names the Safari rule, and
+Firefox now fails the same way. Item 37 says the pinned tier "serves
+Chrome, Firefox". On Firefox 161 that holds only for a **loopback or LAN
+page**: the host's own `/app/` (P1) or the named tier's page (P8). From a
+public origin, which is home's `gawk.ioio.fi` page and the console's
+standalone join link (§6.1 item 5, the QR's `gawk.ioio.fi/#/?relay=…`),
+Firefox refuses the dial and shows no prompt, and **granting the
+permission doesn't help**. So:
+
+- a Firefox guest scanning a standalone PoP's QR code cannot join it;
+- a Firefox viewer on home is offered the PoP (§6.12), probes it and falls
+  back to home (item 43.5). Item 43.4's `granted` branch does not hold for
+  Firefox: the state can read `granted` while WebTransport is still
+  refused.
+
+The Safari rule applies to Firefox too: **Firefox guests use the named
+tier** until Firefox lets a granted page dial WebTransport. §6.11, §6.12
+and §7.3 are not edited here. Re-run P5–P7 on each Firefox release (bug
+2042527), with `tools/popprobe/headless.sh` and the README's headful
+recipe.
 
 PP8 measured the PoP's own carrier sender in R73's lab on 2026-10-22
-(§11.2). PP9's downlink run is still pending.
+(§11.2). PP8's time to first frame and PP9's downlink beside a parallel
+TCP download were measured on 2026-11-25 (§11.3): a cold outside join
+took 254 / 259 ms (p50 / p95) at 40 ms netem RTT, and the carrier did as
+well as or better than datagrams on the downlink in every cell.
 
 ## 4. Vocabulary
 
@@ -750,8 +804,9 @@ PP8 measured the PoP's own carrier sender in R73's lab on 2026-10-22
     broadcast. Pooling the legs on the link's QUIC connection would save the
     handshake. It is deferred until PP8's numbers say it matters (§13),
     because it trades per-leg congestion control for one shared controller
-    on a constrained uplink, and that also needs measuring. *Not measured
-    yet*: no lab cell for it has been written or run (§11.1).
+    on a constrained uplink, and that also needs measuring. *Measured
+    2026-11-25* against a single-pod home (§11.3): cold p95 259 ms at
+    40 ms RTT on the PoP's path (466 ms with 40 ms on the viewer's too).
 
 ### 6.6 Downlink on demand
 
@@ -1213,17 +1268,39 @@ PP8 measured the PoP's own carrier sender in R73's lab on 2026-10-22
     home's `0x19` can arrive after the `0x10` identity, so the probe keeps
     reading after the identity.
 
-    *Built, native:* the desktop Ready page and the iOS start screen and
-    player probe home with `lr=1`, switch to a fresh offer's first pinned
-    candidate before going live, remember "Use … instead" per PoP handle,
-    and leave a PoP that fails or refuses for the app session. **Not yet
-    changed for OD18:** both still persist the opt-out per PoP handle
-    (`local_relay_opt_outs` in the desktop config). On iOS a
-    held PoP applies only to the home relay that offered it, so picking
-    another server dials that server; the desktop keeps its own policy.
-    **Not built:** the iOS room participant switch (the room client sends
-    no `lr=1` on `/room` and ignores `0x18`/`0x19`, assumed rather than
-    tested).
+    *Built, native (2026-11-25):* the desktop Ready page and the iOS start
+    screen, player and room probe home with `lr=1`, switch to a fresh
+    offer's first pinned candidate (a broadcaster before going live), and
+    leave a PoP that fails or refuses for the app session. "Use … instead"
+    follows OD18 on both and is held in memory only. On the desktop it
+    holds for the next broadcast: that broadcast goes home without `lr=1`,
+    and once a broadcast that went live has ended, the next one follows
+    the offer again (a start that never went live keeps it). Builds before
+    OD18 stored it as `localRelayOptOuts` in the desktop config; the key
+    still loads whatever it holds, is never read, and the load-time
+    migration clears it and saves, in every shell (Windows, macOS and
+    Linux share that load). On iOS it is held against the stream it was
+    picked on, keyed as the web's are (`viewer:<code>`, `room:<code>`,
+    `broadcast`, which ends when the broadcast does), and the
+    `localRelayOptOuts` user default is removed at launch and never read.
+    An iOS opt-out names the PoP the session is on, so it holds even after
+    the held offer expired under a room watching the PoP (no `lr=1` to
+    home renews it there), and it steers only its own stream: a room's
+    opt-out leaves the held PoP for the next broadcast and other streams.
+    The iOS room participant now switches too, as the player does. The
+    engine's room session (shared with the desktop, off there) says `lr=1`
+    on every `/room` join and redial when `follow_offers` is set and reads
+    the session's uni streams for `0x19` and `0x18`, skipping other types;
+    `RoomWatcher` hands the offer to Swift. A fresh offer moves the roster
+    session and every playing tile to the PoP with the same code, which is
+    one reconnect, once. A PoP that ends the room before it sent the room
+    sends it home once, for the app session. The room's chip names the
+    PoP and offers "Use <home> instead" for that room. The room view does
+    not act on a PoP's `0x18`. On iOS a held PoP applies only to the home
+    relay that offered it, so picking another server dials that server;
+    the desktop keeps its own policy. Neither native app offers the PoP
+    back ("Use it") after an opt-out; the next stream, or the next fresh
+    offer after the broadcast, does.
 
 44. **Apple platforms.** The iOS app gains `NSLocalNetworkUsageDescription`,
     which it lacks today. Per TN3179, the first dial after an offer may be
@@ -1706,7 +1783,7 @@ needs A. Phase C needs B's link (PP7) and offers nothing without it.
 | **PP14** — the switch | Web (permission query, parallel probes, reconnect, chip, opt-out, denied note), desktop (Ready page), iOS (broadcaster + player, usage string, first-deny retry) | Web unit tests for every permission state; tier-1 e2e with a CDP-granted permission: a viewer switches with one freeze ≤ 1 s, and with the permission denied stays on home; native tests for offer parsing and pinning; the Apple prompts on device (PP15) |
 | **PP15** — the party pass | A real or staged LAN party against the reference deployment | §12's list, recorded here with dates and builds |
 
-### 11.1 Status (2026-10-22)
+### 11.1 Status (2026-10-22, revised 2026-11-26)
 
 Built on `feat/r74-pop-relays`. "Tested" means an automated test that ran
 on the agent host or in CI. Nothing in the right-hand column has been run,
@@ -1714,21 +1791,21 @@ measured or passed.
 
 | Chunk | Built and tested | Still open |
 |---|---|---|
-| **PP0** | Nothing: the `tools/` harness has not landed | Every measurement (owner hardware), §3 |
+| **PP0** | The harness, `tools/popprobe` (2026-11-25): a probe page and server, `headless.sh`, `firewall.ps1` and a recipe per row. Measured on Linux (§3, P1–P10): Firefox 161 and Chrome 158, headless and headful. **Firefox 161 refuses WebTransport from a public page to a LAN relay even after Allow** (P5–P7) | Safari 26.x (macOS, iOS); branded Chrome's prompt on Windows, macOS and Android from a real public origin; Windows Firewall; the macOS app's prompt (owner hardware). The Firefox result asks for a decision: Firefox guests on the named tier, like Safari (§3) |
 | **PP1** | The surfaces, built to §7's copy | Owner sign-off; console, admin and guest copy and layout are provisional |
 | **PP2** | Zero-flag start, restart-resume and the kill-9 stateless reset (`cmd/gawk-relay` tests: in-process, and a subprocess SIGKILL with a fresh-key control); `gawk-server` with zero flags still exits non-zero; every target GOOS/GOARCH builds and vets with cgo off; the portable packages' unit tests run for Windows under Wine (`relay-windows`, DPAPI included) and natively on macOS (`relay-darwin`) | Windows host runtime: a `TerminateProcess` kill and the QUIC listener (Wine cannot open one) have never run on Windows itself; `lanaddr.Detect` on a real multi-NIC Windows or macOS host |
 | **PP3** | Non-loopback refusal (test); QR payloads golden-tested per tier; the firewall helper's command construction; the CI zero-flag smoke probes `127.0.0.1:4480` | The firewall helper run once on Windows (PP15) |
-| **PP4** | `ci.yml`'s `relay` job (windows/amd64, darwin amd64+arm64, linux amd64+arm64; `CGO_ENABLED=0`, `-trimpath`, `main.version` from the release manifest), `relay-macos` (one universal binary, Developer ID signed and notarized, never on pull requests), `relay-release` (attaches to the `gawk-server/vX.Y.Z` release and publishes `releases/gawk-relay/latest.json`); `ghcr.io/tuhis/gawk-relay` from `gawk-server/deploy/Dockerfile.relay` (repo-root context, no chart); `go version -m` checks on every binary and the image; the image's zero-flag start; `tools/releases` `test_relay_releases_under_the_server_tag`; the downloads card on its own page, `site/party.html`, which says what the relay is and that it is experimental, linked in one line from the front page's download section and from `gawk-admin`'s pairing step — never a card among the broadcaster apps, where the web app sends broadcasters (2026-10-25) | Notarization, unexercised until the first tagged release; a real release producing every artifact, the manifest and the multi-arch GHCR push; the arm64 image start under QEMU runs in CI only |
-| **PP5** | Routing vectors; `e2e/pop-pinned.mjs` (headless Chromium 151.0.7922.34: with Local Network Access granted the view link decodes frames, without it the dial fails with `ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS`, and the landing save stores the hashes), wired into `ci.yml`; desktop and iOS-core pinning and the `gawk://server` link vectors; the Rust dial against a pinned relay (an in-test wtransport server, and the ignored real-relay suite CI runs); `0x18` vectors in all three copies | The iOS Swift wiring is unbuilt here; a device pass |
+| **PP4** | `ci.yml`'s `relay` job (windows/amd64, darwin amd64+arm64, linux amd64+arm64; `CGO_ENABLED=0`, `-trimpath`, `main.version` from the release manifest), `relay-macos` (one universal binary, Developer ID signed and notarized, never on pull requests), `relay-release` (attaches to the `gawk-server/vX.Y.Z` release and publishes `releases/gawk-relay/latest.json`); `ghcr.io/tuhis/gawk-relay` from `gawk-server/deploy/Dockerfile.relay` (repo-root context, no chart); `go version -m` checks on every binary and the image; the image's zero-flag start; `tools/releases` `test_relay_releases_under_the_server_tag`; the downloads card on its own page, `site/party.html`, which says what the relay is and that it is experimental, linked in one line from the front page's download section and from `gawk-admin`'s pairing step — never a card among the broadcaster apps, where the web app sends broadcasters (2026-10-25) | Notarization: `gawk-server/v0.42.0` shipped the Windows and Linux relay and `releases/gawk-relay/latest.json`, but **no macOS asset** (the Apple secrets, as R52 MB7); the arm64 image start under QEMU runs in CI only |
+| **PP5** | Routing vectors; `e2e/pop-pinned.mjs` (headless Chromium 151.0.7922.34: with Local Network Access granted the view link decodes frames, without it the dial fails with `ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS`, and the landing save stores the hashes), wired into `ci.yml`; desktop and iOS-core pinning and the `gawk://server` link vectors; the Rust dial against a pinned relay (an in-test wtransport server, and the ignored real-relay suite CI runs); `0x18` vectors in all three copies | A device pass (the Swift wiring is built and `ios.yml`'s xcode job is green on `main`) |
 | **PP6** | The CRD gated on `pops.enabled`; the pairing string shown once with only its hash stored; the `go list -deps` check in CI; the OpenAPI drift check; UI tests | PP1 sign-off on the admin pages |
 | **PP7** | Every row, in-process | — |
-| **PP8** | Every in-process row; `e2e/pop-uplink-full.mjs` (the fourth outside stream reads `4012` in-band) passes on Chrome for Testing 151.0.7922.34 and runs in `ci.yml`; the uplink lab, §11.2 | **Time to first frame at 40 ms netem RTT: not measured** (no harness cell yet); the keyframe-priority cost was not measured separately |
-| **PP9** | Every in-process row, and the leg cap across three pods (item 24) | **The downlink beside a saturating TCP download: not measured** (needs root and netem) |
+| **PP8** | Every in-process row; `e2e/pop-uplink-full.mjs` (the fourth outside stream reads `4012` in-band) passes on Chrome for Testing 151.0.7922.34 and runs in `ci.yml`; the uplink lab, §11.2 | —; time to first frame measured 2026-11-25 (§11.3): cold p50 254 ms, p95 259 ms at 40 ms PoP↔home RTT, 417 / 466 ms with 40 ms on the viewer's path too, against a 1.5 s target. Single home pod, no loss. The keyframe-priority cost was not separated |
+| **PP9** | Every in-process row, and the leg cap across three pods (item 24) | —; measured 2026-11-25 (§11.3): the carrier stays the default. A 1440p stream on a 100 Mbps downlink beside a 4-flow download is unwatchable in both modes (53 % shown on the carrier, 18 % on datagrams) |
 | **PP10** | Every row, in-process (`popsrv/bans_test.go`, `transport/pop_moderation_test.go`, `serve/pops_moderation_test.go`, gawk-admin's `popbroadcasts_test.go` and `BroadcastsView.test.tsx`) | — |
-| **PP11** | Vouched-only wall rooms, the vouched route, link-proxied room control, the local read-only wall with its resync, Hide/Show and `wall=hidden`, and `0x18`'s wall fields, in-process (`popsrv/wall_test.go`, `transport/room_link_test.go`), because the kind tier runs no `gawk-relay`; `rooms-assert` step 3b (a wall grants no attach, an attach secret gets `403`, an outsider's ordinary attach leaves it empty), passed in `e2e-cluster` on the real chart with 2 pods (run 39866366271, 2026-10-23, `6b733252`) | The wall's PoP-side rows in the kind tier, which runs no `gawk-relay`; "Party-only right now" checked end to end |
+| **PP11** | Every row in-process, and since 2026-11-25 end to end in `e2e-cluster`: a `gawk-relay` paired by CR to the two-pod fleet (`e2e/pop-wall-assert.sh`): six party broadcasts on the wall, Hide/Show, `wall=hidden`, `0x18`'s wall code and on-wall state, the budget's `4012` and the slot freeing, and the local wall after a revoke; `rooms-assert` step 3b | —; the "Party-only right now" copy itself is `RoomScreen.test.tsx`'s, not this tier's |
 | **PP12** | Reconciler tests against fake cert-manager and external-dns objects; the CSR, renewal and chain rules; the HTTPS UI; the DNS self-check | **One staging issuance on the reference deployment**; a phone loads the UI with no prompt (PP15) |
 | **PP13** | Every row, in Go tests | — |
-| **PP14** | Web unit tests; `e2e/pop-switch.mjs` (headless Chromium 151.0.7922.34, 2026-10-22, on a scratch merge made before Wave 3 was complete: granted → one switch, longest gap between drawn frames 432 ms; denied → stays on home with the note); the engine's `localrelay` tests and `relay_integration`'s pinned switch against the real relay; iOS-core `localrelay` tests | `pop-switch.mjs` re-run on the final tree (it runs in `ci.yml`, and passed on the post-Wave-3 tree before the review fixes); Swift `LocalRelayTests` (first run: the `ios.yml` xcode job); the Apple prompts on device, Safari/iOS, Firefox and the headful Chrome prompt; the iOS room participant switch is not built |
+| **PP14** | Web unit tests; `e2e/pop-switch.mjs` (headless Chromium 151.0.7922.34, 2026-10-22, on a scratch merge made before Wave 3 was complete: granted → one switch, longest gap between drawn frames 432 ms; denied → stays on home with the note); on the final tree it passes in `ci.yml`'s `e2e (rooms-pop)` job, last on run 45535985443, 2026-11-25); the engine's `localrelay` tests and `relay_integration`'s pinned switch against the real relay; iOS-core `localrelay` tests | Swift `LocalRelayTests` and the iOS room participant switch (built 2026-11-25, item 43) compile first in `ios.yml`'s xcode job; native "Use it" after an opt-out is web-only; the Apple prompts on device, Safari/iOS and branded Chrome's prompt (PP0) |
 | **PP15** | — | All of §12 |
 
 No Swift was compiled or run on this host, and neither was the Apple-only
@@ -1833,6 +1910,146 @@ every table O cell; by PP8's rule the carrier stays the default. Beside
 the upload on 15 Mbps, the PoP's carrier showed the Balanced viewer
 65.3 % of frames, where docs/75 recorded 82.5 % for quinn's carrier
 sender, also on Cubic (§3). The cause of that gap was not investigated.
+
+### 11.3 PP8 time to first frame and PP9 downlink lab (2026-11-25)
+
+Measured on the agent host (8 cores, shared with other agents' builds and
+a kind cluster) in rootless network namespaces (`unshare -rn`). Harness:
+`tools/uplinklab/pop-ttff.sh` + `pop-ttff.py` (PP8) and
+`tools/uplinklab/fair/downlink.sh` + `fair/analyze.py` with `FAIR_SET=down`
+(PP9), landed in #850. The product binaries (`gawk-server`, `gawk-relay`,
+`gawk-pubsim`, `gawk-uplinklab legsend`) were built from that PR's harness
+commit, whose product code is `main` at `2857037f`; the TTFF viewer
+(`gawk-uplinklab ttff`) includes the PR's fix that pauses after closing, so
+home ends the session at once. Go's VCS
+stamp reads `f6fea2e1` for these worktree builds, which is wrong
+(`docs/gotchas.md`). Each run waited for the host's 1-minute load average
+to fall under 4 (up to 5 minutes) and recorded it, with the CPU steal over
+the run. Two PP9 runs over 5 % steal (6.1 and 13.9 %) were re-run.
+
+**PP8: time to first frame.** One single-pod home `gawk-server` (`-pops`,
+a `-pops-file` naming the PoP by a static credential,
+`-pop-uplink-linger 2s`), a `gawk-relay` linked to it with that credential
+(`-pair gawk-cred:…`, as `e2e/pop-*.mjs`), and `gawk-pubsim` publishing on
+the PoP at 30 fps, keyframes padded to 230 000 bytes (docs/75's 1080p60
+trace's mean keyframe) and deltas to 15 000, keyframe every 500 ms. Home
+listens on every address; the PoP dials it as `127.0.0.2` and the viewer
+as `127.0.0.3`, and a prio qdisc on `lo` puts netem on each path by those
+addresses, half the RTT each way (tc's per-class counters show both
+directions of both paths went through their netem). The viewer is
+`gawk-uplinklab ttff`: ms from just before its dial to the first complete
+keyframe with its decoder config (inline in the stream here), which is the
+first decodable frame. Every **cold** join waited until home logged the
+linger's hand-back ("no demand; reservation handed back"), so it started
+with no demand, no leg and no hub at home, and the PoP dialed a fresh leg
+(a new QUIC connection). One second after each cold viewer's first frame
+a **warm** viewer joined the live leg. 20 cold and 20 warm joins per row;
+p95 is nearest-rank.
+
+| PoP ↔ home RTT | Viewer ↔ home RTT | Leg (`-pop-leg-delivery`) | Cold TTFF p50 / p95 / max ms | Cold: viewer's session up, p50 ms | Cold: subscribe → leg up at home, p50 / max ms | Warm TTFF p50 / p95 / max ms | Load before · steal |
+|---|---|---|---|---|---|---|---|
+| 40 ms | 0 | carrier | **254 / 259 / 271** | 5 | 85 / 87 | **8 / 9 / 17** | 3.79 · 0.2 % |
+| 40 ms | 0 | datagram | 263 / 285 / 328 | 8 | 86 / 98 | 11 / 26 / 32 | 3.20 · 5.6 % |
+| 40 ms | 40 ms | carrier | **417 / 466 / 476** | 88 | 87 / 95 | **210 / 227 / 236** | 3.85 · 5.7 % |
+| 40 ms | 40 ms | datagram | 414 / 451 / 454 | 86 | 85 / 86 | 206 / 217 / 236 | 3.71 · 0.2 % |
+
+Two rows ran at 5.6–5.7 % steal (averaged over the row's ≈ 3.5 minutes)
+and were not re-run; their cold p50 is within 9 ms of the low-steal row beside them.
+
+Of a cold join's ≈ 255 ms with an undelayed viewer, ≈ 85 ms is the
+subscribe to the leg's upgrade at home: ½ RTT for the want down the link,
+then 1½ RTTs until the leg's CONNECT reaches home (the PoP's Initial
+arrives, home answers, the Finished and the CONNECT arrive), about 80 ms
+at 40 ms RTT: seen from home, a little under item 22's estimate of
+about 2 WAN RTTs for the handshake.
+The other ≈ 170 ms is the 230 kB prime crossing a fresh connection in
+Cubic's slow start. With 40 ms on the viewer's own path too, both the
+cold and the warm viewer add their own handshake (≈ 2 RTTs, the session-up
+column) and their own slow start for the same keyframe. Not covered: this
+home is a single pod, so the cluster's in-cluster hops, Lease write and
+informer event of item 22 are not in these numbers; there was no loss and
+no bandwidth limit on either path. **The missing keyframe priority was
+not separated.** Datagram legs are no faster to first frame than carrier
+legs (within the spread above), but a datagram leg is not a priority
+build either: there the deltas still share the connection with the
+keyframe stream, so the comparison bounds nothing. Separating it needs a
+leg that can put the keyframe stream first, which webtransport-go does not
+expose (§13).
+
+**PP9: the downlink beside a game update.** `fair/run.sh` with the shaped
+direction the venue's downlink: the leg's media and an `iperf3 -R -P 4`
+download (kernel Cubic; `-P 8` in one cell) from 20 s through one tbf with
+a 50 ms drop-tail queue, 5 ms netem each way (10 ms RTT, as table O),
+acknowledgements back unshaped; the leg for 80 s. The sender is
+`gawk-uplinklab legsend`, `hub.SubscribeLeg`, the writer `/pop/subscribe`
+runs at home (`transport/pop_subscribe.go`), with `LegOptions.Carrier`
+from `?delivery=carrier`; the lab's adapter differs from home's
+`webtransportSessionAdapter` only in having no `PathStats`, which the leg
+writer does not read (`/statusz` and the stripe drain do). Two differences
+remain: in the lab the sender dials the
+receiver, where home is the server for the PoP's dial, and the receiver is
+the lab's (on quic-go's 4096-deep datagram queue, `gawk-uplinklab-bigq`)
+rather than the PoP's edge pump, with the PoP dialer's receive windows at
+`gawk-relay`'s default `-uplink-max-bitrate` 50 mbps (2 000 000 /
+3 000 000 bytes). Three runs a cell, each mode beside the download and
+alone, and the download alone; the 8-flow cell reuses the 4-flow cell's
+alone runs. Columns as table O (§11.2): mean, range in brackets.
+
+What the download gets (*of its fair share* is max-min, as table O):
+
+| Downlink | Leg | TCP Mbps | Of its fair share | TCP retransmits | Ping p50 / p95 ms |
+|---|---|---|---|---|---|
+| 250 Mbps, 1080p (9.5 Mbps mean, 12 ceiling), 4 flows | none | 238.5 (237.9–238.8) | – | 549 (521–582) | 57 (56–57) / 60 |
+| | datagram | 228.2 | 100 % | 382 (360–410) | 54 (54–55) / 60 (59–60) |
+| | carrier | 228.1 (228.0–228.2) | 100 % | 454 (442–474) | 55 (54–55) / 59 (59–60) |
+| 100 Mbps, 1080p, 4 flows | none | 95.6 | – | 278 (227–339) | 59 (58–59) / 62 |
+| | datagram | 84.8 | 100 % | 357 (321–423) | 54 (54–55) / 61 |
+| | carrier | 84.8 | 100 % | 419 (341–459) | 54 (54–55) / 61 |
+| 100 Mbps, 1080p, 8 flows | none | 95.6 | – | 708 (671–744) | 60 (59–60) / 62 |
+| | datagram | 84.9 (84.9–85.0) | 100 % | 991 (943–1024) | 58 / 62 |
+| | carrier | 85.0 (84.9–85.1) | 100 % (100–101) | 1009 (971–1041) | 58 / 62 |
+| 100 Mbps, 1440p (38.9 Mbps mean, 50 ceiling), 4 flows | none | 95.5 (95.3–95.6) | – | 299 (275–347) | 58 (58–59) / 62 |
+| | datagram | 63.9 (60.2–68.3) | 122 % (115–130) | 266 (233–302) | 58 / 61 (61–62) |
+| | carrier | 66.6 (64.5–69.8) | 127 % (123–133) | 282 (257–297) | 58 / 62 |
+
+What the leg gets, alone on the downlink → beside the download.
+Undecodable and decode-ready cover the download (25–80 s), the viewer
+columns its last 40 s:
+
+| Downlink | Leg | Undecodable | Decode-ready p99 ms | Balanced: shown · stalled | Balanced: on-screen latency p50 ms | Lowest latency: stalled |
+|---|---|---|---|---|---|---|
+| 250 Mbps, 1080p, 4 flows | datagram | 0.0 % → 1.4 % (0.8–1.8) | 16 → 240 (194–294) | 100.0 · 0.0 → 84.5 (80.1–90.6) · 17.5 (10.3–22.7) % | 33 → 133 (117–167) | 0.1 % → 29.5 % (26.0–32.3) |
+| | carrier | 0.0 % → 0.0 % | 15 → 207 (188–230) | 100.0 · 0.0 → 90.4 (87.7–93.6) · 10.4 (5.0–14.0) % | 33 → 128 (117–150) | 0.0 % → 23.9 % (21.6–25.1) |
+| 100 Mbps, 1080p, 4 flows | datagram | 0.0 % → 2.1 % (0.9–3.5) | 29 → 321 (275–365) | 100.0 · 0.0 → 91.3 (89.3–93.6) · 9.3 (7.0–12.0) % | 33 → 294 (233–400) | 2.2 % → 37.5 % (32.1–44.2) |
+| | carrier | 0.0 % → 0.1 % (0.0–0.2) | 29 → 275 (262–300) | 100.0 · 0.0 → 91.7 (86.5–96.7) · 9.2 (3.4–15.1) % | 33 → 189 (133–267) | 2.2 % → 30.5 % (29.4–32.5) |
+| 100 Mbps, 1080p, 8 flows | datagram | 0.0 % → 11.8 % (9.0–13.2) | 29 → 454 (430–492) | 100.0 · 0.0 → 85.3 (82.0–87.5) · 14.7 (11.8–18.0) % | 33 → 383 | 2.2 % → 53.0 % (50.1–57.2) |
+| | carrier | 0.0 % → 2.6 % (1.9–3.7) | 29 → 423 (408–439) | 100.0 · 0.0 → 85.8 (78.9–90.9) · 11.3 (9.9–13.2) % | 33 → 372 (367–383) | 2.2 % → 47.9 % (45.2–52.1) |
+| 100 Mbps, 1440p, 4 flows | datagram | 0.0 % → 82.2 % (72.6–93.1) | 73 (71–76) → 510 (487–549) | 96.8 (94.7–98.6) · 3.2 (1.5–5.0) → 18.2 (7.8–29.6) · 83.5 (72.8–94.0) % | 45 (33–50) → 406 (383–450) | 9.6 % (8.3–12.1) → 88.3 % (82.1–94.5) |
+| | carrier | 0.0 % → 36.7 % (29.6–48.8) | 70 (69–74) → 466 (421–508) | 98.8 (98.5–98.9) · 1.2 (1.1–1.5) → 53.1 (39.2–61.0) · 49.2 (41.7–63.0) % | 61 (50–83) → 322 (300–350) | 8.4 % (7.9–9.0) → 53.4 % (48.2–60.7) |
+
+Host, per cell: the load before a run was 0.12–3.96 and the steal over a
+run at most 2.1 % (the download alone at 1440p; every other cell ≤ 2.0 %).
+
+**Verdict.** PP8's time to first frame **meets its target** in this lab:
+the cold join's p95 is 259 ms with the viewer's own path undelayed and
+466 ms with 40 ms on it too, against ≤ 1.5 s at 40 ms RTT; a viewer
+joining a live leg pays only its own path. On this evidence pooling the
+legs on the link's connection (§13) is not needed for the target. The
+single-pod home leaves the cluster's hops out, so the reference
+deployment's figure is still PP15's. PP9: the carrier does as well as or
+better than datagrams in every cell, so the downlink stays on
+`?delivery=carrier` (OD16). The result that fails is the tight cell: a
+1440p home stream on a 100 Mbps venue downlink beside a four-flow
+download is **not watchable in either mode** (carrier 36.7 % undecodable,
+Balanced 53 % shown; datagrams 82 % and 18 %). Four Cubic flows take more
+than their max-min share there (122–127 %) and the single Cubic leg is
+held under the stream's rate, which no delivery mode recovers. Beside the
+download, even on 250 Mbps, where the stream is 4 % of the link, the
+Balanced viewer stalls 10 % (carrier) to 17 % (datagrams) of the time: the
+download keeps the 50 ms queue full, and decode-ready p99 rises to about
+200 ms. Neither is a defect in the leg writer; the remedies are the
+venue's (a smaller stream or a queue discipline) or a different controller
+(§13).
 
 ## 12. Verification (PP15)
 

@@ -1,0 +1,72 @@
+# gawk-mmproxy beside murmur under Docker Compose (R88, docs/92 D14, D16).
+# A worked example: merge the three services into your own compose file,
+# with your murmur's settings.
+#
+#   docker compose -f gawk-mmproxy/deploy/compose/murmur.yml up -d
+#
+# Both gawk-mmproxy containers join murmur's network namespace
+# (network_mode: service:murmur), which is what makes the loopback dial and
+# its routes work. Docker ties them to that container: recreate murmur, and
+# recreate them too (Kubernetes' pod sandbox doesn't have this problem).
+#
+# THE TRUST BOUNDARY (D16). Outside Kubernetes there is no NetworkPolicy:
+# whoever can reach port 64739 can make murmur see any address. The proxy
+# shares murmur's namespace, and murmur is on `default` too (its public
+# port), so the proxy must NOT listen on every interface: it binds only
+# murmur's pinned address on `murmur-internal`, an internal network shared
+# by murmur and gawk-mumble-bridge alone, and 64739 is never published. Put
+# the bridge on that network and set
+# GAWK_BRIDGE_MUMBLE_PROXY_ADDR=172.31.247.10:64739 (change the subnet if
+# it clashes with yours, in all three places).
+
+services:
+  murmur:
+    image: mumblevoip/mumble-server:v1.6.1001
+    # host= stays blank (the default): murmur must listen on loopback for
+    # gawk-mmproxy's dial (docs/92 D3).
+    ports:
+      - "64738:64738/tcp" # native clients, as before
+      - "64738:64738/udp"
+    networks:
+      default: {}
+      murmur-internal:
+        ipv4_address: 172.31.247.10
+    restart: unless-stopped
+
+  # One-shot: the loopback policy routes (docs/92 D4). Root, NET_ADMIN, and
+  # NET_RAW for the binary's file capability (F14). Always exits 0.
+  mmproxy-routes:
+    image: ghcr.io/tuhis/gawk-mmproxy:1.0.0 # x-release-please-version
+    command: [routes]
+    network_mode: service:murmur
+    user: "0"
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, NET_RAW]
+    read_only: true
+    depends_on: [murmur]
+    restart: "no"
+
+  # The proxy: NET_RAW only, nonroot (docs/92 D5). No healthcheck that
+  # restarts it, and nothing depends on it being healthy: murmur must keep
+  # serving native users whatever the proxy does (D15).
+  mmproxy:
+    image: ghcr.io/tuhis/gawk-mmproxy:1.0.0 # x-release-please-version
+    command: [serve]
+    environment:
+      # murmur-internal only, never murmur's address on `default`.
+      GAWK_MMPROXY_LISTEN: 172.31.247.10:64739
+    network_mode: service:murmur
+    cap_drop: [ALL]
+    cap_add: [NET_RAW]
+    read_only: true
+    depends_on:
+      mmproxy-routes:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+networks:
+  murmur-internal:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.247.0/24

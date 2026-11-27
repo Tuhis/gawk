@@ -88,6 +88,7 @@ jobs:
       sampler: ${{ steps.filter.outputs.sampler }}
       bridge: ${{ steps.filter.outputs.bridge }}
       whip: ${{ steps.filter.outputs.whip }}
+      mmproxy: ${{ steps.filter.outputs.mmproxy }}
       tidy: ${{ steps.filter.outputs.tidy }}
       licenses: ${{ steps.filter.outputs.licenses }}
       notices: ${{ steps.filter.outputs.notices }}
@@ -268,7 +269,13 @@ jobs:
           sampler=$(decide      sampler      "^gawk-sampler/|$(srvdeps gawk-sampler)")
           # R79 (docs/80 D1): gawk-mumble-bridge `replace`s gawk-server for
           # its public wire and voice packages, the same shape as the sampler.
-          bridge=$(decide       bridge       "^gawk-mumble-bridge/|$(srvdeps gawk-mumble-bridge)")
+          # R88 (docs/92 PX2): the bridge's real-murmur tests run gawk-mmproxy
+          # in front of murmur (testdata/murmur.sh's `proxied` server), so a
+          # change to the proxy is a change to them.
+          bridge=$(decide       bridge       "^gawk-mumble-bridge/|^gawk-mmproxy/|$(srvdeps gawk-mumble-bridge)")
+          # R88 (docs/92 PX1): gawk-mmproxy, its own module with no gawk
+          # dependency; its vectors test also reads the bridge's copy.
+          mmproxy=$(decide      mmproxy      '^gawk-mmproxy/|^gawk-mumble-bridge/internal/bridge/testdata/proxyv2-vectors\.json$')
           # R33 (docs/83 §8 WG4): gawk-whip-gateway `replace`s gawk-server for
           # its public publisher and wire packages, but NOT through srvdeps:
           # its end-to-end tests `go build` cmd/gawk-server and publish
@@ -292,7 +299,8 @@ jobs:
           e2e=$(decide          e2e          '^(gawk-server|gawk-app|gawk-telemetry|e2e)/')
           # R79 MV7: the voice e2e spans the relay, the bridge, the app and a
           # real murmur, so it runs on any of their changes.
-          e2e_voice=$(decide    e2e_voice    '^(gawk-server|gawk-app|gawk-mumble-bridge|e2e)/')
+          # R88 PX4: and gawk-mmproxy beside murmur.
+          e2e_voice=$(decide    e2e_voice    '^(gawk-server|gawk-app|gawk-mumble-bridge|gawk-mmproxy|e2e)/')
           # R38 (docs/41): the compose stack is assembled from the relay's
           # certificate path, the frontend's runtime config, both images and
           # the dev/ scripts — so a change to any of them can break the one
@@ -1620,6 +1628,188 @@ jobs:
       - if: always()
         run: docker rm -f ci-whip >/dev/null 2>&1 || true
 
+  # R88 (docs/92 PX1, PX3): gawk-mmproxy, the real-address sidecar in
+  # murmur's pod. Three kinds of test:
+  #   * the suite under -race on the runner, where the namespaced tests
+  #     (routes, the transparent dial) skip if the runner can't create user
+  #     namespaces;
+  #   * those namespaced tests again in a privileged container, which can
+  #     (GAWK_MMPROXY_REQUIRE_NETNS: a skip there is a failure);
+  #   * the real-murmur integration tests in a pod-shaped docker topology
+  #     (testdata/topology.sh), on 1.5 and 1.6, and with murmur's host=::,
+  #     which binds a v6only `::` that /readyz must call IPv4-unready (D7).
+  mmproxy:
+    needs: changes
+    if: needs.changes.outputs.mmproxy == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - murmur: "1.5"
+            host: ""
+          - murmur: "1.6"
+            host: ""
+          - murmur: "1.6"
+            host: "::"
+    defaults:
+      run:
+        working-directory: gawk-mmproxy
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
+        with:
+          go-version-file: gawk-mmproxy/go.mod
+          cache-dependency-path: gawk-mmproxy/go.sum
+      - uses: ./.github/actions/go-shared-cache
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./... ./testdata/probe
+      - name: go test -race
+        run: go test -race -count=1 ./...
+        env:
+          CGO_ENABLED: "1"
+      - name: the namespaced tests, in a container that can create namespaces
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/mmproxy-tests"; mkdir -p "$out"
+          for p in routes proxy; do
+            CGO_ENABLED=0 go test -c -o "$out/$p.test" "./internal/$p"
+          done
+          docker rm -f ci-mmproxy-netns >/dev/null 2>&1 || true
+          docker run -d --name ci-mmproxy-netns --privileged \
+            --sysctl net.ipv6.conf.all.disable_ipv6=0 alpine:3.24 sleep 600 >/dev/null
+          docker cp "$out/." ci-mmproxy-netns:/t/
+          docker exec ci-mmproxy-netns apk add -q --no-cache iproute2 >/dev/null
+          for p in routes proxy; do
+            docker exec -e GAWK_MMPROXY_REQUIRE_NETNS=1 -w /t ci-mmproxy-netns "/t/$p.test" -test.count=1 -test.v \
+              -test.run 'TestInstall|TestSmallTable|TestTransparentDial'
+          done
+      - if: always()
+        run: docker rm -f ci-mmproxy-netns >/dev/null 2>&1 || true
+      - name: murmur ${{ matrix.murmur }} (host=${{ matrix.host }}) with gawk-mmproxy beside it
+        run: testdata/topology.sh up "${{ matrix.murmur }}" > "$RUNNER_TEMP/topology.env"
+        env:
+          GAWK_MMPROXY_MURMUR_HOST: ${{ matrix.host }}
+      - name: the integration tests, against real murmur
+        run: |
+          set -a; . "$RUNNER_TEMP/topology.env"; set +a
+          go test -count=1 -v ./internal/itest/
+      - name: logs
+        if: failure()
+        run: for c in $(docker ps -aq --filter name=gawk-test-mmproxy); do docker logs "$c" 2>&1 | tail -40; done
+      - if: always()
+        run: testdata/topology.sh down
+
+  # Coverage for gawk-mmproxy, race-free (docs/43 D9), in a privileged
+  # container so the namespaced tests count as they do on a developer's
+  # machine. testdata/probe (the kind job's client) is not a package of
+  # ./..., and netnstest is test scaffolding.
+  mmproxy-coverage:
+    needs: changes
+    if: needs.changes.outputs.mmproxy == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: go test -cover, in a container that can create namespaces
+        run: |
+          set -euo pipefail
+          docker rm -f ci-mmproxy-cov >/dev/null 2>&1 || true
+          # IPv6 on explicitly (lo gets ::1), as topology.sh does: whether a
+          # container gets it by default depends on the runner's daemon, and
+          # in place the namespaced tests need both families.
+          docker run -d --name ci-mmproxy-cov --privileged \
+            --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv6.conf.lo.disable_ipv6=0 \
+            -w /src/gawk-mmproxy golang:1.27-trixie sleep 900 >/dev/null
+          docker cp gawk-mmproxy ci-mmproxy-cov:/src/
+          docker exec ci-mmproxy-cov sh -c 'apt-get update -qq && apt-get install -y -qq iproute2 >/dev/null'
+          # GAWK_MMPROXY_NETNS_INPLACE: this container is the disposable
+          # namespace, so the namespaced tests run in the test process,
+          # where their coverage counts (a re-executed child's doesn't).
+          # -p 1: the packages share that namespace.
+          docker exec -e GAWK_MMPROXY_NETNS_INPLACE=1 -e GAWK_MMPROXY_ISOLATED=1 ci-mmproxy-cov sh -c \
+            'go test -p 1 -count=1 -covermode=set -coverprofile=coverage.out $(go list ./... | grep -v -e /internal/netnstest -e /internal/itest)'
+          docker cp ci-mmproxy-cov:/src/gawk-mmproxy/coverage.out gawk-mmproxy/coverage.out
+      - if: always()
+        run: docker rm -f ci-mmproxy-cov >/dev/null 2>&1 || true
+      - uses: ./.github/actions/coverage
+        with:
+          format: go
+          report: gawk-mmproxy/coverage.out
+          component: gawk-mmproxy
+          label: mmproxy
+
+  # The image as it ships: the file capability survives the build, the
+  # runtime is nonroot, and `serve` with NET_RAW only answers /healthz.
+  mmproxy-image:
+    needs: changes
+    if: needs.changes.outputs.mmproxy == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-buildx
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: gawk-mmproxy/deploy/Dockerfile
+          push: false
+          load: true
+          tags: gawk-mmproxy:ci
+      - name: it runs nonroot with NET_RAW only and answers /healthz
+        run: |
+          set -euo pipefail
+          docker run -d --name ci-mmproxy --network host --cap-drop ALL --cap-add NET_RAW --read-only \
+            gawk-mmproxy:ci serve -listen 127.0.0.1:18739 -ops-listen 127.0.0.1:18114
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18114/healthz >/dev/null; then
+              m=$(curl -fsS http://127.0.0.1:18114/metrics)
+              grep -q '^gawk_mmproxy_active 0$' <<<"$m"
+              user=$(docker inspect -f '{{.Config.User}}' gawk-mmproxy:ci)
+              [ "$user" = "65532" ] || [ "$user" = "nonroot" ] || [ "$user" = "nonroot:nonroot" ] || { echo "::error::the image runs as '$user'"; exit 1; }
+              echo "gawk-mmproxy:ci is serving"; exit 0
+            fi
+            sleep 1
+          done
+          docker logs ci-mmproxy 2>&1 | tail -30
+          echo "::error::gawk-mmproxy never answered /healthz"; exit 1
+      - if: always()
+        run: docker rm -f ci-mmproxy >/dev/null 2>&1 || true
+
+  # R88 PX3 criterion 3: the deploy files applied for real in kind
+  # (containerd, kindnet's NetworkPolicy): a bridge-labelled probe reaches
+  # murmur with its header's address, an unlabelled pod can't reach the
+  # proxy, a denied NET_ADMIN and a proxy failing closed leave murmur's pod
+  # Ready and in its endpoints, and a killed `serve` restarts. The script is
+  # the job (deploy/k8s/kind-test.sh), so it runs the same on a laptop.
+  mmproxy-kind:
+    needs: changes
+    if: needs.changes.outputs.mmproxy == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL_DISK || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    env:
+      KIND_VERSION: v0.30.0
+      KIND_NODE_IMAGE: kindest/node:v1.34.0
+      KUBECTL_VERSION: v1.34.0
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL_DISK }}
+        with:
+          go-version-file: gawk-mmproxy/go.mod
+          cache-dependency-path: gawk-mmproxy/go.sum
+      - uses: ./.github/actions/setup-buildx
+      - name: Install kind (pinned)
+        run: |
+          sudo curl -fsSLo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          sudo chmod +x /usr/local/bin/kind
+      - uses: azure/setup-kubectl@v5
+        with:
+          version: ${{ env.KUBECTL_VERSION }}
+      - run: gawk-mmproxy/deploy/k8s/kind-test.sh
+
   tidy:
     needs: changes
     if: needs.changes.outputs.tidy == 'true'
@@ -1651,7 +1841,7 @@ jobs:
       - uses: ./.github/actions/go-shared-cache
       - name: go mod tidy leaves every module unchanged
         run: |
-          for mod in gawk-server gawk-telemetry gawk-admin gawk-sampler gawk-mumble-bridge gawk-whip-gateway tools/icon tools/commonlock; do
+          for mod in gawk-server gawk-telemetry gawk-admin gawk-sampler gawk-mumble-bridge gawk-whip-gateway gawk-mmproxy tools/icon tools/commonlock tools/popprobe; do
             (cd "$mod" && go mod tidy)
           done
           if ! git diff --exit-code; then
@@ -2677,6 +2867,20 @@ jobs:
           grep -q 'cidr: 10.0.0.5/32' <<<"$np"
           helm template gawk-mumble-bridge "$chart" --set mumble.ice.addr=m:6502 --set mumble.ice.serverId=0 \
             | grep -A1 'name: GAWK_BRIDGE_MUMBLE_ICE_SERVER_ID$' | grep -q 'value: "0"'
+      - name: bridge chart — gawk-mmproxy (docs/92 D8)
+        run: |
+          set -euo pipefail
+          chart=gawk-mumble-bridge/deploy/charts/gawk-mumble-bridge
+          # Unset (the default): no proxy env, no egress to its port.
+          def=$(helm template gawk-mumble-bridge "$chart" --set networkPolicy.enabled=true)
+          if grep -qE 'GAWK_BRIDGE_MUMBLE_PROXY_ADDR|port: 64739' <<<"$def"; then
+            echo "::error::the default render carries the proxy knob or its port"; exit 1
+          fi
+          px=$(helm template gawk-mumble-bridge "$chart" --set networkPolicy.enabled=true \
+                 --set mumble.proxy.addr=mumble-mmproxy.mumble:64739)
+          grep -A1 'name: GAWK_BRIDGE_MUMBLE_PROXY_ADDR$' <<<"$px" | grep -q 'value: "mumble-mmproxy.mumble:64739"'
+          np=$(awk '/^kind: NetworkPolicy/{p=1} /^---/{p=0} p' <<<"$px")
+          grep -q 'port: 64739' <<<"$np"
       # ---- R33 (docs/83 WG3, WG4) -----------------------------------------
       # The relay half (D4, D12): no proxy token by default, the token and
       # an explicit resume-token key render the env, and the token without
@@ -3405,8 +3609,15 @@ jobs:
           # from the frames at 1 s.
           grep -q 'whipGatewayUrl: "http://localhost:8180"' dev/generated/config.js
           curl -fsS http://127.0.0.1:8080/config.js | grep -q whipGatewayUrl
-          st=$(curl -fsS -D "$RUNNER_TEMP/whip-headers" -H "Authorization: Bearer $key" \
-                 -H 'Origin: http://localhost:8080' http://127.0.0.1:8180/whip/status)
+          # The gateway refreshes its snapshot once a second (session.sample),
+          # so a read right after the round trip can predate the first GOP
+          # median: gopMs is omitempty and absent until then. Poll for it.
+          for i in $(seq 10); do
+            st=$(curl -fsS -D "$RUNNER_TEMP/whip-headers" -H "Authorization: Bearer $key" \
+                   -H 'Origin: http://localhost:8080' http://127.0.0.1:8180/whip/status)
+            jq -e 'has("gopMs")' <<<"$st" >/dev/null && break
+            sleep 1
+          done
           echo "$st"
           jq -e '.state == "live" and .codec == "H.264" and .gopMs >= 900 and .gopMs <= 1100 and (.warnings | length) == 0' <<<"$st" >/dev/null
           grep -qi '^access-control-allow-origin: http://localhost:8080' "$RUNNER_TEMP/whip-headers"
@@ -3626,6 +3837,7 @@ jobs:
           cache-dependency-path: |
             gawk-server/go.sum
             gawk-mumble-bridge/go.sum
+            gawk-mmproxy/go.sum
       - uses: ./.github/actions/go-shared-cache
         if: matrix.check == 'voice'
       - name: Ensure UDP buffer limits for quic-go
@@ -3641,6 +3853,8 @@ jobs:
           mkdir -p e2e/bin
           (cd gawk-server && go build -o ../e2e/bin/ ./cmd/gawk-server ./cmd/gawk-pubsim ./cmd/gawk-devcert)
           (cd gawk-mumble-bridge && CGO_ENABLED=0 go build -o ../e2e/bin/ ./cmd/gawk-mumble-bridge ./cmd/gawk-mumblesim)
+          # R88 PX4: the proxy beside murmur (voice.mjs runs it in a container).
+          (cd gawk-mmproxy && CGO_ENABLED=0 go build -o ../e2e/bin/ ./cmd/gawk-mmproxy)
       - uses: actions/setup-node@v7
         with:
           node-version: 26
@@ -3934,10 +4148,15 @@ jobs:
           if [ "$(sysctl -n net.core.rmem_max)" -lt "$need" ] || [ "$(sysctl -n net.core.wmem_max)" -lt "$need" ]; then
             sudo sysctl -w net.core.rmem_max="$need" net.core.wmem_max="$need"
           fi
-      - name: Build the E2E toolchain (devcert, loadgen, roomsim, pubsim)
+      # gawk-relay is the R74 PoP that pop-wall-assert.sh links to the fleet.
+      # It runs as a plain binary on the runner, not as the Dockerfile.relay
+      # image: that image's npm build of the embedded app is minutes this
+      # tier would spend on a page it never loads, and the PoP has to sit
+      # where its clients and the kind NodePort both are (loopback) anyway.
+      - name: Build the E2E toolchain (devcert, loadgen, roomsim, pubsim, gawk-relay)
         run: |
           mkdir -p e2e/bin e2e/out
-          (cd gawk-server && go build -o ../e2e/bin/ ./cmd/gawk-devcert ./cmd/gawk-loadgen ./cmd/gawk-roomsim)
+          (cd gawk-server && go build -o ../e2e/bin/ ./cmd/gawk-devcert ./cmd/gawk-loadgen ./cmd/gawk-roomsim ./cmd/gawk-relay)
           (cd gawk-server && CGO_ENABLED=0 go build -o ../e2e/bin/gawk-pubsim ./cmd/gawk-pubsim)
       # Host networking and the in-cluster registry mirror — see the action.
       - uses: ./.github/actions/setup-buildx
@@ -4042,6 +4261,11 @@ jobs:
           echo "ADMIN_API_TOKEN=$ADMIN_API_TOKEN" >> "$GITHUB_ENV"
           kubectl -n gawk-e2e create secret tls gawk-server-tls \
             --cert=e2e/out/certs/cert.pem --key=e2e/out/certs/key.pem
+          # R74 (docs/76 §9): pops.enabled installs the Pop CRD, the relay's
+          # pops RBAC and the /pop/ routes, for the PoP pop-wall-assert.sh
+          # pairs. uplinkLinger is cut from 30s to 2s only so that script's
+          # freed budget slot frees within a step; nothing else here links a
+          # PoP.
           # Throwaway fleet secrets (exercises the chart's replicas>1-requires-
           # clusterMode guard and the R17 shared-key plumbing). SSL_CERT_FILE
           # points Go's system root pool at the mounted self-signed cert so
@@ -4069,6 +4293,8 @@ jobs:
             --set moderation.enabled=true \
             --set moderation.adminApi.token="$ADMIN_API_TOKEN" \
             --set rooms.enabled=true \
+            --set pops.enabled=true \
+            --set pops.uplinkLinger=2s \
             --set-json 'extraEnv=[{"name":"SSL_CERT_FILE","value":"/tls/tls.crt"}]' \
             --wait --timeout 180s
       - name: Publish the fixture and spread synthetic viewers
@@ -4167,6 +4393,23 @@ jobs:
       # starts from the state it expects.
       - name: Assert rooms across the fleet — static CR, lease, adoption after a pod kill (R42)
         run: ./e2e/rooms-assert.sh gawk-e2e 120
+      # R74 PP11 (docs/76 §6.10, §11): the party wall's PoP-side rows, which
+      # need a REAL PoP and which rooms-assert's step 3b (the home half: a
+      # spec.pop room refuses an ordinary attach) cannot reach. A gawk-relay
+      # on the runner pairs through a Pop CR (the chart's CRD and pops/status
+      # RBAC write the credential and the link) beside a wall Room CR homed
+      # on its own lease: six party broadcasts appear at home, the fifth and
+      # sixth past the fleet's 4-broadcast room cap included; Hide removes
+      # one and Show restores it; a wall=hidden broadcaster never appears;
+      # each broadcaster's 0x18 carries the wall code and an on-wall bit that
+      # follows all three; an outside tile past the PoP's one-stream budget
+      # is closed with 4012 (the app's "Party-only right now") and joins once
+      # the slot frees; and with the Pop revoked a party guest at the PoP
+      # gets the local read-only wall. AFTER rooms-assert, which ends with two
+      # Ready pods again; it deletes its Pop and Room before returning, so
+      # the portal tier below never sees them. ~25s (22s locally).
+      - name: Assert the party wall with a linked PoP (R74 PP11)
+        run: ./e2e/pop-wall-assert.sh gawk-e2e 90
       # R39 (docs/42 §11.1's kind-tier row): the PORTAL half of the tier —
       # gawk-admin installed for real (waited install, so the migrate hook and
       # /readyz gate genuinely converge), a throwaway Postgres, a TEST-ONLY
@@ -5165,7 +5408,7 @@ jobs:
   # download tolerates finding nothing, and the writer treats an empty record
   # set as "nothing moved".
   coverage-badges:
-    needs: [server-coverage, app, telemetry, telemetry-ui, admin-coverage, admin-ui, bridge-coverage, whip-gateway-coverage]
+    needs: [server-coverage, app, telemetry, telemetry-ui, admin-coverage, admin-ui, bridge-coverage, whip-gateway-coverage, mmproxy-coverage]
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     permissions:

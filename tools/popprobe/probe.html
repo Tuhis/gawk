@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PP0 probe</title>
+<style>
+  body { font: 15px/1.45 system-ui, sans-serif; margin: 0 auto; padding: 16px; max-width: 860px; background: #fff; color: #111; }
+  @media (prefers-color-scheme: dark) { body { background: #111; color: #eee; } input, button { background: #222; color: #eee; } }
+  h1 { font-size: 1.2em; }
+  label { display: block; margin: 6px 0 2px; font-weight: 600; }
+  input { width: 100%; box-sizing: border-box; font: 13px ui-monospace, monospace; padding: 6px; }
+  button { font: inherit; padding: 8px 12px; margin: 8px 8px 0 0; }
+  pre { white-space: pre-wrap; word-break: break-all; font: 13px/1.4 ui-monospace, monospace; border: 1px solid #8884; padding: 8px; }
+  .line { font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>PP0 probe: pinned WebTransport dial to a LAN relay (docs/76 §3)</h1>
+<label for="relay">Relay (https://&lt;IP literal&gt;:&lt;port&gt;)</label>
+<input id="relay" autocomplete="off">
+<label for="hash">certHash (hex SHA-256, comma-separated)</label>
+<input id="hash" autocomplete="off">
+<label for="row">Row label</label>
+<input id="row" autocomplete="off" placeholder="safari-macos, safari-ios, chrome-lna, firefox">
+<div>
+  <button id="dial">Dial</button>
+  <button id="wrong">Dial with a wrong pin (control)</button>
+  <button id="ping">Fetch /ping (LNA control)</button>
+  <button id="copy">Copy result lines</button>
+</div>
+<h2>Environment</h2>
+<pre id="env">…</pre>
+<h2>Results</h2>
+<pre id="out"></pre>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const q = new URLSearchParams(location.search);
+const lines = [];
+let env = {};
+
+function hexToBytes(h) {
+  const b = new Uint8Array(h.length / 2);
+  for (let i = 0; i < b.length; i++) b[i] = parseInt(h.substr(i * 2, 2), 16);
+  return b;
+}
+
+async function permissions() {
+  const out = {};
+  for (const name of ['local-network-access', 'local-network', 'loopback-network']) {
+    try { out[name] = (await navigator.permissions.query({ name })).state; }
+    catch { out[name] = 'unsupported'; }
+  }
+  return Object.entries(out).map(([k, v]) => `${k}=${v}`).join(' ');
+}
+
+async function build() {
+  const ua = navigator.userAgent;
+  let b = '';
+  if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+    try {
+      const h = await navigator.userAgentData.getHighEntropyValues(['fullVersionList', 'platformVersion', 'architecture']);
+      const brand = (h.fullVersionList || []).find((x) => /Chrome|Chromium|Edge|Opera/.test(x.brand) && !/Not/.test(x.brand));
+      b = `${brand ? brand.brand + ' ' + brand.version : 'Chromium'} on ${h.platform} ${h.platformVersion} ${h.architecture || ''}`.trim();
+    } catch { /* fall back to the UA string */ }
+  }
+  if (!b) {
+    let m;
+    if ((m = /Firefox\/(\S+)/.exec(ua))) b = `Firefox ${m[1]}`;
+    else if ((m = /Version\/(\S+).*Safari\/(\S+)/.exec(ua))) b = `Safari ${m[1]} (WebKit ${m[2]})`;
+    else b = 'unknown';
+    const os = /\(([^)]*)\)/.exec(ua);
+    if (os) b += ` on ${os[1]}`;
+  }
+  return b;
+}
+
+function errText(e) {
+  if (!e) return String(e);
+  const parts = [e.name || 'Error', e.message || String(e)];
+  if (e.source) parts.push(`source=${e.source}`);
+  if (e.streamErrorCode != null) parts.push(`streamErrorCode=${e.streamErrorCode}`);
+  return parts.join(': ');
+}
+
+function timeout(ms, what) {
+  return new Promise((_, rej) => setTimeout(() => rej(new Error(`no answer within ${ms / 1000} s (${what})`)), ms));
+}
+
+function record(kind, result, ok) {
+  const row = $('row').value || 'unlabelled';
+  const method = `${kind}; page ${location.origin} (secure context: ${window.isSecureContext}) → ${$('relay').value}`;
+  const line = `PP0 ${row} | ${method} | ${env.build} | ${result}`;
+  lines.push(line);
+  $('out').textContent += line + '\n\n';
+  const payload = JSON.stringify({ line, ok, kind, row, env, at: new Date().toISOString() });
+  if (location.protocol.startsWith('http')) {
+    fetch('/result', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload }).catch(() => {});
+  }
+}
+
+async function dial(hashes, kind) {
+  const relay = $('relay').value.replace(/\/+$/, '');
+  const before = await permissions();
+  const t0 = performance.now();
+  let wt;
+  const limit = Number(q.get('timeout') || 60) * 1000;
+  try {
+    if (typeof WebTransport === 'undefined') throw new Error('no WebTransport in this context');
+    wt = new WebTransport(relay + '/echo', {
+      serverCertificateHashes: hashes.map((h) => ({ algorithm: 'sha-256', value: hexToBytes(h) })),
+    });
+    wt.closed.catch(() => {});
+    await Promise.race([wt.ready, timeout(limit, 'ready')]);
+    const tReady = performance.now() - t0;
+    const dg = wt.datagrams;
+    const writable = typeof dg.createWritable === 'function' ? dg.createWritable() : dg.writable;
+    const w = writable.getWriter();
+    const r = dg.readable.getReader();
+    const t1 = performance.now();
+    const msg = new TextEncoder().encode('popprobe');
+    await w.write(msg);
+    // Datagrams may be lost: resend once a second until one comes back.
+    const resend = setInterval(() => w.write(msg).catch(() => {}), 1000);
+    let echo;
+    try { echo = await Promise.race([r.read(), timeout(5000, 'datagram echo')]); }
+    finally { clearInterval(resend); }
+    const tEcho = performance.now() - t1;
+    const echoed = echo && echo.value && new TextDecoder().decode(echo.value) === 'popprobe';
+    wt.close();
+    record(kind, `connected in ${tReady.toFixed(0)} ms; datagram echo ${echoed ? 'ok' : 'WRONG'} in ${tEcho.toFixed(0)} ms; permissions before [${before}] after [${await permissions()}]`, true);
+  } catch (e) {
+    try { wt && wt.close(); } catch { /* already closed */ }
+    record(kind, `FAILED after ${(performance.now() - t0).toFixed(0)} ms: ${errText(e)}; permissions before [${before}] after [${await permissions()}]`, false);
+  }
+}
+
+async function ping() {
+  const url = q.get('control') || ($('relay').value.replace(/^https:/, 'http:').replace(/:\d+$/, ':8091') + '/ping');
+  const t0 = performance.now();
+  try {
+    const r = await Promise.race([fetch(url, { cache: 'no-store' }), timeout(Number(q.get('timeout') || 60) * 1000, 'fetch')]);
+    record(`fetch control ${url}`, `HTTP ${r.status} "${await r.text()}" in ${(performance.now() - t0).toFixed(0)} ms (check popprobe's log for the ping line)`, true);
+  } catch (e) {
+    record(`fetch control ${url}`, `FAILED after ${(performance.now() - t0).toFixed(0)} ms: ${errText(e)}`, false);
+  }
+}
+
+const hashes = () => $('hash').value.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+
+async function main() {
+  env.build = await build();
+  env.ua = navigator.userAgent;
+  env.secure = window.isSecureContext;
+  env.webtransport = typeof WebTransport !== 'undefined';
+  let cfg = {};
+  if (!q.get('relay')) {
+    try { cfg = await (await fetch('config.json', { cache: 'no-store' })).json(); } catch { /* hosted elsewhere */ }
+  }
+  $('relay').value = q.get('relay') || cfg.relay || '';
+  $('hash').value = q.get('certHash') || (cfg.certHashes || []).join(',');
+  $('row').value = q.get('row') || '';
+  env.permissionsOnLoad = await permissions();
+  $('env').textContent = [
+    `build: ${env.build}`, `userAgent: ${env.ua}`, `origin: ${location.origin}`,
+    `isSecureContext: ${env.secure}`, `WebTransport: ${env.webtransport}`,
+    `permissions on load: ${env.permissionsOnLoad}`, `relay from: ${q.get('relay') ? 'query' : cfg.source || 'none'}`,
+  ].join('\n');
+  $('dial').onclick = () => dial(hashes(), 'pinned WebTransport dial');
+  $('wrong').onclick = () => dial(hashes().map((h) => (h[0] === '0' ? '1' : '0') + h.slice(1)), 'wrong-pin control (must fail)');
+  $('ping').onclick = ping;
+  $('copy').onclick = () => navigator.clipboard.writeText(lines.join('\n')).catch(() => {});
+  // ?autorun=dial,wrong,ping runs those in order on load (no click), for
+  // scripted headless runs and the grant-persists-across-reload check.
+  for (const step of (q.get('autorun') || '').split(',').filter(Boolean)) {
+    if (step === 'dial') await dial(hashes(), 'pinned WebTransport dial');
+    if (step === 'wrong') await dial(hashes().map((h) => (h[0] === '0' ? '1' : '0') + h.slice(1)), 'wrong-pin control (must fail)');
+    if (step === 'ping') await ping();
+  }
+}
+main();
+</script>
+</body>
+</html>

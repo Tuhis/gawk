@@ -27,6 +27,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -85,8 +86,15 @@ type Config struct {
 	// PingInterval is the keepalive (murmur drops a silent client after
 	// 30 s); zero is DefaultPingInterval.
 	PingInterval time.Duration
-	// DialContext replaces the TCP dialer (tests).
+	// DialContext replaces the TCP dialer (tests, and gawk-mmproxy's
+	// header writer).
 	DialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+	// Proxied marks a connection through gawk-mmproxy (docs/92 D6), which
+	// keeps murmur's two pre-TLS closes apart: murmur refusing the address
+	// is a reset, passed through as one (ErrRefused), and the proxy unable
+	// to reach murmur is a clean EOF (a DialError). Without a proxy both are
+	// murmur's own close, and both read as ErrRefused.
+	Proxied bool
 }
 
 // Channel is one channel as murmur reported it.
@@ -205,6 +213,11 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 		_ = raw.Close()
 		// Murmur drops a banned address's TCP connection before the TLS
 		// handshake: an EOF here is the autoban, not an unreachable server.
+		// Through gawk-mmproxy only a reset is murmur's refusal; an EOF is
+		// the proxy saying it can't reach murmur (docs/92 D6).
+		if cfg.Proxied && !errors.Is(err, syscall.ECONNRESET) && isPeerClosed(err) {
+			return nil, &DialError{Err: fmt.Errorf("gawk-mmproxy closed before the TLS handshake (murmur unreachable through it): %w", err)}
+		}
 		if isPeerClosed(err) {
 			return nil, ErrRefused
 		}

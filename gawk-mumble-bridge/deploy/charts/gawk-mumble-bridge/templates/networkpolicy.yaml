@@ -95,6 +95,11 @@ spec:
         - protocol: TCP
           port: {{ $np.murmur.icePort }}
         {{- end }}
+        {{- if .Values.mumble.proxy.addr }}
+        # R88: gawk-mmproxy in murmur's pod (docs/92 D8).
+        - protocol: TCP
+          port: {{ $np.murmur.proxyPort }}
+        {{- end }}
     - to:
         - podSelector:
             matchLabels:

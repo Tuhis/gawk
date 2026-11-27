@@ -769,6 +769,18 @@ COMPONENTS = {
         sources="`go list -deps ./...` in `gawk-whip-gateway/`.",
         collect=lambda: collect_go("gawk-whip-gateway"),
     ),
+    # R88 (docs/92 D1): the real-address sidecar in murmur's pod. The
+    # standard library and golang.org/x/sys only, CGO_ENABLED=0.
+    "mmproxy": dict(
+        path="gawk-mmproxy",
+        blurb=(
+            "The real-address sidecar for murmur (`gawk-mmproxy`). It depends on\n"
+            "the Go standard library and `golang.org/x/sys` only, so this list is\n"
+            "the whole of what its image carries besides the Go runtime."
+        ),
+        sources="`go list -deps ./...` in `gawk-mmproxy/`.",
+        collect=lambda: collect_go("gawk-mmproxy"),
+    ),
     "windows": dict(
         path="gawk-broadcast-desktop",
         blurb=(
@@ -971,6 +983,7 @@ def check() -> int:
         ("gawk-sampler", "", True),
         ("gawk-mumble-bridge", "", False),
         ("gawk-whip-gateway", "", False),
+        ("gawk-mmproxy", "", False),
     ):
         for pkg in collect_go(module, tags, cgo):
             checked += 1

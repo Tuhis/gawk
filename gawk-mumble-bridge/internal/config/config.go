@@ -76,7 +76,9 @@ type Config struct {
 	MumbleObserverName       string
 	MumbleTempParent         string
 	MumbleTempTemplate       string
-	MumbleClientVersion      mumble.Version
+	// MumbleProxyAddr is gawk-mmproxy's host:port (R88, docs/92 D8).
+	MumbleProxyAddr     string
+	MumbleClientVersion mumble.Version
 
 	// Ice mode (docs/89 D1): set MumbleIceAddr, or observer mode.
 	MumbleIceAddr            string
@@ -150,6 +152,7 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 	observerName := str("mumble-observer-name", DefaultObserverName, "the observer's Mumble name (OD33); observer mode only (docs/89 D13)")
 	tempParent := str("mumble-temp-parent", "", "path of the channel temporary channels are created under, e.g. Gawk/Rooms; empty is the root")
 	tempTmpl := str("mumble-temp-channel-template", DefaultTempChannelTemplate, "a dynamic room's temporary channel name; {key} the keyed channel key, {code} the room code (OD32)")
+	proxyAddr := str("mumble-proxy-addr", "", "gawk-mmproxy's host:port in murmur's pod; set, voice users' Mumble connections go through it and murmur sees the browser's address (docs/92 D8)")
 	clientVersion := str("mumble-client-version", DefaultClientVersion, "the Mumble version the bridge reports; below 1.5.0 so murmur speaks the legacy voice format")
 	iceAddr := str("mumble-ice-addr", "", "murmur's Ice endpoint, host:port over TCP; set, the roster comes from Ice and no observer user exists (Ice mode, docs/89 D1)")
 	iceSecret := str("mumble-ice-secret", "", "murmur's icesecretwrite (Ice mode needs the write secret for callbacks); prefer the env")
@@ -207,6 +210,7 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 		MumbleObserverName: strings.TrimSpace(*observerName),
 		MumbleTempParent:   strings.TrimSpace(*tempParent),
 		MumbleTempTemplate: *tempTmpl,
+		MumbleProxyAddr:    strings.TrimSpace(*proxyAddr),
 		LogFormat:          strings.TrimSpace(*logFormat),
 	}
 	var err error
@@ -250,6 +254,11 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 	}
 	if host, port, err := net.SplitHostPort(c.MumbleAddr); err != nil || host == "" || port == "" {
 		return Config{}, fmt.Errorf("invalid -mumble-addr %q (want host:port)", c.MumbleAddr)
+	}
+	if c.MumbleProxyAddr != "" {
+		if host, port, err := net.SplitHostPort(c.MumbleProxyAddr); err != nil || host == "" || port == "" {
+			return Config{}, fmt.Errorf("invalid -mumble-proxy-addr %q (want host:port)", c.MumbleProxyAddr)
+		}
 	}
 	trust := 0
 	for _, set := range []bool{c.MumbleCAFile != "", c.MumbleCertSHA256 != "", c.MumbleInsecureSkipVerify} {
@@ -421,6 +430,7 @@ func (c Config) Options(version string, log *slog.Logger) bridge.Options {
 			ObserverName:        c.MumbleObserverName,
 			TempParent:          c.MumbleTempParent,
 			TempChannelTemplate: c.MumbleTempTemplate,
+			ProxyAddr:           c.MumbleProxyAddr,
 			Ice: bridge.IceOptions{
 				Addr:            c.MumbleIceAddr,
 				Secret:          c.MumbleIceSecret,
@@ -455,6 +465,7 @@ func (c Config) LogAttrs() []any {
 		"mumble_cert_pinned", set(c.MumbleCertSHA256), "mumble_insecure_skip_verify", c.MumbleInsecureSkipVerify,
 		"mumble_name_template", c.MumbleNameTemplate, "mumble_observer_name", c.MumbleObserverName,
 		"mumble_temp_parent", c.MumbleTempParent, "mumble_temp_channel_template", c.MumbleTempTemplate,
+		"mumble_proxy_addr", c.MumbleProxyAddr,
 		"mumble_client_version", c.MumbleClientVersion.String(),
 		"roster", map[bool]string{true: "ice", false: "observer"}[c.MumbleIceAddr != ""],
 		"mumble_ice_addr", c.MumbleIceAddr, "mumble_ice_secret_set", set(c.MumbleIceSecret),

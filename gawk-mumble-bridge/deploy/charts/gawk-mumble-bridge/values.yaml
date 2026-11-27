@@ -149,6 +149,15 @@ mumble:
   tempChannelTemplate: "gawk {key}"
   # Below 1.5.0, so murmur sends the legacy voice format the bridge speaks.
   clientVersion: "1.4.0"
+  # Real client addresses (R88, docs/92): gawk-mmproxy's host:port in
+  # murmur's pod, e.g. mumble-mmproxy.mumble:64739 (a ClusterIP Service,
+  # never public). Set, every voice user's Mumble connection goes through it
+  # and murmur sees the browser's own address, so a Mumble ban or autoban
+  # covers one person, not this pod. Unset: R79's direct dial. The proxy
+  # must be deployed beside murmur first (gawk-mmproxy/README.md); with it
+  # unreachable, voice joins fail with 4016 (no fallback to a direct dial).
+  proxy:
+    addr: ""
   # Ice mode (R85, docs/89): the roster from murmur's Ice instead of a
   # visible observer user. Needs murmur 1.5, or 1.6.1001 and later (on
   # 1.6.870 the bridge never registers callbacks and the roster updates
@@ -226,6 +235,8 @@ networkPolicy:
     # whose permissive default suits egress only; with Ice on and neither
     # set, the chart refuses to render rather than open the port to all.
     icePort: 6502
+    # With mumble.proxy.addr: egress to gawk-mmproxy's port in murmur's pod.
+    proxyPort: 64739
     callbackCidr: ""
     podSelector: {}
     namespaceSelector: {}

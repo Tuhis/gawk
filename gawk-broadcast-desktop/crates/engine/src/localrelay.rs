@@ -3,8 +3,9 @@
 //! and a PoP's `LocalRelayInfo` (`0x18`).
 //!
 //! - **Only on a fresh offer** (item 43.1): an offer is acted on while its
-//!   validity lasts, and nothing remembered ever starts a switch. What is
-//!   remembered is consent only: the per-handle opt-out (item 43.6).
+//!   validity lasts, and nothing remembered ever starts a switch. The
+//!   opt-out (item 43.6) lasts the stream it was picked on and is never
+//!   stored (OD18).
 //! - **Candidates probed in parallel**, first success wins (item 43.2), each
 //!   pinned to the hashes it carries ([`crate::probe::probe_pinned`]).
 //! - **A broadcaster switches only before going live** (item 43.3):
@@ -231,8 +232,9 @@ pub enum Verdict {
 }
 
 /// The consent and failure memory the switch consults (docs/76 items 43.5
-/// and 43.6). `opted_out` is the persisted per-handle "Use … instead";
-/// `unreachable` lives for the app session only.
+/// and 43.6), all in memory. `opted_out` is "Use … instead", for the
+/// stream it was picked on only (OD18: [`SwitchPolicy::end_stream`] ends
+/// it, and it is never stored); `unreachable` lives for the app session.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SwitchPolicy {
     pub opted_out: HashSet<String>,
@@ -240,12 +242,11 @@ pub struct SwitchPolicy {
 }
 
 impl SwitchPolicy {
-    /// A policy seeded with the persisted opt-outs.
-    pub fn with_opt_outs<I: IntoIterator<Item = String>>(opt_outs: I) -> Self {
-        Self {
-            opted_out: opt_outs.into_iter().collect(),
-            unreachable: HashSet::new(),
-        }
+    /// The stream the opt-outs were picked on is over (a broadcast ended,
+    /// or the client joined another stream): the next one follows the
+    /// PoP's offer again (OD18).
+    pub fn end_stream(&mut self) {
+        self.opted_out.clear();
     }
 
     /// The verdict on a fresh `offer`; `live` is whether a broadcast is
@@ -265,8 +266,8 @@ impl SwitchPolicy {
         self.unreachable.insert(handle.to_owned());
     }
 
-    /// The chip's "Use … instead": remembered against the handle until the
-    /// user picks the PoP again.
+    /// The chip's "Use … instead": held against the handle until the user
+    /// picks the PoP again or the stream ends.
     pub fn opt_out(&mut self, handle: &str) {
         self.opted_out.insert(handle.to_owned());
     }
@@ -681,8 +682,14 @@ mod tests {
         assert_eq!(p.decide(&offer, true), Verdict::Ignore);
         p.opt_in(&offer.handle);
         assert_eq!(p.decide(&offer, false), Verdict::Probe);
-        let seeded = SwitchPolicy::with_opt_outs([offer.handle.clone()]);
-        assert_eq!(seeded.decide(&offer, false), Verdict::Ignore);
+        // OD18: the opt-out lasts its stream; unreachable lasts the app
+        // session.
+        p.opt_out(&offer.handle);
+        p.end_stream();
+        assert_eq!(p.decide(&offer, false), Verdict::Probe);
+        p.mark_unreachable(&offer.handle);
+        p.end_stream();
+        assert_eq!(p.decide(&offer, false), Verdict::Ignore);
     }
 
     #[test]

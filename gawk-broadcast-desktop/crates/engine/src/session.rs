@@ -472,6 +472,8 @@ impl Session {
             create_secret: self.cfg.room_create_secret.clone(),
             creator_token_hex: String::new(),
             nickname: self.shared.lock().unwrap().nickname.clone(),
+            // A live broadcast is never moved (docs/76 item 43.3).
+            follow_offers: false,
         }
     }
 

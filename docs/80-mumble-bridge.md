@@ -356,6 +356,8 @@ Bridge (`gawk-mumble-bridge`, flags and `GAWK_*` envs and the chart):
   client without a certificate, so every bridged connection presents a
   fresh self-signed one that is never stored. A Mumble ban of a bridged
   user bans the bridge pod's address; `docs/self-hosting.md` says so.
+  *(2026-11-26: with gawk-mmproxy, R88, murmur sees each browser's own
+  address, so the ban covers one person; see [docs/92](92-mumble-real-client-addresses.md).)*
 - **Audio format**: murmur 1.5 and 1.6 still send the legacy audio format
   over the TCP tunnel to a client that reports 1.4.0 (measured, byte-
   identical), and the protobuf format to one that reports ≥ 1.5.0. The

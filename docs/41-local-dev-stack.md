@@ -516,6 +516,12 @@ observer. Murmur stays on 1.5.939, whose Ice callbacks are safe, because the
 1.6 images (1.6.1001 included, measured 2026-11-15) lose
 `MUMBLE_SUPERUSER_PASSWORD` after their first start.
 
+R88 (docs/92): the lane runs gawk-mmproxy in murmur's network namespace
+(`mmproxy-routes`, then `mmproxy`) and the bridge sends voice users through
+it (`dev/voice-proxy-on.env`), so murmur's log shows each browser's own
+address. `VOICE_PROXY=off` swaps in `dev/voice-proxy-off.env` and dials
+murmur directly.
+
 **R40's screening lane is an override file, not a profile** (added
 2026-10-13, docs/71 §9.7): `docker compose -f docker-compose.yml -f
 dev/compose.screening.yml up -d --build --wait`, or that pair in

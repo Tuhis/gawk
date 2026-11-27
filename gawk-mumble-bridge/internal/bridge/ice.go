@@ -8,6 +8,7 @@ import (
 	"net"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -732,3 +733,17 @@ func (m *iceMirror) status() *IceStatus {
 
 // callbackAddr is the endpoint's bound address (tests).
 func (m *iceMirror) callbackAddr() *net.TCPAddr { return m.ep.Addr() }
+
+// hasName reports whether the mirror lists a user whose lowercased name is
+// key (docs/92 D12). The mirror may be up to one reconcile stale: a user
+// who has left only costs an unneeded suffix.
+func (m *iceMirror) hasName(key string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, u := range m.users {
+		if strings.ToLower(u.Name) == key {
+			return true
+		}
+	}
+	return false
+}

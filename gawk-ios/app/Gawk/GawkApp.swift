@@ -115,6 +115,9 @@ struct RootView: View {
         }
         .onChange(of: broadcast.isActive, initial: true) { _, active in
             router.isBroadcasting = active
+            // docs/76 OD18: a "Use … instead" picked for the broadcast ends
+            // with it.
+            if !active { switcher.broadcastEnded() }
         }
         // TN3179 (docs/76 item 44): a switch never dials while the app is
         // not active, and coming back after the prompt is its one retry.
