@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.43.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.42.0...gawk-server/v0.43.0) (2026-11-28)
+
+
+### Features
+
+* **r74:** the PoP rows the agent can close (PP0 harness, PP8/PP9 labs, PP11 in e2e-cluster, the native switch) ([#850](https://github.com/Tuhis/gawk/issues/850)) ([e645bfb](https://github.com/Tuhis/gawk/commit/e645bfba4b42b58c80447aa4a75dd0d13be8d511))
+
 ## [0.42.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.41.1...gawk-server/v0.42.0) (2026-11-20)
 
 

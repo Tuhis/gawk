@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.0](https://github.com/Tuhis/gawk/compare/gawk-ios/v1.9.1...gawk-ios/v1.10.0) (2026-11-28)
+
+
+### Features
+
+* **r74:** the PoP rows the agent can close (PP0 harness, PP8/PP9 labs, PP11 in e2e-cluster, the native switch) ([#850](https://github.com/Tuhis/gawk/issues/850)) ([e645bfb](https://github.com/Tuhis/gawk/commit/e645bfba4b42b58c80447aa4a75dd0d13be8d511))
+
 ## [1.9.1](https://github.com/Tuhis/gawk/compare/gawk-ios/v1.9.0...gawk-ios/v1.9.1) (2026-11-15)
 
 
